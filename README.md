@@ -1,9 +1,5 @@
 # Metis— High Performance & Personal  AI Assistant
 
-![log](./docs/figures/metis.svg)
-
-
-
 Metis is a Cangjie-native agent runtime for building a personal AI assistant that can work through the terminal, structured tools, MCP, scheduled jobs, workspace memory, and multi-channel gateways.
 
 It combines an interactive CLI, a unified Gateway-first runtime, channel adapters, skills, persistent sessions, and operational surfaces for running agents in real workflows instead of one-off chat demos.
