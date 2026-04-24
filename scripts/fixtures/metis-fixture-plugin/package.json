@@ -1,0 +1,9 @@
+{
+  "name": "metis-fixture-plugin",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "index.mjs",
+  "metis": {
+    "channelPlugin": "index.mjs"
+  }
+}

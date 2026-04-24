@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fix Summary Detail - Magic CLI Data Backend</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .nav {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            justify-content: center;
+        }
+
+        .nav a {
+            background: #667eea;
+            color: white;
+            padding: 0.75rem 1.5rem;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background 0.3s;
+        }
+
+        .nav a:hover {
+            background: #5a6fd8;
+        }
+
+        .detail-card {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+            margin-bottom: 2rem;
+        }
+
+        .detail-header {
+            background: #f8f9fa;
+            padding: 1.5rem;
+            border-bottom: 1px solid #eee;
+        }
+
+        .detail-title {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 0.5rem;
+        }
+
+        .detail-meta {
+            display: flex;
+            gap: 2rem;
+            font-size: 0.9rem;
+            color: #666;
+        }
+
+        .detail-content {
+            padding: 2rem;
+        }
+
+        .detail-section {
+            margin-bottom: 2rem;
+        }
+
+        .detail-section h3 {
+            color: #667eea;
+            margin-bottom: 1rem;
+            font-size: 1.2rem;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 0.5rem;
+        }
+
+        .content-box {
+            background: #f8f9fa;
+            padding: 1.5rem;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.95rem;
+        }
+
+        .meta-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .meta-label {
+            font-weight: bold;
+            color: #333;
+        }
+
+        .meta-value {
+            color: #666;
+        }
+
+        .btn {
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5a6fd8;
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6169;
+        }
+
+        .actions {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .copy-btn {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: background 0.3s;
+        }
+
+        .copy-btn:hover {
+            background: #218838;
+        }
+
+        .copy-btn.copied {
+            background: #17a2b8;
+        }
+
+        .timestamp {
+            color: #666;
+            font-size: 0.9rem;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+
+        @media (max-width: 768px) {
+            .detail-meta {
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+
+            .actions {
+                flex-direction: column;
+            }
+
+            .nav {
+                flex-wrap: wrap;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Fix Summary Detail</h1>
+            <p>View complete fix summary information</p>
+        </div>
+
+        <div class="nav">
+            <a href="/">Back to Home</a>
+            <a href="/fix-summaries">Back to List</a>
+            <a href="/agent-chat-rounds">Agent Chat Rounds</a>
+            <a href="/api">API Documentation</a>
+        </div>
+
+        <div class="detail-card">
+            <div class="detail-header">
+                <div class="detail-title">Fix Summary</div>
+                <div class="detail-meta">
+                    <div class="meta-item">
+                        <span class="meta-label">ID:</span>
+                        <span class="meta-value">{{ summary.id }}</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Time:</span>
+                        <span class="meta-value timestamp">{{ summary.timestamp }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="detail-content">
+                <div class="detail-section">
+                    <h3>Fix Content</h3>
+                    <div class="content-box" id="content-display">{{ summary.content }}</div>
+                    <button class="copy-btn" onclick="copyToClipboard('{{ summary.content }}')">Copy Content</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="actions">
+            <a href="/fix-summaries" class="btn btn-primary">Back to List</a>
+            <a href="/" class="btn btn-secondary">Back to Home</a>
+        </div>
+    </div>
+
+    <script>
+        function formatContent(content) {
+            try {
+                // Try to parse as JSON
+                const parsed = JSON.parse(content);
+                return JSON.stringify(parsed, null, 2);
+            } catch (e) {
+                // If not JSON, return as-is with some formatting
+                return content;
+            }
+        }
+
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(function() {
+                const btn = event.target;
+                const originalText = btn.textContent;
+                btn.textContent = 'Copied!';
+                btn.classList.add('copied');
+
+                setTimeout(function() {
+                    btn.textContent = originalText;
+                    btn.classList.remove('copied');
+                }, 2000);
+            }).catch(function(err) {
+                console.error('Copy failed:', err);
+                alert('Copy failed, please copy manually');
+            });
+        }
+
+        // Format content when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            const contentDisplay = document.getElementById('content-display');
+            if (contentDisplay) {
+                const originalContent = contentDisplay.textContent;
+                const formattedContent = formatContent(originalContent);
+
+                // Check if it's JSON to apply special formatting
+                try {
+                    JSON.parse(originalContent);
+                    contentDisplay.innerHTML = `<pre class="json-content">${formattedContent}</pre>`;
+                } catch (e) {
+                    // Not JSON, just ensure proper line breaks
+                    contentDisplay.style.whiteSpace = 'pre-wrap';
+                    contentDisplay.style.wordBreak = 'break-word';
+                }
+            }
+        });
+    </script>
+
+    <style>
+        .json-content {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 1rem;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9rem;
+            line-height: 1.4;
+            overflow-x: auto;
+            margin: 0;
+        }
+
+        .content-box {
+            background: #f8f9fa;
+            padding: 1.5rem;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.95rem;
+        }
+    </style>
+</body>
+</html>

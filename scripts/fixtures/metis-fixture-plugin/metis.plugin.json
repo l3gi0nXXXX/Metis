@@ -1,0 +1,8 @@
+{
+  "id": "metis-fixture",
+  "channels": ["metis-fixture"],
+  "gatewayRuntime": {
+    "kind": "legacy-node-plugin",
+    "entry": "index.mjs"
+  }
+}

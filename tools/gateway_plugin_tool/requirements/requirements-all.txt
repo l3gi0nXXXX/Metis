@@ -1,0 +1,7 @@
+# 聚合安装：包含当前工具链登记的全部渠道可选依赖
+-r dingtalk.txt
+-r feishu.txt
+-r qq.txt
+-r wechat.txt
+-r wecom.txt
+-r wechat-mp.txt

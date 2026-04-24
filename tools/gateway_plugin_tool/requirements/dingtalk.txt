@@ -1,0 +1,2 @@
+# 钉钉 Stream 模式（免公网回调 URL）
+dingtalk-stream>=0.18.0

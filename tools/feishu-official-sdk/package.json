@@ -1,0 +1,5 @@
+{
+  "name": "metis-feishu-official-sdk-sidecar",
+  "private": true,
+  "type": "module"
+}

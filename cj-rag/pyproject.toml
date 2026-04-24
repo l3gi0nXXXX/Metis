@@ -1,0 +1,21 @@
+[project]
+name = "cj-rag"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.116.1",
+    "fastmcp>=2.11.3",
+    "langchain-huggingface>=0.3.1",
+    "milvus-lite>=2.5.1",
+    "pydantic>=2.11.7",
+    "pymilvus>=2.6.0",
+    "sentence-transformers>=5.1.0",
+    "transformers>=4.55.2",
+    "uvicorn>=0.35.0",
+]
+
+[[tool.uv.index]]
+url="https://pypi.tuna.tsinghua.edu.cn/simple"
+default=true

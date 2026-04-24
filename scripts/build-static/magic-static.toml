@@ -1,0 +1,80 @@
+[target.aarch64-linux-ohos]
+  compile-option = "-B \"${DEVECO_CANGJIE_HOME}/compiler/third_party/llvm/bin\" -B \"${DEVECO_CANGJIE_HOME}/musl/usr/lib/aarch64-linux-ohos\" -L \"${DEVECO_CANGJIE_HOME}/musl/usr/lib/aarch64-linux-ohos\" -L \"${DEVECO_CANGJIE_HOME}/build/linux_ohos_aarch64_llvm/openssl\" --sysroot \"${DEVECO_CANGJIE_HOME}/musl\" --cfg \"ohos=true\""
+  [target.aarch64-linux-ohos.bin-dependencies]
+    path-option = [ "${AARCH64_LIBS}", "${AARCH64_MACRO_LIBS}" ]
+
+[target.x86_64-linux-ohos]
+  compile-option = "-B \"${DEVECO_CANGJIE_HOME}/compiler/third_party/llvm/bin\" -B \"${DEVECO_CANGJIE_HOME}/musl/usr/lib/x86_64-linux-ohos\" -L \"${DEVECO_CANGJIE_HOME}/musl/usr/lib/x86_64-linux-ohos\" -L \"${DEVECO_CANGJIE_HOME}/build/linux_ohos_x86_64_llvm/openssl\" --sysroot \"${DEVECO_CANGJIE_HOME}/musl\" --cfg \"ohos=true\""
+  [target.x86_64-linux-ohos.bin-dependencies]
+    path-option = [ "${X86_64_OHOS_LIBS}", "${X86_64_OHOS_MACRO_LIBS}" ]
+
+[target.x86_64-unknown-linux-gnu]
+  compile-option = "-ldl --cfg \"ohos=false\""
+
+[target.x86_64-unknown-windows-gnu]
+  compile-option = "--cfg \"ohos=false\""
+
+[target.x86_64-w64-mingw32]
+  compile-option = "-lcrypt32 --cfg \"ohos=false\""
+
+[target.aarch64-unknown-linux-gnu]
+  compile-option = "-ldl --cfg \"ohos=false\""
+
+[target.x86_64-apple-darwin]
+  compile-option = "--cfg \"ohos=false\""
+
+[target.aarch64-apple-darwin]
+  compile-option = "--cfg \"ohos=false\""
+
+[package]
+  cjc-version = "1.0.0"
+  compile-option = "-Woff unused -Woff deprecated --static-libs --static-std --static --cfg \"faiss=disable,sqlite=disable,llamacpp=disable,http=curl\" "
+  description = "nothing here"
+  link-option = ""
+  name = "magic"
+  output-type = "static"
+  src-dir = ""
+  target-dir = ""
+  version = "1.0.0"
+
+[package.package-configuration."magic.examples.doc_translator"]
+  output-type = "executable"
+[package.package-configuration."magic.examples.markdown_qa"]
+  output-type = "executable"
+[package.package-configuration."magic.examples.doc_generator"]
+  output-type = "executable"
+[package.package-configuration."magic.examples.file_assistant"]
+  output-type = "executable"
+[package.package-configuration."magic.examples.quick_start"]
+  output-type = "executable"
+[package.package-configuration."magic.examples.mcp_server"]
+  output-type = "executable"
+[package.package-configuration."magic.examples.mcp_client"]
+  output-type = "executable"
+[package.package-configuration."magic.examples.magic_agent"]
+  output-type = "executable"
+
+#----------------------------------------
+#  Setting FFI libs
+#----------------------------------------
+[ffi.c]
+# sqlite = {path="./libs/"}
+# faiss_c = {path="./libs/"}
+
+#----------------------------------------
+#  Setting cangjie-stdx
+#----------------------------------------
+[target.x86_64-unknown-linux-gnu.bin-dependencies]
+  path-option = ["./libs/cangjie-stdx-linux-x64-1.0.0.1/linux_x86_64_llvm/static/stdx"]
+
+[target.x86_64-unknown-windows-gnu.bin-dependencies]
+  path-option = ["./libs/cangjie-stdx-windows-x64-1.0.0.1/windows_x86_64_llvm/static/stdx"]
+
+[target.x86_64-w64-mingw32.bin-dependencies]
+  path-option = ["./libs/cangjie-stdx-windows-x64-1.0.0.1/windows_x86_64_llvm/static/stdx"]
+
+[target.aarch64-unknown-linux-gnu.bin-dependencies]
+  path-option = ["./libs/cangjie-stdx-linux-aarch64-1.0.0.1/linux_aarch64_llvm/static/stdx"]
+
+[target.aarch64-apple-darwin.bin-dependencies]
+  path-option = ["./libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/static/stdx"]

@@ -1,0 +1,77 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment and local overrides
+.env
+.env.*
+.envrc
+.python-version
+
+# Build and packaging
+build/
+dist/
+develop-eggs/
+.eggs/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+.installed.cfg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Testing and coverage
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache
+.pytest_cache/
+nosetests.xml
+*.cover
+*.py,cover
+pytestdebug.log
+
+# Type checking / lint caches
+.mypy_cache/
+.pytype/
+.ruff_cache/
+.pyre/
+
+# Editor and IDE settings
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs and runtime files
+*.log
+log/
+logs/
+*.pid
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# PEP 582
+__pypackages__/
+

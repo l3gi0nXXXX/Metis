@@ -1,0 +1,42 @@
+[target.x86_64-w64-mingw32]
+  compile-option = "-lcrypt32"
+
+[target.aarch64-unknown-linux-gnu]
+  compile-option = "-ldl"
+
+[target.x86_64-unknown-linux-gnu]
+  compile-option = "-ldl"
+
+[package]
+  cjc-version = "1.0.0"
+  name = "metis"
+  description = "nothing here"
+  version = "1.0.0"
+  target-dir = ""
+  src-dir = ""
+  output-type = "executable"
+  compile-option = "-Woff unused --static-libs --static-std --static --cfg \"ohos=false,enable_tree_sitter=true,enable_cl100k_tokenizer=true\""
+  override-compile-option = ""
+  link-option = ""
+
+[dependencies]
+  magic = { path = "${MAGIC_PATH}" }
+
+[ffi.c]
+  rawinput = { path="./ffi/" }
+  signature_extractor = { path = "./ffi/" }
+
+[target.x86_64-unknown-linux-gnu.bin-dependencies]
+  path-option = ["${MAGIC_PATH}/libs/cangjie-stdx-linux-x64-1.0.0.1/linux_x86_64_llvm/static/stdx"]
+
+[target.x86_64-unknown-windows-gnu.bin-dependencies]
+  path-option = ["${MAGIC_PATH}/libs/cangjie-stdx-windows-x64-1.0.0.1/windows_x86_64_llvm/static/stdx"]
+
+[target.x86_64-w64-mingw32.bin-dependencies]
+  path-option = ["${MAGIC_PATH}/libs/cangjie-stdx-windows-x64-1.0.0.1/windows_x86_64_llvm/static/stdx"]
+
+[target.aarch64-unknown-linux-gnu.bin-dependencies]
+  path-option = ["${MAGIC_PATH}/libs/cangjie-stdx-linux-aarch64-1.0.0.1/linux_aarch64_llvm/static/stdx"]
+
+[target.aarch64-apple-darwin.bin-dependencies]
+  path-option = ["${MAGIC_PATH}/libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/static/stdx"]

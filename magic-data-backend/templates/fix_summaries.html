@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fix Summaries - Magic CLI Data Backend</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .nav {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            justify-content: center;
+        }
+
+        .nav a {
+            background: #667eea;
+            color: white;
+            padding: 0.75rem 1.5rem;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background 0.3s;
+        }
+
+        .nav a:hover {
+            background: #5a6fd8;
+        }
+
+        .summary-list {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .summary-item {
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid #eee;
+            transition: background 0.18s ease, box-shadow 0.18s ease;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1rem;
+            position: relative;
+        }
+
+        .summary-item.clickable { cursor: pointer; }
+        .summary-item.clickable:hover { background: #f8fafc; box-shadow: 0 1px 6px rgba(0,0,0,0.06); }
+        .summary-item.clickable:focus { outline: none; box-shadow: 0 0 0 2px rgba(102,126,234,0.4); }
+
+        .summary-item:last-child {
+            border-bottom: none;
+        }
+
+        .summary-time {
+            color: #666;
+            font-size: 0.9rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .summary-main { flex: 1 1 auto; }
+
+        .summary-title { font-weight: 600; color: #2b2d42; margin-bottom: 0.25rem; line-height: 1.4; transition: color 0.18s ease; }
+        .summary-item.clickable:hover .summary-title,
+        .summary-item.clickable:focus .summary-title { color: #667eea; }
+        .summary-content { color: #333; line-height: 1.6; }
+
+        .summary-actions { flex: 0 0 auto; align-self: center; }
+
+        .btn {
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: all 0.3s;
+        }
+
+        .view-btn {
+            background: #667eea;
+            color: #fff !important;
+            padding: 0.5rem 0.9rem;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            border: 1px solid transparent;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+            transition: background 0.2s, box-shadow 0.2s, transform 0.02s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+        .view-btn:hover { background: #5a6fd8; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+        .view-btn:active { transform: translateY(1px); }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6169;
+        }
+
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 1rem;
+            margin: 2rem 0;
+        }
+
+        .pagination a, .pagination span {
+            padding: 0.5rem 1rem;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            text-decoration: none;
+            color: #667eea;
+            transition: all 0.3s;
+        }
+
+        .pagination a:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        .pagination .current {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
+        .pagination .disabled {
+            color: #ccc;
+            border-color: #eee;
+            cursor: not-allowed;
+        }
+
+        .empty {
+            text-align: center;
+            color: #666;
+            padding: 4rem 3rem;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .empty h3 {
+            margin-bottom: 1.5rem;
+            font-size: 1.5rem;
+            color: #333;
+        }
+
+        .empty p {
+            margin-bottom: 2rem;
+            font-size: 1.1rem;
+            line-height: 1.6;
+        }
+
+        .empty .btn {
+            margin-top: 1rem;
+        }
+
+        .back-to-top {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #667eea;
+            color: white;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-decoration: none;
+            font-size: 1.2rem;
+            opacity: 0.8;
+            transition: opacity 0.3s;
+        }
+
+        .back-to-top:hover {
+            opacity: 1;
+        }
+
+        .text-muted { color: #6c757d; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Fix Summaries</h1>
+            <p>All code fixes and optimization records</p>
+        </div>
+
+        <div class="nav">
+            <a href="/">Back to Home</a>
+            <a href="/agent-chat-rounds">Agent Chat Rounds</a>
+            <a href="/api">API Documentation</a>
+        </div>
+
+        {% if summaries %}
+            <div class="summary-list">
+                {% for summary in summaries %}
+                <div class="summary-item clickable" role="link" tabindex="0" data-href="/fix-summary/{{ summary.id }}" aria-label="Open fix summary details">
+                    <div class="summary-main">
+                        <div class="summary-title">{{ summary.content[:140] }}{% if summary.content|length > 140 %}...{% endif %}</div>
+                        <div class="summary-time">{{ summary.timestamp }} · <span class="text-muted">ID: {{ summary.id[:8] }}...</span></div>
+                    </div>
+                    <div class="summary-actions">
+                        <a href="/fix-summary/{{ summary.id }}" class="view-btn js-stop" aria-label="View fix summary details">View Details →</a>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+
+            <div class="pagination">
+                {% if page > 1 %}
+                    <a href="/fix-summaries?page={{ page - 1 }}&limit={{ limit }}">Previous</a>
+                {% else %}
+                    <span class="disabled">Previous</span>
+                {% endif %}
+
+                <span class="current">Page {{ page }} of {{ total_pages }}</span>
+
+                {% if page < total_pages %}
+                    <a href="/fix-summaries?page={{ page + 1 }}&limit={{ limit }}">Next</a>
+                {% else %}
+                    <span class="disabled">Next</span>
+                {% endif %}
+            </div>
+
+            <div style="text-align: center; color: #666; margin-top: 1rem;">
+                Total {{ total }} records, showing {{ limit }} per page
+            </div>
+        {% else %}
+            <div class="empty">
+                <h3>No Fix Summary Data</h3>
+                <p>When your system creates fix summaries, they will be displayed here.</p>
+                <a href="/" class="btn btn-primary" style="margin-top: 1rem;">Back to Home</a>
+            </div>
+        {% endif %}
+    </div>
+
+    <a href="#" class="back-to-top" onclick="window.scrollTo({top: 0, behavior: 'smooth'}); return false;">↑</a>
+</body>
+<script>
+  // Make entire summary rows clickable and keyboard accessible
+  (function() {
+    const rows = document.querySelectorAll('.summary-item.clickable');
+    rows.forEach(row => {
+      const href = row.getAttribute('data-href');
+      if (!href) return;
+      row.addEventListener('click', () => { window.location.assign(href); });
+      row.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); window.location.assign(href); }
+      });
+    });
+    document.querySelectorAll('.js-stop').forEach(el => {
+      el.addEventListener('click', (e) => e.stopPropagation());
+      el.addEventListener('keydown', (e) => e.stopPropagation());
+    });
+  })();
+</script>
+</html>

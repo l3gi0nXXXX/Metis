@@ -1,0 +1,51 @@
+model/
+*.bak
+*.db
+.venv
+
+# Python 通用忽略规则
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# IDE & 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+*.code-workspace
+
+# 依赖和构建生成文件
+pip-wheel-metadata/
+*.egg-info/
+*.egg
+.installed.cfg
+/site
+MANIFEST
+
+# uv/pip 相关
+uv.lock
+*.lock      # 例如 `requirements.lock` (`uv` 可能会生成)
+.uv/        # uv 的临时缓存目录（如果存在）
+.cache/     # 其他可能的缓存
+
+# 测试和日志
+htmlcov/
+.coverage
+*.log
+*.sqlite3

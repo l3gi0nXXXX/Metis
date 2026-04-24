@@ -1,0 +1,946 @@
+package metis.gateway.runtime
+
+import magic.jsonable.*
+import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager, MetisPaths, GatewayUserSettings}
+import metis.core.memory.MemoryRuntimeRegistry
+import metis.core.skills.SkillsPrompt
+import metis.core.model.CliModelManager
+import metis.gateway.config.buildGatewayConfigFromUserSettings
+import metis.gateway.session.GatewayIngressSource
+import metis.io.PrintUtils
+import metis.utils.InfoUtils
+
+import magic.config.Config
+import magic.log.LogUtils
+
+import std.collection.{collectArray, filter, map}
+import std.collection.ArrayList
+import std.env.getVariable
+import std.fs.{Path, exists}
+import std.process.executeWithOutput
+import std.time.DateTime
+import stdx.encoding.json.{JsonObject, JsonString, JsonValue}
+
+private let GATEWAY_PREFIX: String = "gateway "
+
+private func gatewayCliNowMs(): Int64 {
+    DateTime.now().toUnixTimeStamp().toNanoseconds() / 1000000
+}
+
+public func gatewayCliTimingMessage(flow: String, step: String, startMs: Int64, nowMs!: Int64 = gatewayCliNowMs()): String {
+    let elapsedMs = nowMs - startMs
+    "[gateway.timing] flow=${flow} step=${step} elapsedMs=${elapsedMs}"
+}
+
+private func gatewayCliTimingLog(flow: String, step: String, startMs: Int64): Unit {
+    LogUtils.info(gatewayCliTimingMessage(flow, step, startMs))
+}
+
+public func gatewayRestartConfigValidationMessage(): Option<String> {
+    match (MetisConfigManager.currentConfigParseError()) {
+        case Some(parseError) =>
+            Some(
+                "[网关] metis.json 解析失败，已拒绝重启并跳过任何配置持久化。请先修复配置文件后再执行 gateway restart。\n${parseError}"
+            )
+        case None => None
+    }
+}
+
+private func gatewayCliGatewayClient(user: GatewayUserSettings): GatewayClient {
+    if (user.remote.enabled) {
+        return gatewayBuildClient("cli", "local-cli")
+    }
+    return GatewayClient(
+        clientName: "cli",
+        mode: "local-cli",
+        transport: "local",
+        gatewayUrl: "local://gateway"
+    )
+}
+
+public func gatewayCliClient(): GatewayClient {
+    let user = CliSettingManager.readGatewaySettings()
+    gatewayCliGatewayClient(user)
+}
+
+private func concatStringArrays(a: Array<String>, b: Array<String>): Array<String> {
+    let list = ArrayList<String>()
+    for (x in a) {
+        list.add(x)
+    }
+    for (x in b) {
+        list.add(x)
+    }
+    list.toArray()
+}
+
+private func splitRunArgsTail(tail: String): Array<String> {
+    tail.split(" ") |> filter { s => !s.trimAscii().isEmpty() } |> map { s => s.trimAscii() } |> collectArray
+}
+
+/**
+ * 若 argv 形如 `magic-cli gateway ...` 或 `metis.exe gateway ...`，返回 `gateway` 之后的子参数切片。
+ *
+ * Windows 上 `cjpm run --run-args "gateway serve"` 常把整串作为**单个** argv，需解析 `gateway ...` 前缀。
+ */
+public func gatewaySubcommandArgs(args: Array<String>): Option<Array<String>> {
+    var idx: Int64 = 0
+    while (idx < args.size) {
+        let a = args[idx]
+        if (a == "gateway") {
+            return Some(args[(idx + 1)..args.size])
+        }
+        if (a.size >= GATEWAY_PREFIX.size && a.startsWith(GATEWAY_PREFIX)) {
+            let tail = a[GATEWAY_PREFIX.size..].trimAscii()
+            let head = if (tail.isEmpty()) {
+                Array<String>()
+            } else {
+                splitRunArgsTail(tail)
+            }
+            return Some(concatStringArrays(head, args[(idx + 1)..args.size]))
+        }
+        idx += 1
+    }
+    None
+}
+
+private func joinFrom(parts: Array<String>, start: Int64): String {
+    if (start >= parts.size) {
+        return ""
+    }
+    var s = parts[start]
+    var i = start + 1
+    while (i < parts.size) {
+        s = s + " " + parts[i]
+        i += 1
+    }
+    s
+}
+
+private func gatewayPluginParseInstallFlags(parts: Array<String>, start: Int64): (String, String, Bool, Bool) {
+    var appId = ""
+    var appSecret = ""
+    var force = false
+    var ok = true
+    var i = start
+    while (i < parts.size) {
+        let t = parts[i].trimAscii().toAsciiLower()
+        if (t == "--force") {
+            force = true
+            i += 1
+            continue
+        }
+        if (t == "--app-id") {
+            if (i + 1 >= parts.size) {
+                return ("", "", false, false)
+            }
+            appId = parts[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        if (t == "--app-secret") {
+            if (i + 1 >= parts.size) {
+                return ("", "", false, false)
+            }
+            appSecret = parts[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        ok = false
+        break
+    }
+    (appId, appSecret, force, ok)
+}
+
+private func printGatewayHelp(): Unit {
+    PrintUtils.printLine("Metis gateway")
+    PrintUtils.printLine("Run, inspect, and query the Gateway.")
+    PrintUtils.printLine("")
+    PrintUtils.printLine("Usage:")
+    PrintUtils.printLine("  metis gateway <subcommand> [options]")
+    PrintUtils.printLine("")
+    PrintUtils.printLine("Commands:")
+    PrintUtils.printLine("  gateway help                     Show this help")
+    PrintUtils.printLine("  gateway run                      Run the gateway in the foreground")
+    PrintUtils.printLine("  gateway status                   Show gateway runtime status")
+    PrintUtils.printLine("  gateway health                   Fetch the local gateway health summary")
+    PrintUtils.printLine("  gateway probe                    Show local gateway reachability and status")
+    PrintUtils.printLine("  gateway discover                 Discover gateway channels and plugins")
+    PrintUtils.printLine("  gateway call <method> [json]     Call one local gateway method with optional JSON params")
+    PrintUtils.printLine("  gateway usage-cost               Show the local usage-cost summary")
+    PrintUtils.printLine("  gateway master on|off            Set the gateway.enabled master switch")
+    PrintUtils.printLine("  gateway serve                    Alias for gateway run")
+    PrintUtils.printLine("  gateway stop                     Stop the running gateway process from the lock file")
+    PrintUtils.printLine("  gateway restart                  Stop and relaunch the gateway in a new window")
+    PrintUtils.printLine("  gateway channel ...              Inspect or update gateway channels")
+    PrintUtils.printLine("  gateway plugin ...               Inspect or update gateway plugins")
+    PrintUtils.printLine("  gateway sessions ...             Inspect persisted gateway sessions")
+    PrintUtils.printLine("  gateway cron ...                 Inspect or manage scheduled jobs")
+    PrintUtils.printLine("Examples:")
+    PrintUtils.printLine("  metis gateway run")
+    PrintUtils.printLine("  metis gateway status")
+    PrintUtils.printLine("  metis gateway discover")
+    PrintUtils.printLine("  metis gateway call health")
+    PrintUtils.printLine("")
+    PrintUtils.printLine("Notes:")
+    PrintUtils.printLine("  Interactive compatibility commands are still available inside the chat shell.")
+    PrintUtils.printLine("  Gateway runtime reads persisted settings from ~/.metis/metis.json.")
+}
+
+private func gatewayRunForeground(flowName!: String = "run"): Int64 {
+    let startMs = gatewayCliNowMs()
+    gatewayCliTimingLog(flowName, "enter", startMs)
+    PrintUtils.printLine("[gateway] model: ${CliConfig.model}")
+    PrintUtils.printLine("[gateway] log file: ${Config.logFile}")
+    runGatewayService()
+    gatewayCliTimingLog(flowName, "exit", startMs)
+    0
+}
+
+private func gatewayPrintHealth(): Unit {
+    let res = gatewayCliClient().call("health")
+    PrintUtils.printLine(res.toJson().toJsonString())
+}
+
+private func gatewayPrintProbe(): Unit {
+    let health = gatewayCliClient().call("health")
+    let status = gatewayCliClient().call("status")
+    PrintUtils.printLine("Gateway Probe")
+    PrintUtils.printLine(health.toJson().toJsonString())
+    PrintUtils.printLine(status.toJson().toJsonString())
+}
+
+private func gatewayPrintDiscover(): Unit {
+    let res = gatewayCliClient().call("discover")
+    PrintUtils.printLine(res.toJson().toJsonString())
+}
+
+private func gatewayParseCallParams(raw: String): JsonObject {
+    let trimmed = raw.trimAscii()
+    if (trimmed.isEmpty()) {
+        return JsonObject()
+    }
+    try {
+        JsonValue.fromStr(trimmed).asObject()
+    } catch (_e: Exception) {
+        let obj = JsonObject()
+        obj.put("raw", JsonString(trimmed))
+        obj
+    }
+}
+
+private func gatewayCallLocalMethod(methodRaw: String, paramsRaw!: String = ""): Int64 {
+    let method = methodRaw.trimAscii().toAsciiLower()
+    if (method.isEmpty()) {
+        PrintUtils.printLine("Usage: gateway call <method> [json-params]")
+        return 1
+    }
+    let params = gatewayParseCallParams(paramsRaw)
+    let res = gatewayCliClient().call(method, params: params)
+    PrintUtils.printLine(res.toJson().toJsonString())
+    if (res.ok) { 0 } else { 1 }
+}
+
+private func gatewayPrintUsageCost(): Unit {
+    let res = gatewayCliClient().call("usage-cost")
+    PrintUtils.printLine(res.toJson().toJsonString())
+}
+
+private func gatewayDashboardBuildUrl(): String {
+    let (_, token) = gatewayDashboardResolveToken()
+    let user = CliSettingManager.readGatewaySettings()
+    let cfg = buildGatewayConfigFromUserSettings(user)
+    let binding = GatewayControlUiRuntime.controlUiBinding(cfg)
+    if (token.isEmpty()) {
+        return binding.httpUrl
+    }
+    "${binding.httpUrl}#token=${token}"
+}
+
+private func gatewayDashboardAssetModeSummary(): (String, String, String) {
+    let user = CliSettingManager.readGatewaySettings()
+    let cfg = buildGatewayConfigFromUserSettings(user)
+    let snapshot = gatewayControlUiSnapshotJson(cfg)
+    let assetMode = match (snapshot.get("assetMode")) {
+        case Some(v) =>
+            try { v.asString().getValue() } catch (_e: Exception) { "inline-fallback" }
+        case None => "inline-fallback"
+    }
+    let rootState = gatewayControlUiRootStateJson(cfg)
+    let rootKind = match (rootState.get("kind")) {
+        case Some(v) =>
+            try { v.asString().getValue() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+    let rootMessage = match (rootState.get("message")) {
+        case Some(v) =>
+            try { v.asString().getValue() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+    (assetMode, rootKind, rootMessage)
+}
+
+private func gatewayDashboardResolveToken(): (String, String) {
+    let user = CliSettingManager.readGatewaySettings()
+    match (getVariable("CANGJIECLAW_GATEWAY_TOKEN")) {
+        case Some(token) =>
+            let trimmed = token.trimAscii()
+            if (!trimmed.isEmpty()) {
+                return ("env", trimmed)
+            }
+        case None => ()
+    }
+    let token = gatewayPreferredAuthTokenFromSettings(user).trimAscii()
+    if (!token.isEmpty()) {
+        return ("config", token)
+    }
+    ("none", "")
+}
+
+private func gatewayDashboardShellSingleQuote(raw: String): String {
+    "'" + raw.replace("'", "'\"'\"'") + "'"
+}
+
+private func gatewayDashboardTryCopy(url: String): Bool {
+    let (exitCode, _, _) = match (InfoUtils.os) {
+        case "macos" =>
+            executeWithOutput(
+                "osascript",
+                ["-e", "on run argv", "-e", "set the clipboard to (item 1 of argv)", "-e", "end run", url],
+                workingDirectory: CliConfig.cwd
+            )
+        case "linux" =>
+            let escaped = gatewayDashboardShellSingleQuote(url)
+            let xclip = executeWithOutput(
+                "sh",
+                ["-lc", "printf %s ${escaped} | xclip -selection clipboard"],
+                workingDirectory: CliConfig.cwd
+            )
+            if (xclip[0] == 0) {
+                xclip
+            } else {
+                executeWithOutput(
+                    "sh",
+                    ["-lc", "printf %s ${escaped} | wl-copy"],
+                    workingDirectory: CliConfig.cwd
+                )
+            }
+        case "windows" =>
+            executeWithOutput(
+                "powershell",
+                ["-NoProfile", "-Command", "Set-Clipboard -Value $args[0]", url],
+                workingDirectory: CliConfig.cwd
+            )
+        case _ => (-1, Array<Byte>(), Array<Byte>())
+    }
+    exitCode == 0
+}
+
+private func gatewayDashboardOpenHint(url: String): String {
+    let user = CliSettingManager.readGatewaySettings()
+    let cfg = buildGatewayConfigFromUserSettings(user)
+    let host = gatewayHttpListenHost(cfg)
+    let port = cfg.port
+    if (host == "127.0.0.1" || host == "localhost") {
+        return "Browser launch failed. Open the URL above manually."
+    }
+    "Browser launch failed. If this gateway is remote, create an SSH tunnel like `ssh -L ${port}:${host}:${port} <host>` and then open ${url}."
+}
+
+private func gatewayDashboardTryOpen(url: String): Bool {
+    let (exitCode, _, _) = match (InfoUtils.os) {
+        case "macos" => executeWithOutput("open", [url], workingDirectory: CliConfig.cwd)
+        case "linux" => executeWithOutput("xdg-open", [url], workingDirectory: CliConfig.cwd)
+        case "windows" => executeWithOutput("rundll32", ["url.dll,FileProtocolHandler", url], workingDirectory: CliConfig.cwd)
+        case _ => (-1, Array<Byte>(), Array<Byte>())
+    }
+    exitCode == 0
+}
+
+private func gatewayCliJsonString(obj: JsonObject, key: String): String {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asString().getValue() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func gatewayCliJsonBool(obj: JsonObject, key: String): Bool {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asBool().getValue() } catch (_e: Exception) { false }
+        case None => false
+    }
+}
+
+private func gatewayCliFormatVerboseAnswer(answer: String, invoke: JsonObject, verbose: String): String {
+    let mode = verbose.trimAscii().toAsciiLower()
+    if (mode.isEmpty()) {
+        return answer
+    }
+    let lines = ArrayList<String>()
+    lines.add(answer)
+    if (mode == "routing" || mode == "full") {
+        lines.add("")
+        lines.add("[routing]")
+        lines.add("agent=${gatewayCliJsonString(invoke, "agentId")}")
+        lines.add("session=${gatewayCliJsonString(invoke, "session")}")
+        let to = gatewayCliJsonString(invoke, "to")
+        if (!to.isEmpty()) {
+            lines.add("to=${to}")
+        }
+        let lane = gatewayCliJsonString(invoke, "lane")
+        if (!lane.isEmpty()) {
+            lines.add("lane=${lane}")
+        }
+    }
+    if (mode == "delivery" || mode == "full") {
+        lines.add("")
+        lines.add("[delivery]")
+        lines.add("requested=${gatewayCliJsonBool(invoke, "deliver")}")
+        lines.add("status=${gatewayCliJsonString(invoke, "deliveryStatus")}")
+        let err = gatewayCliJsonString(invoke, "deliveryError")
+        if (!err.isEmpty()) {
+            lines.add("error=${err}")
+        }
+        lines.add("bestEffort=${gatewayCliJsonBool(invoke, "bestEffortDeliver")}")
+    }
+    if (mode == "full") {
+        lines.add("")
+        lines.add("[invoke]")
+        let runId = gatewayCliJsonString(invoke, "runId")
+        if (!runId.isEmpty()) {
+            lines.add("runId=${runId}")
+        }
+        lines.add("thinking=${gatewayCliJsonString(invoke, "thinking")}")
+        let timeout = gatewayCliJsonString(invoke, "timeout")
+        if (!timeout.isEmpty()) {
+            lines.add("timeout=${timeout}s")
+        }
+        lines.add("idempotentReplay=${gatewayCliJsonBool(invoke, "idempotentReplay")}")
+    }
+    String.join(lines.toArray(), delimiter: "\n")
+}
+
+public func gatewayInvokeCliAgentResult(
+    message: String,
+    sessionKey!: String = "main",
+    channel!: String = "cli",
+    to!: String = "",
+    agentId!: String = "",
+    thinking!: String = "",
+    verbose!: String = "",
+    timeoutSeconds!: Int64 = 0,
+    deliver!: Bool = false,
+    bestEffortDeliver!: Bool = false,
+    lane!: String = "",
+    runId!: String = "",
+    extraSystemPrompt!: String = "",
+    replyTo!: String = "",
+    replyChannel!: String = "",
+    replyAccount!: String = "",
+    replyToMessageId!: String = "",
+    replyInThread!: Bool = false
+): (Bool, JsonObject, String) {
+    let prompt = message.trimAscii()
+    if (prompt.isEmpty()) {
+        return (false, JsonObject(), "message must be non-empty")
+    }
+    let params = gatewayBuildAgentInvokeRpcParams(
+        GatewayIngressSource.Cli,
+        sessionKey: sessionKey,
+        text: prompt,
+        channel: channel,
+        agentId: agentId,
+        to: to,
+        lane: lane,
+        deliver: deliver,
+        thinking: thinking,
+        verbose: verbose,
+        timeoutSeconds: timeoutSeconds,
+        bestEffortDeliver: bestEffortDeliver,
+        replyChannel: replyChannel,
+        replyTo: replyTo,
+        replyAccount: replyAccount,
+        replyToMessageId: replyToMessageId,
+        replyInThread: replyInThread,
+        extraSystemPrompt: extraSystemPrompt,
+        idempotencyKey: runId
+    )
+    try {
+        let response = gatewayCliClient().request("agent.invoke", params: params)
+        if (!response.ok) {
+            return (false, JsonObject(), response.error)
+        }
+        let result = try {
+            response.result.asObject()
+        } catch (_e: Exception) {
+            JsonObject()
+        }
+        (true, result, "")
+    } catch (ex: Exception) {
+        (false, JsonObject(), ex.message)
+    }
+}
+
+public func gatewayInvokeCliAgent(
+    message: String,
+    sessionKey!: String = "main",
+    channel!: String = "cli",
+    to!: String = "",
+    agentId!: String = "",
+    thinking!: String = "",
+    verbose!: String = "",
+    timeoutSeconds!: Int64 = 0,
+    deliver!: Bool = false,
+    bestEffortDeliver!: Bool = false,
+    lane!: String = "",
+    runId!: String = "",
+    extraSystemPrompt!: String = "",
+    replyTo!: String = "",
+    replyChannel!: String = "",
+    replyAccount!: String = "",
+    replyToMessageId!: String = "",
+    replyInThread!: Bool = false
+): (Bool, String, String) {
+    let (ok, result, err) = gatewayInvokeCliAgentResult(
+        message,
+        sessionKey: sessionKey,
+        channel: channel,
+        to: to,
+        agentId: agentId,
+        thinking: thinking,
+        verbose: verbose,
+        timeoutSeconds: timeoutSeconds,
+        deliver: deliver,
+        bestEffortDeliver: bestEffortDeliver,
+        lane: lane,
+        runId: runId,
+        extraSystemPrompt: extraSystemPrompt,
+        replyTo: replyTo,
+        replyChannel: replyChannel,
+        replyAccount: replyAccount,
+        replyToMessageId: replyToMessageId,
+        replyInThread: replyInThread
+    )
+    if (!ok) {
+        return (false, "", err)
+    }
+    let invoke = match (result.get("invoke")) {
+        case Some(v) =>
+            try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    let answer = match (invoke.get("answer")) {
+        case Some(v) =>
+            try { v.asString().getValue() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+    if (answer.trimAscii().isEmpty()) {
+        return (false, "", "gateway agent invoke returned no answer")
+    }
+    (true, gatewayCliFormatVerboseAnswer(answer, invoke, verbose), "")
+}
+
+public func runGatewayDashboardCli(args: Array<String>): Int64 {
+    applyRuntimeForGatewayServe()
+
+    var shouldOpen = true
+    for (arg in args) {
+        let token = arg.trimAscii().toAsciiLower()
+        if (token == "--no-open") {
+            shouldOpen = false
+            continue
+        }
+        if (token == "--open") {
+            shouldOpen = true
+            continue
+        }
+        if (token == "-h" || token == "--help" || token == "help") {
+            PrintUtils.printLine("Usage: metis dashboard [--open|--no-open]")
+            PrintUtils.printLine("Print the Control UI URL for the running gateway and optionally open it in your browser.")
+            PrintUtils.printLine("The formal production path is static Control UI assets: bundled-root by default, or gateway.controlUi.root when explicitly configured. Inline fallback is legacy-only.")
+            return 0
+        }
+        PrintUtils.printLine("Unknown dashboard option: ${arg}")
+        PrintUtils.printLine("Usage: metis dashboard [--open|--no-open]")
+        return 1
+    }
+
+    let (tokenSource, token) = gatewayDashboardResolveToken()
+    let (assetMode, rootKind, rootMessage) = gatewayDashboardAssetModeSummary()
+    let url = gatewayDashboardBuildUrl()
+    PrintUtils.printLine("Dashboard URL: ${url}")
+    if (assetMode == "static-root" || assetMode == "bundled-root") {
+        PrintUtils.printLine("Control UI asset mode: ${assetMode} (${if (rootKind.isEmpty()) { "configured" } else { rootKind }})")
+    } else {
+        PrintUtils.printLine("Control UI asset mode: legacy inline fallback")
+        PrintUtils.printLine("Recommendation: keep bundled static assets available, or set `gateway.controlUi.root` to a built static UI directory.")
+    }
+    if (!rootMessage.trimAscii().isEmpty()) {
+        PrintUtils.printLine("Control UI root state: ${rootMessage}")
+    }
+    if (tokenSource == "config" && !token.isEmpty()) {
+        PrintUtils.printLine("Token auto-auth source: config")
+    } else if (tokenSource == "env" && !token.isEmpty()) {
+        PrintUtils.printLine("Token auto-auth source: env (CANGJIECLAW_GATEWAY_TOKEN)")
+    } else {
+        PrintUtils.printLine("Token auto-auth unavailable: no gateway token configured")
+    }
+    if (gatewayDashboardTryCopy(url)) {
+        PrintUtils.printLine("Copied to clipboard.")
+    } else {
+        PrintUtils.printLine("Copy to clipboard unavailable.")
+    }
+    if (!gatewayAnotherServeInstanceSeemsRunning()) {
+        PrintUtils.printLine("Gateway does not appear to be running. Start it with `metis gateway run` and then reopen the URL above.")
+        return 0
+    }
+    if (!shouldOpen) {
+        PrintUtils.printLine("Browser launch disabled (--no-open). Use the URL above.")
+        return 0
+    }
+    if (gatewayDashboardTryOpen(url)) {
+        PrintUtils.printLine("Opened in your browser. Keep that tab connected to the gateway.")
+    } else {
+        PrintUtils.printLine(gatewayDashboardOpenHint(url))
+    }
+    0
+}
+
+/**
+ * `gateway serve` 不经 `parseArgsAndSetConfig`，在此与 `~/.metis/metis.json` 对齐模型等配置。
+ * 放在 `metis.gateway.runtime`，避免 `metis.core.config` 依赖 `metis.core.model` 产生环。
+ */
+private func applyRuntimeForGatewayServe(): Unit {
+    // 与 parseArgsAndSetConfig 对齐：否则 LogUtils.info 可能不写文件或级别不对，~/.metis/logs 里看不到 Gateway.*。
+    Config.logLevel = "INFO"
+    Config.logFile = CliConfig.logFile.toString()
+    Config.modelRequestDir = CliConfig.dotDir.join("model-requests").toString()
+    Config.enableModelToolCall = true
+    Config.enableParallelToolCall = false
+    Config.httpReadWriteTimeout = 600000
+    CliConfig.cleanupLogs()
+    MetisConfigManager.initializeIfMissing()
+    MetisConfigManager.migrateLegacyIfNeeded()
+    MetisConfigManager.applyPersistedFieldsToCliConfig()
+    CliSettingManager.applyPersistedFieldsToCliConfig()
+    // Gateway serve should not kick off heavy qmd boot indexing on startup.
+    // Keep control-plane startup compact and do not rescan the whole workspace here.
+    MemoryRuntimeRegistry.activateBackend(CliConfig.memoryProvider, startMaintenance: false)
+    SkillsPrompt.invalidate()
+    CliModelManager.resetRuntimeState()
+}
+
+private func runGatewayStopSubcommand(): Int64 {
+    let startMs = gatewayCliNowMs()
+    gatewayCliTimingLog("stop", "enter", startMs)
+    let lockPath = gatewayServeLockPath()
+    let listenerPids = gatewayFindVerifiedListenerPidsOnPort()
+    let lockPid = gatewayPeekServeLockPid()
+    let stopPids = gatewayResolveStopTargetPids(listenerPids, lockPid: lockPid)
+    if (!exists(lockPath) && stopPids.isEmpty()) {
+        gatewayRuntimeMarkStoppedFromCli(reason: "stopped")
+        PrintUtils.printLine("[网关] 未发现 ~/.metis/gateway-serve.lock，可能没有正在运行的 gateway serve。")
+        gatewayCliTimingLog("stop", "no-lock", startMs)
+        return 0
+    }
+    let me = gatewayCliOwnProcessId()
+    if (listenerPids.size > 0) {
+        let listenerPidText = String.join(
+            listenerPids |> map({p => p.toString()}) |> collectArray,
+            delimiter: ","
+        )
+        match (lockPid) {
+            case Some(pid) =>
+                var matched = false
+                for (listenerPid in listenerPids) {
+                    if (listenerPid == pid) {
+                        matched = true
+                        break
+                    }
+                }
+                if (!matched) {
+                    PrintUtils.printLine(
+                        "[网关] 检测到锁文件 PID=${pid} 与真实 listener PID=${listenerPidText} 不一致，将以 listener 为准。"
+                    )
+                }
+            case None => ()
+        }
+    }
+    for (pid in stopPids) {
+        if (pid == me) {
+            PrintUtils.printLine("[网关] 当前进程即为 gateway serve，请在本窗口按 Ctrl+C 退出；勿在同一进程执行 gateway stop。")
+            gatewayCliTimingLog("stop", "self-process", startMs)
+            return 1
+        }
+    }
+    if (stopPids.isEmpty()) {
+        gatewayReleaseServeLockQuiet()
+        gatewayRuntimeMarkStoppedFromCli(reason: "stopped")
+        PrintUtils.printLine("[网关] 已移除无 PID 的旧版锁。若仍有网关 CMD 窗口，请手动关闭。")
+        gatewayCliTimingLog("stop", "legacy-lock-cleared", startMs)
+        return 0
+    }
+    let stopPidText = String.join(
+        stopPids |> map({p => p.toString()}) |> collectArray,
+        delimiter: ","
+    )
+    PrintUtils.printLine("[网关] 正在停止 gateway serve（PID=${stopPidText}）…")
+    gatewayCliTimingLog("stop", "terminate-begin", startMs)
+    let failed = ArrayList<Int64>()
+    for (pid in stopPids) {
+        if (!gatewayServePidIsAlive(pid)) {
+            continue
+        }
+        if (!gatewayTryTerminateServeProcess(pid)) {
+            failed.add(pid)
+        }
+    }
+    if (failed.isEmpty()) {
+        gatewayReleaseServeLockQuiet()
+        gatewayRuntimeMarkStoppedFromCli(reason: "stopped")
+        PrintUtils.printLine("[网关] 已停止。")
+        gatewayCliTimingLog("stop", "terminate-done", startMs)
+        return 0
+    }
+    let failedPidText = String.join(
+        failed.toArray() |> map({p => p.toString()}) |> collectArray,
+        delimiter: ","
+    )
+    PrintUtils.printLine("[网关] 未能结束进程 PID=${failedPidText}，请手动关闭对应终端窗口或在任务管理器中结束进程。")
+    gatewayCliTimingLog("stop", "terminate-failed", startMs)
+    return 1
+}
+
+/** 与命令行 `gateway stop` 相同逻辑；供 `/Metis` 菜单等调用（依赖当前已初始化的 CliConfig）。 */
+public func gatewayExecuteStopServe(): Int64 {
+    runGatewayStopSubcommand()
+}
+
+/** 与命令行 `gateway restart` 相同逻辑。 */
+public func gatewayExecuteRestartServe(): Int64 {
+    let startMs = gatewayCliNowMs()
+    gatewayCliTimingLog("restart", "enter", startMs)
+    match (gatewayRestartConfigValidationMessage()) {
+        case Some(message) =>
+            PrintUtils.printLine(message)
+            gatewayCliTimingLog("restart", "config-invalid", startMs)
+            return 1
+        case None => ()
+    }
+    let code = runGatewayStopSubcommand()
+    if (code != 0) {
+        gatewayCliTimingLog("restart", "stop-failed", startMs)
+        return code
+    }
+    gatewayCliTimingLog("restart", "stop-done", startMs)
+    PrintUtils.printLine("[网关] 正在另开窗口启动 gateway serve …")
+    let launched = gatewayLaunchDedicatedConsole()
+    gatewayCliTimingLog("restart", if (launched) { "launch-done" } else { "launch-failed" }, startMs)
+    return if (launched) {
+        0
+    } else {
+        1
+    }
+}
+
+/**
+ * 执行 `gateway` 子命令；返回进程退出码。
+ */
+public func runGatewayCli(sub: Array<String>): Int64 {
+    applyRuntimeForGatewayServe()
+
+    if (sub.size == 0 || sub[0] == "help" || sub[0] == "-h" || sub[0] == "--help") {
+        printGatewayHelp()
+        return 0
+    }
+
+    let cmd = sub[0]
+    if (cmd == "run") {
+        return gatewayRunForeground(flowName: "run")
+    }
+    if (cmd == "status") {
+        gatewayActionsPrintStatus()
+        return 0
+    }
+    if (cmd == "health") {
+        gatewayPrintHealth()
+        return 0
+    }
+    if (cmd == "probe") {
+        gatewayPrintProbe()
+        return 0
+    }
+    if (cmd == "discover") {
+        gatewayPrintDiscover()
+        return 0
+    }
+    if (cmd == "call") {
+        if (sub.size < 2) {
+            PrintUtils.printLine("Usage: gateway call <method> [json-params]")
+            return 1
+        }
+        return gatewayCallLocalMethod(sub[1], paramsRaw: joinFrom(sub, 2))
+    }
+    if (cmd == "usage-cost") {
+        gatewayPrintUsageCost()
+        return 0
+    }
+    if (cmd == "master") {
+        if (sub.size < 2) {
+            PrintUtils.printLine("Usage: gateway master on|off")
+            return 1
+        }
+        let sw = sub[1].trimAscii().toAsciiLower()
+        if (sw == "on" || sw == "true" || sw == "1") {
+            gatewayActionsSetMaster(true)
+        } else if (sw == "off" || sw == "false" || sw == "0") {
+            gatewayActionsSetMaster(false)
+        } else {
+            PrintUtils.printLine("Usage: gateway master on|off")
+            return 1
+        }
+        return 0
+    }
+    if (cmd == "serve") {
+        return gatewayRunForeground(flowName: "serve")
+    }
+    if (cmd == "stop") {
+        return gatewayExecuteStopServe()
+    }
+    if (cmd == "restart") {
+        return gatewayExecuteRestartServe()
+    }
+    if (cmd == "sessions") {
+        return runGatewaySessionsCli(sub)
+    }
+    if (cmd == "cron") {
+        return runGatewayCronCli(sub)
+    }
+    if (cmd == "channel") {
+        if (sub.size < 2) {
+            PrintUtils.printLine("Usage: gateway channel <list|enable|disable|set> [...]")
+            PrintUtils.printLine("Try: gateway channel list")
+            return 1
+        }
+        let subcmd = sub[1]
+        if (subcmd == "list") {
+            gatewayActionsPrintChannelsHelp()
+            return 0
+        }
+        if (subcmd == "enable") {
+            if (sub.size < 3) {
+                PrintUtils.printLine("Usage: gateway channel enable <id>")
+                return 1
+            }
+            return if (gatewayActionsSetChannelEnabled(sub[2].trimAscii().toAsciiLower(), true)) {
+                0
+            } else {
+                1
+            }
+        }
+        if (subcmd == "disable") {
+            if (sub.size < 3) {
+                PrintUtils.printLine("Usage: gateway channel disable <id>")
+                return 1
+            }
+            return if (gatewayActionsSetChannelEnabled(sub[2].trimAscii().toAsciiLower(), false)) {
+                0
+            } else {
+                1
+            }
+        }
+        if (subcmd == "set") {
+            if (sub.size < 5) {
+                PrintUtils.printLine("Usage: gateway channel set <id> <key> <value...>")
+                return 1
+            }
+            let cid = sub[2].trimAscii().toAsciiLower()
+            let key = sub[3].trimAscii().toAsciiLower()
+            let value = joinFrom(sub, 4)
+            if (cid == "feishu") {
+                return if (gatewayActionsSetFeishu(key, value)) {
+                    0
+                } else {
+                    1
+                }
+            }
+            if (cid == "qq") {
+                return if (gatewayActionsSetQq(key, value)) {
+                    0
+                } else {
+                    1
+                }
+            }
+            PrintUtils.printLine("Interactive native field editing currently supports feishu and qq only.")
+            PrintUtils.printLine("Try: gateway channel list")
+            return 1
+        }
+        PrintUtils.printLine("Unknown gateway channel subcommand: ${subcmd}")
+        PrintUtils.printLine("Try: gateway channel list")
+        return 1
+    }
+    if (cmd == "plugin") {
+        if (sub.size < 2) {
+            PrintUtils.printLine("Usage: gateway plugin <list|list-supported|install|enable|disable|set> [...]")
+            PrintUtils.printLine("Try: gateway plugin list")
+            return 1
+        }
+        let subcmd = sub[1].trimAscii().toAsciiLower()
+        if (subcmd == "list") {
+            gatewayActionsPrintPluginsList()
+            return 0
+        }
+        if (subcmd == "list-supported") {
+            return if (gatewayActionsPrintPluginSupportedChannels()) { 0 } else { 1 }
+        }
+        if (subcmd == "install") {
+            if (sub.size < 3) {
+                PrintUtils.printLine("Usage: gateway plugin install <name> [--app-id <id>] [--app-secret <secret>] [--force]")
+                return 1
+            }
+            let name = sub[2]
+            let (appId, appSecret, force, ok) = gatewayPluginParseInstallFlags(sub, 3)
+            if (!ok) {
+                PrintUtils.printLine("Usage: gateway plugin install <name> [--app-id <id>] [--app-secret <secret>] [--force]")
+                return 1
+            }
+            return if (gatewayActionsInstallPlugin(name, appId: appId, appSecret: appSecret, force: force)) {
+                0
+            } else {
+                1
+            }
+        }
+        if (subcmd == "enable") {
+            if (sub.size < 3) {
+                PrintUtils.printLine("Usage: gateway plugin enable <id>")
+                return 1
+            }
+            return if (gatewayActionsSetPluginEnabled(sub[2], true)) { 0 } else { 1 }
+        }
+        if (subcmd == "disable") {
+            if (sub.size < 3) {
+                PrintUtils.printLine("Usage: gateway plugin disable <id>")
+                return 1
+            }
+            return if (gatewayActionsSetPluginEnabled(sub[2], false)) { 0 } else { 1 }
+        }
+        if (subcmd == "set") {
+            if (sub.size < 5) {
+                PrintUtils.printLine("Usage: gateway plugin set <id> <key> <value...>")
+                return 1
+            }
+            let pid = sub[2]
+            let key = sub[3]
+            let value = joinFrom(sub, 4)
+            return if (gatewayActionsSetPluginField(pid, key, value)) { 0 } else { 1 }
+        }
+        PrintUtils.printLine("Unknown gateway plugin subcommand: ${subcmd}")
+        PrintUtils.printLine("Try: gateway plugin list")
+        return 1
+    }
+    PrintUtils.printLine("Unknown gateway command: ${cmd}")
+    PrintUtils.printLine("Try: metis gateway help")
+    1
+}

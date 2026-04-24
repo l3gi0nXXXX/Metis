@@ -1,0 +1,47 @@
+.env
+.agents/
+.claude/
+.learnings/
+.qwen/
+.env.example
+control-ui-cjbackup/
+
+.magic-cli/
+**/*.bak
+**/backups/**
+# Build artifacts
+target/
+*.macrocall
+binary/
+
+# Log files
+logs/
+*.log
+log.txt
+
+# Cache files
+.cache/
+build-script-cache/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+todo.md
+
+# Test files
+test/
+test_examples/
+
+# External modules
+CangjieMagic/
+cj-lsp/

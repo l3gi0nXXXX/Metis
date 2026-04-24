@@ -1,0 +1,6 @@
+*.db
+*.bak
+graph.json
+*.pkl
+*.lock
+./cangjie_docs

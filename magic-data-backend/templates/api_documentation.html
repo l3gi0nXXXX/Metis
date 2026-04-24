@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Documentation - Magic CLI Data Backend</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .nav {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            justify-content: center;
+        }
+
+        .nav a {
+            background: #667eea;
+            color: white;
+            padding: 0.75rem 1.5rem;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background 0.3s;
+        }
+
+        .nav a:hover {
+            background: #5a6fd8;
+        }
+
+        .api-section {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 2rem;
+            overflow: hidden;
+        }
+
+        .api-header {
+            background: #f8f9fa;
+            padding: 1.5rem;
+            border-bottom: 1px solid #eee;
+        }
+
+        .api-header h2 {
+            color: #667eea;
+            margin-bottom: 0.5rem;
+        }
+
+        .api-content {
+            padding: 2rem;
+        }
+
+        .endpoint {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border-left: 4px solid #667eea;
+        }
+
+        .endpoint:last-child {
+            margin-bottom: 0;
+        }
+
+        .method {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 0.9rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .method.post {
+            background: #28a745;
+            color: white;
+        }
+
+        .method.get {
+            background: #007bff;
+            color: white;
+        }
+
+        .method.schema {
+            background: #6f42c1;
+            color: white;
+        }
+
+        .path {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 1.1rem;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 0.5rem;
+        }
+
+        .description {
+            color: #666;
+            margin-bottom: 1rem;
+        }
+
+        .parameters {
+            background: white;
+            border-radius: 6px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .parameters h4 {
+            color: #333;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .parameter {
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        .parameter-name {
+            font-family: 'Consolas', 'Monaco', monospace;
+            background: #e9ecef;
+            padding: 0.2rem 0.4rem;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+
+        .parameter-type {
+            color: #667eea;
+            font-style: italic;
+        }
+
+        .response {
+            background: white;
+            border-radius: 6px;
+            padding: 1rem;
+        }
+
+        .response h4 {
+            color: #333;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .response-code {
+            font-family: 'Consolas', 'Monaco', monospace;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 1rem;
+            font-size: 0.9rem;
+            overflow-x: auto;
+        }
+
+        .example {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 6px;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+
+        .example h4 {
+            color: #856404;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        .example-code {
+            font-family: 'Consolas', 'Monaco', monospace;
+            background: #fff8e1;
+            border: 1px solid #ffecb3;
+            border-radius: 4px;
+            padding: 1rem;
+            font-size: 0.85rem;
+            overflow-x: auto;
+        }
+
+        .try-it {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            margin-top: 1rem;
+            transition: background 0.3s;
+        }
+
+        .try-it:hover {
+            background: #5a6fd8;
+        }
+
+        .json-viewer {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 1rem;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9rem;
+            white-space: pre-wrap;
+            overflow-x: auto;
+            margin-top: 1rem;
+        }
+
+        @media (max-width: 768px) {
+            .nav {
+                flex-wrap: wrap;
+            }
+
+            .container {
+                padding: 10px;
+            }
+
+            .api-content {
+                padding: 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>API Documentation</h1>
+            <p>Magic CLI Data Backend API Reference</p>
+        </div>
+
+        <div class="nav">
+            <a href="/">Back to Home</a>
+            <a href="/fix-summaries">Fix Summaries</a>
+            <a href="/agent-chat-rounds">Agent Chat Rounds</a>
+        </div>
+
+        <div class="api-section">
+            <div class="api-header">
+                <h2>API Overview</h2>
+                <p>Magic CLI Data Backend provides RESTful APIs for collecting and querying code assistance data</p>
+            </div>
+            <div class="api-content">
+                <div class="endpoint">
+                    <div class="method schema">SCHEMA</div>
+                    <div class="path">Message Object</div>
+                    <div class="description">Standard message format for all communications</div>
+
+                    <div class="parameters">
+                        <h4>Fields</h4>
+                        <div class="parameter">
+                            <span class="parameter-name">role</span>
+                            <span class="parameter-type">string</span>
+                            <span> - Message role ("system", "user", "assistant", "function", etc.)</span>
+                        </div>
+                        <div class="parameter">
+                            <span class="parameter-name">content</span>
+                            <span class="parameter-type">string</span>
+                            <span> - The message content</span>
+                        </div>
+                        <div class="parameter">
+                            <span class="parameter-name">image</span>
+                            <span class="parameter-type">string|null</span>
+                            <span> - Optional image URL or base64 data (null if not present)</span>
+                        </div>
+                        <div class="parameter">
+                            <span class="parameter-name">reason</span>
+                            <span class="parameter-type">string|null</span>
+                            <span> - Optional reasoning or explanation (null if not present)</span>
+                        </div>
+                    </div>
+
+                    <div class="response">
+                        <h4>Example</h4>
+                        <div class="response-code">{
+  "role": "user",
+  "content": "How to optimize this function?",
+  "image": null,
+  "reason": null
+}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="api-section">
+            <div class="api-header">
+                <h2>API Endpoints</h2>
+                <p>Available endpoints for data operations</p>
+            </div>
+            <div class="api-content">
+                <div class="endpoint">
+                    <div class="method post">POST</div>
+                    <div class="path">/api/fix-summary</div>
+                    <div class="description">Create a new fix summary record</div>
+
+                    <div class="parameters">
+                        <h4>Request Body</h4>
+                        <div class="parameter">
+                            <span class="parameter-name">content</span>
+                            <span class="parameter-type">string</span>
+                            <span> - The fix summary content</span>
+                        </div>
+                    </div>
+
+                    <div class="response">
+                        <h4>Response</h4>
+                        <div class="response-code">{
+  "summary_id": "uuid-string",
+  "status": "created"
+}</div>
+                    </div>
+
+                    <div class="example">
+                        <h4>Example</h4>
+                        <div class="example-code">curl -X POST "http://localhost:8000/api/fix-summary" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "Fixed the memory leak in the data processing module"}'</div>
+                    </div>
+                </div>
+
+      
+                <div class="endpoint">
+                    <div class="method post">POST</div>
+                    <div class="path">/api/agent-chat-round</div>
+                    <div class="description">Log a new agent chat round</div>
+
+                    <div class="parameters">
+                        <h4>Request Body</h4>
+                        <div class="parameter">
+                            <span class="parameter-name">question</span>
+                            <span class="parameter-type">object</span>
+                            <span> - The question message object</span>
+                        </div>
+                        <div class="parameter">
+                            <span class="parameter-name">answer</span>
+                            <span class="parameter-type">object</span>
+                            <span> - The answer message object</span>
+                        </div>
+                        <div class="parameter">
+                            <span class="parameter-name">steps</span>
+                            <span class="parameter-type">array</span>
+                            <span> - Array of all step message objects in this chat round</span>
+                        </div>
+                    </div>
+
+                    <div class="response">
+                        <h4>Response</h4>
+                        <div class="response-code">{
+  "chat_round_id": "uuid-string",
+  "status": "logged"
+}</div>
+                    </div>
+
+                    <div class="example">
+                        <h4>Example</h4>
+                        <div class="example-code">curl -X POST "http://localhost:8000/api/agent-chat-round" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": {
+      "role": "user",
+      "content": "How to optimize this function?",
+      "image": null,
+      "reason": null
+    },
+    "answer": {
+      "role": "assistant",
+      "content": "You can optimize by using memoization...",
+      "image": null,
+      "reason": "Analysis shows that memoization can reduce redundant calculations"
+    },
+    "steps": [
+      { "role": "user", "content": "How to optimize this function?", "image": null, "reason": null },
+      { "role": "assistant", "content": "You can optimize by using memoization...", "image": null, "reason": "Analysis shows that memoization can reduce redundant calculations" }
+    ]
+  }'</div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="method get">GET</div>
+                    <div class="path">/api/fix-summary/{summary_id}</div>
+                    <div class="description">Get a specific fix summary by ID</div>
+
+                    <div class="parameters">
+                        <h4>Path Parameters</h4>
+                        <div class="parameter">
+                            <span class="parameter-name">summary_id</span>
+                            <span class="parameter-type">string</span>
+                            <span> - The UUID of the fix summary</span>
+                        </div>
+                    </div>
+
+                    <div class="response">
+                        <h4>Response</h4>
+                        <div class="response-code">{
+  "id": "uuid-string",
+  "content": "Fix summary content...",
+  "timestamp": "2024-01-01T12:00:00.000Z"
+}</div>
+                    </div>
+                </div>
+
+        
+                <div class="endpoint">
+                    <div class="method get">GET</div>
+                    <div class="path">/api/agent-chat-round/{chat_round_id}</div>
+                    <div class="description">Get a specific agent chat round by ID</div>
+
+                    <div class="parameters">
+                        <h4>Path Parameters</h4>
+                        <div class="parameter">
+                            <span class="parameter-name">chat_round_id</span>
+                            <span class="parameter-type">string</span>
+                            <span> - The UUID of the agent chat round</span>
+                        </div>
+                    </div>
+
+                    <div class="response">
+                        <h4>Response</h4>
+                        <div class="response-code">{
+  "id": "uuid-string",
+  "query": "User query...",
+  "answer": "Agent answer...",
+  "steps": [
+    { "role": "user", "content": "User message..." },
+    { "role": "assistant", "content": "Assistant response..." }
+  ],
+  "timestamp": "2024-01-01T12:00:00.000Z"
+}</div>
+                    </div>
+
+                    <div class="example">
+                        <h4>Example</h4>
+                        <div class="example-code">curl "http://localhost:8000/api/agent-chat-round/abc123"</div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="method get">GET</div>
+                    <div class="path">/api/fix-summary</div>
+                    <div class="description">List fix summaries with pagination</div>
+
+                    <div class="parameters">
+                        <h4>Query Parameters</h4>
+                        <div class="parameter">
+                            <span class="parameter-name">limit</span>
+                            <span class="parameter-type">integer</span>
+                            <span> - Number of records per page (default: 50)</span>
+                        </div>
+                        <div class="parameter">
+                            <span class="parameter-name">offset</span>
+                            <span class="parameter-type">integer</span>
+                            <span> - Number of records to skip (default: 0)</span>
+                        </div>
+                    </div>
+
+                    <div class="response">
+                        <h4>Response</h4>
+                        <div class="response-code">{
+  "summaries": [
+    {
+      "id": "uuid-string",
+      "content": "Fix summary content...",
+      "timestamp": "2024-01-01T12:00:00.000Z"
+    }
+  ],
+  "limit": 50,
+  "offset": 0
+}</div>
+                    </div>
+
+                    <div class="example">
+                        <h4>Example</h4>
+                        <div class="example-code">curl "http://localhost:8000/api/fix-summary?limit=10&offset=0"</div>
+                    </div>
+                </div>
+
+  
+                <div class="endpoint">
+                    <div class="method get">GET</div>
+                    <div class="path">/api/agent-chat-round</div>
+                    <div class="description">List agent chat rounds with pagination (preferred endpoint)</div>
+
+                    <div class="parameters">
+                        <h4>Query Parameters</h4>
+                        <div class="parameter">
+                            <span class="parameter-name">limit</span>
+                            <span class="parameter-type">integer</span>
+                            <span> - Number of records per page (default: 50)</span>
+                        </div>
+                        <div class="parameter">
+                            <span class="parameter-name">offset</span>
+                            <span class="parameter-type">integer</span>
+                            <span> - Number of records to skip (default: 0)</span>
+                        </div>
+                    </div>
+
+                    <div class="response">
+                        <h4>Response</h4>
+                    <div class="response-code">{
+  "chat_rounds": [
+    {
+      "id": "uuid-string",
+      "query": "User query...",
+      "answer": "Agent answer...",
+      "steps": [...],
+      "timestamp": "2024-01-01T12:00:00.000Z"
+    }
+  ],
+  "limit": 50,
+  "offset": 0
+}</div>
+                    </div>
+
+                    <div class="example">
+                        <h4>Example</h4>
+                        <div class="example-code">curl "http://localhost:8000/api/agent-chat-round?limit=10&offset=0"</div>
+                    </div>
+                </div>
+
+                <div class="endpoint">
+                    <div class="method get">GET</div>
+                    <div class="path">/health</div>
+                    <div class="description">Health check endpoint</div>
+
+                    <div class="response">
+                        <h4>Response</h4>
+                        <div class="response-code">{
+  "status": "healthy",
+  "timestamp": "2024-01-01T12:00:00.000Z"
+}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    
+</body>
+</html>

@@ -1,0 +1,26 @@
+[package]
+  cjc-version = "1.0.0"
+  compile-option = "-Woff unused -Woff deprecated --static --static-libs --static-std --cfg \"faiss=disable,sqlite=disable,llamacpp=disable,http=cj\" "
+  description = "nothing here"
+  link-option = ""
+  name = "magic"
+  output-type = "static"
+  src-dir = ""
+  target-dir = ""
+  version = "1.0.0"
+
+#----------------------------------------
+#  Setting FFI libs
+#----------------------------------------
+[ffi.c]
+# sqlite = {path="./libs/"}
+# faiss_c = {path="./libs/"}
+
+#----------------------------------------
+#  Setting cangjie-stdx
+#----------------------------------------
+
+[target.aarch64-linux-ohos]
+  compile-option = "-B \"${DEV_ROOT}/cangjie-sdk-windows-1.0-ohos/cangjie/compiler/third_party/llvm/bin\" -B \"${DEV_ROOT}/deveco-studio-5.1.1.804CJ.win/deveco-studio/sdk/default/openharmony/native/sysroot/usr/lib/aarch64-linux-ohos\" -L \"${DEV_ROOT}/deveco-studio-5.1.1.804CJ.win/deveco-studio/sdk/default/openharmony/native/sysroot/usr/lib/aarch64-linux-ohos\" -L \"${DEV_ROOT}/deveco-studio-5.1.1.804CJ.win/deveco-studio/sdk/default/openharmony/native/llvm/lib/clang/15.0.4/lib/aarch64-linux-ohos\" -L \"${DEV_ROOT}/deveco-studio-5.1.1.804CJ.win/deveco-studio/sdk/default/openharmony/native/llvm/lib/aarch64-linux-ohos\" --sysroot \"${DEV_ROOT}/deveco-studio-5.1.1.804CJ.win/deveco-studio/sdk/default/openharmony/native/sysroot\" --cfg \"ohos=false\" --output-type=staticlib"
+  [target.aarch64-linux-ohos.bin-dependencies]
+    path-option = [ "${DEV_ROOT}/cangjie-stdx-ohos-aarch64-1.0.0.1/linux_ohos_aarch64_llvm/static/stdx" ]

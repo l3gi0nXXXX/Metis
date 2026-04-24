@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Metis Control</title>
+    <meta name="color-scheme" content="dark light" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
+    <script>
+      (function () {
+        var THEMES = { claw: 1, knot: 1, dash: 1 };
+        var MODES = { system: 1, light: 1, dark: 1 };
+        var LEGACY = {
+          dark: "claw:dark",
+          light: "claw:light",
+          openknot: "knot:dark",
+          fieldmanual: "dash:dark",
+          clawdash: "dash:light",
+          system: "claw:system",
+        };
+        try {
+          var keys = Object.keys(localStorage);
+          var raw;
+          for (var i = 0; i < keys.length; i++) {
+            if (keys[i].indexOf("metis.control.settings.v1") === 0) {
+              raw = localStorage.getItem(keys[i]);
+              if (raw) break;
+            }
+          }
+          if (!raw) return;
+          var s = JSON.parse(raw);
+          var t = s && s.theme;
+          var m = s && s.themeMode;
+          if (typeof t !== "string") t = "";
+          if (typeof m !== "string") m = "";
+          var legacy = LEGACY[t];
+          var theme = THEMES[t] ? t : legacy ? legacy.split(":")[0] : "claw";
+          var mode = MODES[m] ? m : legacy ? legacy.split(":")[1] : "system";
+          if (mode === "system") {
+            mode = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+          }
+          var resolved =
+            theme === "knot"
+              ? mode === "light"
+                ? "openknot-light"
+                : "openknot"
+              : theme === "dash"
+                ? mode === "light"
+                  ? "dash-light"
+                  : "dash"
+                : mode === "light"
+                  ? "light"
+                  : "dark";
+          document.documentElement.setAttribute("data-theme", resolved);
+          document.documentElement.setAttribute(
+            "data-theme-mode",
+            resolved.indexOf("light") !== -1 ? "light" : "dark",
+          );
+        } catch (e) {}
+      })();
+    </script>
+    <script>
+      (function () {
+        function safeParse(text) {
+          try {
+            return JSON.parse(text);
+          } catch (_e) {
+            return null;
+          }
+        }
+        function readJson(path) {
+          try {
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", path, false);
+            xhr.send(null);
+            if (xhr.status >= 200 && xhr.status < 300) {
+              return safeParse(xhr.responseText || "");
+            }
+          } catch (_e) {}
+          return null;
+        }
+        function computeWsUrl() {
+          try {
+            var protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+            var origin = protocol + "//" + window.location.host;
+            return origin + "/ws";
+          } catch (_e) {
+            return "ws://127.0.0.1:18788/ws";
+          }
+        }
+        function mergeSettings(existing, next) {
+          var out = {};
+          if (existing && typeof existing === "object") {
+            for (var k in existing) out[k] = existing[k];
+          }
+          for (var nk in next) out[nk] = next[nk];
+          return out;
+        }
+        function normalizeGatewayUrl(url) {
+          try {
+            var parsed = new URL(url, window.location.href);
+            var pathname = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "") || parsed.pathname;
+            return (parsed.protocol + "//" + parsed.host + pathname).toLowerCase();
+          } catch (_e) {
+            return String(url || "").trim().toLowerCase();
+          }
+        }
+        function computeMetisDefaultGatewayUrl() {
+          try {
+            var protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+            return protocol + "//" + window.location.host;
+          } catch (_e) {
+            return "ws://127.0.0.1:18788";
+          }
+        }
+        function writeSettingsVariants(localStorageRef, settings) {
+          var keys = [];
+          var actualWsUrl = settings.gatewayUrl;
+          var defaultGatewayUrl = computeMetisDefaultGatewayUrl();
+          var normalizedActual = normalizeGatewayUrl(actualWsUrl);
+          var normalizedDefault = normalizeGatewayUrl(defaultGatewayUrl);
+          keys.push("metis.control.settings.v1");
+          keys.push("metis.control.settings.v1:default");
+          if (normalizedActual) keys.push("metis.control.settings.v1:" + normalizedActual);
+          if (normalizedDefault) keys.push("metis.control.settings.v1:" + normalizedDefault);
+          for (var i = 0; i < keys.length; i++) {
+            localStorageRef.setItem(keys[i], JSON.stringify(settings));
+          }
+          return {
+            normalizedActual: normalizedActual,
+            normalizedDefault: normalizedDefault,
+          };
+        }
+        function writeTokenVariants(localStorageRef, token, normalizedActual, normalizedDefault) {
+          localStorageRef.removeItem("metis.control.token.v1");
+          var values = [];
+          if (normalizedActual) values.push("metis.control.token.v1:" + normalizedActual);
+          if (normalizedDefault && normalizedDefault !== normalizedActual) {
+            values.push("metis.control.token.v1:" + normalizedDefault);
+          }
+          for (var i = 0; i < values.length; i++) {
+            if (token) {
+              localStorageRef.setItem(values[i], token);
+            } else {
+              localStorageRef.removeItem(values[i]);
+            }
+          }
+        }
+        try {
+          var bootstrap = readJson("/__metis/control-ui-config.json") || {};
+          var auth = readJson("/__metis/control-ui-auth.json") || {};
+          var wsUrl = typeof bootstrap.wsUrl === "string" && bootstrap.wsUrl ? bootstrap.wsUrl : computeWsUrl();
+          var token = typeof auth.authToken === "string" ? auth.authToken : "";
+          var password = typeof auth.authPassword === "string" ? auth.authPassword : "";
+          var existing = safeParse(localStorage.getItem("metis.control.settings.v1") || "") || {};
+          var merged = mergeSettings(existing, {
+            gatewayUrl: wsUrl,
+            language: "en",
+          });
+          var variants = writeSettingsVariants(localStorage, merged);
+          writeTokenVariants(localStorage, token, variants.normalizedActual, variants.normalizedDefault);
+          window.__LEGACY_CJ_BOOTSTRAP__ = {
+            gatewayUrl: wsUrl,
+            token: token,
+            password: password,
+          };
+          if (token && window.location.hash.indexOf("token=") === -1) {
+            window.location.hash = "token=" + encodeURIComponent(token);
+          }
+        } catch (_e) {}
+      })();
+    </script>
+    <script type="module" crossorigin src="./assets/index-DWX0XMYb.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/i18n-CV7rUnW0.js">
+    <link rel="modulepreload" crossorigin href="./assets/directive-CUxOzvVj.js">
+    <link rel="modulepreload" crossorigin href="./assets/format-EHph2kGh.js">
+    <link rel="stylesheet" crossorigin href="./assets/index-D6qddEG9.css">
+  </head>
+  <body>
+    <metis-app></metis-app>
+  </body>
+</html>

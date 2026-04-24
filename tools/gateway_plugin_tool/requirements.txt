@@ -1,0 +1,4 @@
+# 网关插件 Python 依赖（聚合）。也可只装某一渠道，例如：
+#   pip install -r requirements/dingtalk.txt
+# 或由 install.py 安装：  python install.py deps dingtalk
+-r requirements/requirements-all.txt

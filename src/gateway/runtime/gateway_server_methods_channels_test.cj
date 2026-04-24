@@ -1,0 +1,508 @@
+package metis.gateway.runtime
+
+import magic.jsonable.*
+
+import metis.core.config.{GatewayUserSettings, TelegramCustomCommandUserSettings}
+import metis.gateway.core.{
+    gatewayChannelManagerSummary,
+    gatewayChannelRuntimeMarkFailure,
+    gatewayChannelRuntimeMarkMonitorEnabled,
+    gatewayChannelRuntimeMarkMonitorTick,
+    gatewayChannelRuntimeMarkPull,
+    gatewayChannelRuntimeMarkRunning,
+    gatewayChannelRuntimeMarkStarting,
+    gatewayChannelRuntimePrimeAccount,
+    gatewayChannelRuntimeRegisterAccount,
+    gatewayPluginManagerSummary
+}
+
+import std.convert.Parsable
+import std.unittest.testmacro.*
+import stdx.encoding.json.{JsonObject, JsonString}
+
+private func channelsTestBool(obj: JsonObject, key: String): Bool {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asBool().getValue() } catch (_: Exception) { false }
+        case None => false
+    }
+}
+
+private func channelsTestString(obj: JsonObject, key: String): String {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asString().getValue() } catch (_: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func channelsTestInt(obj: JsonObject, key: String): Int64 {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { Int64.parse(v.toJsonString()) } catch (_: Exception) { 0 }
+        case None => 0
+    }
+}
+
+@Test
+public class GatewayServerMethodsChannelsTest {
+    @TestCase
+    public func builtinSupportsCaptureFeishuAndQqDifferences(): Unit {
+        var user = GatewayUserSettings()
+        user.feishu.replyInThread = "enabled"
+        user.telegram.replyToMode = "all"
+        user.telegram.webhookUrl = "https://example.test/telegram-webhook"
+        user.telegram.reactionNotifications = "all"
+        user.telegram.reactionLevel = "ack"
+        user.telegram.ackReaction = "👀"
+
+        let feishu = gatewayChannelSupportsJson(user, "feishu")
+        let qq = gatewayChannelSupportsJson(user, "qq")
+        let telegram = gatewayChannelSupportsJson(user, "telegram")
+
+        @Expect(channelsTestBool(feishu, "messageReply"), true)
+        @Expect(channelsTestBool(feishu, "threadReply"), true)
+        @Expect(channelsTestBool(feishu, "replyInThreadDefault"), true)
+        @Expect(channelsTestString(feishu, "transport"), "official-sdk-monitor-host")
+
+        @Expect(channelsTestBool(qq, "messageReply"), true)
+        @Expect(channelsTestBool(qq, "threadReply"), false)
+        @Expect(channelsTestBool(qq, "officialGateway"), true)
+        @Expect(channelsTestString(qq, "transport"), "official-ws")
+
+        @Expect(channelsTestBool(telegram, "threadReply"), true)
+        @Expect(channelsTestBool(telegram, "officialGateway"), true)
+        @Expect(channelsTestBool(telegram, "webhookIngress"), true)
+        @Expect(channelsTestBool(telegram, "pollingIngress"), true)
+        @Expect(channelsTestString(telegram, "activeMode"), "webhook")
+        @Expect(channelsTestString(telegram, "transport"), "webhook")
+        @Expect(channelsTestBool(telegram, "nativeCommands"), true)
+        @Expect(channelsTestBool(telegram, "customCommands"), true)
+        @Expect(channelsTestBool(telegram, "topicBindings"), true)
+        @Expect(channelsTestBool(telegram, "topicActions"), true)
+        @Expect(channelsTestBool(telegram, "pollActions"), true)
+        @Expect(channelsTestBool(telegram, "reactionActions"), true)
+        @Expect(channelsTestBool(telegram, "reactionEvents"), true)
+        @Expect(channelsTestBool(telegram, "ackReaction"), true)
+        @Expect(channelsTestBool(telegram, "mediaSticker"), true)
+        @Expect(channelsTestBool(telegram, "mediaPhoto"), true)
+        @Expect(channelsTestBool(telegram, "mediaDocument"), true)
+        @Expect(channelsTestBool(telegram, "mediaAudio"), true)
+        @Expect(channelsTestBool(telegram, "mediaVoice"), true)
+        @Expect(channelsTestBool(telegram, "mediaVideo"), true)
+        @Expect(channelsTestBool(telegram, "mediaVideoNote"), true)
+        @Expect(channelsTestBool(telegram, "allowedUpdatesAuto"), true)
+    }
+
+    @TestCase
+    public func pluginSupportsExposeUnifiedBindingCapabilities(): Unit {
+        let user = GatewayUserSettings()
+        let supports = gatewayPluginSupportsJson(user, "dingtalk")
+
+        @Expect(channelsTestBool(supports, "conversationBinding"), true)
+        @Expect(channelsTestBool(supports, "accountBinding"), true)
+        @Expect(channelsTestBool(supports, "threadReply"), true)
+        @Expect(channelsTestString(supports, "provider"), "dingtalk")
+    }
+
+    @TestCase
+    public func channelGetAndStatusExposeSupports(): Unit {
+        var user = GatewayUserSettings()
+        user.feishu.replyInThread = "enabled"
+        user.telegram.reactionNotifications = "all"
+
+        let channel = gatewayChannelGetJson(user, "feishu")
+        @Expect(channel.get("supports").isSome(), true)
+
+        let status = handleGatewayChannelsFamily("channels.status", user).getOrThrow().result.asObject()
+        let meta = status.get("channelMeta").getOrThrow().asObject()
+        let feishuMeta = meta.get("feishu").getOrThrow().asObject()
+        let metaSupports = feishuMeta.get("supports").getOrThrow().asObject()
+        @Expect(channelsTestBool(metaSupports, "threadReply"), true)
+        @Expect(channelsTestString(metaSupports, "transport"), "official-sdk-monitor-host")
+        let telegramMeta = meta.get("telegram").getOrThrow().asObject()
+        let telegramSupports = telegramMeta.get("supports").getOrThrow().asObject()
+        @Expect(channelsTestBool(telegramSupports, "reactionEvents"), true)
+        @Expect(channelsTestBool(telegramSupports, "mediaPhoto"), true)
+        @Expect(channelsTestBool(telegramSupports, "mediaAudio"), true)
+        @Expect(channelsTestBool(telegramSupports, "mediaVideoNote"), true)
+    }
+
+    @TestCase
+    public func telegramChannelGetExposesNativeConfigAndActions(): Unit {
+        var user = GatewayUserSettings()
+        user.telegram.enabled = true
+        user.telegram.botToken = "telegram-token"
+        user.telegram.commandsNative = "auto"
+        user.telegram.customCommands = [TelegramCustomCommandUserSettings(command: "deploy", description: "Deploy")]
+        user.telegram.reactionNotifications = "all"
+        user.telegram.reactionLevel = "ack"
+        user.telegram.webhookUrl = "https://example.test/telegram-webhook"
+        user.telegram.actions.photo = true
+        user.telegram.actions.document = true
+
+        let channel = gatewayChannelGetJson(user, "telegram")
+        @Expect(channelsTestString(channel, "kind"), "builtin")
+        @Expect(channelsTestBool(channel, "enabled"), true)
+        @Expect(channelsTestBool(channel, "configured"), true)
+        @Expect(channelsTestString(channel, "commandsNative"), "auto")
+        @Expect(channelsTestInt(channel, "customCommandCount"), 1)
+        let actions = channel.get("actions").getOrThrow().asObject()
+        @Expect(channelsTestBool(actions, "photo"), true)
+        @Expect(channelsTestBool(actions, "document"), true)
+        let supports = channel.get("supports").getOrThrow().asObject()
+        @Expect(channelsTestBool(supports, "allowedUpdatesAuto"), true)
+    }
+
+    @TestCase
+    public func telegramChannelsRuntimeExposesNativeRuntimeView(): Unit {
+        var user = GatewayUserSettings()
+        user.telegram.enabled = true
+        user.telegram.botToken = "telegram-token"
+        user.telegram.webhookUrl = "https://example.test/telegram-webhook"
+        user.telegram.reactionNotifications = "all"
+        user.telegram.reactionLevel = "ack"
+        user.telegram.ackReaction = "👀"
+        let params = JsonObject()
+        params.put("channelId", JsonString("telegram"))
+        params.put("probe", true.toJsonValue())
+        let result = handleGatewayChannelsFamily(
+            "channels.runtime",
+            user,
+            request: Some(GatewayRpcRequest("channels.runtime", params: params))
+        ).getOrThrow().result.asObject()
+        let telegram = result.get("telegram").getOrThrow().asObject()
+        @Expect(channelsTestString(telegram, "mode"), "webhook")
+        @Expect(channelsTestBool(telegram, "webhookConfigured"), true)
+        @Expect(channelsTestBool(telegram, "allowedUpdatesAuto"), true)
+        let allowed = telegram.get("allowedUpdates").getOrThrow().asArray()
+        @Expect(allowed.size() >= 5, true)
+        @Expect(allowed[4].asString().getValue(), "message_reaction")
+        let registration = telegram.get("registrationPayload").getOrThrow().asObject()
+        @Expect(registration.get("allowed_updates").isSome(), true)
+        let health = telegram.get("healthSnapshot").getOrThrow().asObject()
+        @Expect(health.get("summary").isSome(), true)
+        @Expect(health.get("webhook").isSome(), true)
+        let summary = health.get("summary").getOrThrow().asObject()
+        @Expect(channelsTestBool(summary, "offsetPersistenceEnabled"), true)
+        @Expect(summary.get("lastInboundUpdateId").isSome(), true)
+        let offset = health.get("offset").getOrThrow().asObject()
+        @Expect(channelsTestBool(offset, "persistenceEnabled"), true)
+        @Expect(offset.get("statePath").isSome(), true)
+        let liveProbe = telegram.get("liveProbe").getOrThrow().asObject()
+        @Expect(channelsTestBool(liveProbe, "supported"), true)
+        @Expect(channelsTestBool(liveProbe, "executed"), true)
+    }
+
+    @TestCase
+    public func telegramChannelsHealthExposesNativeHealthView(): Unit {
+        var user = GatewayUserSettings()
+        user.telegram.enabled = true
+        user.telegram.botToken = "telegram-token"
+        user.telegram.webhookUrl = "https://example.test/telegram-webhook"
+        user.telegram.reactionNotifications = "all"
+        user.telegram.actions.photo = true
+        user.telegram.actions.videoNote = true
+        let params = JsonObject()
+        params.put("probe", true.toJsonValue())
+
+        let result = handleGatewayChannelsFamily(
+            "channels.health",
+            user,
+            request: Some(GatewayRpcRequest("channels.health", params: params))
+        ).getOrThrow().result.asObject()
+        let telegram = result.get("telegram").getOrThrow().asObject()
+        @Expect(channelsTestString(telegram, "mode"), "webhook")
+        @Expect(channelsTestBool(telegram, "webhookConfigured"), true)
+        @Expect(channelsTestBool(telegram, "allowedUpdatesAuto"), true)
+        let supports = telegram.get("supports").getOrThrow().asObject()
+        @Expect(channelsTestBool(supports, "mediaPhoto"), true)
+        @Expect(channelsTestBool(supports, "mediaVideoNote"), true)
+        let actions = telegram.get("actions").getOrThrow().asObject()
+        @Expect(channelsTestBool(actions, "photo"), true)
+        @Expect(channelsTestBool(actions, "videoNote"), true)
+        let registration = telegram.get("registrationPayload").getOrThrow().asObject()
+        @Expect(registration.get("allowed_updates").isSome(), true)
+        let health = telegram.get("healthSnapshot").getOrThrow().asObject()
+        @Expect(health.get("summary").isSome(), true)
+        let summary = health.get("summary").getOrThrow().asObject()
+        @Expect(channelsTestBool(summary, "offsetPersistenceEnabled"), true)
+        let offset = health.get("offset").getOrThrow().asObject()
+        @Expect(channelsTestBool(offset, "persistenceEnabled"), true)
+        let liveProbe = telegram.get("liveProbe").getOrThrow().asObject()
+        @Expect(channelsTestBool(liveProbe, "supported"), true)
+        @Expect(channelsTestBool(liveProbe, "executed"), true)
+    }
+
+    @TestCase
+    public func telegramChannelsAuditExposesUnifiedClosureSurface(): Unit {
+        var user = GatewayUserSettings()
+        user.telegram.enabled = true
+        user.telegram.botToken = "telegram-token"
+        user.telegram.webhookUrl = "https://example.test/telegram-webhook"
+        user.telegram.reactionNotifications = "all"
+        user.telegram.actions.photo = true
+        user.telegram.actions.videoNote = true
+
+        let params = JsonObject()
+        params.put("channelId", JsonString("telegram"))
+        let result = handleGatewayChannelsFamily(
+            "channels.audit",
+            user,
+            request: Some(GatewayRpcRequest("channels.audit", params: params))
+        ).getOrThrow().result.asObject()
+        let audit = result.get("audit").getOrThrow().asObject()
+        @Expect(channelsTestString(audit, "kind"), "gateway-channels-audit")
+        let summary = audit.get("summary").getOrThrow().asObject()
+        @Expect(channelsTestString(summary, "phase"), "T12")
+        let closure = summary.get("closure").getOrThrow().asObject()
+        @Expect(channelsTestBool(closure, "telegramNativeRuntimeVisible"), true)
+        @Expect(channelsTestBool(closure, "telegramLiveProbeRuntimeVisible"), true)
+        @Expect(channelsTestBool(closure, "telegramReactionRuntimeVisible"), true)
+        @Expect(channelsTestBool(closure, "telegramMediaRuntimeVisible"), true)
+        @Expect(channelsTestBool(closure, "telegramMediaPersistenceVisible"), true)
+        @Expect(channelsTestBool(closure, "controlUiSessionsHttpAvailable"), true)
+        @Expect(channelsTestBool(closure, "controlUiSessionsWsAvailable"), true)
+        @Expect(channelsTestBool(closure, "telegramThreadBindingVisibleInDashboardSessions"), true)
+        @Expect(channelsTestBool(closure, "telegramThreadBindingVisibleInControlUiSessions"), true)
+        @Expect(channelsTestBool(closure, "telegramThreadBindingVisibleInControlUiWsSessions"), true)
+        let consumers = summary.get("consumers").getOrThrow().asObject()
+        @Expect(channelsTestBool(consumers, "mcpOverHttp"), true)
+        @Expect(channelsTestBool(consumers, "dashboardSessions"), true)
+        @Expect(channelsTestBool(consumers, "controlUiSessionsHttp"), true)
+        @Expect(channelsTestBool(consumers, "controlUiSessionsWs"), true)
+        let runtime = audit.get("runtime").getOrThrow().asObject()
+        let telegram = runtime.get("telegram").getOrThrow().asObject()
+        @Expect(telegram.get("healthSnapshot").isSome(), true)
+        let liveProbe = telegram.get("liveProbe").getOrThrow().asObject()
+        @Expect(channelsTestBool(liveProbe, "supported"), true)
+        @Expect(channelsTestBool(liveProbe, "executed"), true)
+        let media = telegram.get("media").getOrThrow().asObject()
+        @Expect(channelsTestBool(media, "persistenceEnabled"), true)
+        @Expect(channelsTestBool(media, "downloadEnabled"), true)
+        @Expect(telegram.get("supports").isSome(), true)
+        @Expect(telegram.get("actions").isSome(), true)
+        let accepted = audit.get("acceptance").getOrThrow().asArray()
+        @Expect(accepted.toJsonString().contains("telegram-live-probe-runtime-is-visible-across-consumers"), true)
+        @Expect(accepted.toJsonString().contains("telegram-reaction-and-media-runtime-are-visible-across-consumers"), true)
+        @Expect(accepted.toJsonString().contains("telegram-media-download-and-file-persistence-are-visible-across-consumers"), true)
+        let remaining = audit.get("remaining").getOrThrow().asArray()
+        @Expect(remaining.toJsonString().contains("telegram-webhook-live-probe-remains-ops-followup"), false)
+        @Expect(remaining.toJsonString().contains("telegram-media-download-and-file-persistence-remain-followups"), false)
+    }
+
+    @TestCase
+    public func deliveryPolicyDegradesUnsupportedThreadReply(): Unit {
+        let user = GatewayUserSettings()
+        let delivery = gatewayApplyChannelDeliveryPolicy(
+            user,
+            "qq",
+            gatewayChannelsDeliveryJson("qq", "group:chat-1", "qq:default", replyToMessageId: "msg-1", replyInThread: true, deliverable: true)
+        )
+        @Expect(channelsTestBool(delivery, "requestedReplyInThread"), true)
+        @Expect(channelsTestBool(delivery, "effectiveReplyInThread"), false)
+        @Expect(channelsTestBool(delivery, "degraded"), true)
+        @Expect(channelsTestString(delivery, "policyReason"), "thread-reply-unsupported")
+    }
+
+    @TestCase
+    public func pluginDeliveryPolicyPreservesEffectiveMessageReplyButDisablesThreadReply(): Unit {
+        let user = GatewayUserSettings()
+        let delivery = gatewayApplyChannelDeliveryPolicy(
+            user,
+            "qq",
+            gatewayChannelsDeliveryJson("qq", "group:chat-2", "qq:default", replyToMessageId: "msg-2", replyInThread: true, deliverable: true)
+        )
+        @Expect(channelsTestString(delivery, "effectiveReplyToMessageId"), "msg-2")
+        @Expect(channelsTestBool(delivery, "effectiveReplyInThread"), false)
+        @Expect(channelsTestString(delivery, "policyState"), "degraded")
+    }
+
+    @TestCase
+    public func channelManagerSummaryExposesRuntimeManagerFields(): Unit {
+        gatewayChannelRuntimeRegisterAccount("phase15-manager", accountId: "acct-a", pluginId: "dingtalk")
+        gatewayChannelRuntimePrimeAccount("phase15-manager", accountId: "acct-a", autoEnabled: true)
+        gatewayChannelRuntimeMarkStarting("phase15-manager", accountId: "acct-a")
+        gatewayChannelRuntimeMarkRunning("phase15-manager", accountId: "acct-a")
+        gatewayChannelRuntimeMarkPull("phase15-manager", accountId: "acct-a", inboundCount: 2)
+        gatewayChannelRuntimeMarkMonitorEnabled("phase15-manager", accountId: "acct-a", enabled: true)
+        gatewayChannelRuntimeMarkMonitorTick("phase15-manager", accountId: "acct-a")
+        gatewayChannelRuntimeMarkFailure(
+            "phase15-manager",
+            accountId: "acct-a",
+            lifecycleState: "backoff",
+            error: "dial failed",
+            backoffMs: 15000
+        )
+
+        let manager = gatewayChannelManagerSummary("phase15-manager")
+        @Expect(channelsTestInt(manager, "count"), 1)
+        @Expect(channelsTestInt(manager, "backoff"), 1)
+        @Expect(channelsTestString(manager, "lifecycleState"), "backoff")
+        @Expect(channelsTestString(manager, "taskState"), "recovering")
+        @Expect(channelsTestInt(manager, "taskGeneration") > 0, true)
+        @Expect(channelsTestString(manager, "monitorState"), "enabled")
+        @Expect(channelsTestInt(manager, "monitorEnabledAtMs") > 0, true)
+        @Expect(channelsTestInt(manager, "lastMonitorAtMs") > 0, true)
+        @Expect(channelsTestInt(manager, "lastEventAtMs") > 0, true)
+        @Expect(channelsTestString(manager, "lastError"), "dial failed")
+        @Expect(channelsTestInt(manager, "nextRestartAtMs") > 0, true)
+        @Expect(channelsTestInt(manager, "restartBudget"), 1)
+        @Expect(channelsTestString(manager, "restartBudgetState"), "budgeting")
+    }
+
+    @TestCase
+    public func pluginManagerSummaryAggregatesPluginRuntimeManagerFields(): Unit {
+        gatewayChannelRuntimeRegisterAccount("phase15-plugin-a", accountId: "acct-a", pluginId: "phase15-plugin")
+        gatewayChannelRuntimeRegisterAccount("phase15-plugin-b", accountId: "acct-b", pluginId: "phase15-plugin")
+        gatewayChannelRuntimeMarkStarting("phase15-plugin-a", accountId: "acct-a")
+        gatewayChannelRuntimeMarkRunning("phase15-plugin-a", accountId: "acct-a")
+        gatewayChannelRuntimeMarkMonitorEnabled("phase15-plugin-a", accountId: "acct-a", enabled: true)
+        gatewayChannelRuntimeMarkPull("phase15-plugin-a", accountId: "acct-a", inboundCount: 1)
+        gatewayChannelRuntimeMarkFailure(
+            "phase15-plugin-b",
+            accountId: "acct-b",
+            lifecycleState: "backoff",
+            error: "plugin error",
+            backoffMs: 8000
+        )
+
+        let manager = gatewayPluginManagerSummary("phase15-plugin")
+        @Expect(channelsTestInt(manager, "count"), 2)
+        @Expect(channelsTestInt(manager, "running"), 1)
+        @Expect(channelsTestString(manager, "monitorState"), "enabled")
+        @Expect(channelsTestInt(manager, "monitorEnabledAtMs") > 0, true)
+        @Expect(channelsTestInt(manager, "lastEventAtMs") > 0, true)
+        @Expect(channelsTestString(manager, "lastError"), "plugin error")
+        @Expect(channelsTestInt(manager, "nextRestartAtMs") > 0, true)
+        @Expect(channelsTestInt(manager, "restartBudget"), 1)
+        @Expect(channelsTestString(manager, "restartBudgetState"), "budgeting")
+    }
+
+    @TestCase
+    public func pluginsHealthActionsExposeActionsNeeded(): Unit {
+        let user = GatewayUserSettings()
+        let result = handleGatewayChannelsFamily("plugins.health.actions", user).getOrThrow().result.asObject()
+        @Expect(result.get("actionsNeeded").isSome(), true)
+        @Expect(result.get("byHealthState").isSome(), true)
+    }
+
+    @TestCase
+    public func pluginsHealthMonitorExposesRestartBudgetLimit(): Unit {
+        let user = GatewayUserSettings()
+        let result = handleGatewayChannelsFamily("plugins.health", user).getOrThrow().result.asObject()
+        let plugins = result.get("plugins").getOrThrow().asObject()
+        let items = plugins.get("items").getOrThrow().asArray()
+        @Expect(items.size() > 0, true)
+        let first = items[0].asObject()
+        let monitor = first.get("monitor").getOrThrow().asObject()
+        @Expect(monitor.get("maxRestartsPerHour").isSome(), true)
+    }
+
+    @TestCase
+    public func pluginsHealthPolicyExposesConfiguredAndRestartBudgetConstraints(): Unit {
+        let user = GatewayUserSettings()
+        let result = handleGatewayChannelsFamily("plugins.health", user).getOrThrow().result.asObject()
+        let plugins = result.get("plugins").getOrThrow().asObject()
+        let items = plugins.get("items").getOrThrow().asArray()
+        @Expect(items.size() > 0, true)
+        let first = items[0].asObject()
+        let monitor = first.get("monitor").getOrThrow().asObject()
+        let constraints = monitor.get("constraints").getOrThrow().asArray()
+        var sawConfigured = false
+        var sawRestartBudget = false
+        for (i in 0..constraints.size()) {
+            let row = constraints[i].asObject()
+            let name = channelsTestString(row, "name")
+            if (name == "plugin-configured") {
+                sawConfigured = true
+            }
+            if (name == "restart-budget") {
+                sawRestartBudget = true
+            }
+        }
+        @Expect(sawConfigured, true)
+        @Expect(sawRestartBudget, true)
+    }
+
+    @TestCase
+    public func channelPolicySummaryAggregatesRemediationActions(): Unit {
+        let user = GatewayUserSettings()
+        let result = handleGatewayChannelsFamily("channels.policy", user).getOrThrow().result.asObject()
+        let policy = result.get("policy").getOrThrow().asObject()
+        @Expect(policy.get("actions").isSome(), true)
+        @Expect(policy.get("actionCount").isSome(), true)
+        @Expect(policy.get("remediationState").isSome(), true)
+    }
+
+    @TestCase
+    public func pluginSurfacesAggregateActionsNeededFromItems(): Unit {
+        let user = GatewayUserSettings()
+
+        let approvals = handleGatewayChannelsFamily("plugins.approvals", user).getOrThrow().result.asObject()
+        @Expect(approvals.get("actionsNeeded").isSome(), true)
+        @Expect(approvals.get("actions").isSome(), true)
+
+        let packageState = handleGatewayChannelsFamily("plugins.package_state", user).getOrThrow().result.asObject()
+        @Expect(packageState.get("actionsNeeded").isSome(), true)
+        @Expect(packageState.get("actions").isSome(), true)
+
+        let setup = handleGatewayChannelsFamily("plugins.setup", user).getOrThrow().result.asObject()
+        @Expect(setup.get("actionsNeeded").isSome(), true)
+        @Expect(setup.get("actions").isSome(), true)
+    }
+
+    @TestCase
+    public func channelsLogoutExposesTopLevelPayloadFields(): Unit {
+        let user = GatewayUserSettings()
+        let params = JsonObject()
+        params.put("channel", JsonString("feishu"))
+        let response = handleGatewayChannelsFamily(
+            "channels.logout",
+            user,
+            request: Some(GatewayRpcRequest("channels.logout", params: params, clientId: "phase15-logout"))
+        ).getOrThrow().result.asObject()
+
+        @Expect(channelsTestString(response, "channel"), "feishu")
+        @Expect(channelsTestString(response, "channelId"), "feishu")
+        @Expect(response.get("cleared").isSome(), true)
+        @Expect(response.get("loggedOut").isSome(), true)
+        @Expect(channelsTestBool(response, "cleared"), false)
+        @Expect(channelsTestBool(response, "loggedOut"), false)
+    }
+
+    @TestCase
+    public func hostCompatibleChannelsLogoutAlsoExposeTopLevelLogoutFields(): Unit {
+        let user = GatewayUserSettings()
+        let params = JsonObject()
+        params.put("channel", JsonString("metis-fixture"))
+        params.put("accountId", JsonString("fixture:default"))
+        let response = handleGatewayChannelsFamily(
+            "channels.logout",
+            user,
+            request: Some(GatewayRpcRequest("channels.logout", params: params, clientId: "phase15-channel-logout"))
+        ).getOrThrow().result.asObject()
+
+        @Expect(channelsTestString(response, "channel"), "metis-fixture")
+        @Expect(channelsTestBool(response, "cleared"), true)
+        @Expect(channelsTestBool(response, "loggedOut"), true)
+    }
+
+    @TestCase
+    public func pluginsLogoutMarksRuntimeAsLoggedOutWhenHostClearsSession(): Unit {
+        let user = GatewayUserSettings()
+        let params = JsonObject()
+        params.put("pluginId", JsonString("metis-fixture"))
+        params.put("accountId", JsonString("fixture:default"))
+        let response = handleGatewayChannelsFamily(
+            "plugins.logout",
+            user,
+            request: Some(GatewayRpcRequest("plugins.logout", params: params, clientId: "phase15-plugin-logout"))
+        ).getOrThrow().result.asObject()
+
+        @Expect(channelsTestString(response, "plugin"), "metis-fixture")
+        @Expect(channelsTestBool(response, "loggedOut"), true)
+        let runtime = response.get("runtime").getOrThrow().asObject()
+        @Expect(channelsTestString(runtime, "lastError"), "logged out")
+    }
+}
