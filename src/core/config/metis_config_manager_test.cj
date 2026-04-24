@@ -211,6 +211,59 @@ public class MetisConfigManagerTest {
     }
 
     @TestCase
+    public func migrateLegacyIfNeededMovesLegacyMetaNamespaceToMetis(): Unit {
+        let testHome = "/tmp/metis-phase6-migrate-legacy-meta-namespace"
+        try {
+            remove(Path(testHome), recursive: true)
+        } catch (_: Exception) {
+            ()
+        }
+        Directory.create(testHome, recursive: true)
+        let oldHome = getVariable("METIS_HOME")
+        setVariable("METIS_HOME", testHome)
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+
+        let root = JsonObject()
+        let agents = JsonObject()
+        let defaults = JsonObject()
+        defaults.put("workspace", JsonString("/tmp/project"))
+        agents.put("defaults", defaults)
+        root.put("agents", agents)
+
+        let meta = JsonObject()
+        let legacy = JsonObject()
+        let legacyWizard = JsonObject()
+        legacyWizard.put("lastWorkspace", JsonString("/tmp/legacy-project"))
+        legacy.put("wizard", legacyWizard)
+        let metis = JsonObject()
+        let metisWizard = JsonObject()
+        metisWizard.put("homeRoot", JsonString("/tmp/.metis"))
+        metis.put("wizard", metisWizard)
+        meta.put("cangjieclaw", legacy)
+        meta.put("metis", metis)
+        root.put("meta", meta)
+
+        MetisConfigManager.writeRoot(root)
+        MetisConfigManager.invalidate()
+        MetisConfigManager.migrateLegacyIfNeeded()
+
+        let persisted = MetisConfigManager.rawConfig().getOrThrow()
+        let persistedMeta = persisted.get("meta").getOrThrow().asObject()
+        @Expect(persistedMeta.get("cangjieclaw").isNone(), true)
+        let wizard = persistedMeta.get("metis").getOrThrow().asObject().get("wizard").getOrThrow().asObject()
+        @Expect(wizard.get("lastWorkspace").getOrThrow().asString().getValue(), "/tmp/legacy-project")
+        @Expect(wizard.get("homeRoot").getOrThrow().asString().getValue(), "/tmp/.metis")
+
+        match (oldHome) {
+            case Some(value) => setVariable("METIS_HOME", value)
+            case None => setVariable("METIS_HOME", "")
+        }
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+    }
+
+    @TestCase
     public func setGatewaySettingsFailsClosedWhenConfigIsInvalid(): Unit {
         let testHome = "/tmp/metis-phase3-invalid-config-no-gateway-persist"
         try {

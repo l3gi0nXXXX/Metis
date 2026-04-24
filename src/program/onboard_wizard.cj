@@ -133,32 +133,58 @@ private func normalizeWorkspacePath(raw: String): String {
     trimmed
 }
 
-private func promptWorkspaceDirectory(root: JsonObject): String {
-    PrintUtils.printLine("")
+func onboardWorkspacePromptState(root: JsonObject): (String, String, String, Bool) {
     let agents = wizardEnsureObject(root, "agents")
     let defaults = wizardEnsureObject(agents, "defaults")
-    let currentWorkspace = wizardReadString(defaults, "workspace").trimAscii()
-    let defaultWorkspace = if (currentWorkspace.isEmpty()) {
-        MetisPaths.workspaceRoot().toString()
+    let currentDirectory = normalizeWorkspacePath(MetisPaths.workspaceRoot().toString())
+    let configuredWorkspace = wizardReadString(defaults, "workspace").trimAscii()
+    let normalizedConfigured = if (configuredWorkspace.isEmpty()) {
+        ""
     } else {
-        currentWorkspace
+        normalizeWorkspacePath(configuredWorkspace)
     }
+    let effectiveWorkspace = if (normalizedConfigured.isEmpty()) {
+        currentDirectory
+    } else {
+        normalizedConfigured
+    }
+    let showConfiguredOption = !normalizedConfigured.isEmpty() && normalizedConfigured != currentDirectory
+    (currentDirectory, normalizedConfigured, effectiveWorkspace, showConfiguredOption)
+}
+
+private func promptWorkspaceDirectory(root: JsonObject): String {
+    PrintUtils.printLine("")
+    let (currentDirectory, configuredWorkspace, defaultWorkspace, showConfiguredOption) = onboardWorkspacePromptState(root)
+    let configuredSummary = if (configuredWorkspace.isEmpty()) { "(not set)" } else { configuredWorkspace }
     PrintUtils.printNoteBox(
         "Workspace directory",
-        "Choose where Metis should treat as the default workspace.\n\nCurrent/default:\n${defaultWorkspace}"
+        "Choose where Metis should treat as the default workspace.\n\n" +
+        "Current directory:\n${currentDirectory}\n\n" +
+        "Configured default:\n${configuredSummary}"
     )
-    match (InputUtils.getOptions([
-        "Use current workspace  ${defaultWorkspace}",
-        "Enter custom workspace path"
-    ])) {
-        case Some(1) =>
-            let input = match (InputUtils.getUserInputOrCancel(prompt: "Workspace directory [default: ${defaultWorkspace}]: ")) {
-                case Some(text) => text.trimAscii()
-                case None => defaultWorkspace
+    let options = ArrayList<String>()
+    options.add("Use current directory  ${currentDirectory}")
+    if (showConfiguredOption) {
+        options.add("Keep configured default  ${configuredWorkspace}")
+    }
+    options.add("Enter custom workspace path")
+    match (InputUtils.getOptions(options.toArray())) {
+        case Some(index) =>
+            if (showConfiguredOption && index == 1) {
+                return configuredWorkspace
             }
-            let next = if (input.isEmpty()) { defaultWorkspace } else { input }
-            normalizeWorkspacePath(next)
-        case _ => normalizeWorkspacePath(defaultWorkspace)
+            let customIndex = if (showConfiguredOption) { 2 } else { 1 }
+            if (index == customIndex) {
+                let input = match (InputUtils.getUserInputOrCancel(prompt: "Workspace directory [default: ${defaultWorkspace}]: ")) {
+                    case Some(text) => text.trimAscii()
+                    case None => defaultWorkspace
+                }
+                let next = if (input.isEmpty()) { defaultWorkspace } else { input }
+                return normalizeWorkspacePath(next)
+            }
+            currentDirectory
+        case None =>
+            currentDirectory
     }
 }
 
