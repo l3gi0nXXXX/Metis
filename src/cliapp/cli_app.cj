@@ -1,4 +1,4 @@
-package metis.app
+package metis.cliapp
 
 import magic.log.LogUtils
 import magic.core.agent.Agent
@@ -171,10 +171,10 @@ protected class CliApp {
                 "Context: ${remaining}% remaining".withColor(Theme.current.muted),
                 align: Align.Right
             )
-            InputUtils.readline.setFootnote(footnote)
+            InputUtils.getReadline().setFootnote(footnote)
         } catch (ex: Exception) {
             LogUtils.error("Failed to compute context usage ${ex.message}")
-            InputUtils.readline.setFootnote("")
+            InputUtils.getReadline().setFootnote("")
         }
     }
 }

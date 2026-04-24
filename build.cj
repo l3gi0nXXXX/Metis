@@ -261,6 +261,52 @@ func stagePreBuild(): Int64 {
 }
 
 func stagePostBuild(): Int64 {
+    let targets = [
+        "./target/release/unittest_bin/metis.app",
+        "./target/debug/unittest_bin/metis.app"
+    ]
+    for (target in targets) {
+        let status = wrapDotAppTestBinary(target)
+        if (status != 0) {
+            return status
+        }
+    }
+    0
+}
+
+func wrapDotAppTestBinary(targetPath: String): Int64 {
+    if (!exists(targetPath)) {
+        return 0
+    }
+    let target = Path(targetPath)
+    let realBinary = Path("${targetPath}.bin")
+    if (!exists(realBinary)) {
+        try {
+            rename(target, to: realBinary)
+        } catch (e: FSException) {
+            eprintln("Failed to rename ${targetPath} to ${realBinary}: ${e.message}")
+            return 1
+        }
+    } else {
+        try {
+            remove(target)
+        } catch (e: FSException) {
+            eprintln("Failed to remove existing wrapper ${targetPath}: ${e.message}")
+            return 1
+        }
+    }
+
+    let script = "#!/bin/sh\nexec \"${realBinary}\" \"$@\"\n"
+    try {
+        File.writeTo(target, script.toArray())
+    } catch (e: FSException) {
+        eprintln("Failed to write wrapper ${targetPath}: ${e.message}")
+        return 1
+    }
+    if (launch("chmod", ["+x", targetPath]).wait() != 0) {
+        eprintln("Failed to chmod +x ${targetPath}")
+        return 1
+    }
     0
 }
 

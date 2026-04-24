@@ -2,7 +2,7 @@ package metis
 
 import magic.log.LogUtils
 
-import metis.app.CliApp
+import metis.cliapp.CliApp
 import metis.core.config.CliConfig
 import metis.gateway.runtime.{gatewayInvokeCliAgent, runFeishuWebhookGatewayService, runGatewayP0Demo, runGatewayP1DemoWithFeishuWebhook}
 import metis.io.PrintUtils

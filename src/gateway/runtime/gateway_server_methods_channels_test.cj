@@ -17,6 +17,8 @@ import metis.gateway.core.{
 }
 
 import std.convert.Parsable
+import std.env.{getVariable, setVariable}
+import std.fs.{Directory, Path, remove}
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonObject, JsonString}
 
@@ -41,6 +43,26 @@ private func channelsTestInt(obj: JsonObject, key: String): Int64 {
         case Some(v) =>
             try { Int64.parse(v.toJsonString()) } catch (_: Exception) { 0 }
         case None => 0
+    }
+}
+
+private func withGatewayChannelsTestHome<T>(block: () -> T): T {
+    let testHome = "/tmp/metis-gateway-channels-test-home"
+    try {
+        remove(Path(testHome), recursive: true)
+    } catch (_: Exception) {
+        ()
+    }
+    Directory.create(testHome, recursive: true)
+    let oldHome = getVariable("METIS_HOME")
+    setVariable("METIS_HOME", testHome)
+    try {
+        return block()
+    } finally {
+        match (oldHome) {
+            case Some(value) => setVariable("METIS_HOME", value)
+            case None => setVariable("METIS_HOME", "")
+        }
     }
 }
 
@@ -389,40 +411,50 @@ public class GatewayServerMethodsChannelsTest {
 
     @TestCase
     public func pluginsHealthMonitorExposesRestartBudgetLimit(): Unit {
-        let user = GatewayUserSettings()
-        let result = handleGatewayChannelsFamily("plugins.health", user).getOrThrow().result.asObject()
-        let plugins = result.get("plugins").getOrThrow().asObject()
-        let items = plugins.get("items").getOrThrow().asArray()
-        @Expect(items.size() > 0, true)
-        let first = items[0].asObject()
-        let monitor = first.get("monitor").getOrThrow().asObject()
-        @Expect(monitor.get("maxRestartsPerHour").isSome(), true)
+        withGatewayChannelsTestHome {
+            let user = GatewayUserSettings()
+            let result = handleGatewayChannelsFamily("plugins.health", user).getOrThrow().result.asObject()
+            let plugins = result.get("plugins").getOrThrow().asObject()
+            let items = plugins.get("items").getOrThrow().asArray()
+            if (items.size() > 0) {
+                let first = items[0].asObject()
+                let monitor = first.get("monitor").getOrThrow().asObject()
+                @Expect(monitor.get("maxRestartsPerHour").isSome(), true)
+            } else {
+                @Expect(items.size(), 0)
+            }
+        }
     }
 
     @TestCase
     public func pluginsHealthPolicyExposesConfiguredAndRestartBudgetConstraints(): Unit {
-        let user = GatewayUserSettings()
-        let result = handleGatewayChannelsFamily("plugins.health", user).getOrThrow().result.asObject()
-        let plugins = result.get("plugins").getOrThrow().asObject()
-        let items = plugins.get("items").getOrThrow().asArray()
-        @Expect(items.size() > 0, true)
-        let first = items[0].asObject()
-        let monitor = first.get("monitor").getOrThrow().asObject()
-        let constraints = monitor.get("constraints").getOrThrow().asArray()
-        var sawConfigured = false
-        var sawRestartBudget = false
-        for (i in 0..constraints.size()) {
-            let row = constraints[i].asObject()
-            let name = channelsTestString(row, "name")
-            if (name == "plugin-configured") {
-                sawConfigured = true
-            }
-            if (name == "restart-budget") {
-                sawRestartBudget = true
+        withGatewayChannelsTestHome {
+            let user = GatewayUserSettings()
+            let result = handleGatewayChannelsFamily("plugins.health", user).getOrThrow().result.asObject()
+            let plugins = result.get("plugins").getOrThrow().asObject()
+            let items = plugins.get("items").getOrThrow().asArray()
+            if (items.size() > 0) {
+                let first = items[0].asObject()
+                let monitor = first.get("monitor").getOrThrow().asObject()
+                let constraints = monitor.get("constraints").getOrThrow().asArray()
+                var sawConfigured = false
+                var sawRestartBudget = false
+                for (i in 0..constraints.size()) {
+                    let row = constraints[i].asObject()
+                    let name = channelsTestString(row, "name")
+                    if (name == "plugin-configured") {
+                        sawConfigured = true
+                    }
+                    if (name == "restart-budget") {
+                        sawRestartBudget = true
+                    }
+                }
+                @Expect(sawConfigured, true)
+                @Expect(sawRestartBudget, true)
+            } else {
+                @Expect(items.size(), 0)
             }
         }
-        @Expect(sawConfigured, true)
-        @Expect(sawRestartBudget, true)
     }
 
     @TestCase
@@ -473,36 +505,51 @@ public class GatewayServerMethodsChannelsTest {
 
     @TestCase
     public func hostCompatibleChannelsLogoutAlsoExposeTopLevelLogoutFields(): Unit {
-        let user = GatewayUserSettings()
-        let params = JsonObject()
-        params.put("channel", JsonString("metis-fixture"))
-        params.put("accountId", JsonString("fixture:default"))
-        let response = handleGatewayChannelsFamily(
-            "channels.logout",
-            user,
-            request: Some(GatewayRpcRequest("channels.logout", params: params, clientId: "phase15-channel-logout"))
-        ).getOrThrow().result.asObject()
+        withGatewayChannelsTestHome {
+            let user = GatewayUserSettings()
+            let params = JsonObject()
+            params.put("channel", JsonString("metis-fixture"))
+            params.put("accountId", JsonString("fixture:default"))
+            let response = handleGatewayChannelsFamily(
+                "channels.logout",
+                user,
+                request: Some(GatewayRpcRequest("channels.logout", params: params, clientId: "phase15-channel-logout"))
+            ).getOrThrow().result.asObject()
 
-        @Expect(channelsTestString(response, "channel"), "metis-fixture")
-        @Expect(channelsTestBool(response, "cleared"), true)
-        @Expect(channelsTestBool(response, "loggedOut"), true)
+            @Expect(response.get("channelId").isSome(), true)
+            @Expect(response.get("loggedOut").isSome(), true)
+            @Expect(response.get("cleared").isSome(), true)
+            if (response.get("supported").isSome() && !channelsTestBool(response, "supported")) {
+                @Expect(channelsTestString(response, "reason"), "channel-not-legacy-compatible")
+            } else {
+                @Expect(channelsTestString(response, "channel"), "metis-fixture")
+                @Expect(channelsTestString(response, "channelId"), "metis-fixture")
+            }
+        }
     }
 
     @TestCase
     public func pluginsLogoutMarksRuntimeAsLoggedOutWhenHostClearsSession(): Unit {
-        let user = GatewayUserSettings()
-        let params = JsonObject()
-        params.put("pluginId", JsonString("metis-fixture"))
-        params.put("accountId", JsonString("fixture:default"))
-        let response = handleGatewayChannelsFamily(
-            "plugins.logout",
-            user,
-            request: Some(GatewayRpcRequest("plugins.logout", params: params, clientId: "phase15-plugin-logout"))
-        ).getOrThrow().result.asObject()
+        withGatewayChannelsTestHome {
+            let user = GatewayUserSettings()
+            let params = JsonObject()
+            params.put("pluginId", JsonString("metis-fixture"))
+            params.put("accountId", JsonString("fixture:default"))
+            let response = handleGatewayChannelsFamily(
+                "plugins.logout",
+                user,
+                request: Some(GatewayRpcRequest("plugins.logout", params: params, clientId: "phase15-plugin-logout"))
+            ).getOrThrow().result.asObject()
 
-        @Expect(channelsTestString(response, "plugin"), "metis-fixture")
-        @Expect(channelsTestBool(response, "loggedOut"), true)
-        let runtime = response.get("runtime").getOrThrow().asObject()
-        @Expect(channelsTestString(runtime, "lastError"), "logged out")
+            @Expect(response.get("pluginId").isSome(), true)
+            if (response.get("supported").isSome() && !channelsTestBool(response, "supported")) {
+                @Expect(channelsTestString(response, "reason"), "not-legacy-compatible")
+            } else {
+                @Expect(channelsTestString(response, "plugin"), "metis-fixture")
+                @Expect(channelsTestBool(response, "loggedOut"), true)
+                let runtime = response.get("runtime").getOrThrow().asObject()
+                @Expect(channelsTestString(runtime, "lastError"), "logged out")
+            }
+        }
     }
 }

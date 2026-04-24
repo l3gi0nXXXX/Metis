@@ -3,7 +3,7 @@ package metis.program
 import magic.utils.readFile
 import magic.jsonable.*
 
-import metis.app.runEmbeddedPrompt
+import metis.cliapp.runEmbeddedPrompt
 import metis.core.config.{CliConfig, MetisConfigManager, MetisPaths, CliSettingManager, cliFindModelProviderDescriptor, cliModelProviderCatalogDescriptors, cliValidateProviderBaseUrl}
 import metis.core.mcp.{mcpConfiguredServerJson, mcpConfiguredServersJson, mcpConfiguredServersPath, mcpResolveSecretOption, mcpSetConfiguredServerJson, mcpUnsetConfiguredServerJson}
 import metis.gateway.channels.telegram.TelegramPairingStore

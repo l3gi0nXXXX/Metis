@@ -25,8 +25,18 @@ protected class InputUtils {
     private static var terminalInputLocked: AtomicBool = AtomicBool(false)
     // Track whether raw mode is enabled in this process.
     private static var rawModeEnabled: AtomicBool = AtomicBool(false)
+    // Delay readline construction until interactive input is actually needed.
+    // This keeps non-interactive test startup from touching raw terminal state.
+    private static var readlineInstance: Option<Readline> = None
 
-    protected static let readline = Readline(CliConfig.readlineFile)
+    protected static func getReadline(): Readline {
+        if (let Some(readline) <- readlineInstance) {
+            return readline
+        }
+        let readline = Readline(CliConfig.readlineFile)
+        readlineInstance = Some(readline)
+        readline
+    }
 
     public static func enterRawMode(): Unit {
         if (rawModeEnabled.load()) {
@@ -92,7 +102,7 @@ protected class InputUtils {
                     exitRawMode()
                 }
                 try {
-                    let input = readline.simpleReadLine(cookedPrompt) ?? "exit"
+                    let input = getReadline().simpleReadLine(cookedPrompt) ?? "exit"
                     renderCookedSubmittedInput(targetPrompt, input)
                     return input
                 } finally {
@@ -101,7 +111,7 @@ protected class InputUtils {
                     }
                 }
             }
-            return readline.readline(prompt ?? buildPrompt("🔮"), withBox: withBox) ?? "exit"
+            return getReadline().readline(prompt ?? buildPrompt("🔮"), withBox: withBox) ?? "exit"
         } finally {
             // Clear the flag when done
             isRequestingUserInput.store(false)
@@ -111,7 +121,7 @@ protected class InputUtils {
     public static func getUserInputOrCancel(prompt!: Option<String> = None, withBox!: Bool = true): Option<String> {
         isRequestingUserInput.store(true)
         try {
-            return readline.readlineWithCancel(prompt ?? buildPrompt("🔮"), withBox: withBox)
+            return getReadline().readlineWithCancel(prompt ?? buildPrompt("🔮"), withBox: withBox)
         } finally {
             isRequestingUserInput.store(false)
         }

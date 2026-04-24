@@ -1,4 +1,4 @@
-package metis.app
+package metis.cliapp
 
 import metis.core.memory.DreamingPhaseRuntime
 import metis.core.memory.MemoryRuntime

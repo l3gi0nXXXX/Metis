@@ -1,4 +1,4 @@
-package metis.app
+package metis.cliapp
 
 import magic.config.Config
 import magic.log.LogUtils

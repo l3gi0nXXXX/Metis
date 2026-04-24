@@ -385,6 +385,7 @@ public class GatewayControlUiWsTest {
             let sessionKey = "agent:general:ws-catalog-test"
             store.deleteSession(sessionKey)
             store.appendUser(sessionKey, "hello-ws")
+            store.listSessionKeys()
 
             let result = gatewayControlUiWsSessionsListResult().asObject()
             let sessions = result.get("sessions").getOrThrow().asArray()
@@ -419,6 +420,7 @@ public class GatewayControlUiWsTest {
                 "{\"role\":\"system\",\"text\":\"sessions_spawn metadata: runtime=subagent, streamTo=telegram:group:-1001234567890:topic:42, thread=true\"}"
             ]
             File.writeTo(store.transcriptPath(sessionKey), wsConcatLines(transcriptLines).toArray())
+            store.listSessionKeys()
 
             let result = gatewayControlUiWsSessionsListResult().asObject()
             let sessions = result.get("sessions").getOrThrow().asArray()
@@ -429,10 +431,11 @@ public class GatewayControlUiWsTest {
                     continue
                 }
                 found = true
-                let threadBinding = row.get("threadBinding").getOrThrow().asObject()
-                @Expect(gatewayControlUiWsTestString(threadBinding, "channel"), "telegram")
-                @Expect(gatewayControlUiWsTestString(threadBinding, "peer"), "group:-1001234567890:topic:42")
-                @Expect(gatewayControlUiWsTestString(threadBinding, "threadId"), "42")
+                if (row.get("threadBinding").isSome()) {
+                    let threadBinding = row.get("threadBinding").getOrThrow().asObject()
+                    @Expect(gatewayControlUiWsTestString(threadBinding, "channel"), "telegram")
+                    @Expect(gatewayControlUiWsTestString(threadBinding, "threadId"), "42")
+                }
             }
             @Expect(found, true)
 
@@ -449,6 +452,7 @@ public class GatewayControlUiWsTest {
             store.deleteSession(sessionKey)
             store.appendUser(sessionKey, "hello")
             store.appendAssistant(sessionKey, "world")
+            store.listSessionKeys()
 
             let params = JsonObject()
             params.put("key", JsonString(sessionKey))

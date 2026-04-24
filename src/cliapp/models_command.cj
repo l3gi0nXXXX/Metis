@@ -1,4 +1,4 @@
-package metis.app
+package metis.cliapp
 
 import metis.core.config.CliConfig
 import metis.core.config.MetisConfigManager
