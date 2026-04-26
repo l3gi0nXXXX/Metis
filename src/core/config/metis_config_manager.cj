@@ -659,32 +659,6 @@ private func cfgGetProviderFieldFromRaw(providerId: String, field: String): Opti
     }
 }
 
-private func mergeJsonObjectsPreferPrimary(primary: JsonObject, fallback: JsonObject): JsonObject {
-    let merged = JsonObject()
-    for ((key, value) in fallback.getFields()) {
-        merged.put(key, value)
-    }
-    for ((key, value) in primary.getFields()) {
-        match (merged.get(key)) {
-            case Some(existing) =>
-                try {
-                    let primaryObject = value.asObject()
-                    try {
-                        let fallbackObject = existing.asObject()
-                        merged.put(key, mergeJsonObjectsPreferPrimary(primaryObject, fallbackObject))
-                    } catch (_: Exception) {
-                        merged.put(key, value)
-                    }
-                } catch (_: Exception) {
-                    merged.put(key, value)
-                }
-            case None =>
-                merged.put(key, value)
-        }
-    }
-    merged
-}
-
 public class MetisConfigManager {
     private static var _raw: Option<JsonObject> = None
     private static var _rawLoadAttempted: Bool = false
@@ -790,25 +764,6 @@ public class MetisConfigManager {
 
     private static func migrateLegacyInto(root: JsonObject): Bool {
         var changed = false
-        match (cfgGetObject(root, "meta")) {
-            case Some(meta) =>
-                match (cfgGetObject(meta, "cangjieclaw")) {
-                    case Some(legacyNamespace) =>
-                        let currentNamespace = cfgGetObject(meta, "metis") ?? JsonObject()
-                        let mergedNamespace = mergeJsonObjectsPreferPrimary(currentNamespace, legacyNamespace)
-                        let rebuiltMeta = JsonObject()
-                        for ((key, value) in meta.getFields()) {
-                            if (key != "cangjieclaw" && key != "metis") {
-                                rebuiltMeta.put(key, value)
-                            }
-                        }
-                        rebuiltMeta.put("metis", mergedNamespace)
-                        root.put("meta", rebuiltMeta)
-                        changed = true
-                    case None => ()
-                }
-            case None => ()
-        }
         match (cfgGetObject(root, "agents")) {
             case Some(agents) =>
                 match (cfgGetObject(agents, "defaults")) {

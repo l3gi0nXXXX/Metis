@@ -211,8 +211,8 @@ public class MetisConfigManagerTest {
     }
 
     @TestCase
-    public func migrateLegacyIfNeededMovesLegacyMetaNamespaceToMetis(): Unit {
-        let testHome = "/tmp/metis-phase6-migrate-legacy-meta-namespace"
+    public func migrateLegacyIfNeededDoesNotMoveLegacyMetaNamespaceToMetis(): Unit {
+        let testHome = "/tmp/metis-phase2-no-legacy-meta-namespace-migration"
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -250,9 +250,12 @@ public class MetisConfigManagerTest {
 
         let persisted = MetisConfigManager.rawConfig().getOrThrow()
         let persistedMeta = persisted.get("meta").getOrThrow().asObject()
-        @Expect(persistedMeta.get("cangjieclaw").isNone(), true)
+        let persistedLegacyWizard = persistedMeta
+            .get("cangjieclaw").getOrThrow().asObject()
+            .get("wizard").getOrThrow().asObject()
+        @Expect(persistedLegacyWizard.get("lastWorkspace").getOrThrow().asString().getValue(), "/tmp/legacy-project")
         let wizard = persistedMeta.get("metis").getOrThrow().asObject().get("wizard").getOrThrow().asObject()
-        @Expect(wizard.get("lastWorkspace").getOrThrow().asString().getValue(), "/tmp/legacy-project")
+        @Expect(wizard.get("lastWorkspace").isNone(), true)
         @Expect(wizard.get("homeRoot").getOrThrow().asString().getValue(), "/tmp/.metis")
 
         match (oldHome) {
