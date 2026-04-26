@@ -622,7 +622,6 @@ private func applyRuntimeForGatewayServe(): Unit {
     Config.httpReadWriteTimeout = 600000
     CliConfig.cleanupLogs()
     MetisConfigManager.initializeIfMissing()
-    MetisConfigManager.migrateLegacyIfNeeded()
     MetisConfigManager.applyPersistedFieldsToCliConfig()
     CliSettingManager.applyPersistedFieldsToCliConfig()
     // Gateway serve should not kick off heavy qmd boot indexing on startup.

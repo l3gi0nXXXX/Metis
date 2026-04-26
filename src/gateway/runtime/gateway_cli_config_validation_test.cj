@@ -9,6 +9,40 @@ import std.unittest.testmacro.*
 @Test
 public class GatewayCliConfigValidationTest {
     @TestCase
+    public func gatewayStatusDoesNotMigrateLegacyMetaNamespace(): Unit {
+        let testHome = "/tmp/metis-phase1-gateway-status-no-legacy-meta-migration"
+        try {
+            remove(Path(testHome), recursive: true)
+        } catch (_: Exception) {
+            ()
+        }
+        Directory.create(testHome, recursive: true)
+        let oldHome = getVariable("METIS_HOME")
+        setVariable("METIS_HOME", testHome)
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+
+        let config = "{\n" +
+            "  \"agents\": {\"defaults\": {\"workspace\": \"/tmp/project\"}},\n" +
+            "  \"gateway\": {\"auth\": {\"mode\": \"token\", \"token\": \"existing-token\"}},\n" +
+            "  \"session\": {},\n" +
+            "  \"meta\": {\"cangjieclaw\": {\"wizard\": {\"lastWorkspace\": \"/tmp/legacy-project\"}}}\n" +
+            "}\n"
+        let path = MetisConfigManager.configPath()
+        File.writeTo(path, config.toArray())
+
+        let _ = runGatewayCli(["status"])
+        @Expect(String.fromUtf8(File.readFrom(path)), config)
+
+        match (oldHome) {
+            case Some(value) => setVariable("METIS_HOME", value)
+            case None => setVariable("METIS_HOME", "")
+        }
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+    }
+
+    @TestCase
     public func cliGatewayClientUsesLocalTransportUnlessRemoteGatewayIsEnabled(): Unit {
         let testHome = "/tmp/metis-phase4-gateway-cli-transport-selection"
         try {

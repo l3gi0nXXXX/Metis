@@ -131,7 +131,6 @@ func parseArgsAndSetConfig(args: Array<String>): ParseArgsResult {
     CliConfig.cleanupLogs()
 
     MetisConfigManager.initializeIfMissing()
-    MetisConfigManager.migrateLegacyIfNeeded()
 
     // Now, we can start the sandbox because it will inherits environment variables
     if (result.options.contains("sandbox")) {
