@@ -890,6 +890,78 @@ public class GatewayManagedSessionsToolset {
         sandbox: Option<String>,
         streamTo: Option<String>
     ): String {
+        this.sessionsSpawnImpl(
+            task,
+            label,
+            runtime,
+            agentId,
+            resumeSessionId,
+            model,
+            thinking,
+            cwd,
+            runTimeoutSeconds,
+            timeoutSeconds,
+            thread,
+            mode,
+            cleanup,
+            sandbox,
+            streamTo
+        )
+    }
+
+    public func sessionsSpawnForCommand(
+        task: String,
+        label: Option<String>,
+        runtime: Option<String>,
+        agentId: Option<String>,
+        resumeSessionId: Option<String>,
+        model: Option<String>,
+        thinking: Option<String>,
+        cwd: Option<String>,
+        runTimeoutSeconds: Option<Int64>,
+        timeoutSeconds: Option<Int64>,
+        thread: Option<Bool>,
+        mode: Option<String>,
+        cleanup: Option<String>,
+        sandbox: Option<String>,
+        streamTo: Option<String>
+    ): String {
+        this.sessionsSpawnImpl(
+            task,
+            label,
+            runtime,
+            agentId,
+            resumeSessionId,
+            model,
+            thinking,
+            cwd,
+            runTimeoutSeconds,
+            timeoutSeconds,
+            thread,
+            mode,
+            cleanup,
+            sandbox,
+            streamTo
+        )
+    }
+
+    private func sessionsSpawnImpl(
+        task: String,
+        label: Option<String>,
+        runtime: Option<String>,
+        agentId: Option<String>,
+        resumeSessionId: Option<String>,
+        model: Option<String>,
+        thinking: Option<String>,
+        cwd: Option<String>,
+        runTimeoutSeconds: Option<Int64>,
+        timeoutSeconds: Option<Int64>,
+        thread: Option<Bool>,
+        mode: Option<String>,
+        cleanup: Option<String>,
+        sandbox: Option<String>,
+        streamTo: Option<String>
+    ): String {
         PrintUtils.printTool("sessions_spawn", shortMessage: "gateway-managed")
         let trimmedTask = task.trimAscii()
         if (trimmedTask.isEmpty()) {
@@ -1298,6 +1370,10 @@ public class GatewayManagedSessionsToolset {
     }
 
     public func subagentsForTest(action: Option<String>, target: Option<String>, message: Option<String>, recentMinutes: Option<Int64>): String {
+        this.subagentsImpl(action, target, message, recentMinutes)
+    }
+
+    public func subagentsForCommand(action: Option<String>, target: Option<String>, message: Option<String>, recentMinutes: Option<Int64>): String {
         this.subagentsImpl(action, target, message, recentMinutes)
     }
 

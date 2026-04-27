@@ -24,6 +24,7 @@ public func cliRegisteredSubcliDescriptors(): Array<CliRootCommandDescriptor> {
         ("plugin", "Gateway plugin operations", true, false, ""),
         ("plugins", "Gateway plugin operations", true, false, ""),
         ("sessions", "Gateway session operations", true, false, ""),
+        ("subagents", "Gateway background subagent operations", true, false, ""),
         ("cron", "Gateway scheduler operations", true, false, "")
     ]
 }

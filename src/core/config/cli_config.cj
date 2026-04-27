@@ -38,6 +38,11 @@ protected class CliConfig {
         }
     }
 
+    public static func invalidatePathCache(): Unit {
+        _dotDir = None<Path>
+        _cwd = None<Path>
+    }
+
     /**
      * The current working directory
      */

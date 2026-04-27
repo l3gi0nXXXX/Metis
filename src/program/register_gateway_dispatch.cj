@@ -36,7 +36,7 @@ public func cliDispatchGatewayBackedRootCommand(cmd: String, tail: Array<String>
     if (command == "plugin" || command == "plugins") {
         return Some(runGatewayCli(appendHead("plugin", tail)))
     }
-    if (command == "sessions" || command == "cron") {
+    if (command == "sessions" || command == "cron" || command == "subagents") {
         return Some(runGatewayCli(appendHead(command, tail)))
     }
     None

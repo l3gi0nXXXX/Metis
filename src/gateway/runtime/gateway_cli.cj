@@ -175,6 +175,7 @@ private func printGatewayHelp(): Unit {
     PrintUtils.printLine("  gateway channel ...              Inspect or update gateway channels")
     PrintUtils.printLine("  gateway plugin ...               Inspect or update gateway plugins")
     PrintUtils.printLine("  gateway sessions ...             Inspect persisted gateway sessions")
+    PrintUtils.printLine("  gateway subagents ...            Spawn or control background subagent runs")
     PrintUtils.printLine("  gateway cron ...                 Inspect or manage scheduled jobs")
     PrintUtils.printLine("Examples:")
     PrintUtils.printLine("  metis gateway run")
@@ -813,6 +814,16 @@ public func runGatewayCli(sub: Array<String>): Int64 {
     }
     if (cmd == "sessions") {
         return runGatewaySessionsCli(sub)
+    }
+    if (cmd == "subagents") {
+        let commandLine = "/" + joinFrom(sub, 0)
+        let (ok, answer, err) = gatewayInvokeCliAgent(commandLine, sessionKey: "main", channel: "cli")
+        if (ok) {
+            PrintUtils.printLine(answer)
+            return if (answer.contains("\"ok\":false")) { 1 } else { 0 }
+        }
+        PrintUtils.printLine("Gateway agent failed: ${err}")
+        return 1
     }
     if (cmd == "cron") {
         return runGatewayCronCli(sub)

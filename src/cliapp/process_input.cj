@@ -164,6 +164,10 @@ private func executeCommand(input: String, app: CliApp): Option<Bool> {
             handleGatewaySessionsLine(_input)
             return true
 
+        case _input where isGatewaySubagentsCommandLine(_input) =>
+            handleGatewaySubagentsLine(_input)
+            return true
+
         case _input where isGatewayCronCommandLine(_input) =>
             handleGatewayCronLine(_input)
             return true

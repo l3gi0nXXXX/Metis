@@ -1,23 +1,26 @@
 package metis.gateway.tools
 
 import metis.core.{GatewayToolRuntimeContext, gatewaySubagentCreateRunRecord, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordString, gatewayWithToolRuntimeContext}
-import metis.core.config.{CliSettingManager, MetisConfigManager}
+import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager}
 import metis.core.memory.memorySessionStoreForGatewayUser
 
 import std.env.{getVariable, setVariable}
 import std.fs.{Directory, Path, exists, remove}
+import std.time.DateTime
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonObject, JsonValue}
 
 private func withManagedSessionsToolsetTestHome<T>(home: String, block: () -> T): T {
+    let actualHome = "${home}-${DateTime.now().toUnixTimeStamp().toNanoseconds()}"
     try {
-        remove(Path(home), recursive: true)
+        remove(Path(actualHome), recursive: true)
     } catch (_: Exception) {
         ()
     }
-    Directory.create(home, recursive: true)
+    Directory.create(actualHome, recursive: true)
     let oldHome = getVariable("METIS_HOME")
-    setVariable("METIS_HOME", home)
+    setVariable("METIS_HOME", actualHome)
+    CliConfig.invalidatePathCache()
     MetisConfigManager.invalidate()
     CliSettingManager.invalidate()
     try {
@@ -27,8 +30,14 @@ private func withManagedSessionsToolsetTestHome<T>(home: String, block: () -> T)
             case Some(value) => setVariable("METIS_HOME", value)
             case None => setVariable("METIS_HOME", "")
         }
+        CliConfig.invalidatePathCache()
         MetisConfigManager.invalidate()
         CliSettingManager.invalidate()
+        try {
+            remove(Path(actualHome), recursive: true)
+        } catch (_: Exception) {
+            ()
+        }
     }
 }
 
@@ -166,6 +175,39 @@ public class GatewayManagedSessionsToolsetTest {
                 @Expect(managedSubagentsString(denied, "status"), "denied")
                 @Expect(managedSubagentsString(denied, "action"), "status")
             }
+        }
+    }
+
+    @TestCase
+    public func subagentsCommandSpawnRecordsRunAndStatusInRequesterSession(): Unit {
+        withManagedSessionsToolsetTestHome("/tmp/metis-managed-subagents-command-spawn-record") {
+            gatewayWithToolRuntimeContext(GatewayToolRuntimeContext("telegram", sessionKey: "telegram:chat:phase7")) {
+                let spawned = managedSubagentsJson(gatewayHandleSubagentsCommandLine("/subagents spawn observer \"inspect unicode 任务\"").getOrThrow())
+                @Expect(managedSubagentsString(spawned, "status"), "accepted")
+                @Expect(managedSubagentsString(spawned, "agentId"), "observer")
+                @Expect(managedSubagentsString(spawned, "task"), "inspect unicode 任务")
+                @Expect(spawned.get("liveRunStarted").getOrThrow().asBool().getValue(), false)
+
+                let runId = managedSubagentsString(spawned, "runId")
+                let status = managedSubagentsJson(gatewayHandleSubagentsCommandLine("/subagents status ${runId}").getOrThrow())
+                @Expect(managedSubagentsString(status, "status"), "ok")
+                @Expect(managedSubagentsString(status, "runId"), runId)
+                let run = status.get("run").getOrThrow().asObject()
+                @Expect(managedSubagentsString(run, "status"), "queued")
+                @Expect(managedSubagentsString(run, "requesterSessionKey"), "telegram:chat:phase7")
+                @Expect(managedSubagentsString(run, "requesterChannel"), "telegram")
+            }
+        }
+    }
+
+    @TestCase
+    public func subagentsCommandErrorsUseStructuredJson(): Unit {
+        withManagedSessionsToolsetTestHome("/tmp/metis-managed-subagents-command-error") {
+            let failed = managedSubagentsJson(gatewayHandleSubagentsCommandLine("/subagents steer subrun_123").getOrThrow())
+            @Expect(failed.get("ok").getOrThrow().asBool().getValue(), false)
+            @Expect(managedSubagentsString(failed, "status"), "error")
+            @Expect(managedSubagentsString(failed, "action"), "steer")
+            @Expect(managedSubagentsString(failed, "usage").contains("/subagents spawn"), true)
         }
     }
 }

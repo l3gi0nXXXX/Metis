@@ -14,7 +14,7 @@ import metis.core.prompting.{MetisBootstrapBudgetResult, MetisSystemPromptParams
 import metis.core.skills.SkillsPrompt
 import metis.core.skills.tryHandleSkillsCommand
 import metis.cron.{executeGatewayCronCommand, parseSlashCronLine}
-import metis.gateway.tools.{GatewayCronToolset, GatewayFSToolset, GatewayGatewayToolset, GatewayManagedSessionsToolset, GatewayMemoryToolset, GatewayMessageToolset, GatewayPlanToolset, GatewaySessionTranscriptToolset, GatewayShellToolset, GatewayWeatherToolset}
+import metis.gateway.tools.{GatewayCronToolset, GatewayFSToolset, GatewayGatewayToolset, GatewayManagedSessionsToolset, GatewayMemoryToolset, GatewayMessageToolset, GatewayPlanToolset, GatewaySessionTranscriptToolset, GatewayShellToolset, GatewayWeatherToolset, gatewayHandleSubagentsCommandLine}
 import metis.io.{PrintUtils, AnsiColor, WithColor}
 
 import std.collection.{HashMap, ArrayList, enumerate}
@@ -347,6 +347,12 @@ public class AgentBridge {
                     let (msg, _) = executeGatewayCronCommand(parts)
                     return msg
                 }
+                if (trimmedPrompt == "/subagents" || trimmedPrompt.startsWith("/subagents ")) {
+                    match (gatewayHandleSubagentsCommandLine(trimmedPrompt)) {
+                        case Some(out) => return out
+                        case None => ()
+                    }
+                }
                 if (trimmedPrompt.startsWith("/skills ")) {
                     if (let Some(out) <- tryHandleSkillsCommand(trimmedPrompt)) {
                         return out
@@ -355,7 +361,7 @@ public class AgentBridge {
                 let forcedSkillCheck = parseForcedSkillFromSlash(trimmedPrompt)
                 if (forcedSkillCheck.isNone()) {
                     LogUtils.info("Gateway.reply: unknown slash command, bypass LLM and history")
-                    return "这不是一个有效的命令。可用 /cron 管理定时任务，或使用 /skills list 查看可用技能，或使用 /<skillName> 参数（例如 /weather 上海）。"
+                    return "这不是一个有效的命令。可用 /cron 管理定时任务，/subagents 管理后台 subagent，或使用 /skills list 查看可用技能，或使用 /<skillName> 参数（例如 /weather 上海）。"
                 }
             }
             if (!this.historyByConversation.contains(conversationKey)) {

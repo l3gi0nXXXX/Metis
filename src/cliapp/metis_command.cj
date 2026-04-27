@@ -10,7 +10,7 @@ import metis.gateway.runtime.{gatewayActionsMaskSecret, gatewayActionsPrintChann
     gatewayActionsSetChannelEnabled, gatewayActionsSetFeishu, gatewayActionsSetMaster, gatewayActionsSetQq,
     gatewayActionsSetPluginEnabled, gatewayActionsSetPluginField,
     gatewayAnotherServeInstanceSeemsRunning, gatewayExecuteRestartServe, gatewayExecuteStopServe,
-    gatewayExecuteCronWithUnifiedRun, gatewayLaunchDedicatedConsole, runGatewaySessionsCli}
+    gatewayExecuteCronWithUnifiedRun, gatewayInvokeCliAgent, gatewayLaunchDedicatedConsole, runGatewaySessionsCli}
 import metis.io.{InputUtils, PrintUtils, Theme, WithColor, AnsiColor}
 import metis.core.skills.SkillsPrompt
 
@@ -33,6 +33,12 @@ protected func isGatewayPluginCommandLine(raw: String): Bool {
 protected func isGatewaySessionsCommandLine(raw: String): Bool {
     let t = raw.trimAscii().toAsciiLower()
     t == "/sessions" || t.startsWith("/sessions ")
+}
+
+/** 顶层 subagent 命令：`/subagents ...`。 */
+protected func isGatewaySubagentsCommandLine(raw: String): Bool {
+    let t = raw.trimAscii().toAsciiLower()
+    t == "/subagents" || t.startsWith("/subagents ")
 }
 
 /** 顶层渠道命令：`/channel ...`。 */
@@ -208,6 +214,16 @@ protected func handleGatewaySessionsLine(raw: String): Unit {
         i += 1
     }
     let _ = runGatewaySessionsCli(args.toArray())
+}
+
+/** 顶层 `/subagents`：由统一 Gateway main runtime 处理。 */
+protected func handleGatewaySubagentsLine(raw: String): Unit {
+    let (ok, answer, err) = gatewayInvokeCliAgent(raw.trimAscii(), sessionKey: "main", channel: "cli")
+    if (!ok) {
+        PrintUtils.printLine("Gateway agent failed: ${err}")
+        return
+    }
+    PrintUtils.printLine(answer)
 }
 
 /** 顶层 `/plugin`：与 `gateway plugin` 一致。 */

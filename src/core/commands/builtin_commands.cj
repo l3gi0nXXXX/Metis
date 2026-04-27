@@ -20,6 +20,11 @@ protected let BUILTIN_COMMANDS: ArrayList<(String, String, Array<String>)> = Arr
     ("plugin", "Gateway plugin ops: list/list-supported/install/enable/disable/set", ["list", "list-supported", "install", "enable", "disable", "set"]),
     ("sessions", "Gateway sessions ops: list/path/show/clear/help", ["list", "path", "show", "clear", "help"]),
     (
+        "subagents",
+        "Gateway subagent ops: spawn/list/status/logs/poll/kill/steer/send",
+        ["spawn", "list", "status", "logs", "poll", "kill", "steer", "send"]
+    ),
+    (
         "cron",
         "Gateway cron (Metis-like): path/list/add --name .../edit/remove/enable/disable",
         ["path", "list", "help", "add", "edit", "remove", "enable", "disable"]
@@ -40,13 +45,13 @@ protected let BUILTIN_COMMANDS: ArrayList<(String, String, Array<String>)> = Arr
 func registerBuiltinCommands(): Unit {
     for ((commandName, _commandDescription, subcommands) in BUILTIN_COMMANDS) {
         // 一级入口控制：
-        // - /plugin /channel /sessions 仅显示入口，不在一级补全展开子命令；
+        // - /plugin /channel /sessions /subagents 仅显示入口，不在一级补全展开子命令；
         // - /Metis 保留入口，兼容旧交互工作流。
         if (commandName != "skills") {
             CompletionListUtils.registerCompletionItem("/${commandName}")
         }
 
-        if (commandName == "plugin" || commandName == "channel" || commandName == "sessions" || commandName == "cron") {
+        if (commandName == "plugin" || commandName == "channel" || commandName == "sessions" || commandName == "subagents" || commandName == "cron") {
             continue
         }
 

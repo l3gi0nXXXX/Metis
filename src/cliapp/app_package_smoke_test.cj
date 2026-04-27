@@ -9,6 +9,7 @@ public class AppPackageSmokeTest {
         @Expect(isGatewayChannelCommandLine("/channel list"), true)
         @Expect(isGatewayPluginCommandLine("/plugin list"), true)
         @Expect(isGatewaySessionsCommandLine("/sessions list"), true)
+        @Expect(isGatewaySubagentsCommandLine("/subagents list"), true)
         @Expect(isGatewayCronCommandLine("/cron list"), true)
     }
 
