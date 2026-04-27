@@ -5,7 +5,7 @@ import magic.prelude.*
 
 import metis.core.config.{CliConfig, CliSettingManager}
 import metis.core.memory.{MemorySessionTranscriptStore, memorySessionStoreForGatewayUser}
-import metis.core.{gatewayCurrentToolRuntimeContext, gatewaySubagentBuildBuiltinPrompt, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentIsBuiltinAgent, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunState, gatewaySubagentNormalizeBuiltinAgentId, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentWriteRunRecord}
+import metis.core.{gatewayCurrentToolRuntimeContext, gatewaySubagentBuildBuiltinPrompt, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentIsBuiltinAgent, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunState, gatewaySubagentNormalizeBuiltinAgentId, gatewaySubagentNoticeShouldDeliver, gatewaySubagentNoticeTargetSession, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentRenderNotice, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentRunStatusIsTerminal, gatewaySubagentUpdateNoticeStatus, gatewaySubagentWriteRunRecord}
 import metis.io.PrintUtils
 
 import std.collection.{ArrayList, HashMap}
@@ -174,6 +174,14 @@ public class GatewayManagedSessionsToolset {
         this.extractManagedSpawnMetadataField(sessionKey, "timeoutSeconds")
     }
 
+    private func requesterThreadIdFromSessionKey(sessionKey: String): String {
+        let marker = ":topic:"
+        match (sessionKey.indexOf(marker)) {
+            case Some(idx) => sessionKey[idx + marker.size..].trimAscii()
+            case None => ""
+        }
+    }
+
     private func managedState(sessionKey: String): String {
         synchronized(gatewayManagedSessionLock) {
             if (let Some(v) <- gatewayManagedStates.get(sessionKey)) {
@@ -232,6 +240,29 @@ public class GatewayManagedSessionsToolset {
             exitCode: exitCode,
             outputPath: outputPath
         )
+        if (gatewaySubagentRunStatusIsTerminal(state)) {
+            this.deliverManagedTerminalNotice(sessionKey)
+        }
+    }
+
+    private func deliverManagedTerminalNotice(sessionKey: String): Unit {
+        let st = this.gwStore()
+        let record = match (gatewaySubagentResolveRunRecord(st.sessionsRoot(), sessionKey)) {
+            case Some(v) => v
+            case None => return
+        }
+        if (!gatewaySubagentNoticeShouldDeliver(record)) {
+            return
+        }
+        let notice = gatewaySubagentRenderNotice(record)
+        let target = gatewaySubagentNoticeTargetSession(record)
+        let effectiveTarget = if (target.trimAscii().isEmpty()) { sessionKey } else { target.trimAscii() }
+        try {
+            st.appendTranscriptEntry(effectiveTarget, "system", notice)
+            let _ = gatewaySubagentUpdateNoticeStatus(st.sessionsRoot(), sessionKey, "delivered")
+        } catch (e: Exception) {
+            let _ = gatewaySubagentUpdateNoticeStatus(st.sessionsRoot(), sessionKey, "failed", error: e.message)
+        }
     }
 
     private func buildManagedSubagentPrompt(task: String, cwdHint: String, sessionKey: String, agentId: String): String {
@@ -587,26 +618,28 @@ public class GatewayManagedSessionsToolset {
                 if (!stderr.trimAscii().isEmpty()) {
                     st.appendTranscriptEntry(sessionKey, "system", "acp stderr: ${stderr.trimAscii()}")
                 }
+                let outputPath = st.transcriptPath(sessionKey).toString()
                 if (timedOut) {
                     st.appendTranscriptEntry(sessionKey, "system", "acp timed out: harness=${resolvedHarness} timeoutSeconds=${runTimeoutSeconds}")
-                    this.setManagedState(sessionKey, "timed_out", error: "subagent timed out after ${runTimeoutSeconds}s", exitCode: -1)
+                    this.setManagedState(sessionKey, "timed_out", error: "subagent timed out after ${runTimeoutSeconds}s", exitCode: -1, outputPath: outputPath)
                 } else if (Thread.currentThread.hasPendingCancellation) {
                     st.appendTranscriptEntry(sessionKey, "system", "acp cancelled")
-                    this.setManagedState(sessionKey, "cancelled", error: "cancelled")
+                    this.setManagedState(sessionKey, "cancelled", error: "cancelled", outputPath: outputPath)
                 } else if (exitCode == 0) {
                     st.appendTranscriptEntry(sessionKey, "system", "acp completed: harness=${resolvedHarness} exitCode=${exitCode}")
-                    this.setManagedState(sessionKey, "succeeded", resultSummary: if (stdout.trimAscii().isEmpty()) { "acp completed" } else { stdout.trimAscii() }, exitCode: exitCode)
+                    this.setManagedState(sessionKey, "succeeded", resultSummary: if (stdout.trimAscii().isEmpty()) { "acp completed" } else { stdout.trimAscii() }, exitCode: exitCode, outputPath: outputPath)
                 } else {
                     st.appendTranscriptEntry(sessionKey, "system", "acp failed: harness=${resolvedHarness} exitCode=${exitCode}")
-                    this.setManagedState(sessionKey, "failed", error: "acp failed: harness=${resolvedHarness} exitCode=${exitCode}", exitCode: exitCode)
+                    this.setManagedState(sessionKey, "failed", error: "acp failed: harness=${resolvedHarness} exitCode=${exitCode}", exitCode: exitCode, outputPath: outputPath)
                 }
             } catch (e: Exception) {
+                let outputPath = st.transcriptPath(sessionKey).toString()
                 if (Thread.currentThread.hasPendingCancellation) {
                     st.appendTranscriptEntry(sessionKey, "system", "acp cancelled")
-                    this.setManagedState(sessionKey, "cancelled", error: "cancelled")
+                    this.setManagedState(sessionKey, "cancelled", error: "cancelled", outputPath: outputPath)
                 } else {
                     st.appendTranscriptEntry(sessionKey, "system", "acp failed: ${e.message}")
-                    this.setManagedState(sessionKey, "failed", error: "acp failed: ${e.message}", exitCode: 1)
+                    this.setManagedState(sessionKey, "failed", error: "acp failed: ${e.message}", exitCode: 1, outputPath: outputPath)
                 }
             } finally {
                 this.clearManagedProcess(sessionKey)
@@ -815,10 +848,21 @@ public class GatewayManagedSessionsToolset {
         }
         let st = this.gwStore()
         var effectiveTimeout = if (let Some(v) <- runTimeoutSeconds) { v } else { timeoutSeconds ?? -1 }
-        let requesterSessionKey = match (gatewayCurrentToolRuntimeContext()) {
+        let runtimeContext = gatewayCurrentToolRuntimeContext()
+        let requesterSessionKey = match (runtimeContext) {
             case Some(ctx) => ctx.sessionKey
             case None => ""
         }
+        let requesterChannelText = match (runtimeContext) {
+            case Some(ctx) =>
+                if (!ctx.channelName.trimAscii().isEmpty()) {
+                    ctx.channelName
+                } else {
+                    ctx.sourceLabel
+                }
+            case None => "gateway"
+        }
+        let requesterThreadIdText = this.requesterThreadIdFromSessionKey(requesterSessionKey)
         var currentDepth: Int64 = 0
         if (!requesterSessionKey.trimAscii().isEmpty()) {
             match (gatewaySubagentFindRunBySessionKey(st.sessionsRoot(), requesterSessionKey)) {
@@ -972,9 +1016,10 @@ public class GatewayManagedSessionsToolset {
         let runRecord = gatewaySubagentCreateRunRecord(
             st.sessionsRoot(),
             sessionKey,
-            parentSessionKey: "",
-            requesterSessionKey: "",
-            requesterChannel: "gateway",
+            parentSessionKey: requesterSessionKey,
+            requesterSessionKey: requesterSessionKey,
+            requesterChannel: requesterChannelText,
+            requesterThreadId: requesterThreadIdText,
             agentId: agentIdText,
             agentSource: if (runtimeText == "acp") { "acp" } else { "builtin" },
             runtime: runtimeText,
