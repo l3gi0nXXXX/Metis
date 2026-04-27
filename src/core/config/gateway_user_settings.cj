@@ -19,6 +19,30 @@ public struct GatewayToolsUserSettings {
     public var deny: Array<String> = []
 }
 
+/**
+ * Subagent 启动策略与资源上限。
+ *
+ * 默认值保持已有 `sessions_spawn` 能力可用；显式禁用、黑白名单或超限时在创建
+ * 子 session 前拒绝启动，避免产生半成品转录和 run record。
+ */
+@jsonable
+public struct GatewaySubagentPolicyUserSettings {
+    public var enabled: Bool = true
+    public var allowAgents: Array<String> = []
+    public var denyAgents: Array<String> = []
+    public var requireAgentId: Bool = false
+    public var maxConcurrentSubagents: Int64 = 4
+    public var maxChildrenPerSession: Int64 = 8
+    public var maxSpawnDepth: Int64 = 1
+    public var defaultTimeoutSeconds: Int64 = 600
+    public var maxTimeoutSeconds: Int64 = 1800
+    public var childAllowedTools: Array<String> = []
+    public var childDeniedTools: Array<String> = []
+    public var allowCustomAgents: Bool = false
+    public var allowWriteAgents: Bool = false
+    public var requireWorktreeForWriteAgents: Bool = true
+}
+
 @jsonable
 public struct GatewayTlsUserSettings {
     public var enabled: Bool = false
@@ -444,6 +468,8 @@ public struct GatewayUserSettings {
     public var channelModels: HashMap<String, String> = HashMap<String, String>()
     /** 网关 P1 Agent 工具白名单/黑名单。 */
     public var tools: GatewayToolsUserSettings = GatewayToolsUserSettings()
+    /** Subagent 启动策略与资源上限。 */
+    public var subagents: GatewaySubagentPolicyUserSettings = GatewaySubagentPolicyUserSettings()
     public var webchat: GatewayWebchatUserSettings = GatewayWebchatUserSettings()
     public var channelHealthCheckMinutes: Int64 = 5
     public var channelStaleEventThresholdMinutes: Int64 = 30

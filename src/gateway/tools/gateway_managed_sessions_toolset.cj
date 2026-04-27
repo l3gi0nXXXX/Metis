@@ -5,7 +5,7 @@ import magic.prelude.*
 
 import metis.core.config.{CliConfig, CliSettingManager}
 import metis.core.memory.{MemorySessionTranscriptStore, memorySessionStoreForGatewayUser}
-import metis.core.{gatewaySubagentCreateRunRecord, gatewaySubagentFindRunBySessionKey, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordString, gatewaySubagentUpdateRunStatus}
+import metis.core.{gatewayCurrentToolRuntimeContext, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentUpdateRunStatus, gatewaySubagentWriteRunRecord}
 import metis.io.PrintUtils
 
 import std.collection.{ArrayList, HashMap}
@@ -776,7 +776,44 @@ public class GatewayManagedSessionsToolset {
         } else {
             this.normalizeManagedAgentId(requestedAgentId)
         }
-        let sessionKey = this.gwStore().spawnSession(this.buildSpawnLabel(labelText, runtimeText, agentIdText))
+        let st = this.gwStore()
+        var effectiveTimeout = if (let Some(v) <- runTimeoutSeconds) { v } else { timeoutSeconds ?? -1 }
+        let requesterSessionKey = match (gatewayCurrentToolRuntimeContext()) {
+            case Some(ctx) => ctx.sessionKey
+            case None => ""
+        }
+        var currentDepth: Int64 = 0
+        if (!requesterSessionKey.trimAscii().isEmpty()) {
+            match (gatewaySubagentFindRunBySessionKey(st.sessionsRoot(), requesterSessionKey)) {
+                case Some(parentRun) => currentDepth = gatewaySubagentRunRecordInt(parentRun, "depth")
+                case None => ()
+            }
+        }
+        let requestedSandboxText = match (sandbox) {
+            case Some(v) => v.trimAscii()
+            case None => ""
+        }
+        let agentSourceText = if (runtimeText == "acp") { "acp" } else { "builtin" }
+        let policyDecision = gatewaySubagentEvaluateSpawnPolicy(
+            CliSettingManager.readGatewaySettings().subagents,
+            st.sessionsRoot(),
+            requesterSessionKey,
+            agentIdText,
+            agentSourceText,
+            runtimeText,
+            effectiveTimeout,
+            currentDepth,
+            requestedSandboxText
+        )
+        effectiveTimeout = policyDecision.effectiveTimeoutSeconds
+        if (!policyDecision.allowed) {
+            let err = gatewaySubagentPolicyRejectionJson(policyDecision, agentIdText, runtimeText)
+            let out = err.toJsonString()
+            PrintUtils.printToolResult(out)
+            return out
+        }
+
+        let sessionKey = st.spawnSession(this.buildSpawnLabel(labelText, runtimeText, agentIdText))
         if (sessionKey.startsWith("error:")) {
             let err = JsonObject()
             err.put("ok", JsonBool(false))
@@ -843,12 +880,10 @@ public class GatewayManagedSessionsToolset {
             case Some(v) => metadata.add("thread=${v}")
             case None => ()
         }
-        let effectiveTimeout = if (let Some(v) <- runTimeoutSeconds) { v } else { timeoutSeconds ?? -1 }
         if (effectiveTimeout >= 0) {
             metadata.add("timeoutSeconds=${effectiveTimeout}")
         }
 
-        let st = this.gwStore()
         st.appendTranscriptEntry(sessionKey, "system", "sessions_spawn metadata: ${String.join(metadata.toArray(), delimiter: ", ")}")
 
         let cwdHint = match (cwd) {
@@ -915,8 +950,13 @@ public class GatewayManagedSessionsToolset {
             timeoutSeconds: effectiveTimeout,
             transcriptPath: st.transcriptPath(sessionKey).toString()
         )
+        let runMetadata = JsonObject()
+        runMetadata.put("policy", gatewaySubagentPolicyDecisionToJson(policyDecision))
+        runRecord.put("metadata", runMetadata)
+        let _ = gatewaySubagentWriteRunRecord(st.sessionsRoot(), runRecord)
         let runId = gatewaySubagentRunRecordString(runRecord, "runId")
         result.put("runId", JsonString(runId))
+        result.put("policy", gatewaySubagentPolicyDecisionToJson(policyDecision))
         if (!streamToText.isEmpty()) {
             result.put("compatNote", JsonString("streamTo is recorded, but this Gateway-managed toolset currently only streams output back into the managed session transcript."))
         }

@@ -3,7 +3,7 @@ package metis.core.tools
 import magic.dsl.{tool, toolset}
 import magic.prelude.*
 
-import metis.core.{gatewayMessagePayloadPreview, gatewaySubagentCreateRunRecord, gatewaySubagentFindRunBySessionKey, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordString, gatewaySubagentUpdateRunStatus, parseGatewayPollParts, renderGatewayAudioText, renderGatewayDeleteText, renderGatewayDocumentText, renderGatewayEditText, renderGatewayPhotoText, renderGatewayPollText, renderGatewayReactionText, renderGatewayTopicCreateText, renderGatewayTopicEditText, renderGatewayVideoNoteText, renderGatewayVideoText, renderGatewayVoiceText}
+import metis.core.{gatewayCurrentToolRuntimeContext, gatewayMessagePayloadPreview, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentUpdateRunStatus, gatewaySubagentWriteRunRecord, parseGatewayPollParts, renderGatewayAudioText, renderGatewayDeleteText, renderGatewayDocumentText, renderGatewayEditText, renderGatewayPhotoText, renderGatewayPollText, renderGatewayReactionText, renderGatewayTopicCreateText, renderGatewayTopicEditText, renderGatewayVideoNoteText, renderGatewayVideoText, renderGatewayVoiceText}
 import metis.core.config.{CliConfig, CliSettingManager}
 import metis.core.config.GatewayUserSettings
 import metis.core.plan.Plan
@@ -1458,8 +1458,47 @@ public class GatewaySessionsToolset {
             this.normalizeManagedAgentId(requestedAgentId)
         }
         let spawnLabel = this.buildSpawnLabel(labelText, runtimeText, agentIdText)
-
         let st = this.gwStore()
+        var effectiveTimeout = if (let Some(v) <- runTimeoutSeconds) {
+            v
+        } else {
+            timeoutSeconds ?? -1
+        }
+        let requesterSessionKey = match (gatewayCurrentToolRuntimeContext()) {
+            case Some(ctx) => ctx.sessionKey
+            case None => ""
+        }
+        var currentDepth: Int64 = 0
+        if (!requesterSessionKey.trimAscii().isEmpty()) {
+            match (gatewaySubagentFindRunBySessionKey(st.sessionsRoot(), requesterSessionKey)) {
+                case Some(parentRun) => currentDepth = gatewaySubagentRunRecordInt(parentRun, "depth")
+                case None => ()
+            }
+        }
+        let requestedSandboxText = match (sandbox) {
+            case Some(v) => v.trimAscii()
+            case None => ""
+        }
+        let agentSourceText = if (runtimeText == "acp") { "acp" } else { "builtin" }
+        let policyDecision = gatewaySubagentEvaluateSpawnPolicy(
+            CliSettingManager.readGatewaySettings().subagents,
+            st.sessionsRoot(),
+            requesterSessionKey,
+            agentIdText,
+            agentSourceText,
+            runtimeText,
+            effectiveTimeout,
+            currentDepth,
+            requestedSandboxText
+        )
+        effectiveTimeout = policyDecision.effectiveTimeoutSeconds
+        if (!policyDecision.allowed) {
+            let err = gatewaySubagentPolicyRejectionJson(policyDecision, agentIdText, runtimeText)
+            let out = err.toJsonString()
+            PrintUtils.printToolResult(out)
+            return out
+        }
+
         let sessionKey = st.spawnSession(spawnLabel)
         if (sessionKey.startsWith("error:")) {
             let err = JsonObject()
@@ -1530,11 +1569,6 @@ public class GatewaySessionsToolset {
         match (thread) {
             case Some(v) => metadata.add("thread=${v}")
             case None => ()
-        }
-        let effectiveTimeout = if (let Some(v) <- runTimeoutSeconds) {
-            v
-        } else {
-            timeoutSeconds ?? -1
         }
         if (effectiveTimeout >= 0) {
             metadata.add("timeoutSeconds=${effectiveTimeout}")
@@ -1615,8 +1649,13 @@ public class GatewaySessionsToolset {
             timeoutSeconds: effectiveTimeout,
             transcriptPath: st.transcriptPath(sessionKey).toString()
         )
+        let runMetadata = JsonObject()
+        runMetadata.put("policy", gatewaySubagentPolicyDecisionToJson(policyDecision))
+        runRecord.put("metadata", runMetadata)
+        let _ = gatewaySubagentWriteRunRecord(st.sessionsRoot(), runRecord)
         let runId = gatewaySubagentRunRecordString(runRecord, "runId")
         result.put("runId", JsonString(runId))
+        result.put("policy", gatewaySubagentPolicyDecisionToJson(policyDecision))
         if (runtimeText == "subagent" && this.supportsRealManagedSubagent(agentIdText)) {
             let launched = this.launchManagedSubagentRun(sessionKey, agentIdText, trimmedTask, cwdHint)
             result.put("liveRunStarted", launched.toJsonValue())
