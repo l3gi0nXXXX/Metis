@@ -69,18 +69,6 @@ private func subagentPolicyStatusIsActive(status: String): Bool {
     }
 }
 
-private func subagentPolicyAgentLooksWriteCapable(agentId: String): Bool {
-    let normalized = agentId.trimAscii().toAsciiLower()
-    if (normalized.isEmpty()) {
-        return false
-    }
-    normalized.contains("write") ||
-        normalized.contains("fix") ||
-        normalized.contains("patch") ||
-        normalized.contains("implement") ||
-        normalized.contains("coder")
-}
-
 public func gatewaySubagentPolicyDecisionToJson(decision: SubagentPolicyDecision): JsonObject {
     let obj = JsonObject()
     obj.put("allowed", decision.allowed.toJsonValue())
@@ -146,11 +134,11 @@ public func gatewaySubagentEvaluateSpawnPolicy(
     if (!settings.allowCustomAgents && cleanAgentSource == "custom") {
         return subagentPolicyRejected("custom agents disabled", effectiveTimeoutSeconds, settings)
     }
-    if (!settings.allowWriteAgents && subagentPolicyAgentLooksWriteCapable(cleanAgentId)) {
+    if (!settings.allowWriteAgents && gatewaySubagentAgentLooksWriteCapable(cleanAgentId)) {
         return subagentPolicyRejected("write-capable agents disabled: ${cleanAgentId}", effectiveTimeoutSeconds, settings)
     }
     if (settings.requireWorktreeForWriteAgents &&
-        subagentPolicyAgentLooksWriteCapable(cleanAgentId) &&
+        gatewaySubagentAgentLooksWriteCapable(cleanAgentId) &&
         cleanIsolationMode != "worktree") {
         return subagentPolicyRejected("write-capable agents require worktree isolation", effectiveTimeoutSeconds, settings)
     }

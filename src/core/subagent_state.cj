@@ -27,7 +27,8 @@ public func gatewaySubagentMarkRunState(
     status: String,
     resultSummary!: String = "",
     error!: String = "",
-    exitCode!: Int64 = 0
+    exitCode!: Int64 = 0,
+    outputPath!: String = ""
 ): Bool {
     gatewaySubagentUpdateRunStatus(
         sessionsRoot,
@@ -35,7 +36,8 @@ public func gatewaySubagentMarkRunState(
         gatewaySubagentRuntimeState(status),
         resultSummary: resultSummary,
         error: error,
-        exitCode: exitCode
+        exitCode: exitCode,
+        outputPath: outputPath
     )
 }
 
@@ -47,14 +49,16 @@ public func gatewaySubagentMarkRunSucceeded(
     sessionsRoot: Path,
     runIdOrSessionKey: String,
     resultSummary!: String = "",
-    exitCode!: Int64 = 0
+    exitCode!: Int64 = 0,
+    outputPath!: String = ""
 ): Bool {
     gatewaySubagentMarkRunState(
         sessionsRoot,
         runIdOrSessionKey,
         "succeeded",
         resultSummary: resultSummary,
-        exitCode: exitCode
+        exitCode: exitCode,
+        outputPath: outputPath
     )
 }
 

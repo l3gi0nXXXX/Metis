@@ -5,7 +5,7 @@ import magic.prelude.*
 
 import metis.core.config.{CliConfig, CliSettingManager}
 import metis.core.memory.{MemorySessionTranscriptStore, memorySessionStoreForGatewayUser}
-import metis.core.{gatewayCurrentToolRuntimeContext, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunState, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentWriteRunRecord}
+import metis.core.{gatewayCurrentToolRuntimeContext, gatewaySubagentBuildBuiltinPrompt, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentIsBuiltinAgent, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunState, gatewaySubagentNormalizeBuiltinAgentId, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentWriteRunRecord}
 import metis.io.PrintUtils
 
 import std.collection.{ArrayList, HashMap}
@@ -48,39 +48,11 @@ public class GatewayManagedSessionsToolset {
     }
 
     private func normalizeManagedAgentId(agentId: String): String {
-        let normalized = agentId.trimAscii().toAsciiLower().replace("-", "_")
-        if (normalized.isEmpty()) {
-            return "explorer"
-        }
-        if (normalized == "explorer" || normalized == "exploreragent") {
-            return "explorer"
-        }
-        if (normalized == "editor" || normalized == "edit" || normalized == "editoragent") {
-            return "editor"
-        }
-        if (normalized == "reviewer" || normalized == "review" || normalized == "revieweragent") {
-            return "reviewer"
-        }
-        if (normalized == "test_generator" || normalized == "testgenerator" || normalized == "testgeneratoragent") {
-            return "test_generator"
-        }
-        if (normalized == "refactoring" || normalized == "refactor" || normalized == "refactoringagent") {
-            return "refactoring"
-        }
-        if (normalized == "planner" || normalized == "planneragent") {
-            return "planner"
-        }
-        normalized
+        gatewaySubagentNormalizeBuiltinAgentId(agentId)
     }
 
     private func supportsRealManagedSubagent(agentId: String): Bool {
-        let normalized = this.normalizeManagedAgentId(agentId)
-        normalized == "explorer" ||
-            normalized == "editor" ||
-            normalized == "reviewer" ||
-            normalized == "test_generator" ||
-            normalized == "refactoring" ||
-            normalized == "planner"
+        gatewaySubagentIsBuiltinAgent(agentId)
     }
 
     private func isManagedSpawnSession(sessionKey: String): Bool {
@@ -245,7 +217,8 @@ public class GatewayManagedSessionsToolset {
         state: String,
         resultSummary!: String = "",
         error!: String = "",
-        exitCode!: Int64 = 0
+        exitCode!: Int64 = 0,
+        outputPath!: String = ""
     ): Unit {
         synchronized(gatewayManagedSessionLock) {
             gatewayManagedStates.add(sessionKey, state)
@@ -256,8 +229,18 @@ public class GatewayManagedSessionsToolset {
             state,
             resultSummary: resultSummary,
             error: error,
-            exitCode: exitCode
+            exitCode: exitCode,
+            outputPath: outputPath
         )
+    }
+
+    private func buildManagedSubagentPrompt(task: String, cwdHint: String, sessionKey: String, agentId: String): String {
+        let effectiveCwd = if (cwdHint.trimAscii().isEmpty()) {
+            CliConfig.cwd.toString()
+        } else {
+            cwdHint.trimAscii()
+        }
+        gatewaySubagentBuildBuiltinPrompt(task, effectiveCwd, sessionKey, agentId)
     }
 
     private func setManagedFuture(sessionKey: String, future: Future<Unit>): Unit {
@@ -649,7 +632,8 @@ public class GatewayManagedSessionsToolset {
         if (!this.tryQueueManagedRun(sessionKey, normalized)) {
             return false
         }
-        let spec = this.internalSubagentCommandSpec(sessionKey, normalized, task, cwdHint)
+        let prompt = this.buildManagedSubagentPrompt(task, cwdHint, sessionKey, normalized)
+        let spec = this.internalSubagentCommandSpec(sessionKey, normalized, prompt, cwdHint)
         let command = spec[0]
         let args = spec[1]
         let workDir = spec[2]
@@ -690,14 +674,15 @@ public class GatewayManagedSessionsToolset {
                 }
                 let content = (try { stdoutFuture.get() } catch (_: Exception) { "" }).trimAscii()
                 let stderr = (try { stderrFuture.get() } catch (_: Exception) { "" }).trimAscii()
+                let outputPath = st.transcriptPath(sessionKey).toString()
                 if (timedOut) {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent timed out: agentId=${normalized} timeoutSeconds=${runTimeoutSeconds}")
-                    this.setManagedState(sessionKey, "timed_out", error: "subagent timed out after ${runTimeoutSeconds}s", exitCode: -1)
+                    this.setManagedState(sessionKey, "timed_out", error: "subagent timed out after ${runTimeoutSeconds}s", exitCode: -1, outputPath: outputPath)
                     return
                 }
                 if (Thread.currentThread.hasPendingCancellation) {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent cancelled")
-                    this.setManagedState(sessionKey, "cancelled", error: "cancelled")
+                    this.setManagedState(sessionKey, "cancelled", error: "cancelled", outputPath: outputPath)
                     return
                 }
                 if (!stderr.isEmpty()) {
@@ -706,21 +691,22 @@ public class GatewayManagedSessionsToolset {
                 if (exitCode == 0 && !content.isEmpty()) {
                     st.appendTranscriptEntry(sessionKey, "assistant", content)
                     st.appendTranscriptEntry(sessionKey, "system", "subagent completed: agentId=${normalized}")
-                    this.setManagedState(sessionKey, "succeeded", resultSummary: content, exitCode: exitCode)
+                    this.setManagedState(sessionKey, "succeeded", resultSummary: content, exitCode: exitCode, outputPath: outputPath)
                 } else if (exitCode == 0) {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent completed with empty response")
-                    this.setManagedState(sessionKey, "succeeded", resultSummary: "subagent completed with empty response", exitCode: exitCode)
+                    this.setManagedState(sessionKey, "succeeded", resultSummary: "subagent completed with empty response", exitCode: exitCode, outputPath: outputPath)
                 } else {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent failed: agentId=${normalized} exitCode=${exitCode}")
-                    this.setManagedState(sessionKey, "failed", error: "subagent failed: agentId=${normalized} exitCode=${exitCode}", exitCode: exitCode)
+                    this.setManagedState(sessionKey, "failed", error: "subagent failed: agentId=${normalized} exitCode=${exitCode}", exitCode: exitCode, outputPath: outputPath)
                 }
             } catch (e: Exception) {
+                let outputPath = st.transcriptPath(sessionKey).toString()
                 if (Thread.currentThread.hasPendingCancellation) {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent cancelled")
-                    this.setManagedState(sessionKey, "cancelled", error: "cancelled")
+                    this.setManagedState(sessionKey, "cancelled", error: "cancelled", outputPath: outputPath)
                 } else {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent failed: ${e.message}")
-                    this.setManagedState(sessionKey, "failed", error: "subagent failed: ${e.message}", exitCode: 1)
+                    this.setManagedState(sessionKey, "failed", error: "subagent failed: ${e.message}", exitCode: 1, outputPath: outputPath)
                 }
             } finally {
                 this.clearManagedProcess(sessionKey)

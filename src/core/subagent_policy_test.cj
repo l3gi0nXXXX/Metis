@@ -167,10 +167,36 @@ public class SubagentPolicyTest {
         let sessionsRoot = this.tempSessionsRoot("write")
         let settings = GatewaySubagentPolicyUserSettings()
 
-        let decision = this.evaluate(settings, sessionsRoot, agentId: "patch-writer")
+        let decision = this.evaluate(settings, sessionsRoot, agentId: "editor")
 
         @Expect(decision.allowed, false)
-        @Expect(decision.reason, "write-capable agents disabled: patch-writer")
+        @Expect(decision.reason, "write-capable agents disabled: editor")
+    }
+
+    @TestCase
+    public func readonlyBuiltinAgentRunsUnderDefaultPolicy(): Unit {
+        let sessionsRoot = this.tempSessionsRoot("readonly")
+        let settings = GatewaySubagentPolicyUserSettings()
+
+        let decision = this.evaluate(settings, sessionsRoot, agentId: "reviewer")
+
+        @Expect(decision.allowed, true)
+        @Expect(decision.reason, "allowed")
+    }
+
+    @TestCase
+    public func writeBuiltinAgentRequiresWorktreeWhenWriteAgentsAllowed(): Unit {
+        let sessionsRoot = this.tempSessionsRoot("write-worktree")
+        var settings = GatewaySubagentPolicyUserSettings()
+        settings.allowWriteAgents = true
+
+        let denied = this.evaluate(settings, sessionsRoot, agentId: "test_generator", requestedIsolationMode: "shared")
+        @Expect(denied.allowed, false)
+        @Expect(denied.reason, "write-capable agents require worktree isolation")
+
+        let allowed = this.evaluate(settings, sessionsRoot, agentId: "test_generator", requestedIsolationMode: "worktree")
+        @Expect(allowed.allowed, true)
+        @Expect(allowed.reason, "allowed")
     }
 
     @TestCase

@@ -295,7 +295,8 @@ public func gatewaySubagentUpdateRunStatus(
     status: String,
     resultSummary!: String = "",
     error!: String = "",
-    exitCode!: Int64 = 0
+    exitCode!: Int64 = 0,
+    outputPath!: String = ""
 ): Bool {
     let resolved = match (gatewaySubagentResolveRunRecord(sessionsRoot, runIdOrSessionKey)) {
         case Some(record) => record
@@ -320,6 +321,9 @@ public func gatewaySubagentUpdateRunStatus(
     }
     if (!error.trimAscii().isEmpty()) {
         resolved.put("error", JsonString(error.trimAscii()))
+    }
+    if (!outputPath.trimAscii().isEmpty()) {
+        resolved.put("outputPath", JsonString(outputPath.trimAscii()))
     }
     resolved.put("exitCode", exitCode.toJsonValue())
     gatewaySubagentWriteRunRecord(sessionsRoot, resolved)

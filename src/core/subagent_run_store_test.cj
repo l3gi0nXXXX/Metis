@@ -63,11 +63,21 @@ public class SubagentRunStoreTest {
             case None => @Expect("missing", "record")
         }
 
-        @Expect(gatewaySubagentUpdateRunStatus(sessionsRoot, "gateway:spawn:subagent-reviewer:1", "completed", resultSummary: "done"), true)
+        @Expect(
+            gatewaySubagentUpdateRunStatus(
+                sessionsRoot,
+                "gateway:spawn:subagent-reviewer:1",
+                "completed",
+                resultSummary: "done",
+                outputPath: "/tmp/subagent-output.txt"
+            ),
+            true
+        )
         match (gatewaySubagentResolveRunRecord(sessionsRoot, runId)) {
             case Some(found) =>
                 @Expect(gatewaySubagentRunRecordString(found, "status"), "succeeded")
                 @Expect(gatewaySubagentRunRecordString(found, "resultSummary"), "done")
+                @Expect(gatewaySubagentRunRecordString(found, "outputPath"), "/tmp/subagent-output.txt")
                 @Expect(gatewaySubagentRunRecordInt(found, "completedAtMs") > 0, true)
             case None => @Expect("missing", "record")
         }
