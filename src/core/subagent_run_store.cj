@@ -47,7 +47,7 @@ private func subagentJsonInt(record: JsonObject, key: String): Int64 {
 
 private func normalizeSubagentStatus(status: String): String {
     match (status.trimAscii().toAsciiLower()) {
-        case "completed" | "complete" | "success" | "ok" => "succeeded"
+        case "completed" | "complete" | "success" | "ok" | "succeeded" => "succeeded"
         case "cancelling" | "canceling" | "cancelled" | "canceled" => "cancelled"
         case "timeout" | "timedout" | "timed_out" => "timed_out"
         case "running" => "running"

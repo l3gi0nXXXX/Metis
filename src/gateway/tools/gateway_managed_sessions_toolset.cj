@@ -5,10 +5,11 @@ import magic.prelude.*
 
 import metis.core.config.{CliConfig, CliSettingManager}
 import metis.core.memory.{MemorySessionTranscriptStore, memorySessionStoreForGatewayUser}
-import metis.core.{gatewayCurrentToolRuntimeContext, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentUpdateRunStatus, gatewaySubagentWriteRunRecord}
+import metis.core.{gatewayCurrentToolRuntimeContext, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunState, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentWriteRunRecord}
 import metis.io.PrintUtils
 
 import std.collection.{ArrayList, HashMap}
+import std.convert.Parsable
 import std.core.Duration
 import std.fs.{Directory, File, OpenMode, Path, exists}
 import std.io.StringReader
@@ -234,16 +235,29 @@ public class GatewayManagedSessionsToolset {
             true
         }
         if (queued) {
-            let _ = gatewaySubagentUpdateRunStatus(this.gwStore().sessionsRoot(), sessionKey, "queued")
+            let _ = gatewaySubagentMarkRunState(this.gwStore().sessionsRoot(), sessionKey, "queued")
         }
         queued
     }
 
-    private func setManagedState(sessionKey: String, state: String): Unit {
+    private func setManagedState(
+        sessionKey: String,
+        state: String,
+        resultSummary!: String = "",
+        error!: String = "",
+        exitCode!: Int64 = 0
+    ): Unit {
         synchronized(gatewayManagedSessionLock) {
             gatewayManagedStates.add(sessionKey, state)
         }
-        let _ = gatewaySubagentUpdateRunStatus(this.gwStore().sessionsRoot(), sessionKey, state)
+        let _ = gatewaySubagentMarkRunState(
+            this.gwStore().sessionsRoot(),
+            sessionKey,
+            state,
+            resultSummary: resultSummary,
+            error: error,
+            exitCode: exitCode
+        )
     }
 
     private func setManagedFuture(sessionKey: String, future: Future<Unit>): Unit {
@@ -496,10 +510,12 @@ public class GatewayManagedSessionsToolset {
             if (let Some(future) <- gatewayManagedFutures.get(sessionKey)) {
                 future.cancel()
                 gatewayManagedStates.add(sessionKey, "cancelling")
+                let _ = gatewaySubagentMarkRunCancelled(this.gwStore().sessionsRoot(), sessionKey, reason: "cancel requested")
                 return true
             }
             if (cancelled) {
                 gatewayManagedStates.add(sessionKey, "cancelling")
+                let _ = gatewaySubagentMarkRunCancelled(this.gwStore().sessionsRoot(), sessionKey, reason: "process terminated")
             }
             cancelled
         }
@@ -572,7 +588,14 @@ public class GatewayManagedSessionsToolset {
                     let reader = StringReader(process.stdErrPipe)
                     try { reader.readToEnd() } catch (_: Exception) { "" }
                 }
-                let exitCode = process.wait(timeout: timeout)
+                var exitCode: Int64 = 0
+                var timedOut = false
+                try {
+                    exitCode = process.wait(timeout: timeout)
+                } catch (_timeout: TimeoutException) {
+                    timedOut = true
+                    try { process.terminate(force: true) } catch (_terminateErr: Exception) { () }
+                }
                 let stdout = try { stdoutFuture.get() } catch (_: Exception) { "" }
                 let stderr = try { stderrFuture.get() } catch (_: Exception) { "" }
                 if (!stdout.trimAscii().isEmpty()) {
@@ -581,23 +604,26 @@ public class GatewayManagedSessionsToolset {
                 if (!stderr.trimAscii().isEmpty()) {
                     st.appendTranscriptEntry(sessionKey, "system", "acp stderr: ${stderr.trimAscii()}")
                 }
-                if (Thread.currentThread.hasPendingCancellation) {
+                if (timedOut) {
+                    st.appendTranscriptEntry(sessionKey, "system", "acp timed out: harness=${resolvedHarness} timeoutSeconds=${runTimeoutSeconds}")
+                    this.setManagedState(sessionKey, "timed_out", error: "subagent timed out after ${runTimeoutSeconds}s", exitCode: -1)
+                } else if (Thread.currentThread.hasPendingCancellation) {
                     st.appendTranscriptEntry(sessionKey, "system", "acp cancelled")
-                    this.setManagedState(sessionKey, "cancelled")
+                    this.setManagedState(sessionKey, "cancelled", error: "cancelled")
                 } else if (exitCode == 0) {
                     st.appendTranscriptEntry(sessionKey, "system", "acp completed: harness=${resolvedHarness} exitCode=${exitCode}")
-                    this.setManagedState(sessionKey, "completed")
+                    this.setManagedState(sessionKey, "succeeded", resultSummary: if (stdout.trimAscii().isEmpty()) { "acp completed" } else { stdout.trimAscii() }, exitCode: exitCode)
                 } else {
                     st.appendTranscriptEntry(sessionKey, "system", "acp failed: harness=${resolvedHarness} exitCode=${exitCode}")
-                    this.setManagedState(sessionKey, "failed")
+                    this.setManagedState(sessionKey, "failed", error: "acp failed: harness=${resolvedHarness} exitCode=${exitCode}", exitCode: exitCode)
                 }
             } catch (e: Exception) {
                 if (Thread.currentThread.hasPendingCancellation) {
                     st.appendTranscriptEntry(sessionKey, "system", "acp cancelled")
-                    this.setManagedState(sessionKey, "cancelled")
+                    this.setManagedState(sessionKey, "cancelled", error: "cancelled")
                 } else {
                     st.appendTranscriptEntry(sessionKey, "system", "acp failed: ${e.message}")
-                    this.setManagedState(sessionKey, "failed")
+                    this.setManagedState(sessionKey, "failed", error: "acp failed: ${e.message}", exitCode: 1)
                 }
             } finally {
                 this.clearManagedProcess(sessionKey)
@@ -609,7 +635,13 @@ public class GatewayManagedSessionsToolset {
         true
     }
 
-    private func launchManagedSubagentRun(sessionKey: String, agentId: String, task: String, cwdHint: String): Bool {
+    private func launchManagedSubagentRun(
+        sessionKey: String,
+        agentId: String,
+        task: String,
+        cwdHint: String,
+        runTimeoutSeconds!: Int64 = -1
+    ): Bool {
         let normalized = this.normalizeManagedAgentId(agentId)
         if (!this.supportsRealManagedSubagent(normalized)) {
             return false
@@ -635,6 +667,11 @@ public class GatewayManagedSessionsToolset {
                     workingDirectory: Some(workDir)
                 )
                 this.setManagedProcess(sessionKey, process)
+                let timeout: Option<Duration> = if (runTimeoutSeconds > 0) {
+                    Some(Duration.second * runTimeoutSeconds)
+                } else {
+                    None<Duration>
+                }
                 let stdoutFuture = spawn {
                     let reader = StringReader(process.stdOutPipe)
                     try { reader.readToEnd() } catch (_: Exception) { "" }
@@ -643,12 +680,24 @@ public class GatewayManagedSessionsToolset {
                     let reader = StringReader(process.stdErrPipe)
                     try { reader.readToEnd() } catch (_: Exception) { "" }
                 }
-                let exitCode = process.wait()
+                var exitCode: Int64 = 0
+                var timedOut = false
+                try {
+                    exitCode = process.wait(timeout: timeout)
+                } catch (_timeout: TimeoutException) {
+                    timedOut = true
+                    try { process.terminate(force: true) } catch (_terminateErr: Exception) { () }
+                }
                 let content = (try { stdoutFuture.get() } catch (_: Exception) { "" }).trimAscii()
                 let stderr = (try { stderrFuture.get() } catch (_: Exception) { "" }).trimAscii()
+                if (timedOut) {
+                    st.appendTranscriptEntry(sessionKey, "system", "subagent timed out: agentId=${normalized} timeoutSeconds=${runTimeoutSeconds}")
+                    this.setManagedState(sessionKey, "timed_out", error: "subagent timed out after ${runTimeoutSeconds}s", exitCode: -1)
+                    return
+                }
                 if (Thread.currentThread.hasPendingCancellation) {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent cancelled")
-                    this.setManagedState(sessionKey, "cancelled")
+                    this.setManagedState(sessionKey, "cancelled", error: "cancelled")
                     return
                 }
                 if (!stderr.isEmpty()) {
@@ -657,21 +706,21 @@ public class GatewayManagedSessionsToolset {
                 if (exitCode == 0 && !content.isEmpty()) {
                     st.appendTranscriptEntry(sessionKey, "assistant", content)
                     st.appendTranscriptEntry(sessionKey, "system", "subagent completed: agentId=${normalized}")
-                    this.setManagedState(sessionKey, "completed")
+                    this.setManagedState(sessionKey, "succeeded", resultSummary: content, exitCode: exitCode)
                 } else if (exitCode == 0) {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent completed with empty response")
-                    this.setManagedState(sessionKey, "completed")
+                    this.setManagedState(sessionKey, "succeeded", resultSummary: "subagent completed with empty response", exitCode: exitCode)
                 } else {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent failed: agentId=${normalized} exitCode=${exitCode}")
-                    this.setManagedState(sessionKey, "failed")
+                    this.setManagedState(sessionKey, "failed", error: "subagent failed: agentId=${normalized} exitCode=${exitCode}", exitCode: exitCode)
                 }
             } catch (e: Exception) {
                 if (Thread.currentThread.hasPendingCancellation) {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent cancelled")
-                    this.setManagedState(sessionKey, "cancelled")
+                    this.setManagedState(sessionKey, "cancelled", error: "cancelled")
                 } else {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent failed: ${e.message}")
-                    this.setManagedState(sessionKey, "failed")
+                    this.setManagedState(sessionKey, "failed", error: "subagent failed: ${e.message}", exitCode: 1)
                 }
             } finally {
                 this.clearManagedProcess(sessionKey)
@@ -706,7 +755,9 @@ public class GatewayManagedSessionsToolset {
             )
         }
         let agentId = this.managedAgentId(sessionKey)
-        this.launchManagedSubagentRun(sessionKey, agentId, task, cwdHint)
+        let timeoutText = this.managedTimeoutSeconds(sessionKey)
+        let runTimeoutSeconds = try { Int64.parse(timeoutText) } catch (_: Exception) { -1 }
+        this.launchManagedSubagentRun(sessionKey, agentId, task, cwdHint, runTimeoutSeconds: runTimeoutSeconds)
     }
 
     @tool[
@@ -961,7 +1012,7 @@ public class GatewayManagedSessionsToolset {
             result.put("compatNote", JsonString("streamTo is recorded, but this Gateway-managed toolset currently only streams output back into the managed session transcript."))
         }
         if (runtimeText == "subagent" && this.supportsRealManagedSubagent(agentIdText)) {
-            result.put("liveRunStarted", this.launchManagedSubagentRun(sessionKey, agentIdText, trimmedTask, cwdHint).toJsonValue())
+            result.put("liveRunStarted", this.launchManagedSubagentRun(sessionKey, agentIdText, trimmedTask, cwdHint, runTimeoutSeconds: effectiveTimeout).toJsonValue())
         } else if (runtimeText == "acp") {
             let effectiveHarness = match (agentIdText.trimAscii().toAsciiLower()) {
                 case "" | "codex" | "codex-cli" => "codex"

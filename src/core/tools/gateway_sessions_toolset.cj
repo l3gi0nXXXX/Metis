@@ -3,7 +3,7 @@ package metis.core.tools
 import magic.dsl.{tool, toolset}
 import magic.prelude.*
 
-import metis.core.{gatewayCurrentToolRuntimeContext, gatewayMessagePayloadPreview, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentUpdateRunStatus, gatewaySubagentWriteRunRecord, parseGatewayPollParts, renderGatewayAudioText, renderGatewayDeleteText, renderGatewayDocumentText, renderGatewayEditText, renderGatewayPhotoText, renderGatewayPollText, renderGatewayReactionText, renderGatewayTopicCreateText, renderGatewayTopicEditText, renderGatewayVideoNoteText, renderGatewayVideoText, renderGatewayVoiceText}
+import metis.core.{gatewayCurrentToolRuntimeContext, gatewayMessagePayloadPreview, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunFailed, gatewaySubagentMarkRunRunning, gatewaySubagentMarkRunState, gatewaySubagentMarkRunSucceeded, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentWriteRunRecord, parseGatewayPollParts, renderGatewayAudioText, renderGatewayDeleteText, renderGatewayDocumentText, renderGatewayEditText, renderGatewayPhotoText, renderGatewayPollText, renderGatewayReactionText, renderGatewayTopicCreateText, renderGatewayTopicEditText, renderGatewayVideoNoteText, renderGatewayVideoText, renderGatewayVoiceText}
 import metis.core.config.{CliConfig, CliSettingManager}
 import metis.core.config.GatewayUserSettings
 import metis.core.plan.Plan
@@ -15,6 +15,7 @@ import metis.io.PrintUtils
 import metis.utils.ShellUtils
 
 import std.collection.{ArrayList, HashMap}
+import std.convert.Parsable
 import std.core.Duration
 import std.fs.{exists, Path, Directory, File, OpenMode}
 import std.io.*
@@ -510,11 +511,24 @@ public class GatewaySessionsToolset {
         }
     }
 
-    private func setManagedSubagentState(sessionKey: String, state: String): Unit {
+    private func setManagedSubagentState(
+        sessionKey: String,
+        state: String,
+        resultSummary!: String = "",
+        error!: String = "",
+        exitCode!: Int64 = 0
+    ): Unit {
         synchronized(managedSubagentLock) {
             managedSubagentStates.add(sessionKey, state)
         }
-        let _ = gatewaySubagentUpdateRunStatus(this.gwStore().sessionsRoot(), sessionKey, state)
+        let _ = gatewaySubagentMarkRunState(
+            this.gwStore().sessionsRoot(),
+            sessionKey,
+            state,
+            resultSummary: resultSummary,
+            error: error,
+            exitCode: exitCode
+        )
     }
 
     private func tryQueueManagedSubagent(sessionKey: String, agentId: String): Bool {
@@ -529,7 +543,7 @@ public class GatewaySessionsToolset {
             true
         }
         if (queued) {
-            let _ = gatewaySubagentUpdateRunStatus(this.gwStore().sessionsRoot(), sessionKey, "queued")
+            let _ = gatewaySubagentMarkRunState(this.gwStore().sessionsRoot(), sessionKey, "queued")
         }
         queued
     }
@@ -640,10 +654,12 @@ public class GatewaySessionsToolset {
             if (let Some(future) <- managedSubagentFutures.get(sessionKey)) {
                 future.cancel()
                 managedSubagentStates.add(sessionKey, "cancelling")
+                let _ = gatewaySubagentMarkRunCancelled(this.gwStore().sessionsRoot(), sessionKey, reason: "cancel requested")
                 return true
             }
             if (cancelled) {
                 managedSubagentStates.add(sessionKey, "cancelling")
+                let _ = gatewaySubagentMarkRunCancelled(this.gwStore().sessionsRoot(), sessionKey, reason: "process terminated")
             }
             return cancelled
         }
@@ -897,6 +913,7 @@ public class GatewaySessionsToolset {
             "acp dispatch accepted: harness=${resolvedHarness}, mode=${effectiveMode}, sandbox=${effectiveSandbox}, sessionPersistence=${effectiveSessionPersistence}"
         )
         let future = spawn {
+            let _ = gatewaySubagentMarkRunRunning(st.sessionsRoot(), sessionKey)
             this.setManagedSubagentState(sessionKey, "running")
             st.appendTranscriptEntry(
                 sessionKey,
@@ -920,7 +937,14 @@ public class GatewaySessionsToolset {
                     let reader = StringReader(process.stdErrPipe)
                     try { reader.readToEnd() } catch (_: Exception) { "" }
                 }
-                let exitCode = process.wait(timeout: timeout)
+                var exitCode: Int64 = 0
+                var timedOut = false
+                try {
+                    exitCode = process.wait(timeout: timeout)
+                } catch (_timeout: TimeoutException) {
+                    timedOut = true
+                    try { process.terminate(force: true) } catch (_terminateErr: Exception) { () }
+                }
                 let stdout = try { stdoutFuture.get() } catch (_: Exception) { "" }
                 let stderr = try { stderrFuture.get() } catch (_: Exception) { "" }
                 if (!stdout.trimAscii().isEmpty()) {
@@ -931,23 +955,26 @@ public class GatewaySessionsToolset {
                     st.appendTranscriptEntry(sessionKey, "system", "acp stderr: ${stderr.trimAscii()}")
                     this.postManagedOutput(streamTo, sessionKey, "system", "acp stderr: ${stderr.trimAscii()}")
                 }
-                if (Thread.currentThread.hasPendingCancellation) {
+                if (timedOut) {
+                    st.appendTranscriptEntry(sessionKey, "system", "acp timed out: harness=${resolvedHarness} timeoutSeconds=${runTimeoutSeconds}")
+                    this.setManagedSubagentState(sessionKey, "timed_out", error: "subagent timed out after ${runTimeoutSeconds}s", exitCode: -1)
+                } else if (Thread.currentThread.hasPendingCancellation) {
                     st.appendTranscriptEntry(sessionKey, "system", "acp cancelled")
-                    this.setManagedSubagentState(sessionKey, "cancelled")
+                    this.setManagedSubagentState(sessionKey, "cancelled", error: "cancelled")
                 } else if (exitCode == 0) {
                     st.appendTranscriptEntry(sessionKey, "system", "acp completed: harness=${resolvedHarness} exitCode=${exitCode}")
-                    this.setManagedSubagentState(sessionKey, "completed")
+                    this.setManagedSubagentState(sessionKey, "succeeded", resultSummary: if (stdout.trimAscii().isEmpty()) { "acp completed" } else { stdout.trimAscii() }, exitCode: exitCode)
                 } else {
                     st.appendTranscriptEntry(sessionKey, "system", "acp failed: harness=${resolvedHarness} exitCode=${exitCode}")
-                    this.setManagedSubagentState(sessionKey, "failed")
+                    this.setManagedSubagentState(sessionKey, "failed", error: "acp failed: harness=${resolvedHarness} exitCode=${exitCode}", exitCode: exitCode)
                 }
             } catch (e: Exception) {
                 if (Thread.currentThread.hasPendingCancellation) {
                     st.appendTranscriptEntry(sessionKey, "system", "acp cancelled")
-                    this.setManagedSubagentState(sessionKey, "cancelled")
+                    this.setManagedSubagentState(sessionKey, "cancelled", error: "cancelled")
                 } else {
                     st.appendTranscriptEntry(sessionKey, "system", "acp failed: ${e.message}")
-                    this.setManagedSubagentState(sessionKey, "failed")
+                    this.setManagedSubagentState(sessionKey, "failed", error: "acp failed: ${e.message}", exitCode: 1)
                 }
             } finally {
                 this.clearManagedSubagentProcess(sessionKey)
@@ -959,7 +986,13 @@ public class GatewaySessionsToolset {
         return true
     }
 
-    private func launchManagedSubagentRun(sessionKey: String, agentId: String, task: String, cwdHint: String): Bool {
+    private func launchManagedSubagentRun(
+        sessionKey: String,
+        agentId: String,
+        task: String,
+        cwdHint: String,
+        runTimeoutSeconds!: Int64 = -1
+    ): Bool {
         let normalized = this.normalizeManagedAgentId(agentId)
         if (!this.supportsRealManagedSubagent(normalized)) {
             return false
@@ -988,6 +1021,11 @@ public class GatewaySessionsToolset {
                     workingDirectory: Some(workDir)
                 )
                 this.setManagedSubagentProcess(sessionKey, process)
+                let timeout: Option<Duration> = if (runTimeoutSeconds > 0) {
+                    Some(Duration.second * runTimeoutSeconds)
+                } else {
+                    None<Duration>
+                }
                 let stdoutFuture = spawn {
                     let reader = StringReader(process.stdOutPipe)
                     try { reader.readToEnd() } catch (_: Exception) { "" }
@@ -996,12 +1034,24 @@ public class GatewaySessionsToolset {
                     let reader = StringReader(process.stdErrPipe)
                     try { reader.readToEnd() } catch (_: Exception) { "" }
                 }
-                let exitCode = process.wait()
+                var exitCode: Int64 = 0
+                var timedOut = false
+                try {
+                    exitCode = process.wait(timeout: timeout)
+                } catch (_timeout: TimeoutException) {
+                    timedOut = true
+                    try { process.terminate(force: true) } catch (_terminateErr: Exception) { () }
+                }
                 let content = (try { stdoutFuture.get() } catch (_: Exception) { "" }).trimAscii()
                 let stderr = (try { stderrFuture.get() } catch (_: Exception) { "" }).trimAscii()
+                if (timedOut) {
+                    st.appendTranscriptEntry(sessionKey, "system", "subagent timed out: agentId=${normalized} timeoutSeconds=${runTimeoutSeconds}")
+                    this.setManagedSubagentState(sessionKey, "timed_out", error: "subagent timed out after ${runTimeoutSeconds}s", exitCode: -1)
+                    return
+                }
                 if (Thread.currentThread.hasPendingCancellation) {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent cancelled")
-                    this.setManagedSubagentState(sessionKey, "cancelled")
+                    this.setManagedSubagentState(sessionKey, "cancelled", error: "cancelled")
                     return
                 }
                 if (!stderr.isEmpty()) {
@@ -1012,21 +1062,21 @@ public class GatewaySessionsToolset {
                     st.appendTranscriptEntry(sessionKey, "assistant", content)
                     this.postManagedOutput(this.managedSpawnStreamTo(sessionKey), sessionKey, "assistant", content)
                     st.appendTranscriptEntry(sessionKey, "system", "subagent completed: agentId=${normalized}")
-                    this.setManagedSubagentState(sessionKey, "completed")
+                    this.setManagedSubagentState(sessionKey, "succeeded", resultSummary: content, exitCode: exitCode)
                 } else if (exitCode == 0) {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent completed with empty response")
-                    this.setManagedSubagentState(sessionKey, "completed")
+                    this.setManagedSubagentState(sessionKey, "succeeded", resultSummary: "subagent completed with empty response", exitCode: exitCode)
                 } else {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent failed: agentId=${normalized} exitCode=${exitCode}")
-                    this.setManagedSubagentState(sessionKey, "failed")
+                    this.setManagedSubagentState(sessionKey, "failed", error: "subagent failed: agentId=${normalized} exitCode=${exitCode}", exitCode: exitCode)
                 }
             } catch (e: Exception) {
                 if (Thread.currentThread.hasPendingCancellation) {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent cancelled")
-                    this.setManagedSubagentState(sessionKey, "cancelled")
+                    this.setManagedSubagentState(sessionKey, "cancelled", error: "cancelled")
                 } else {
                     st.appendTranscriptEntry(sessionKey, "system", "subagent failed: ${e.message}")
-                    this.setManagedSubagentState(sessionKey, "failed")
+                    this.setManagedSubagentState(sessionKey, "failed", error: "subagent failed: ${e.message}", exitCode: 1)
                 }
             } finally {
                 this.clearManagedSubagentProcess(sessionKey)
@@ -1062,7 +1112,9 @@ public class GatewaySessionsToolset {
             )
         }
         let agentId = this.managedSubagentAgentId(sessionKey)
-        return this.launchManagedSubagentRun(sessionKey, agentId, task, cwdHint)
+        let timeoutText = this.managedSpawnTimeoutSeconds(sessionKey)
+        let runTimeoutSeconds = try { Int64.parse(timeoutText) } catch (_: Exception) { -1 }
+        return this.launchManagedSubagentRun(sessionKey, agentId, task, cwdHint, runTimeoutSeconds: runTimeoutSeconds)
     }
 
     @tool[
@@ -1657,7 +1709,7 @@ public class GatewaySessionsToolset {
         result.put("runId", JsonString(runId))
         result.put("policy", gatewaySubagentPolicyDecisionToJson(policyDecision))
         if (runtimeText == "subagent" && this.supportsRealManagedSubagent(agentIdText)) {
-            let launched = this.launchManagedSubagentRun(sessionKey, agentIdText, trimmedTask, cwdHint)
+            let launched = this.launchManagedSubagentRun(sessionKey, agentIdText, trimmedTask, cwdHint, runTimeoutSeconds: effectiveTimeout)
             result.put("liveRunStarted", launched.toJsonValue())
             if (!launched) {
                 result.put("compatNote", JsonString("The subagent runtime rejected the launch because this session already has a queued or running turn."))
