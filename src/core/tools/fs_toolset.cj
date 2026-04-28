@@ -9,6 +9,7 @@ import metis.io.{InputUtils, PrintUtils, Confirmation}
 import metis.core.tools.fs_utils.*
 import metis.core.tools.code_compression.*
 import metis.core.config.CliConfig
+import metis.core.{gatewaySubagentAfterCurrentFileWrite, gatewaySubagentBeforeCurrentFileWrite, gatewaySubagentCancelCurrentFileWrite, gatewaySubagentRecordCurrentFileRead}
 
 import std.collection.{map, collectArray, fold}
 import std.fs.{Path, File, Directory, remove, exists, FSException}
@@ -75,6 +76,7 @@ protected func fileRead(filePath: String, startLine: Option<Int64>, endLine: Opt
     let message = "${filePath} (${start}-${end})"
     PrintUtils.printTool("Read File", shortMessage: message)
     var content = catRange(filePath, startLine ?? 1, endLine: endLine ?? Int64.Max)
+    let _ = gatewaySubagentRecordCurrentFileRead(filePath)
 
     if (content.size > getCompressionThreshold(false)) {
         content = compressCode(filePath, startLine: startLine ?? 1, endLine: endLine ?? Int64.Max, originalContent: content)
@@ -208,6 +210,9 @@ protected func fileBatchRead(files: Array<ReadFileParam>): String {
     }
 
     let results = batchRead(files)
+    for (param in files) {
+        let _ = gatewaySubagentRecordCurrentFileRead(param.filePath)
+    }
 
     //code compression
     var totalChars = results |> fold(0) { sum: Int, r: ?String => sum + (r?.size ?? 0) }
@@ -257,7 +262,12 @@ protected func fileCreate(filePath: String, content: String): String {
         return "File path must be absolute"
     }
 
+    let coordination = gatewaySubagentBeforeCurrentFileWrite(filePath, operation: "create")
+    if (!coordination[0]) {
+        return "[subagent-file-coordination:block] ${coordination[1]}"
+    }
     if (InputUtils.confirm("Create File", filePath, content) == Confirmation.Deny) {
+        let _ = gatewaySubagentCancelCurrentFileWrite(filePath)
         return "User denied the operation"
     }
 
@@ -265,8 +275,11 @@ protected func fileCreate(filePath: String, content: String): String {
         let file = File(filePath, Write)
         file.write(content.toArray())
         file.close()
-        return "File ${filePath} created successfully!"
+        let _ = gatewaySubagentAfterCurrentFileWrite(filePath, operation: "create", warning: coordination[1])
+        let prefix = if (coordination[1].isEmpty()) { "" } else { "[subagent-file-coordination:warning] ${coordination[1]}\n" }
+        return "${prefix}File ${filePath} created successfully!"
     } catch (e: Exception) {
+        let _ = gatewaySubagentCancelCurrentFileWrite(filePath)
         return "Failed to create file: ${e}"
     }
 }
@@ -280,10 +293,22 @@ protected func fileWrite(filePath: String, content: String): String {
         return "File path must be absolute"
     }
 
+    let coordination = gatewaySubagentBeforeCurrentFileWrite(filePath, operation: "write")
+    if (!coordination[0]) {
+        return "[subagent-file-coordination:block] ${coordination[1]}"
+    }
     if (InputUtils.confirm("Write File", filePath, content) == Confirmation.Deny) {
+        let _ = gatewaySubagentCancelCurrentFileWrite(filePath)
         return "User denied the operation"
     }
-    return writeFileBasic(filePath, content)
+    let result = writeFileBasic(filePath, content)
+    if (result.contains("written successfully")) {
+        let _ = gatewaySubagentAfterCurrentFileWrite(filePath, operation: "write", warning: coordination[1])
+    } else {
+        let _ = gatewaySubagentCancelCurrentFileWrite(filePath)
+    }
+    let prefix = if (coordination[1].isEmpty()) { "" } else { "[subagent-file-coordination:warning] ${coordination[1]}\n" }
+    return "${prefix}${result}"
 }
 
 @tool[
@@ -360,9 +385,20 @@ public class FSToolset {
             if (InputUtils.confirm(toolName, filePath, message) == Confirmation.Deny) {
                 return "User denied the operation"
             }
+            let coordination = gatewaySubagentBeforeCurrentFileWrite(filePath, operation: "edit")
+            if (!coordination[0]) {
+                return "[subagent-file-coordination:block] ${coordination[1]}"
+            }
             // Write the modified content to the file
-            File.writeTo(filePath, newFileContent.toArray())
-            return "File ${filePath} content modified successfully."
+            try {
+                File.writeTo(filePath, newFileContent.toArray())
+                let _ = gatewaySubagentAfterCurrentFileWrite(filePath, operation: "edit", warning: coordination[1])
+                let prefix = if (coordination[1].isEmpty()) { "" } else { "[subagent-file-coordination:warning] ${coordination[1]}\n" }
+                return "${prefix}File ${filePath} content modified successfully."
+            } catch (e: Exception) {
+                let _ = gatewaySubagentCancelCurrentFileWrite(filePath)
+                throw e
+            }
         } catch (ex: FSException) {
             return "File path error or file is not readable/writable"
         } catch (ex: IllegalArgumentException) {

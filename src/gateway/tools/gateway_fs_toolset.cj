@@ -6,6 +6,7 @@ import magic.prelude.*
 import metis.core.tools.fs_utils.{catRange, grep, glob, ignored}
 import metis.io.PrintUtils
 import metis.core.config.CliConfig
+import metis.core.gatewaySubagentRecordCurrentFileRead
 import metis.utils.{InfoUtils, ShellUtils}
 
 import std.collection.{ArrayList, map, collectArray}
@@ -64,6 +65,7 @@ public class GatewayFSToolset {
         let end = endLine.map { n => n.toString() } ?? "EOF"
         PrintUtils.printTool("Read File", shortMessage: "${filePath} (${start}-${end})")
         let content = catRange(filePath, start, endLine: endLine ?? Int64.Max)
+        let _ = gatewaySubagentRecordCurrentFileRead(filePath)
         PrintUtils.printToolResult(content)
         let startInfo = startLine.map { n => " start=${n}" } ?? ""
         let endInfo = endLine.map { n => " end=${n}" } ?? ""
