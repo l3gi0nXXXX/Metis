@@ -5,7 +5,7 @@ import magic.prelude.*
 
 import metis.core.config.{CliConfig, CliSettingManager}
 import metis.core.memory.{MemorySessionTranscriptStore, memorySessionStoreForGatewayUser}
-import metis.core.{GatewaySubagentAgentSpec, gatewayCurrentToolRuntimeContext, gatewaySubagentBuildBuiltinPrompt, gatewaySubagentBuildContextPrompt, gatewaySubagentBuildCustomPrompt, gatewaySubagentControllerCanAccessRun, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentIsBuiltinAgent, gatewaySubagentListRunRecords, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunState, gatewaySubagentNormalizeBuiltinAgentId, gatewaySubagentNormalizeCleanupMode, gatewaySubagentNormalizeContextMode, gatewaySubagentNormalizeIsolationMode, gatewaySubagentNormalizeSandboxMode, gatewaySubagentNoticeShouldDeliver, gatewaySubagentNoticeTargetSession, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentRenderNotice, gatewaySubagentResolveAgent, gatewaySubagentResolveRunRecord, gatewaySubagentRunMatchesControlFilter, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentRunStatusIsTerminal, gatewaySubagentUpdateNoticeStatus, gatewaySubagentWriteRunRecord}
+import metis.core.{GatewaySubagentAgentSpec, gatewayCurrentToolRuntimeContext, gatewaySubagentBuildBuiltinPrompt, gatewaySubagentBuildContextPrompt, gatewaySubagentBuildCustomPrompt, gatewaySubagentControllerCanAccessRun, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentIsBuiltinAgent, gatewaySubagentListRunRecords, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunState, gatewaySubagentMarkRunTimedOut, gatewaySubagentNormalizeBuiltinAgentId, gatewaySubagentNormalizeCleanupMode, gatewaySubagentNormalizeContextMode, gatewaySubagentNormalizeIsolationMode, gatewaySubagentNormalizeSandboxMode, gatewaySubagentNoticeShouldDeliver, gatewaySubagentNoticeTargetSession, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentRenderNotice, gatewaySubagentResolveAgent, gatewaySubagentResolveRunRecord, gatewaySubagentRunMatchesControlFilter, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentRunStatusIsTerminal, gatewaySubagentUpdateNoticeStatus, gatewaySubagentWriteRunRecord}
 import metis.io.PrintUtils
 
 import std.collection.{ArrayList, HashMap}
@@ -16,7 +16,7 @@ import std.io.StringReader
 import std.process.*
 import std.sync.Mutex
 
-import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString, JsonValue}
 
 private let gatewayManagedSessionLock = Mutex()
 private var gatewayManagedAgentIds = HashMap<String, String>()
@@ -1162,6 +1162,263 @@ public class GatewayManagedSessionsToolset {
             sandbox,
             streamTo
         )
+    }
+
+    @tool[
+        description: "Gateway main-runtime sessions_batch_delegate tool. Delegates several tasks through sessions_spawn, returns one structured summary for the current turn, and keeps each accepted child as an independently trackable subagent run.",
+        parameters: {
+            tasks: "Task list to delegate. Empty task entries are reported as per-task failures and do not stop other tasks.",
+            agentId: "Optional target agent identifier hint passed to each child spawn.",
+            label: "Optional label prefix. Each child receives a stable numbered label derived from it.",
+            maxWorkers: "Optional maximum number of child runs accepted from this batch. Extra valid tasks are returned as deferred.",
+            perTaskTimeout: "Optional timeout in seconds applied to each child run. A value of 0 means immediate timeout for the child record.",
+            runtime: "Optional runtime hint: subagent or acp. Defaults to subagent.",
+            cwd: "Optional working directory hint passed to each child spawn.",
+            contextMode: "Optional context inheritance mode for runtime=subagent: fresh, with_context, fork, or thread.",
+            isolation: "Optional workspace isolation mode for runtime=subagent: shared, cwd, or worktree.",
+            cleanup: "Optional cleanup hint: delete or keep.",
+            sandbox: "Optional sandbox hint: inherit or require."
+        }
+    ]
+    public func sessions_batch_delegate(
+        tasks: Array<String>,
+        agentId: Option<String>,
+        label: Option<String>,
+        maxWorkers: Option<Int64>,
+        perTaskTimeout: Option<Int64>,
+        runtime: Option<String>,
+        cwd: Option<String>,
+        contextMode: Option<String>,
+        isolation: Option<String>,
+        cleanup: Option<String>,
+        sandbox: Option<String>
+    ): String {
+        this.sessionsBatchDelegateImpl(
+            tasks,
+            agentId,
+            label,
+            maxWorkers,
+            perTaskTimeout,
+            runtime,
+            cwd,
+            contextMode,
+            isolation,
+            cleanup,
+            sandbox
+        )
+    }
+
+    public func sessionsBatchDelegateForTest(
+        tasks: Array<String>,
+        agentId: Option<String>,
+        label: Option<String>,
+        maxWorkers: Option<Int64>,
+        perTaskTimeout: Option<Int64>
+    ): String {
+        this.sessionsBatchDelegateImpl(
+            tasks,
+            agentId,
+            label,
+            maxWorkers,
+            perTaskTimeout,
+            Some<String>("subagent"),
+            None<String>,
+            None<String>,
+            None<String>,
+            None<String>,
+            None<String>
+        )
+    }
+
+    private func batchJsonString(obj: JsonObject, key: String): String {
+        match (obj.get(key)) {
+            case Some(v) => try { v.asString().getValue() } catch (_: Exception) { "" }
+            case None => ""
+        }
+    }
+
+    private func batchJsonBool(obj: JsonObject, key: String): Bool {
+        match (obj.get(key)) {
+            case Some(v) => try { v.asBool().getValue() } catch (_: Exception) { false }
+            case None => false
+        }
+    }
+
+    private func normalizeBatchWorkerLimit(maxWorkers: Option<Int64>, total: Int64): Int64 {
+        if (total <= 0) {
+            return 0
+        }
+        match (maxWorkers) {
+            case Some(v) =>
+                if (v <= 0) {
+                    return 1
+                }
+                if (v < total) {
+                    return v
+                }
+                total
+            case None => total
+        }
+    }
+
+    private func batchChildLabel(label: Option<String>, index: Int64): Option<String> {
+        let prefix = match (label) {
+            case Some(v) =>
+                let t = v.trimAscii()
+                if (t.isEmpty()) { "batch" } else { t }
+            case None => "batch"
+        }
+        Some<String>("${prefix}-${index}")
+    }
+
+    private func batchErrorRow(index: Int64, task: String, status: String, error: String): JsonObject {
+        let row = JsonObject()
+        row.put("index", index.toJsonValue())
+        row.put("task", JsonString(task))
+        row.put("ok", JsonBool(false))
+        row.put("status", JsonString(status))
+        row.put("error", JsonString(error))
+        row
+    }
+
+    private func sessionsBatchDelegateImpl(
+        tasks: Array<String>,
+        agentId: Option<String>,
+        label: Option<String>,
+        maxWorkers: Option<Int64>,
+        perTaskTimeout: Option<Int64>,
+        runtime: Option<String>,
+        cwd: Option<String>,
+        contextMode: Option<String>,
+        isolation: Option<String>,
+        cleanup: Option<String>,
+        sandbox: Option<String>
+    ): String {
+        PrintUtils.printTool("sessions_batch_delegate", shortMessage: "gateway-managed")
+        let total = Int64(tasks.size)
+        if (total == 0) {
+            let err = JsonObject()
+            err.put("ok", JsonBool(false))
+            err.put("status", JsonString("error"))
+            err.put("error", JsonString("tasks must be non-empty"))
+            err.put("total", 0.toJsonValue())
+            let out = err.toJsonString()
+            PrintUtils.printToolResult(out)
+            return out
+        }
+
+        let workerLimit = this.normalizeBatchWorkerLimit(maxWorkers, total)
+        let rows = JsonArray([])
+        let runIds = JsonArray([])
+        var acceptedCount: Int64 = 0
+        var failedCount: Int64 = 0
+        var timedOutCount: Int64 = 0
+        var deferredCount: Int64 = 0
+        var launchedCount: Int64 = 0
+
+        for (i in 0..tasks.size) {
+            let index = Int64(i) + 1
+            let trimmedTask = tasks[i].trimAscii()
+            if (trimmedTask.isEmpty()) {
+                failedCount += 1
+                rows.add(this.batchErrorRow(index, trimmedTask, "error", "task must be non-empty"))
+                continue
+            }
+            if (launchedCount >= workerLimit) {
+                deferredCount += 1
+                rows.add(this.batchErrorRow(index, trimmedTask, "deferred", "maxWorkers limit reached"))
+                continue
+            }
+            launchedCount += 1
+
+            let raw = this.sessionsSpawnImpl(
+                trimmedTask,
+                this.batchChildLabel(label, index),
+                runtime,
+                agentId,
+                None<String>,
+                None<String>,
+                None<String>,
+                cwd,
+                perTaskTimeout,
+                None<Int64>,
+                contextMode,
+                isolation,
+                None<Bool>,
+                None<String>,
+                cleanup,
+                sandbox,
+                None<String>
+            )
+            let child = try {
+                JsonValue.fromStr(raw).asObject()
+            } catch (_: Exception) {
+                let obj = JsonObject()
+                obj.put("ok", JsonBool(false))
+                obj.put("status", JsonString("error"))
+                obj.put("error", JsonString("child spawn returned invalid json"))
+                obj
+            }
+            let row = JsonObject()
+            row.put("index", index.toJsonValue())
+            row.put("task", JsonString(trimmedTask))
+            row.put("ok", this.batchJsonBool(child, "ok").toJsonValue())
+            row.put("status", JsonString(this.batchJsonString(child, "status")))
+            row.put("runId", JsonString(this.batchJsonString(child, "runId")))
+            row.put("sessionKey", JsonString(this.batchJsonString(child, "sessionKey")))
+            row.put("runtime", JsonString(this.batchJsonString(child, "runtime")))
+            row.put("agentId", JsonString(this.batchJsonString(child, "agentId")))
+            row.put("liveRunStarted", this.batchJsonBool(child, "liveRunStarted").toJsonValue())
+            let childError = this.batchJsonString(child, "error")
+            if (!childError.isEmpty()) {
+                row.put("error", JsonString(childError))
+            }
+            let childRunId = this.batchJsonString(child, "runId")
+            if (!childRunId.isEmpty()) {
+                runIds.add(JsonString(childRunId))
+            }
+
+            let immediateTimeout = match (perTaskTimeout) {
+                case Some(v) => v == 0
+                case None => false
+            }
+            if (immediateTimeout && !childRunId.isEmpty()) {
+                let _ = gatewaySubagentMarkRunTimedOut(this.gwStore().sessionsRoot(), childRunId, 0)
+                row.put("ok", JsonBool(false))
+                row.put("status", JsonString("timed_out"))
+                row.put("error", JsonString("subagent timed out"))
+                timedOutCount += 1
+            } else if (this.batchJsonBool(child, "ok")) {
+                acceptedCount += 1
+            } else {
+                failedCount += 1
+            }
+            rows.add(row)
+        }
+
+        let status = if (acceptedCount > 0 && failedCount == 0 && timedOutCount == 0 && deferredCount == 0) {
+            "accepted"
+        } else if (acceptedCount > 0 || timedOutCount > 0 || deferredCount > 0) {
+            "partial"
+        } else {
+            "error"
+        }
+        let summaryText = "accepted=${acceptedCount} failed=${failedCount} timedOut=${timedOutCount} deferred=${deferredCount}"
+        let result = JsonObject()
+        result.put("ok", (acceptedCount > 0 || timedOutCount > 0 || deferredCount > 0).toJsonValue())
+        result.put("status", JsonString(status))
+        result.put("summary", JsonString(summaryText))
+        result.put("total", total.toJsonValue())
+        result.put("maxWorkers", workerLimit.toJsonValue())
+        result.put("acceptedCount", acceptedCount.toJsonValue())
+        result.put("failedCount", failedCount.toJsonValue())
+        result.put("timedOutCount", timedOutCount.toJsonValue())
+        result.put("deferredCount", deferredCount.toJsonValue())
+        result.put("runIds", runIds)
+        result.put("children", rows)
+        let out = result.toJsonString()
+        PrintUtils.printToolResult(out)
+        out
     }
 
     private func sessionsSpawnImpl(

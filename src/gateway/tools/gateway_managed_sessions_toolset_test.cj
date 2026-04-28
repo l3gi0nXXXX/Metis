@@ -59,6 +59,13 @@ private func managedSubagentsString(obj: JsonObject, key: String): String {
     }
 }
 
+private func managedSubagentsInt(obj: JsonObject, key: String): Int64 {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asInt().getValue() } catch (_: Exception) { 0 }
+        case None => 0
+    }
+}
+
 private func createManagedSubagentsCustomAgentFixture(id: String, background: Bool): Path {
     let agentDir = CliConfig.dotDir.join("agents").join(id)
     Directory.create(agentDir, recursive: true)
@@ -477,6 +484,133 @@ public class GatewayManagedSessionsToolsetTest {
             @Expect(managedSubagentsString(failed, "status"), "error")
             @Expect(managedSubagentsString(failed, "action"), "steer")
             @Expect(managedSubagentsString(failed, "usage").contains("/subagents spawn"), true)
+        }
+    }
+
+    @TestCase
+    public func sessionsBatchDelegateRecordsMultipleChildRuns(): Unit {
+        withManagedSessionsToolsetTestHome("/tmp/metis-managed-subagents-batch-success") {
+            createManagedSubagentsCustomAgentFixture("phase13-batch", false)
+            var settings = CliSettingManager.readGatewaySettings()
+            settings.subagents.allowCustomAgents = true
+            let _ = MetisConfigManager.setGatewaySettings(settings)
+            CliSettingManager.invalidate()
+            let toolset = GatewayManagedSessionsToolset()
+
+            gatewayWithToolRuntimeContext(GatewayToolRuntimeContext("cli", sessionKey: "cli:phase13")) {
+                let batch = managedSubagentsJson(toolset.sessionsBatchDelegateForTest(
+                    ["inspect first", "inspect second"],
+                    Some("phase13-batch"),
+                    Some("phase13"),
+                    Some(2),
+                    None<Int64>
+                ))
+                @Expect(managedSubagentsString(batch, "status"), "accepted")
+                @Expect(managedSubagentsInt(batch, "total"), 2)
+                @Expect(managedSubagentsInt(batch, "acceptedCount"), 2)
+                @Expect(managedSubagentsString(batch, "summary"), "accepted=2 failed=0 timedOut=0 deferred=0")
+                let children = batch.get("children").getOrThrow().asArray()
+                @Expect(children.size(), 2)
+                let first = children[0].asObject()
+                let second = children[1].asObject()
+                @Expect(managedSubagentsString(first, "status"), "accepted")
+                @Expect(managedSubagentsString(second, "status"), "accepted")
+                @Expect(managedSubagentsString(first, "runId").isEmpty(), false)
+                @Expect(managedSubagentsString(second, "runId").isEmpty(), false)
+                let status = managedSubagentsJson(toolset.subagentsForTest(managedSubagentsSome("status"), managedSubagentsSome(managedSubagentsString(first, "runId")), None<String>, None<Int64>))
+                @Expect(managedSubagentsString(status, "status"), "ok")
+            }
+        }
+    }
+
+    @TestCase
+    public func sessionsBatchDelegateKeepsValidTasksWhenOneFailsValidation(): Unit {
+        withManagedSessionsToolsetTestHome("/tmp/metis-managed-subagents-batch-partial") {
+            createManagedSubagentsCustomAgentFixture("phase13-partial", false)
+            var settings = CliSettingManager.readGatewaySettings()
+            settings.subagents.allowCustomAgents = true
+            let _ = MetisConfigManager.setGatewaySettings(settings)
+            CliSettingManager.invalidate()
+            let toolset = GatewayManagedSessionsToolset()
+
+            gatewayWithToolRuntimeContext(GatewayToolRuntimeContext("cli", sessionKey: "cli:phase13-partial")) {
+                let batch = managedSubagentsJson(toolset.sessionsBatchDelegateForTest(
+                    ["inspect valid", "   "],
+                    Some("phase13-partial"),
+                    Some("phase13-partial"),
+                    Some(2),
+                    None<Int64>
+                ))
+                @Expect(managedSubagentsString(batch, "status"), "partial")
+                @Expect(managedSubagentsInt(batch, "acceptedCount"), 1)
+                @Expect(managedSubagentsInt(batch, "failedCount"), 1)
+                @Expect(managedSubagentsString(batch, "summary"), "accepted=1 failed=1 timedOut=0 deferred=0")
+                let children = batch.get("children").getOrThrow().asArray()
+                @Expect(children.size(), 2)
+                @Expect(managedSubagentsString(children[0].asObject(), "status"), "accepted")
+                @Expect(managedSubagentsString(children[1].asObject(), "status"), "error")
+            }
+        }
+    }
+
+    @TestCase
+    public func sessionsBatchDelegateCanMarkImmediatePerTaskTimeout(): Unit {
+        withManagedSessionsToolsetTestHome("/tmp/metis-managed-subagents-batch-timeout") {
+            createManagedSubagentsCustomAgentFixture("phase13-timeout", false)
+            var settings = CliSettingManager.readGatewaySettings()
+            settings.subagents.allowCustomAgents = true
+            let _ = MetisConfigManager.setGatewaySettings(settings)
+            CliSettingManager.invalidate()
+            let toolset = GatewayManagedSessionsToolset()
+
+            gatewayWithToolRuntimeContext(GatewayToolRuntimeContext("cli", sessionKey: "cli:phase13-timeout")) {
+                let batch = managedSubagentsJson(toolset.sessionsBatchDelegateForTest(
+                    ["inspect timeout"],
+                    Some("phase13-timeout"),
+                    Some("phase13-timeout"),
+                    Some(1),
+                    Some(0)
+                ))
+                @Expect(managedSubagentsString(batch, "status"), "partial")
+                @Expect(managedSubagentsInt(batch, "timedOutCount"), 1)
+                let child = batch.get("children").getOrThrow().asArray()[0].asObject()
+                @Expect(managedSubagentsString(child, "status"), "timed_out")
+                let status = managedSubagentsJson(toolset.subagentsForTest(managedSubagentsSome("status"), managedSubagentsSome(managedSubagentsString(child, "runId")), None<String>, None<Int64>))
+                let run = status.get("run").getOrThrow().asObject()
+                @Expect(managedSubagentsString(run, "status"), "timed_out")
+            }
+        }
+    }
+
+    @TestCase
+    public func sessionsBatchDelegateHonorsMaxWorkersWithDeferredRows(): Unit {
+        withManagedSessionsToolsetTestHome("/tmp/metis-managed-subagents-batch-max-workers") {
+            createManagedSubagentsCustomAgentFixture("phase13-workers", false)
+            var settings = CliSettingManager.readGatewaySettings()
+            settings.subagents.allowCustomAgents = true
+            let _ = MetisConfigManager.setGatewaySettings(settings)
+            CliSettingManager.invalidate()
+            let toolset = GatewayManagedSessionsToolset()
+
+            gatewayWithToolRuntimeContext(GatewayToolRuntimeContext("cli", sessionKey: "cli:phase13-workers")) {
+                let batch = managedSubagentsJson(toolset.sessionsBatchDelegateForTest(
+                    ["inspect one", "inspect two", "inspect three"],
+                    Some("phase13-workers"),
+                    Some("phase13-workers"),
+                    Some(2),
+                    None<Int64>
+                ))
+                @Expect(managedSubagentsString(batch, "status"), "partial")
+                @Expect(managedSubagentsInt(batch, "maxWorkers"), 2)
+                @Expect(managedSubagentsInt(batch, "acceptedCount"), 2)
+                @Expect(managedSubagentsInt(batch, "deferredCount"), 1)
+                let children = batch.get("children").getOrThrow().asArray()
+                @Expect(children.size(), 3)
+                @Expect(managedSubagentsString(children[0].asObject(), "status"), "accepted")
+                @Expect(managedSubagentsString(children[1].asObject(), "status"), "accepted")
+                @Expect(managedSubagentsString(children[2].asObject(), "status"), "deferred")
+                @Expect(batch.get("runIds").getOrThrow().asArray().size(), 2)
+            }
         }
     }
 }
