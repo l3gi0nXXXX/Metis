@@ -59,6 +59,7 @@
   - `message`
   - `sessions_spawn`
   - `subagents`
+  - `sessions_batch_delegate`
 - `ingresses`
   用来观察默认入口是否共享同一套 Gateway 主 agent。
   当前会列出：
@@ -195,7 +196,9 @@
 - `process` 现在也已经进入默认主轨，用于后台 managed session/process 的 list/status/poll/logs/kill
 - `cron` 也已经通过 Gateway-side wrapper 接入默认主轨
 - `message` 现在也已经通过 Gateway-side wrapper 接入默认主轨
-- `sessions_spawn / subagents` 现在也已经通过 Gateway-side managed-session toolset 接入默认主轨
+- `sessions_spawn / subagents / sessions_batch_delegate` 现在也已经通过 Gateway-side managed-session toolset 接入默认主轨
+  - CLI、Telegram 和自然语言触发方式见 `docs/user/subagents.md`
+  - Control UI 通过 `subagents.list/status/logs/kill` 与 `/api/subagents/*` 查看和控制后台 run
 - 剩下更厚的 Gateway control / ACP 生态仍可继续打磨，但默认主轨的扩展工具面已经补齐
 
 这正是后续要收敛到统一 Gateway 主运行时的核心改造点。

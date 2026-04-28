@@ -200,5 +200,52 @@ public func gatewayBuildControlUiV3InteractionsScript(): String {
     });
   }
 
+  function renderSubagentDetail(obj) {
+    const out = document.getElementById('subagents-detail');
+    if (!out) return;
+    try {
+      out.textContent = JSON.stringify(obj || {}, null, 2);
+    } catch (_e) {
+      out.textContent = String(obj || '');
+    }
+  }
+
+  function wireV3SubagentsPanel() {
+    if (uiVariant !== 'v3') return;
+    const host = document.querySelector('.oc-root');
+    if (!host || host.__wiredV3SubagentsPanel) return;
+    host.__wiredV3SubagentsPanel = true;
+    host.addEventListener('click', function(e) {
+      const statusBtn = (e.target && e.target.closest) ? e.target.closest('.subagent-status') : null;
+      const logsBtn = (e.target && e.target.closest) ? e.target.closest('.subagent-logs') : null;
+      const killBtn = (e.target && e.target.closest) ? e.target.closest('.subagent-kill') : null;
+      const btn = statusBtn || logsBtn || killBtn;
+      if (!btn) return;
+      const target = btn.getAttribute('data-target') || '';
+      if (!target) return;
+      if (statusBtn) {
+        apiPost('/api/subagents/status', { target: target })
+          .then(renderSubagentDetail)
+          .catch(function(err) { renderSubagentDetail({ ok: false, error: String(err) }); });
+        return;
+      }
+      if (logsBtn) {
+        apiPost('/api/subagents/logs', { target: target })
+          .then(renderSubagentDetail)
+          .catch(function(err) { renderSubagentDetail({ ok: false, error: String(err) }); });
+        return;
+      }
+      if (killBtn) {
+        if (!confirm('Kill subagent ' + target + '?')) return;
+        apiPost('/api/subagents/kill', { target: target })
+          .then(function(resp) {
+            renderSubagentDetail(resp);
+            loadStatus().catch(function(err){ console.warn(err); });
+          })
+          .catch(function(err) { renderSubagentDetail({ ok: false, error: String(err) }); });
+      }
+    });
+  }
+
 """
 }

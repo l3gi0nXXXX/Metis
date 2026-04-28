@@ -637,6 +637,9 @@ private func buildStatusJson(ctx: HttpContext): String {
     }
     sb.append("]")
     sb.append("},")
+    sb.append("\"subagents\":")
+    sb.append(gatewayDashboardSubagentsJson().toJsonString())
+    sb.append(",")
     sb.append("\"chat\":{")
     sb.append("\"recentMessages\":[")
     var firstMsg = true

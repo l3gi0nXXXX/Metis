@@ -65,6 +65,18 @@ public func gatewayRegisterControlUiRoutes(server: Server, cfg: GatewayConfig): 
     GatewayControlUiRuntime.registerRoute(server, cfg, "/api/sessions/list", { ctx =>
         gatewayControlUiReplyJson(ctx, "sessions.list", { => gatewayDashboardBuildSessionsJson() })
     })
+    GatewayControlUiRuntime.registerRoute(server, cfg, "/api/subagents/list", { ctx =>
+        gatewayControlUiReplyJson(ctx, "subagents.list", { => gatewayDashboardBuildSubagentsJson() })
+    })
+    GatewayControlUiRuntime.registerRoute(server, cfg, "/api/subagents/status", { ctx =>
+        gatewayControlUiReplyJson(ctx, "subagents.status", { => gatewayDashboardBuildSubagentStatusJson(ctx) })
+    })
+    GatewayControlUiRuntime.registerRoute(server, cfg, "/api/subagents/logs", { ctx =>
+        gatewayControlUiReplyJson(ctx, "subagents.logs", { => gatewayDashboardBuildSubagentLogsJson(ctx) })
+    })
+    GatewayControlUiRuntime.registerRoute(server, cfg, "/api/subagents/kill", { ctx =>
+        gatewayControlUiReplyJson(ctx, "subagents.kill", { => gatewayDashboardHandleSubagentKill(ctx) })
+    })
     GatewayControlUiRuntime.registerRoute(server, cfg, "/api/chat/send", { ctx =>
         gatewayControlUiReplyJson(ctx, "http.responses", { => gatewayDashboardHandleChatSend(ctx) })
     })

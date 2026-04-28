@@ -36,6 +36,7 @@ public func gatewayBuildControlUiV3PanelsScript(): String {
         buildV3NavItem('channels', '频道', 'link') +
         buildV3NavItem('instances', '实例', 'radio') +
         buildV3NavItem('sessions', '会话', 'scrollText') +
+        buildV3NavItem('subagents', 'Subagents', 'terminal') +
         buildV3NavItem('usage', '使用情况', 'barChart') +
         buildV3NavItem('cron', '定时任务', 'sparkles')
       ) +
@@ -107,6 +108,55 @@ public func gatewayBuildControlUiV3PanelsScript(): String {
         '<div class="card-title">日志</div>' +
         '<div class="card-sub">当前显示仍复用 /api/status 的 tail（与 v2 一致）。</div>' +
         '<ul class="logs-list" style="margin-top:12px;">' + logsTail + '</ul>' +
+      '</section>'
+    );
+  }
+
+  function buildV3SubagentsPanelHtml(data) {
+    const subagents = (data && data.subagents) ? data.subagents : {};
+    const rows = (subagents.sessions || subagents.active || []).map(function(r) {
+      const runId = String((r && r.runId) || '');
+      const sessionKey = String((r && r.sessionKey) || '');
+      const status = String((r && (r.status || r.state)) || '');
+      const agentId = String((r && r.agentId) || '');
+      const runtime = String((r && r.runtime) || '');
+      const notice = String((r && r.noticeStatus) || '');
+      const live = !!(r && (r.hasLiveFuture || r.hasLiveProcess));
+      const target = runId || sessionKey;
+      return '' +
+        '<tr>' +
+          '<td style="min-width:230px;"><span class="mono">' + escapeHtml(runId || '--') + '</span><div class="session-key-display-name">' + escapeHtml(sessionKey) + '</div></td>' +
+          '<td style="width:120px;"><span class="data-table-badge">' + escapeHtml(status || '--') + '</span></td>' +
+          '<td style="width:140px;">' + escapeHtml(agentId || '--') + '</td>' +
+          '<td style="width:110px;">' + escapeHtml(runtime || '--') + '</td>' +
+          '<td style="width:90px;">' + (live ? '<span class="data-table-badge data-table-badge--direct">live</span>' : '<span class="data-table-badge data-table-badge--unknown">idle</span>') + '</td>' +
+          '<td style="width:130px;">' + escapeHtml(notice || '--') + '</td>' +
+          '<td style="width:190px;">' +
+            '<button type="button" class="btn btn--sm subagent-status" data-target="' + escapeHtml(target) + '">Status</button> ' +
+            '<button type="button" class="btn btn--sm subagent-logs" data-target="' + escapeHtml(target) + '">Logs</button> ' +
+            '<button type="button" class="btn btn--sm btn-danger subagent-kill" data-target="' + escapeHtml(target) + '">Kill</button>' +
+          '</td>' +
+        '</tr>';
+    }).join('');
+    const body = rows || '<tr><td colspan="7" class="muted">No subagent runs.</td></tr>';
+    return (
+      '<section class="card" data-tab-panel="subagents" style="' + (currentTab === 'subagents' ? '' : 'display:none;') + '">' +
+        '<div class="sessions-head">' +
+          '<div>' +
+            '<div class="sessions-title">Subagents</div>' +
+            '<div class="sessions-sub">后台运行、状态和日志。</div>' +
+          '</div>' +
+          '<button class="btn btn--sm" id="refresh-btn-subagents">Refresh</button>' +
+        '</div>' +
+        '<div class="data-table-wrapper">' +
+          '<div class="data-table-container">' +
+            '<table class="data-table">' +
+              '<thead><tr><th>RUN</th><th>STATUS</th><th>AGENT</th><th>RUNTIME</th><th>LIVE</th><th>NOTICE</th><th>ACTIONS</th></tr></thead>' +
+              '<tbody>' + body + '</tbody>' +
+            '</table>' +
+          '</div>' +
+        '</div>' +
+        '<pre class="logs-list mono" id="subagents-detail" style="margin-top:12px;white-space:pre-wrap;max-height:360px;overflow:auto;"></pre>' +
       '</section>'
     );
   }

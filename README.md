@@ -123,7 +123,16 @@ Metis supports managed agent sessions, bindings, and operational inspection thro
 ```bash
 metis agents list
 metis sessions list
+metis subagents list
 ```
+
+Background subagents can be started from CLI or IM sessions without blocking the current conversation:
+
+```text
+/subagents spawn explorer "analyze the gateway runtime and notify this session when done"
+```
+
+See `docs/user/subagents.md` for CLI, Telegram, natural-language, custom agent, policy, and control-ui usage.
 
 ### Scheduled Jobs
 
@@ -178,6 +187,7 @@ Useful project documents:
 
 - `README.md` for the current project intro and command overview
 - `docs/user/runtime-execution-model.md` for how Gateway-first execution works
+- `docs/user/subagents.md` for background subagent usage and control-ui operations
 - `docs/user/skills-guide.md` for skills discovery, commands, and installation
 - `docs/user/gateway-im-plugins.md` for IM plugin integration
 - `docs/mcp.md` for MCP-related configuration

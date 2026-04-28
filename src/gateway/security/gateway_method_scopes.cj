@@ -25,6 +25,7 @@ public func gatewayResolveRequiredOperatorScope(method: String): String {
         m == "config.get" || m == "config.schema.lookup" ||
         m == "http.status" || m == "control_ui.status" || m == "control-ui.status" || m == "webchat.status" ||
         m == "discover" || m == "sessions.list" || m == "sessions.path" ||
+        m == "subagents.list" || m == "subagents.status" || m == "subagents.poll" || m == "subagents.logs" ||
         m == "cron.list" || m == "cron.path" || m == "cron.help" || m == "cron.status" ||
         m == "channels.status" || m == "channels.list" || m == "channels.runtime" || m == "channels.manager" ||
         m == "plugins.status" || m == "plugins.list" || m == "plugins.runtime" || m == "plugins.manager" ||

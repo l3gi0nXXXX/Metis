@@ -206,6 +206,7 @@ public func gatewayBuildControlUiV3TemplatesScript(): String {
     const sidebarNavHtml = (ctx && ctx.sidebarNavHtml) ? ctx.sidebarNavHtml : '';
     const chatPanelHtml = (ctx && ctx.chatPanelHtml) ? ctx.chatPanelHtml : '';
     const sessionsPanelHtml = (ctx && ctx.sessionsPanelHtml) ? ctx.sessionsPanelHtml : '';
+    const subagentsPanelHtml = (ctx && ctx.subagentsPanelHtml) ? ctx.subagentsPanelHtml : '';
     const skillsPanelHtml = (ctx && ctx.skillsPanelHtml) ? ctx.skillsPanelHtml : '';
     const logsPanelHtml = (ctx && ctx.logsPanelHtml) ? ctx.logsPanelHtml : '';
     const cronPanelHtml = (ctx && ctx.cronPanelHtml) ? ctx.cronPanelHtml : '';
@@ -258,6 +259,7 @@ public func gatewayBuildControlUiV3TemplatesScript(): String {
             '<section class="content-header" id="v3-header-host"></section>' +
             chatPanelHtml +
             sessionsPanelHtml +
+            subagentsPanelHtml +
             skillsPanelHtml +
             logsPanelHtml +
             cronPanelHtml +

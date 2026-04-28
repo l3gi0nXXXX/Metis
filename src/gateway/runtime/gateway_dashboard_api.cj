@@ -263,6 +263,22 @@ public func gatewayDashboardBuildSessionsJson(): String {
     dashboardGatewayRequest("sessions.list")
 }
 
+public func gatewayDashboardBuildSubagentsJson(): String {
+    dashboardGatewayRequest("subagents.list")
+}
+
+public func gatewayDashboardBuildSubagentStatusJson(ctx: HttpContext): String {
+    dashboardGatewayRequestFromForm(ctx, "subagents.status", ["target", "runId", "sessionKey"])
+}
+
+public func gatewayDashboardBuildSubagentLogsJson(ctx: HttpContext): String {
+    dashboardGatewayRequestFromForm(ctx, "subagents.logs", ["target", "runId", "sessionKey"])
+}
+
+public func gatewayDashboardHandleSubagentKill(ctx: HttpContext): String {
+    dashboardGatewayRequestFromForm(ctx, "subagents.kill", ["target", "runId", "sessionKey"])
+}
+
 public func gatewayDashboardBuildChannelsJson(ctx: HttpContext): String {
     dashboardGatewayRequestFromForm(ctx, "channels.status", ["probe", "timeoutMs"])
 }

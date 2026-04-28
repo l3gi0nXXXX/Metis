@@ -54,11 +54,13 @@ public func gatewayBuildControlUiV3ShellScript(): String {
     const chatPanelHtml = buildV3ChatPanelHtml();
     const skillsPanelHtml = buildV3SkillsPanelHtml();
     const logsPanelHtml = buildV3LogsPanelHtml(data);
+    const subagentsPanelHtml = buildV3SubagentsPanelHtml(data);
 
     const html = buildV3ShellHtml({
       sidebarNavHtml: sidebarNavHtml,
       chatPanelHtml: chatPanelHtml,
       sessionsPanelHtml: sessionsPanelHtml,
+      subagentsPanelHtml: subagentsPanelHtml,
       skillsPanelHtml: skillsPanelHtml,
       logsPanelHtml: logsPanelHtml,
       cronPanelHtml: cronPanelHtml,
@@ -76,6 +78,8 @@ public func gatewayBuildControlUiV3ShellScript(): String {
     wireRefreshBtnV3Sessions();
     wireV3SessionsTableClicks();
     wireRefreshBtnV3Skills();
+    wireRefreshBtnV3Subagents();
+    wireV3SubagentsPanel();
     wireCronPanel();
     wireV3SessionsPagination();
     wireV3SessionsSelection();

@@ -28,6 +28,16 @@ public func gatewayBuildControlUiV3NavigationScript(): String {
       return;
     }
 
+    if (tab === 'subagents') {
+      host.innerHTML =
+        '<div style="min-width:0">' +
+          '<div class="page-title">Subagents</div>' +
+          '<div class="page-sub">查看后台任务、日志和取消运行。</div>' +
+        '</div>' +
+        '<div class="page-meta"></div>';
+      return;
+    }
+
     if (tab === 'appearance') {
       host.innerHTML =
         '<div style="min-width:0;flex:1">' +
@@ -122,6 +132,14 @@ public func gatewayBuildControlUiV3NavigationScript(): String {
 
   function wireRefreshBtnV3Skills() {
     const b = document.getElementById('refresh-btn-skills');
+    if (!b) return;
+    b.onclick = function() {
+      loadStatus().catch(function(err) { console.warn(err); });
+    };
+  }
+
+  function wireRefreshBtnV3Subagents() {
+    const b = document.getElementById('refresh-btn-subagents');
     if (!b) return;
     b.onclick = function() {
       loadStatus().catch(function(err) { console.warn(err); });
