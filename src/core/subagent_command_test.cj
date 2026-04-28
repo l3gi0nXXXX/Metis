@@ -43,6 +43,17 @@ public class SubagentCommandTest {
     }
 
     @TestCase
+    public func parsesHelpAliasesAsSuccessfulHelpAction(): Unit {
+        for (line in ["/subagents help", "/subagents -h", "/subagents --help"]) {
+            let req = parseGatewaySubagentCommandLine(line)
+            @Expect(req.recognized, true)
+            @Expect(req.ok, true)
+            @Expect(req.action, "help")
+        }
+        @Expect(gatewaySubagentCommandExamples().size > 0, true)
+    }
+
+    @TestCase
     public func invalidCommandReportsUsageReadyError(): Unit {
         let req = parseGatewaySubagentCommandLine("/subagents steer subrun_123")
         @Expect(req.recognized, true)

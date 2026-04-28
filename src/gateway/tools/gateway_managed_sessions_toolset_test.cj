@@ -488,6 +488,18 @@ public class GatewayManagedSessionsToolsetTest {
     }
 
     @TestCase
+    public func subagentsCommandHelpReturnsSuccessfulUsageJson(): Unit {
+        withManagedSessionsToolsetTestHome("/tmp/metis-managed-subagents-command-help") {
+            let help = managedSubagentsJson(gatewayHandleSubagentsCommandLine("/subagents help").getOrThrow())
+            @Expect(help.get("ok").getOrThrow().asBool().getValue(), true)
+            @Expect(managedSubagentsString(help, "status"), "ok")
+            @Expect(managedSubagentsString(help, "action"), "help")
+            @Expect(managedSubagentsString(help, "usage").contains("/subagents spawn"), true)
+            @Expect(help.get("examples").getOrThrow().asArray().size() > 0, true)
+        }
+    }
+
+    @TestCase
     public func sessionsBatchDelegateRecordsMultipleChildRuns(): Unit {
         withManagedSessionsToolsetTestHome("/tmp/metis-managed-subagents-batch-success") {
             createManagedSubagentsCustomAgentFixture("phase13-batch", false)

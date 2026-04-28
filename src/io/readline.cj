@@ -229,7 +229,12 @@ private func styleUserInputLine(prompt: String, text: String, isShellMode: Bool)
     } else {
         AnsiColor.BRIGHT_WHITE
     }
-    return "${Theme.BG_INPUT}${foreground}${prompt}${text}${AnsiColor.RESET}"
+    let content = wrapInput("${prompt}${text}")
+    let styledLines = ArrayList<String>()
+    for (line in content.lines()) {
+        styledLines.add("${Theme.BG_INPUT}${foreground}${padString(line)}${AnsiColor.RESET}")
+    }
+    return String.join(styledLines.toArray(), delimiter: "\n")
 }
 
 /**
@@ -642,7 +647,7 @@ public class Readline {
         var wrappedContent = if (useInputBoxBorder) {
             wrapBox(styleUserInputLine(displayPrompt, displayText, isShellMode))
         } else {
-            wrapInput(styleUserInputLine(displayPrompt, displayText, isShellMode))
+            styleUserInputLine(displayPrompt, displayText, isShellMode)
         }
 
         // Append footnote if set
@@ -725,7 +730,7 @@ public class Readline {
         let wrappedContent = if (useInputBoxBorder) {
             wrapBox(styleUserInputLine(displayPrompt, displayText, isShellMode))
         } else {
-            wrapInput(styleUserInputLine(displayPrompt, displayText, isShellMode))
+            styleUserInputLine(displayPrompt, displayText, isShellMode)
         }
 
         if (displayContext.lastRenderedLines > 0) {

@@ -59,21 +59,23 @@ protected class InputUtils {
     }
 
     public static func buildPrompt(prompt: String): String {
-        return " ${prompt} > ".withColor(Theme.MUTED)
+        let label = prompt.trimAscii()
+        if (label.isEmpty()) {
+            return " > ".withColor(Theme.MUTED)
+        }
+        return " ${label} > ".withColor(Theme.MUTED)
     }
 
     /**
      * macOS cooked input uses terminal-native line editing.
-     * A colored / wide-character prompt (for example ANSI-colored "🔮 > ")
+     * A colored / wide-character prompt
      * can leave a stray cell behind when deleting CJK runes with backspace.
      * Use a plain ASCII prompt for the actual cooked read, then keep the
      * styled replay after submission.
      */
     private static func buildCookedReadPrompt(prompt: String): String {
         let plainPrompt = removeAnsiEscape(prompt)
-        let normalized = if (plainPrompt.contains("🔮")) {
-            " > "
-        } else if (plainPrompt.trimAscii().isEmpty()) {
+        let normalized = if (plainPrompt.trimAscii().isEmpty()) {
             " > "
         } else {
             plainPrompt
@@ -82,11 +84,15 @@ protected class InputUtils {
     }
 
     private static func renderCookedSubmittedInput(prompt: String, input: String): Unit {
-        let styledLine = "${Theme.BG_INPUT}${AnsiColor.BRIGHT_WHITE}${prompt}${input}${AnsiColor.RESET}"
+        let styledLines = ArrayList<String>()
+        for (line in wrapInput("${prompt}${input}").lines()) {
+            styledLines.add("${Theme.BG_INPUT}${AnsiColor.BRIGHT_WHITE}${padString(line)}${AnsiColor.RESET}")
+        }
+        let styledLine = String.join(styledLines.toArray(), delimiter: "\n")
         moveCursor(1, direction: Direction.Up)
         moveCursor(col: 0)
         clearScreen(mode: ClearMode.EntireLine)
-        PrintUtils.printLine(wrapInput(styledLine))
+        PrintUtils.printLine(styledLine)
         PrintUtils.printLine("")
     }
 
@@ -95,7 +101,7 @@ protected class InputUtils {
         isRequestingUserInput.store(true)
         try {
             if (shouldUseCookedPrompt() && prompt.isSome()) {
-                let targetPrompt = prompt ?? buildPrompt("🔮")
+                let targetPrompt = prompt ?? buildPrompt("")
                 let cookedPrompt = buildCookedReadPrompt(targetPrompt)
                 let restoreRaw = rawModeEnabled.load()
                 if (restoreRaw) {
@@ -111,7 +117,7 @@ protected class InputUtils {
                     }
                 }
             }
-            return getReadline().readline(prompt ?? buildPrompt("🔮"), withBox: withBox) ?? "exit"
+            return getReadline().readline(prompt ?? buildPrompt(""), withBox: withBox) ?? "exit"
         } finally {
             // Clear the flag when done
             isRequestingUserInput.store(false)
@@ -121,7 +127,7 @@ protected class InputUtils {
     public static func getUserInputOrCancel(prompt!: Option<String> = None, withBox!: Bool = true): Option<String> {
         isRequestingUserInput.store(true)
         try {
-            return getReadline().readlineWithCancel(prompt ?? buildPrompt("🔮"), withBox: withBox)
+            return getReadline().readlineWithCancel(prompt ?? buildPrompt(""), withBox: withBox)
         } finally {
             isRequestingUserInput.store(false)
         }

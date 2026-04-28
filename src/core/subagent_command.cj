@@ -34,6 +34,18 @@ public func gatewaySubagentCommandUsage(): String {
     "Usage: /subagents spawn <agentId> \"<task>\" | list [current|all|agent:<id>] | status <runId> | logs <runId> | poll <runId> | kill <runId> | steer <runId> \"<message>\" | send <runId> \"<message>\""
 }
 
+public func gatewaySubagentCommandExamples(): Array<String> {
+    [
+        "/subagents",
+        "/subagents list all",
+        "/subagents spawn explorer \"inspect the current implementation\"",
+        "/subagents status <runId>",
+        "/subagents logs <runId>",
+        "/subagents kill <runId>",
+        "/subagents send <runId> \"continue with tests\""
+    ]
+}
+
 private func subagentCommandJoin(parts: Array<String>, start: Int64): String {
     if (start >= parts.size) {
         return ""
@@ -107,6 +119,9 @@ public func parseGatewaySubagentCommandLine(raw: String): GatewaySubagentCommand
         return GatewaySubagentCommandRequest(recognized: true, ok: true, action: "list", target: "current")
     }
     let action = tokens[1].trimAscii().toAsciiLower()
+    if (action == "help" || action == "-h" || action == "--help") {
+        return GatewaySubagentCommandRequest(recognized: true, ok: true, action: "help")
+    }
     if (action == "spawn") {
         if (tokens.size < 4) {
             return GatewaySubagentCommandRequest(recognized: true, action: action, error: "spawn requires <agentId> and <task>")

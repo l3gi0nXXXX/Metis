@@ -1,8 +1,9 @@
 package metis.gateway.tools
 
-import metis.core.{GatewaySubagentCommandRequest, gatewaySubagentCommandUsage, parseGatewaySubagentCommandLine}
+import metis.core.{GatewaySubagentCommandRequest, gatewaySubagentCommandUsage, gatewaySubagentCommandExamples,
+    parseGatewaySubagentCommandLine}
 
-import stdx.encoding.json.{JsonBool, JsonObject, JsonString}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 
 private func subagentCommandSome(v: String): Option<String> {
     Some<String>(v)
@@ -18,6 +19,20 @@ private func subagentCommandErrorJson(req: GatewaySubagentCommandRequest): Strin
     out.toJsonString()
 }
 
+private func subagentCommandHelpJson(): String {
+    let out = JsonObject()
+    out.put("ok", JsonBool(true))
+    out.put("status", JsonString("ok"))
+    out.put("action", JsonString("help"))
+    out.put("usage", JsonString(gatewaySubagentCommandUsage()))
+    let examples = JsonArray()
+    for (example in gatewaySubagentCommandExamples()) {
+        examples.add(JsonString(example))
+    }
+    out.put("examples", examples)
+    out.toJsonString()
+}
+
 public func gatewayHandleSubagentsCommandLine(raw: String): Option<String> {
     let req = parseGatewaySubagentCommandLine(raw)
     if (!req.recognized) {
@@ -25,6 +40,9 @@ public func gatewayHandleSubagentsCommandLine(raw: String): Option<String> {
     }
     if (!req.ok) {
         return Some(subagentCommandErrorJson(req))
+    }
+    if (req.action == "help") {
+        return Some(subagentCommandHelpJson())
     }
     let toolset = GatewayManagedSessionsToolset()
     if (req.action == "spawn") {
