@@ -520,6 +520,7 @@ private func buildSubagentOrchestrationGuidance(hasSessionsSpawn: Bool, hasSubag
         "- After `sessions_spawn` returns accepted, report the run id/session key briefly and continue serving the current session; do not wait for the subagent to finish.",
         "- Completion notification is push-based and delivered by the runtime back to the requester session/thread. Do not simulate completion by polling.",
         "- For multiple requested background agents, issue one `sessions_spawn` call per role/task and let policy/concurrency controls accept, queue, or reject each run.",
+        "- When inspecting subagent state, use `effectiveState` and `isActive` as the user-visible running truth; do not treat persisted `status: \"running\"` alone as proof that a live background run still exists.",
         "- Do the work yourself for small, quick, single-focus tasks unless the user explicitly asks for subagent/background/parallel execution."
     ])
     if (acpHarnessSpawnAllowed) {

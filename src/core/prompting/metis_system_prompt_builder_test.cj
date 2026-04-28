@@ -257,6 +257,7 @@ public class MetisSystemPromptBuilderTest {
         @Expect(prompt.contains("\"完成后通知\""), true)
         @Expect(prompt.contains("do not wait for the subagent to finish"), true)
         @Expect(prompt.contains("Completion notification is push-based"), true)
+        @Expect(prompt.contains("use `effectiveState` and `isActive`"), true)
         @Expect(prompt.contains("multiple requested background agents"), true)
         @Expect(prompt.contains("one `sessions_spawn` call per role/task"), true)
         @Expect(prompt.contains("Do the work yourself for small, quick, single-focus tasks"), true)

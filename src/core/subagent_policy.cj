@@ -16,6 +16,10 @@ public class SubagentPolicyDecision {
     public var timeoutClamped: Bool = false
     public var childAllowedTools: Array<String> = []
     public var childDeniedTools: Array<String> = []
+    public var activeRunCount: Int64 = 0
+    public var staleRunCount: Int64 = 0
+    public var recordedRunCount: Int64 = 0
+    public var terminalRunCount: Int64 = 0
     public init() {}
 }
 
@@ -79,6 +83,10 @@ public func gatewaySubagentPolicyDecisionToJson(decision: SubagentPolicyDecision
     obj.put("timeoutClamped", decision.timeoutClamped.toJsonValue())
     obj.put("childAllowedTools", subagentPolicyJsonArray(decision.childAllowedTools))
     obj.put("childDeniedTools", subagentPolicyJsonArray(decision.childDeniedTools))
+    obj.put("activeRunCount", decision.activeRunCount.toJsonValue())
+    obj.put("staleRunCount", decision.staleRunCount.toJsonValue())
+    obj.put("recordedRunCount", decision.recordedRunCount.toJsonValue())
+    obj.put("terminalRunCount", decision.terminalRunCount.toJsonValue())
     return obj
 }
 
@@ -103,7 +111,11 @@ public func gatewaySubagentEvaluateSpawnPolicy(
     runtime: String,
     requestedTimeoutSeconds: Int64,
     currentDepth: Int64,
-    requestedIsolationMode: String
+    requestedIsolationMode: String,
+    activeRunCountOverride!: Int64 = -1,
+    staleRunCountOverride!: Int64 = -1,
+    recordedRunCountOverride!: Int64 = -1,
+    terminalRunCountOverride!: Int64 = -1
 ): SubagentPolicyDecision {
     var effectiveTimeoutSeconds = requestedTimeoutSeconds
     if (effectiveTimeoutSeconds < 0) {
@@ -147,15 +159,35 @@ public func gatewaySubagentEvaluateSpawnPolicy(
     }
 
     let records = gatewaySubagentListRunRecords(sessionsRoot)
-    if (settings.maxConcurrentSubagents > 0) {
-        var active: Int64 = 0
+    var activeRunCount = activeRunCountOverride
+    var staleRunCount = staleRunCountOverride
+    var recordedRunCount = recordedRunCountOverride
+    var terminalRunCount = terminalRunCountOverride
+    if (activeRunCount < 0) {
+        activeRunCount = 0
+        staleRunCount = if (staleRunCount < 0) { 0 } else { staleRunCount }
+        recordedRunCount = if (recordedRunCount < 0) { 0 } else { recordedRunCount }
+        terminalRunCount = if (terminalRunCount < 0) { 0 } else { terminalRunCount }
         for (record in records) {
             if (subagentPolicyStatusIsActive(gatewaySubagentRunRecordString(record, "status"))) {
-                active += 1
+                activeRunCount += 1
+            } else if (gatewaySubagentRunStatusIsTerminal(gatewaySubagentRunRecordString(record, "status"))) {
+                terminalRunCount += 1
             }
         }
-        if (active >= settings.maxConcurrentSubagents) {
-            return subagentPolicyRejected("max concurrent subagents exceeded", effectiveTimeoutSeconds, settings)
+    } else {
+        if (staleRunCount < 0) { staleRunCount = 0 }
+        if (recordedRunCount < 0) { recordedRunCount = 0 }
+        if (terminalRunCount < 0) { terminalRunCount = 0 }
+    }
+    if (settings.maxConcurrentSubagents > 0) {
+        if (activeRunCount >= settings.maxConcurrentSubagents) {
+            let rejected = subagentPolicyRejected("max concurrent subagents exceeded", effectiveTimeoutSeconds, settings)
+            rejected.activeRunCount = activeRunCount
+            rejected.staleRunCount = staleRunCount
+            rejected.recordedRunCount = recordedRunCount
+            rejected.terminalRunCount = terminalRunCount
+            return rejected
         }
     }
 
@@ -169,9 +201,19 @@ public func gatewaySubagentEvaluateSpawnPolicy(
             }
         }
         if (children >= settings.maxChildrenPerSession) {
-            return subagentPolicyRejected("max children per session exceeded", effectiveTimeoutSeconds, settings)
+            let rejected = subagentPolicyRejected("max children per session exceeded", effectiveTimeoutSeconds, settings)
+            rejected.activeRunCount = activeRunCount
+            rejected.staleRunCount = staleRunCount
+            rejected.recordedRunCount = recordedRunCount
+            rejected.terminalRunCount = terminalRunCount
+            return rejected
         }
     }
 
-    return subagentPolicyAllowed(effectiveTimeoutSeconds, timeoutClamped, settings)
+    let allowed = subagentPolicyAllowed(effectiveTimeoutSeconds, timeoutClamped, settings)
+    allowed.activeRunCount = activeRunCount
+    allowed.staleRunCount = staleRunCount
+    allowed.recordedRunCount = recordedRunCount
+    allowed.terminalRunCount = terminalRunCount
+    return allowed
 }

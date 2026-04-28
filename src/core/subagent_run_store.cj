@@ -83,7 +83,10 @@ public func gatewaySubagentNewRunId(sessionsRoot: Path, sessionKey: String): Str
         Directory.create(root, recursive: true)
     }
     let now = subagentNowMs()
-    let stem = subagentSafeFileStem(sessionKey)
+    var stem = subagentSafeFileStem(sessionKey)
+    if (stem.size > 32) {
+        stem = stem[0..32]
+    }
     let base = "subrun_${now}_${stem}"
     var runId = base
     var n: Int64 = 0
@@ -264,12 +267,20 @@ public func gatewaySubagentFindRunBySessionKey(sessionsRoot: Path, sessionKey: S
     if (target.isEmpty()) {
         return None
     }
+    var found: Option<JsonObject> = None<JsonObject>
+    var foundUpdatedAt: Int64 = -1
     for (record in gatewaySubagentListRunRecords(sessionsRoot)) {
         if (subagentJsonString(record, "sessionKey") == target) {
-            return Some(record)
+            let updatedAt = subagentJsonInt(record, "lastUpdatedAtMs")
+            let createdAt = subagentJsonInt(record, "createdAtMs")
+            let score = if (updatedAt > 0) { updatedAt } else { createdAt }
+            if (found.isNone() || score >= foundUpdatedAt) {
+                found = Some<JsonObject>(record)
+                foundUpdatedAt = score
+            }
         }
     }
-    None
+    found
 }
 
 public func gatewaySubagentResolveRunRecord(sessionsRoot: Path, target: String): Option<JsonObject> {
@@ -281,15 +292,35 @@ public func gatewaySubagentResolveRunRecord(sessionsRoot: Path, target: String):
         case Some(record) => return Some(record)
         case None => ()
     }
+    var exactSession: Option<JsonObject> = None<JsonObject>
+    var exactSessionUpdatedAt: Int64 = -1
+    let fuzzyMatches = ArrayList<JsonObject>()
     for (record in gatewaySubagentListRunRecords(sessionsRoot)) {
         let runId = subagentJsonString(record, "runId")
         let sessionKey = subagentJsonString(record, "sessionKey")
         let lower = trimmed.toAsciiLower()
-        if (runId == trimmed || sessionKey == trimmed ||
-            runId.toAsciiLower().contains(lower) ||
-            sessionKey.toAsciiLower().contains(lower)) {
+        if (runId == trimmed) {
             return Some(record)
         }
+        if (sessionKey == trimmed) {
+            let updatedAt = subagentJsonInt(record, "lastUpdatedAtMs")
+            let createdAt = subagentJsonInt(record, "createdAtMs")
+            let score = if (updatedAt > 0) { updatedAt } else { createdAt }
+            if (exactSession.isNone() || score >= exactSessionUpdatedAt) {
+                exactSession = Some<JsonObject>(record)
+                exactSessionUpdatedAt = score
+            }
+            continue
+        }
+        if (runId.toAsciiLower().contains(lower) || sessionKey.toAsciiLower().contains(lower)) {
+            fuzzyMatches.add(record)
+        }
+    }
+    if (exactSession.isSome()) {
+        return exactSession
+    }
+    if (fuzzyMatches.size == 1) {
+        return Some<JsonObject>(fuzzyMatches[0])
     }
     None
 }

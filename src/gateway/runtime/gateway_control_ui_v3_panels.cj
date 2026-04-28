@@ -114,22 +114,29 @@ public func gatewayBuildControlUiV3PanelsScript(): String {
 
   function buildV3SubagentsPanelHtml(data) {
     const subagents = (data && data.subagents) ? data.subagents : {};
+    const activeCount = Number(subagents.activeCount || 0);
+    const staleCount = Number(subagents.staleCount || 0);
+    const recordedCount = Number(subagents.recordedCount || 0);
+    const terminalCount = Number(subagents.terminalCount || 0);
     const rows = (subagents.sessions || subagents.active || []).map(function(r) {
       const runId = String((r && r.runId) || '');
       const sessionKey = String((r && r.sessionKey) || '');
-      const status = String((r && (r.status || r.state)) || '');
+      const status = String((r && (r.effectiveState || r.status || r.state)) || '');
+      const persistedStatus = String((r && (r.persistedStatus || r.status)) || '');
       const agentId = String((r && r.agentId) || '');
       const runtime = String((r && r.runtime) || '');
       const notice = String((r && r.noticeStatus) || '');
-      const live = !!(r && (r.hasLiveFuture || r.hasLiveProcess));
+      const live = !!(r && (r.isLive || r.hasLiveFuture || r.hasLiveProcess));
       const target = runId || sessionKey;
+      const liveBadge = live ? 'live' : (status === 'stale' ? 'stale' : (status === 'recorded' ? 'recorded' : 'idle'));
+      const liveClass = live ? 'data-table-badge--direct' : 'data-table-badge--unknown';
       return '' +
         '<tr>' +
           '<td style="min-width:230px;"><span class="mono">' + escapeHtml(runId || '--') + '</span><div class="session-key-display-name">' + escapeHtml(sessionKey) + '</div></td>' +
-          '<td style="width:120px;"><span class="data-table-badge">' + escapeHtml(status || '--') + '</span></td>' +
+          '<td style="width:150px;"><span class="data-table-badge">' + escapeHtml(status || '--') + '</span><div class="session-key-display-name">persisted: ' + escapeHtml(persistedStatus || '--') + '</div></td>' +
           '<td style="width:140px;">' + escapeHtml(agentId || '--') + '</td>' +
           '<td style="width:110px;">' + escapeHtml(runtime || '--') + '</td>' +
-          '<td style="width:90px;">' + (live ? '<span class="data-table-badge data-table-badge--direct">live</span>' : '<span class="data-table-badge data-table-badge--unknown">idle</span>') + '</td>' +
+          '<td style="width:100px;"><span class="data-table-badge ' + liveClass + '">' + escapeHtml(liveBadge) + '</span></td>' +
           '<td style="width:130px;">' + escapeHtml(notice || '--') + '</td>' +
           '<td style="width:190px;">' +
             '<button type="button" class="btn btn--sm subagent-status" data-target="' + escapeHtml(target) + '">Status</button> ' +
@@ -144,7 +151,7 @@ public func gatewayBuildControlUiV3PanelsScript(): String {
         '<div class="sessions-head">' +
           '<div>' +
             '<div class="sessions-title">Subagents</div>' +
-            '<div class="sessions-sub">后台运行、状态和日志。</div>' +
+            '<div class="sessions-sub">后台运行、状态和日志。Active ' + activeCount + ' · Stale ' + staleCount + ' · Recorded ' + recordedCount + ' · History ' + terminalCount + '</div>' +
           '</div>' +
           '<button class="btn btn--sm" id="refresh-btn-subagents">Refresh</button>' +
         '</div>' +

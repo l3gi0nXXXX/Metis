@@ -76,7 +76,7 @@ public func handleGatewaySubagentsFamily(method: String, request!: Option<Gatewa
     }
     let action = normalized["subagents.".size..].trimAscii()
     match (action) {
-        case "list" | "status" | "poll" | "logs" | "kill" =>
+        case "list" | "status" | "poll" | "logs" | "kill" | "cleanup" =>
             let req = match (request) {
                 case Some(value) => value
                 case None => GatewayRpcRequest(method)

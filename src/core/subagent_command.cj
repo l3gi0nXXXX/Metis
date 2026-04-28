@@ -31,7 +31,7 @@ public class GatewaySubagentCommandRequest {
 }
 
 public func gatewaySubagentCommandUsage(): String {
-    "Usage: /subagents spawn <agentId> \"<task>\" | list [current|active|stale|history|all|agent:<id>] | status <runId> | logs <runId> | poll <runId> | kill <runId> | steer <runId> \"<message>\" | send <runId> \"<message>\""
+    "Usage: /subagents spawn <agentId> \"<task>\" | list [current|active|stale|recorded|history|all|agent:<id>] | status <runId> | logs <runId> | poll <runId> | kill <runId> | cleanup stale | steer <runId> \"<message>\" | send <runId> \"<message>\""
 }
 
 public func gatewaySubagentCommandExamples(): Array<String> {
@@ -39,12 +39,14 @@ public func gatewaySubagentCommandExamples(): Array<String> {
         "/subagents",
         "/subagents list active",
         "/subagents list stale",
+        "/subagents list recorded",
         "/subagents list history",
         "/subagents list all",
         "/subagents spawn explorer \"inspect the current implementation\"",
         "/subagents status <runId>",
         "/subagents logs <runId>",
         "/subagents kill <runId>",
+        "/subagents cleanup stale",
         "/subagents send <runId> \"continue with tests\""
     ]
 }
@@ -143,7 +145,7 @@ public func parseGatewaySubagentCommandLine(raw: String): GatewaySubagentCommand
             target: if (tokens.size >= 3) { tokens[2] } else { "current" }
         )
     }
-    if (action == "status" || action == "logs" || action == "poll" || action == "kill") {
+    if (action == "status" || action == "logs" || action == "poll" || action == "kill" || action == "cleanup") {
         if (tokens.size < 3) {
             return GatewaySubagentCommandRequest(recognized: true, action: action, error: "${action} requires <runId>")
         }

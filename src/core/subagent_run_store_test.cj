@@ -1,6 +1,6 @@
 package metis.core
 
-import std.fs.{Directory, Path, exists, remove}
+import std.fs.{Directory, File, Path, exists, remove}
 import std.time.DateTime
 import std.unittest.testmacro.*
 
@@ -81,5 +81,45 @@ public class SubagentRunStoreTest {
                 @Expect(gatewaySubagentRunRecordInt(found, "completedAtMs") > 0, true)
             case None => @Expect("missing", "record")
         }
+    }
+
+    @TestCase
+    public func sessionKeyResolutionPrefersLatestAndFuzzyAmbiguityReturnsNone(): Unit {
+        let sessionsRoot = this.tempSessionsRoot("resolve")
+        Directory.create(sessionsRoot, recursive: true)
+        let older = gatewaySubagentCreateRunRecord(sessionsRoot, "child-dup", status: "running")
+        let newer = gatewaySubagentCreateRunRecord(sessionsRoot, "child-dup", status: "queued")
+        let other = gatewaySubagentCreateRunRecord(sessionsRoot, "child-dup-other", status: "queued")
+        let newerRunId = gatewaySubagentRunRecordString(newer, "runId")
+
+        @Expect(gatewaySubagentUpdateRunStatus(sessionsRoot, gatewaySubagentRunRecordString(older, "runId"), "running"), true)
+        @Expect(gatewaySubagentUpdateRunStatus(sessionsRoot, newerRunId, "failed", error: "latest"), true)
+
+        match (gatewaySubagentFindRunBySessionKey(sessionsRoot, "child-dup")) {
+            case Some(found) => @Expect(gatewaySubagentRunRecordString(found, "runId"), newerRunId)
+            case None => @Expect("missing", "latest")
+        }
+        match (gatewaySubagentResolveRunRecord(sessionsRoot, "child-dup")) {
+            case Some(found) => @Expect(gatewaySubagentRunRecordString(found, "runId"), newerRunId)
+            case None => @Expect("missing", "exact")
+        }
+        @Expect(gatewaySubagentResolveRunRecord(sessionsRoot, "dup").isNone(), true)
+        match (gatewaySubagentResolveRunRecord(sessionsRoot, gatewaySubagentRunRecordString(other, "runId"))) {
+            case Some(found) => @Expect(gatewaySubagentRunRecordString(found, "sessionKey"), "child-dup-other")
+            case None => @Expect("missing", "runId")
+        }
+    }
+
+    @TestCase
+    public func newRunIdWithLongSessionKeyKeepsUniqueSuffixVisible(): Unit {
+        let sessionsRoot = this.tempSessionsRoot("long-run-id")
+        Directory.create(sessionsRoot, recursive: true)
+        let longSessionKey = "cli:phase13-workers:child-session-name-that-is-long-enough-to-exceed-file-stem-limit"
+        let first = gatewaySubagentNewRunId(sessionsRoot, longSessionKey)
+        File.writeTo(gatewaySubagentRunRecordPath(sessionsRoot, first), "{}".toArray())
+        let second = gatewaySubagentNewRunId(sessionsRoot, longSessionKey)
+
+        @Expect(first == second, false)
+        @Expect(gatewaySubagentRunRecordPath(sessionsRoot, first).toString() == gatewaySubagentRunRecordPath(sessionsRoot, second).toString(), false)
     }
 }

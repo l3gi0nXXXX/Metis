@@ -1,6 +1,6 @@
 package metis.gateway.tools
 
-import metis.core.{GatewayToolRuntimeContext, gatewaySubagentCreateRunRecord, gatewaySubagentResolveAgent, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordString, gatewayWithToolRuntimeContext}
+import metis.core.{GatewayToolRuntimeContext, gatewaySubagentCreateRunRecord, gatewaySubagentResolveAgent, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordString, gatewaySubagentWriteRunRecord, gatewayWithToolRuntimeContext}
 import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager}
 import metis.core.memory.memorySessionStoreForGatewayUser
 import metis.utils.ShellUtils
@@ -11,7 +11,7 @@ import std.fs.{Directory, File, Path, exists, remove}
 import std.core.Duration
 import std.time.DateTime
 import std.unittest.testmacro.*
-import stdx.encoding.json.{JsonObject, JsonValue}
+import stdx.encoding.json.{JsonBool, JsonObject, JsonValue}
 
 private func withManagedSessionsToolsetTestHome<T>(home: String, block: () -> T): T {
     let actualHome = "${home}-${DateTime.now().toUnixTimeStamp().toNanoseconds()}"
@@ -142,10 +142,13 @@ public class GatewayManagedSessionsToolsetTest {
                 let status = managedSubagentsJson(toolset.subagentsForTest(managedSubagentsSome("status"), managedSubagentsSome(runId), None<String>, None<Int64>))
                 @Expect(managedSubagentsString(status, "action"), "status")
                 @Expect(managedSubagentsString(status, "runId"), runId)
+                @Expect(managedSubagentsString(status, "effectiveState"), "stale")
+                @Expect(status.get("isStale").getOrThrow().asBool().getValue(), true)
                 @Expect(status.get("run").getOrThrow().asObject().get("runId").getOrThrow().asString().getValue(), runId)
 
                 let logs = managedSubagentsJson(toolset.subagentsForTest(managedSubagentsSome("logs"), managedSubagentsSome(runId), None<String>, None<Int64>))
                 @Expect(managedSubagentsString(logs, "action"), "logs")
+                @Expect(managedSubagentsString(logs, "effectiveState"), "stale")
                 @Expect(managedSubagentsString(logs, "logs").contains("analysis ready"), true)
                 @Expect(managedSubagentsString(logs, "transcriptPath").isEmpty(), false)
             }
@@ -177,24 +180,42 @@ public class GatewayManagedSessionsToolsetTest {
                 agentId: "planner",
                 status: "failed"
             )
+            let recorded = gatewaySubagentCreateRunRecord(
+                store.sessionsRoot(),
+                "child-session-recorded",
+                requesterSessionKey: "cli:main",
+                agentId: "custom-recorded",
+                status: "queued"
+            )
+            let metadata = JsonObject()
+            let agent = JsonObject()
+            agent.put("background", JsonBool(false))
+            metadata.put("agent", agent)
+            recorded.put("metadata", metadata)
+            let _ = gatewaySubagentWriteRunRecord(store.sessionsRoot(), recorded)
             let staleRunId = gatewaySubagentRunRecordString(staleRunning, "runId")
             let succeededRunId = gatewaySubagentRunRecordString(succeeded, "runId")
             let failedRunId = gatewaySubagentRunRecordString(failed, "runId")
+            let recordedRunId = gatewaySubagentRunRecordString(recorded, "runId")
             let toolset = GatewayManagedSessionsToolset()
 
             gatewayWithToolRuntimeContext(GatewayToolRuntimeContext("cli", sessionKey: "cli:main")) {
                 let all = managedSubagentsJson(toolset.subagentsForTest(managedSubagentsSome("list"), managedSubagentsSome("all"), None<String>, None<Int64>))
                 @Expect(managedSubagentsString(all, "filter"), "all")
-                @Expect(managedSubagentsInt(all, "total"), 3)
+                @Expect(managedSubagentsInt(all, "total"), 4)
                 @Expect(managedSubagentsInt(all, "activeCount"), 0)
                 @Expect(managedSubagentsInt(all, "staleCount"), 1)
+                @Expect(managedSubagentsInt(all, "recordedCount"), 1)
                 @Expect(managedSubagentsInt(all, "terminalCount"), 2)
-                @Expect(all.get("sessions").getOrThrow().asArray().size(), 3)
-                @Expect(all.get("runs").getOrThrow().asArray().size(), 3)
+                @Expect(all.get("sessions").getOrThrow().asArray().size(), 4)
+                @Expect(all.get("runs").getOrThrow().asArray().size(), 4)
                 @Expect(all.get("active").getOrThrow().asArray().size(), 0)
                 @Expect(all.get("stale").getOrThrow().asArray().size(), 1)
+                @Expect(all.get("recorded").getOrThrow().asArray().size(), 1)
                 @Expect(managedSubagentsString(all.get("stale").getOrThrow().asArray()[0].asObject(), "runId"), staleRunId)
                 @Expect(all.get("stale").getOrThrow().asArray()[0].asObject().get("isStale").getOrThrow().asBool().getValue(), true)
+                @Expect(managedSubagentsString(all.get("recorded").getOrThrow().asArray()[0].asObject(), "runId"), recordedRunId)
+                @Expect(all.get("recorded").getOrThrow().asArray()[0].asObject().get("isRecordedOnly").getOrThrow().asBool().getValue(), true)
 
                 let active = managedSubagentsJson(toolset.subagentsForTest(managedSubagentsSome("list"), managedSubagentsSome("active"), None<String>, None<Int64>))
                 @Expect(managedSubagentsString(active, "filter"), "active")
@@ -211,6 +232,12 @@ public class GatewayManagedSessionsToolsetTest {
                 @Expect(managedSubagentsInt(stale, "staleCount"), 1)
                 @Expect(managedSubagentsInt(stale, "terminalCount"), 0)
                 @Expect(managedSubagentsString(stale.get("sessions").getOrThrow().asArray()[0].asObject(), "runId"), staleRunId)
+
+                let recordedRows = managedSubagentsJson(toolset.subagentsForTest(managedSubagentsSome("list"), managedSubagentsSome("recorded"), None<String>, None<Int64>))
+                @Expect(managedSubagentsString(recordedRows, "filter"), "recorded")
+                @Expect(managedSubagentsInt(recordedRows, "total"), 1)
+                @Expect(managedSubagentsInt(recordedRows, "recordedCount"), 1)
+                @Expect(managedSubagentsString(recordedRows.get("sessions").getOrThrow().asArray()[0].asObject(), "runId"), recordedRunId)
 
                 let history = managedSubagentsJson(toolset.subagentsForTest(managedSubagentsSome("list"), managedSubagentsSome("history"), None<String>, None<Int64>))
                 @Expect(managedSubagentsString(history, "filter"), "history")
@@ -252,6 +279,38 @@ public class GatewayManagedSessionsToolsetTest {
                     case Some(found) => @Expect(gatewaySubagentRunRecordString(found, "status"), "cancelled")
                     case None => @Expect("missing", "record")
                 }
+            }
+        }
+    }
+
+    @TestCase
+    public func subagentsCleanupStaleMarksRunCancelledWithoutDeletingTranscript(): Unit {
+        withManagedSessionsToolsetTestHome("/tmp/metis-managed-subagents-toolset-cleanup-stale") {
+            let store = memorySessionStoreForGatewayUser(CliSettingManager.readGatewaySettings())
+            let sessionKey = "child-session-cleanup"
+            store.appendTranscriptEntry(sessionKey, "assistant", "stale work")
+            let record = gatewaySubagentCreateRunRecord(
+                store.sessionsRoot(),
+                sessionKey,
+                requesterSessionKey: "cli:main",
+                agentId: "reviewer",
+                status: "running",
+                transcriptPath: store.transcriptPath(sessionKey).toString()
+            )
+            let runId = gatewaySubagentRunRecordString(record, "runId")
+            let toolset = GatewayManagedSessionsToolset()
+
+            gatewayWithToolRuntimeContext(GatewayToolRuntimeContext("cli", sessionKey: "cli:main")) {
+                let cleaned = managedSubagentsJson(toolset.subagentsForTest(managedSubagentsSome("cleanup"), managedSubagentsSome("stale"), None<String>, None<Int64>))
+                @Expect(managedSubagentsString(cleaned, "status"), "ok")
+                @Expect(managedSubagentsInt(cleaned, "count"), 1)
+                @Expect(exists(store.transcriptPath(sessionKey)), true)
+                match (gatewaySubagentResolveRunRecord(store.sessionsRoot(), runId)) {
+                    case Some(found) => @Expect(gatewaySubagentRunRecordString(found, "status"), "cancelled")
+                    case None => @Expect("missing", "record")
+                }
+                let stale = managedSubagentsJson(toolset.subagentsForTest(managedSubagentsSome("list"), managedSubagentsSome("stale"), None<String>, None<Int64>))
+                @Expect(managedSubagentsInt(stale, "total"), 0)
             }
         }
     }

@@ -14,8 +14,14 @@ Control existing runs:
 
 ```text
 /subagents list
+/subagents list active
+/subagents list stale
+/subagents list recorded
+/subagents list history
+/subagents list all
 /subagents status <runId>
 /subagents logs <runId>
+/subagents cleanup stale
 /subagents kill <runId>
 /subagents steer <runId> "补充检查配置读取路径"
 ```
@@ -31,6 +37,17 @@ Use the same command shape in a chat or thread:
 ```
 
 The accepted response is sent immediately. Completion, failure, timeout, or cancellation notices are routed back to the requester session/thread recorded on the run.
+
+## State Model
+
+The persisted run record keeps the lifecycle `status`, while the Gateway process knows whether a live future or process still exists. User-facing commands and UI expose the derived `effectiveState` so stale records are not mistaken for active subagents.
+
+- `running` or `queued`: a live background run exists.
+- `stale`: the run record is non-terminal, but no live future/process exists in the current Gateway process.
+- `recorded`: the task was recorded by design, usually from `background: false`, and no live run was started.
+- `succeeded`, `failed`, `cancelled`, `timed_out`: terminal history rows.
+
+Use `effectiveState` or `isActive` to decide whether a subagent is really running. Do not use persisted `status=running` alone for that decision.
 
 ## Natural Language
 
@@ -96,7 +113,8 @@ The Gateway control-ui exposes a Subagents panel. It shows active and historical
 
 - `runId`
 - `sessionKey`
-- status/state
+- `effectiveState`
+- persisted status
 - agent id
 - runtime
 - live process/future state
@@ -124,6 +142,7 @@ subagents.list
 subagents.status
 subagents.logs
 subagents.kill
+subagents.cleanup
 ```
 
 These routes do not bypass Gateway. They call the same managed subagent control path as CLI and Telegram commands.

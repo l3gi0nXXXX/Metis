@@ -106,6 +106,51 @@ public class SubagentPolicyTest {
     }
 
     @TestCase
+    public func maxConcurrentSubagentsCanUseEffectiveActiveRunCountOverride(): Unit {
+        let sessionsRoot = this.tempSessionsRoot("concurrent-effective")
+        Directory.create(sessionsRoot, recursive: true)
+        let _ = gatewaySubagentCreateRunRecord(sessionsRoot, "child-stale-1", status: "running")
+        let _ = gatewaySubagentCreateRunRecord(sessionsRoot, "child-stale-2", status: "queued")
+        var settings = GatewaySubagentPolicyUserSettings()
+        settings.maxConcurrentSubagents = 1
+
+        let allowed = gatewaySubagentEvaluateSpawnPolicy(
+            settings,
+            sessionsRoot,
+            "",
+            "reviewer",
+            "builtin",
+            "subagent",
+            -1,
+            0,
+            "shared",
+            activeRunCountOverride: 0,
+            staleRunCountOverride: 2
+        )
+        @Expect(allowed.allowed, true)
+        @Expect(allowed.activeRunCount, 0)
+        @Expect(allowed.staleRunCount, 2)
+
+        let rejected = gatewaySubagentEvaluateSpawnPolicy(
+            settings,
+            sessionsRoot,
+            "",
+            "reviewer",
+            "builtin",
+            "subagent",
+            -1,
+            0,
+            "shared",
+            activeRunCountOverride: 1,
+            staleRunCountOverride: 2
+        )
+        @Expect(rejected.allowed, false)
+        @Expect(rejected.reason, "max concurrent subagents exceeded")
+        @Expect(rejected.activeRunCount, 1)
+        @Expect(rejected.staleRunCount, 2)
+    }
+
+    @TestCase
     public func maxChildrenPerSessionRejectsWhenRequesterLimitReached(): Unit {
         let sessionsRoot = this.tempSessionsRoot("children")
         Directory.create(sessionsRoot, recursive: true)
