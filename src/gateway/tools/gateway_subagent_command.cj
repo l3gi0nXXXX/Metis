@@ -39,6 +39,7 @@ public func gatewayHandleSubagentsCommandLine(raw: String): Option<String> {
             None<String>,
             None<Int64>,
             None<Int64>,
+            None<String>,
             None<Bool>,
             None<String>,
             None<String>,

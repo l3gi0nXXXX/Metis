@@ -5,7 +5,7 @@ import magic.prelude.*
 
 import metis.core.config.{CliConfig, CliSettingManager}
 import metis.core.memory.{MemorySessionTranscriptStore, memorySessionStoreForGatewayUser}
-import metis.core.{GatewaySubagentAgentSpec, gatewayCurrentToolRuntimeContext, gatewaySubagentBuildBuiltinPrompt, gatewaySubagentBuildCustomPrompt, gatewaySubagentControllerCanAccessRun, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentIsBuiltinAgent, gatewaySubagentListRunRecords, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunState, gatewaySubagentNormalizeBuiltinAgentId, gatewaySubagentNoticeShouldDeliver, gatewaySubagentNoticeTargetSession, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentRenderNotice, gatewaySubagentResolveAgent, gatewaySubagentResolveRunRecord, gatewaySubagentRunMatchesControlFilter, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentRunStatusIsTerminal, gatewaySubagentUpdateNoticeStatus, gatewaySubagentWriteRunRecord}
+import metis.core.{GatewaySubagentAgentSpec, gatewayCurrentToolRuntimeContext, gatewaySubagentBuildBuiltinPrompt, gatewaySubagentBuildContextPrompt, gatewaySubagentBuildCustomPrompt, gatewaySubagentControllerCanAccessRun, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentIsBuiltinAgent, gatewaySubagentListRunRecords, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunState, gatewaySubagentNormalizeBuiltinAgentId, gatewaySubagentNormalizeContextMode, gatewaySubagentNoticeShouldDeliver, gatewaySubagentNoticeTargetSession, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentRenderNotice, gatewaySubagentResolveAgent, gatewaySubagentResolveRunRecord, gatewaySubagentRunMatchesControlFilter, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentRunStatusIsTerminal, gatewaySubagentUpdateNoticeStatus, gatewaySubagentWriteRunRecord}
 import metis.io.PrintUtils
 
 import std.collection.{ArrayList, HashMap}
@@ -339,20 +339,42 @@ public class GatewayManagedSessionsToolset {
         }
     }
 
-    private func buildManagedSubagentPrompt(task: String, cwdHint: String, sessionKey: String, agentId: String, agentSpec!: Option<GatewaySubagentAgentSpec> = None): String {
+    private func buildManagedSubagentPrompt(
+        task: String,
+        cwdHint: String,
+        sessionKey: String,
+        agentId: String,
+        agentSpec!: Option<GatewaySubagentAgentSpec> = None,
+        contextMode!: String = "fresh",
+        parentSessionKey!: String = "",
+        parentHistory!: String = ""
+    ): String {
         let effectiveCwd = if (cwdHint.trimAscii().isEmpty()) {
             CliConfig.cwd.toString()
         } else {
             cwdHint.trimAscii()
         }
+        var basePrompt = ""
         match (agentSpec) {
             case Some(spec) =>
                 if (spec.source == "custom") {
-                    return gatewaySubagentBuildCustomPrompt(task, effectiveCwd, sessionKey, spec)
+                    basePrompt = gatewaySubagentBuildCustomPrompt(task, effectiveCwd, sessionKey, spec)
+                } else {
+                    basePrompt = gatewaySubagentBuildBuiltinPrompt(task, effectiveCwd, sessionKey, agentId)
                 }
-            case None => ()
+            case None => basePrompt = gatewaySubagentBuildBuiltinPrompt(task, effectiveCwd, sessionKey, agentId)
         }
-        gatewaySubagentBuildBuiltinPrompt(task, effectiveCwd, sessionKey, agentId)
+        gatewaySubagentBuildContextPrompt(basePrompt, contextMode, parentSessionKey, sessionKey, parentHistory)
+    }
+
+    private func managedParentContextHistory(contextMode: String, parentSessionKey: String): String {
+        let mode = gatewaySubagentNormalizeContextMode(contextMode)
+        let parent = parentSessionKey.trimAscii()
+        if (mode == "fresh" || parent.isEmpty()) {
+            return ""
+        }
+        let maxEntries: Int64 = if (mode == "fork") { 200 } else { 30 }
+        this.gwStore().formatHistoryAsText(parent, maxEntries)
     }
 
     private func setManagedFuture(sessionKey: String, future: Future<Unit>): Unit {
@@ -751,7 +773,10 @@ public class GatewayManagedSessionsToolset {
         task: String,
         cwdHint: String,
         runTimeoutSeconds!: Int64 = -1,
-        agentSpec!: Option<GatewaySubagentAgentSpec> = None
+        agentSpec!: Option<GatewaySubagentAgentSpec> = None,
+        contextMode!: String = "fresh",
+        parentSessionKey!: String = "",
+        parentHistory!: String = ""
     ): Bool {
         let resolvedSpec = match (agentSpec) {
             case Some(spec) => spec
@@ -764,7 +789,16 @@ public class GatewayManagedSessionsToolset {
         if (!this.tryQueueManagedRun(sessionKey, resolvedAgentId)) {
             return false
         }
-        let prompt = this.buildManagedSubagentPrompt(task, cwdHint, sessionKey, resolvedAgentId, agentSpec: Some(resolvedSpec))
+        let prompt = this.buildManagedSubagentPrompt(
+            task,
+            cwdHint,
+            sessionKey,
+            resolvedAgentId,
+            agentSpec: Some(resolvedSpec),
+            contextMode: contextMode,
+            parentSessionKey: parentSessionKey,
+            parentHistory: parentHistory
+        )
         let spec = this.internalSubagentCommandSpec(
             sessionKey,
             resolvedAgentId,
@@ -898,6 +932,7 @@ public class GatewayManagedSessionsToolset {
             cwd: "Optional working directory hint used when launching the background run.",
             runTimeoutSeconds: "Optional run timeout hint.",
             timeoutSeconds: "Optional legacy timeout hint. Used only when runTimeoutSeconds is omitted.",
+            contextMode: "Optional context inheritance mode for runtime=subagent: fresh, with_context, fork, or thread. Defaults to fresh.",
             thread: "Optional thread mode hint.",
             mode: "Optional spawn mode hint: run or session.",
             cleanup: "Optional cleanup hint: delete or keep.",
@@ -916,6 +951,7 @@ public class GatewayManagedSessionsToolset {
         cwd: Option<String>,
         runTimeoutSeconds: Option<Int64>,
         timeoutSeconds: Option<Int64>,
+        contextMode: Option<String>,
         thread: Option<Bool>,
         mode: Option<String>,
         cleanup: Option<String>,
@@ -933,6 +969,7 @@ public class GatewayManagedSessionsToolset {
             cwd,
             runTimeoutSeconds,
             timeoutSeconds,
+            contextMode,
             thread,
             mode,
             cleanup,
@@ -952,6 +989,7 @@ public class GatewayManagedSessionsToolset {
         cwd: Option<String>,
         runTimeoutSeconds: Option<Int64>,
         timeoutSeconds: Option<Int64>,
+        contextMode: Option<String>,
         thread: Option<Bool>,
         mode: Option<String>,
         cleanup: Option<String>,
@@ -969,6 +1007,7 @@ public class GatewayManagedSessionsToolset {
             cwd,
             runTimeoutSeconds,
             timeoutSeconds,
+            contextMode,
             thread,
             mode,
             cleanup,
@@ -988,6 +1027,7 @@ public class GatewayManagedSessionsToolset {
         cwd: Option<String>,
         runTimeoutSeconds: Option<Int64>,
         timeoutSeconds: Option<Int64>,
+        contextMode: Option<String>,
         thread: Option<Bool>,
         mode: Option<String>,
         cleanup: Option<String>,
@@ -1068,6 +1108,10 @@ public class GatewayManagedSessionsToolset {
             case Some(v) => v.trimAscii()
             case None => ""
         }
+        let contextModeText = gatewaySubagentNormalizeContextMode(match (contextMode) {
+            case Some(v) => v
+            case None => "fresh"
+        })
         let agentSourceText = if (runtimeText == "acp") { "acp" } else { resolvedAgentSpec.source }
         let policyDecision = gatewaySubagentEvaluateSpawnPolicy(
             CliSettingManager.readGatewaySettings().subagents,
@@ -1162,6 +1206,7 @@ public class GatewayManagedSessionsToolset {
         if (effectiveTimeout >= 0) {
             metadata.add("timeoutSeconds=${effectiveTimeout}")
         }
+        metadata.add("contextMode=${contextModeText}")
 
         st.appendTranscriptEntry(sessionKey, "system", "sessions_spawn metadata: ${String.join(metadata.toArray(), delimiter: ", ")}")
 
@@ -1212,6 +1257,7 @@ public class GatewayManagedSessionsToolset {
         if (effectiveTimeout >= 0) {
             result.put("timeoutSeconds", effectiveTimeout.toJsonValue())
         }
+        result.put("contextMode", JsonString(contextModeText))
         let runRecord = gatewaySubagentCreateRunRecord(
             st.sessionsRoot(),
             sessionKey,
@@ -1229,6 +1275,7 @@ public class GatewayManagedSessionsToolset {
             model: match (model) { case Some(v) => v.trimAscii() case None => "" },
             thinking: match (thinking) { case Some(v) => v.trimAscii() case None => "" },
             timeoutSeconds: effectiveTimeout,
+            contextMode: contextModeText,
             transcriptPath: st.transcriptPath(sessionKey).toString()
         )
         let runMetadata = JsonObject()
@@ -1264,8 +1311,19 @@ public class GatewayManagedSessionsToolset {
         if (!streamToText.isEmpty()) {
             result.put("compatNote", JsonString("streamTo is recorded, but this Gateway-managed toolset currently only streams output back into the managed session transcript."))
         }
+        let parentHistory = this.managedParentContextHistory(contextModeText, requesterSessionKey)
         if (runtimeText == "subagent" && resolvedAgentSpec.background) {
-            result.put("liveRunStarted", this.launchManagedSubagentRun(sessionKey, agentIdText, trimmedTask, cwdHint, runTimeoutSeconds: effectiveTimeout, agentSpec: Some(resolvedAgentSpec)).toJsonValue())
+            result.put("liveRunStarted", this.launchManagedSubagentRun(
+                sessionKey,
+                agentIdText,
+                trimmedTask,
+                cwdHint,
+                runTimeoutSeconds: effectiveTimeout,
+                agentSpec: Some(resolvedAgentSpec),
+                contextMode: contextModeText,
+                parentSessionKey: requesterSessionKey,
+                parentHistory: parentHistory
+            ).toJsonValue())
         } else if (runtimeText == "subagent") {
             st.appendTranscriptEntry(sessionKey, "user", trimmedTask)
             result.put("liveRunStarted", JsonBool(false))

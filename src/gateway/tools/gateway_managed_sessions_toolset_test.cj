@@ -247,6 +247,7 @@ public class GatewayManagedSessionsToolsetTest {
                     None<String>,
                     None<Int64>,
                     None<Int64>,
+                    None<String>,
                     None<Bool>,
                     None<String>,
                     None<String>,
@@ -281,6 +282,7 @@ public class GatewayManagedSessionsToolsetTest {
                     None<String>,
                     None<Int64>,
                     None<Int64>,
+                    None<String>,
                     None<Bool>,
                     None<String>,
                     None<String>,
@@ -305,6 +307,49 @@ public class GatewayManagedSessionsToolsetTest {
                 let agent = metadata.get("agent").getOrThrow().asObject()
                 @Expect(managedSubagentsString(agent, "source"), "custom")
                 @Expect(managedSubagentsString(agent, "model"), "openai/gpt-test")
+            }
+        }
+    }
+
+    @TestCase
+    public func sessionsSpawnStoresRequestedContextModeAndParentThread(): Unit {
+        withManagedSessionsToolsetTestHome("/tmp/metis-managed-subagents-context-mode") {
+            createManagedSubagentsCustomAgentFixture("phase10-custom", false)
+            var settings = CliSettingManager.readGatewaySettings()
+            settings.subagents.allowCustomAgents = true
+            let _ = MetisConfigManager.setGatewaySettings(settings)
+            CliSettingManager.invalidate()
+            let store = memorySessionStoreForGatewayUser(CliSettingManager.readGatewaySettings())
+            store.appendTranscriptEntry("telegram:chat:phase10:topic:42", "user", "parent context should be available")
+            let toolset = GatewayManagedSessionsToolset()
+
+            gatewayWithToolRuntimeContext(GatewayToolRuntimeContext("telegram", sessionKey: "telegram:chat:phase10:topic:42")) {
+                let spawned = managedSubagentsJson(toolset.sessionsSpawnForCommand(
+                    "inspect with parent context",
+                    Some("context"),
+                    Some("subagent"),
+                    Some("phase10-custom"),
+                    None<String>,
+                    None<String>,
+                    None<String>,
+                    None<String>,
+                    None<Int64>,
+                    None<Int64>,
+                    Some("with-context"),
+                    None<Bool>,
+                    None<String>,
+                    None<String>,
+                    None<String>,
+                    None<String>
+                ))
+                @Expect(managedSubagentsString(spawned, "status"), "accepted")
+                @Expect(managedSubagentsString(spawned, "contextMode"), "with_context")
+                let runId = managedSubagentsString(spawned, "runId")
+                let status = managedSubagentsJson(toolset.subagentsForTest(managedSubagentsSome("status"), managedSubagentsSome(runId), None<String>, None<Int64>))
+                let run = status.get("run").getOrThrow().asObject()
+                @Expect(managedSubagentsString(run, "contextMode"), "with_context")
+                @Expect(managedSubagentsString(run, "parentSessionKey"), "telegram:chat:phase10:topic:42")
+                @Expect(managedSubagentsString(run, "requesterThreadId"), "42")
             }
         }
     }

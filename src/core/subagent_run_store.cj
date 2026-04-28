@@ -196,6 +196,7 @@ public func gatewaySubagentCreateRunRecord(
     model!: String = "",
     thinking!: String = "",
     timeoutSeconds!: Int64 = -1,
+    contextMode!: String = "fresh",
     transcriptPath!: String = ""
 ): JsonObject {
     let now = subagentNowMs()
@@ -224,7 +225,7 @@ public func gatewaySubagentCreateRunRecord(
     record.put("depth", 1.toJsonValue())
     record.put("parentRunId", JsonString(""))
     record.put("children", JsonArray([]))
-    record.put("contextMode", JsonString("fresh"))
+    record.put("contextMode", JsonString(gatewaySubagentNormalizeContextMode(contextMode)))
     record.put("isolationMode", JsonString("shared"))
     record.put("cwd", JsonString(cwd.trimAscii()))
     record.put("worktreePath", JsonString(""))
