@@ -2,7 +2,7 @@ package metis.gateway.runtime
 
 import magic.jsonable.*
 
-import metis.core.config.{GatewayUserSettings, TelegramCustomCommandUserSettings}
+import metis.core.config.{CliConfig, GatewayUserSettings, TelegramCustomCommandUserSettings}
 import metis.gateway.core.{
     gatewayChannelManagerSummary,
     gatewayChannelRuntimeMarkFailure,
@@ -56,6 +56,7 @@ private func withGatewayChannelsTestHome<T>(block: () -> T): T {
     Directory.create(testHome, recursive: true)
     let oldHome = getVariable("METIS_HOME")
     setVariable("METIS_HOME", testHome)
+    CliConfig.invalidatePathCache()
     try {
         return block()
     } finally {
@@ -63,6 +64,7 @@ private func withGatewayChannelsTestHome<T>(block: () -> T): T {
             case Some(value) => setVariable("METIS_HOME", value)
             case None => setVariable("METIS_HOME", "")
         }
+        CliConfig.invalidatePathCache()
     }
 }
 
@@ -342,63 +344,67 @@ public class GatewayServerMethodsChannelsTest {
 
     @TestCase
     public func channelManagerSummaryExposesRuntimeManagerFields(): Unit {
-        gatewayChannelRuntimeRegisterAccount("phase15-manager", accountId: "acct-a", pluginId: "dingtalk")
-        gatewayChannelRuntimePrimeAccount("phase15-manager", accountId: "acct-a", autoEnabled: true)
-        gatewayChannelRuntimeMarkStarting("phase15-manager", accountId: "acct-a")
-        gatewayChannelRuntimeMarkRunning("phase15-manager", accountId: "acct-a")
-        gatewayChannelRuntimeMarkPull("phase15-manager", accountId: "acct-a", inboundCount: 2)
-        gatewayChannelRuntimeMarkMonitorEnabled("phase15-manager", accountId: "acct-a", enabled: true)
-        gatewayChannelRuntimeMarkMonitorTick("phase15-manager", accountId: "acct-a")
-        gatewayChannelRuntimeMarkFailure(
-            "phase15-manager",
-            accountId: "acct-a",
-            lifecycleState: "backoff",
-            error: "dial failed",
-            backoffMs: 15000
-        )
+        withGatewayChannelsTestHome {
+            gatewayChannelRuntimeRegisterAccount("phase15-manager", accountId: "acct-a", pluginId: "dingtalk")
+            gatewayChannelRuntimePrimeAccount("phase15-manager", accountId: "acct-a", autoEnabled: true)
+            gatewayChannelRuntimeMarkStarting("phase15-manager", accountId: "acct-a")
+            gatewayChannelRuntimeMarkRunning("phase15-manager", accountId: "acct-a")
+            gatewayChannelRuntimeMarkPull("phase15-manager", accountId: "acct-a", inboundCount: 2)
+            gatewayChannelRuntimeMarkMonitorEnabled("phase15-manager", accountId: "acct-a", enabled: true)
+            gatewayChannelRuntimeMarkMonitorTick("phase15-manager", accountId: "acct-a")
+            gatewayChannelRuntimeMarkFailure(
+                "phase15-manager",
+                accountId: "acct-a",
+                lifecycleState: "backoff",
+                error: "dial failed",
+                backoffMs: 15000
+            )
 
-        let manager = gatewayChannelManagerSummary("phase15-manager")
-        @Expect(channelsTestInt(manager, "count"), 1)
-        @Expect(channelsTestInt(manager, "backoff"), 1)
-        @Expect(channelsTestString(manager, "lifecycleState"), "backoff")
-        @Expect(channelsTestString(manager, "taskState"), "recovering")
-        @Expect(channelsTestInt(manager, "taskGeneration") > 0, true)
-        @Expect(channelsTestString(manager, "monitorState"), "enabled")
-        @Expect(channelsTestInt(manager, "monitorEnabledAtMs") > 0, true)
-        @Expect(channelsTestInt(manager, "lastMonitorAtMs") > 0, true)
-        @Expect(channelsTestInt(manager, "lastEventAtMs") > 0, true)
-        @Expect(channelsTestString(manager, "lastError"), "dial failed")
-        @Expect(channelsTestInt(manager, "nextRestartAtMs") > 0, true)
-        @Expect(channelsTestInt(manager, "restartBudget"), 1)
-        @Expect(channelsTestString(manager, "restartBudgetState"), "budgeting")
+            let manager = gatewayChannelManagerSummary("phase15-manager")
+            @Expect(channelsTestInt(manager, "count"), 1)
+            @Expect(channelsTestInt(manager, "backoff"), 1)
+            @Expect(channelsTestString(manager, "lifecycleState"), "backoff")
+            @Expect(channelsTestString(manager, "taskState"), "recovering")
+            @Expect(channelsTestInt(manager, "taskGeneration") > 0, true)
+            @Expect(channelsTestString(manager, "monitorState"), "enabled")
+            @Expect(channelsTestInt(manager, "monitorEnabledAtMs") > 0, true)
+            @Expect(channelsTestInt(manager, "lastMonitorAtMs") > 0, true)
+            @Expect(channelsTestInt(manager, "lastEventAtMs") > 0, true)
+            @Expect(channelsTestString(manager, "lastError"), "dial failed")
+            @Expect(channelsTestInt(manager, "nextRestartAtMs") > 0, true)
+            @Expect(channelsTestInt(manager, "restartBudget"), 1)
+            @Expect(channelsTestString(manager, "restartBudgetState"), "budgeting")
+        }
     }
 
     @TestCase
     public func pluginManagerSummaryAggregatesPluginRuntimeManagerFields(): Unit {
-        gatewayChannelRuntimeRegisterAccount("phase15-plugin-a", accountId: "acct-a", pluginId: "phase15-plugin")
-        gatewayChannelRuntimeRegisterAccount("phase15-plugin-b", accountId: "acct-b", pluginId: "phase15-plugin")
-        gatewayChannelRuntimeMarkStarting("phase15-plugin-a", accountId: "acct-a")
-        gatewayChannelRuntimeMarkRunning("phase15-plugin-a", accountId: "acct-a")
-        gatewayChannelRuntimeMarkMonitorEnabled("phase15-plugin-a", accountId: "acct-a", enabled: true)
-        gatewayChannelRuntimeMarkPull("phase15-plugin-a", accountId: "acct-a", inboundCount: 1)
-        gatewayChannelRuntimeMarkFailure(
-            "phase15-plugin-b",
-            accountId: "acct-b",
-            lifecycleState: "backoff",
-            error: "plugin error",
-            backoffMs: 8000
-        )
+        withGatewayChannelsTestHome {
+            gatewayChannelRuntimeRegisterAccount("phase15-plugin-a", accountId: "acct-a", pluginId: "phase15-plugin")
+            gatewayChannelRuntimeRegisterAccount("phase15-plugin-b", accountId: "acct-b", pluginId: "phase15-plugin")
+            gatewayChannelRuntimeMarkStarting("phase15-plugin-a", accountId: "acct-a")
+            gatewayChannelRuntimeMarkRunning("phase15-plugin-a", accountId: "acct-a")
+            gatewayChannelRuntimeMarkMonitorEnabled("phase15-plugin-a", accountId: "acct-a", enabled: true)
+            gatewayChannelRuntimeMarkPull("phase15-plugin-a", accountId: "acct-a", inboundCount: 1)
+            gatewayChannelRuntimeMarkFailure(
+                "phase15-plugin-b",
+                accountId: "acct-b",
+                lifecycleState: "backoff",
+                error: "plugin error",
+                backoffMs: 8000
+            )
 
-        let manager = gatewayPluginManagerSummary("phase15-plugin")
-        @Expect(channelsTestInt(manager, "count"), 2)
-        @Expect(channelsTestInt(manager, "running"), 1)
-        @Expect(channelsTestString(manager, "monitorState"), "enabled")
-        @Expect(channelsTestInt(manager, "monitorEnabledAtMs") > 0, true)
-        @Expect(channelsTestInt(manager, "lastEventAtMs") > 0, true)
-        @Expect(channelsTestString(manager, "lastError"), "plugin error")
-        @Expect(channelsTestInt(manager, "nextRestartAtMs") > 0, true)
-        @Expect(channelsTestInt(manager, "restartBudget"), 1)
-        @Expect(channelsTestString(manager, "restartBudgetState"), "budgeting")
+            let manager = gatewayPluginManagerSummary("phase15-plugin")
+            @Expect(channelsTestInt(manager, "count"), 2)
+            @Expect(channelsTestInt(manager, "running"), 1)
+            @Expect(channelsTestString(manager, "monitorState"), "enabled")
+            @Expect(channelsTestInt(manager, "monitorEnabledAtMs") > 0, true)
+            @Expect(channelsTestInt(manager, "lastEventAtMs") > 0, true)
+            @Expect(channelsTestString(manager, "lastError"), "plugin error")
+            @Expect(channelsTestInt(manager, "nextRestartAtMs") > 0, true)
+            @Expect(channelsTestInt(manager, "restartBudget"), 1)
+            @Expect(channelsTestString(manager, "restartBudgetState"), "budgeting")
+        }
     }
 
     @TestCase

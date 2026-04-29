@@ -21,6 +21,7 @@ public func gatewayBuiltinExtraConfig(user: GatewayUserSettings, channelId: Stri
         obj.put("streaming", user.telegram.streaming.toJsonValue())
         obj.put("textChunkLimit", user.telegram.textChunkLimit.toJsonValue())
         obj.put("linkPreview", user.telegram.linkPreview.toJsonValue())
+        obj.put("silent", user.telegram.silent.toJsonValue())
         obj.put("webhookUrl", user.telegram.webhookUrl.toJsonValue())
         obj.put("webhookSecret", user.telegram.webhookSecret.toJsonValue())
         obj.put("webhookPath", user.telegram.webhookPath.toJsonValue())

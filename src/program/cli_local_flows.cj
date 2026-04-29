@@ -6,7 +6,7 @@ import magic.jsonable.*
 import metis.cliapp.runEmbeddedPrompt
 import metis.core.config.{CliConfig, MetisConfigManager, MetisPaths, CliSettingManager, cliFindModelProviderDescriptor, cliModelProviderCatalogDescriptors, cliValidateProviderBaseUrl}
 import metis.core.mcp.{mcpConfiguredServerJson, mcpConfiguredServersJson, mcpConfiguredServersPath, mcpResolveSecretOption, mcpSetConfiguredServerJson, mcpUnsetConfiguredServerJson}
-import metis.gateway.channels.telegram.TelegramPairingStore
+import metis.gateway.channels.telegram.telegramPairingAccountStore
 import metis.mcp.{MetisMcpServeOptions, serveMetisChannelMcp}
 import metis.gateway.runtime.{gatewayCliClient, gatewayInvokeCliAgent, gatewayInvokeCliAgentResult}
 import metis.io.PrintUtils
@@ -2103,7 +2103,8 @@ public func cliRunPairingFlow(args: Array<String>): Int64 {
     if (sub == "status" || sub == "list") {
         let channel = argAt(args, 1).trimAscii().toAsciiLower()
         if (channel == "telegram") {
-            let store = TelegramPairingStore()
+            let accountId = "default"
+            let store = telegramPairingAccountStore(accountId: accountId)
             let pending = JsonArray([])
             for (row in store.pendingRows()) {
                 pending.add(row.toJsonValue())
@@ -2116,6 +2117,8 @@ public func cliRunPairingFlow(args: Array<String>): Int64 {
             obj.put("kind", JsonString("pairing"))
             obj.put("surface", JsonString("local"))
             obj.put("channel", JsonString("telegram"))
+            obj.put("accountId", JsonString(accountId))
+            obj.put("storeRoot", JsonString(store.rootPath().toString()))
             obj.put("pending", pending)
             obj.put("approvedSenders", approved)
             obj.put("pendingCount", Int64(pending.size()).toJsonValue())
@@ -2143,12 +2146,15 @@ public func cliRunPairingFlow(args: Array<String>): Int64 {
             PrintUtils.printLine("Usage: metis pairing approve telegram <CODE>")
             return CLI_EXIT_USAGE_ERROR
         }
-        let store = TelegramPairingStore()
+        let accountId = "default"
+        let store = telegramPairingAccountStore(accountId: accountId)
         let approved = store.approve(code)
         let obj = JsonObject()
         obj.put("kind", JsonString("pairing"))
         obj.put("surface", JsonString("local"))
         obj.put("channel", JsonString("telegram"))
+        obj.put("accountId", JsonString(accountId))
+        obj.put("storeRoot", JsonString(store.rootPath().toString()))
         obj.put("code", JsonString(code))
         obj.put("approved", approved.toJsonValue())
         obj.put("recommended", JsonString("send Telegram DM again"))

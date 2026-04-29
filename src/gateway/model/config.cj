@@ -613,6 +613,7 @@ public class TelegramConfig {
     public let blockStreaming: Bool
     public let timeoutSeconds: Int64
     public let linkPreview: Bool
+    public let silent: Bool
     public let webhookUrl: String
     public let webhookSecret: String
     public let webhookPath: String
@@ -651,6 +652,7 @@ public class TelegramConfig {
         blockStreaming!: Bool = false,
         timeoutSeconds!: Int64 = 30,
         linkPreview!: Bool = true,
+        silent!: Bool = false,
         webhookUrl!: String = "",
         webhookSecret!: String = "",
         webhookPath!: String = "/telegram-webhook",
@@ -688,6 +690,7 @@ public class TelegramConfig {
         this.blockStreaming = blockStreaming
         this.timeoutSeconds = timeoutSeconds
         this.linkPreview = linkPreview
+        this.silent = silent
         this.webhookUrl = webhookUrl
         this.webhookSecret = webhookSecret
         this.webhookPath = webhookPath

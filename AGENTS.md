@@ -175,3 +175,39 @@ You can run `cjpm build -i` to build the project. If there are some errors, you 
 ## Code Style
 
 You must write readable code, e.g., adding clear and concise comments.
+
+## Metis Telegram transport notes
+
+When investigating or changing Telegram Bot API connectivity, keep the fix inside the existing
+gateway/channel/session architecture. Telegram proxy details belong in the Telegram channel
+transport layer, not in the main agent, session manager, CLI, control-ui, or unrelated IM adapters.
+
+Telegram Bot API targets are HTTPS URLs such as `https://api.telegram.org/...`. When the configured
+proxy is an HTTP proxy, for example `http://127.0.0.1:7897` or bare `127.0.0.1:7897`, the correct
+native transport path is:
+
+```text
+Metis -> HTTP proxy -> CONNECT api.telegram.org:443 -> stdx TLS -> stdx HTTP request
+```
+
+Do not remove the small native HTTP CONNECT connector just because the final Telegram target is
+HTTPS. The connector is required for HTTPS-through-HTTP-proxy routing; after it establishes the
+tunnel, stdx should still handle TLS and HTTP request semantics.
+
+If a user configures a proxy string like `https://127.0.0.1:7897`, do not assume that the local
+proxy is truly an HTTPS proxy. Many local proxy tools expose an HTTP proxy on that port even when
+users describe the outbound destination as HTTPS. Treat this as a configuration semantics issue:
+
+- HTTP proxy and bare host:port should use HTTP CONNECT for Telegram HTTPS targets.
+- True HTTPS proxy support would require TLS to the proxy first, then CONNECT inside that TLS
+  connection.
+- If true HTTPS proxy is not implemented, return a clear diagnostic instead of silently failing.
+
+Telegram transport work must not fall back to `curl --config`. Tests for this area must not use
+real Telegram network, real bot tokens, proxy credentials, or real user files under `~/.metis`.
+Never log Telegram bot tokens, proxy passwords, or authorization headers.
+
+For Telegram "no reply" reports, first check whether logs contain `Gateway.inbound: channel=telegram`.
+If no inbound event exists, prioritize Telegram polling/transport/proxy/pairing diagnostics. If the
+inbound event exists but no answer is sent, then investigate gateway reply, session, model, and
+send-path behavior.

@@ -13,12 +13,44 @@ import stdx.encoding.json.*
 
 private let TELEGRAM_PAIRING_TTL_MS: Int64 = 60 * 60 * 1000
 private let TELEGRAM_PAIRING_CODE_LEN: Int64 = 8
+private let TELEGRAM_PAIRING_DEFAULT_ACCOUNT_ID = "default"
+
+public func telegramPairingAccountStore(
+    rootDir!: Path = CliConfig.dotDir,
+    accountId!: String = TELEGRAM_PAIRING_DEFAULT_ACCOUNT_ID
+): TelegramPairingStore {
+    TelegramPairingStore(
+        rootDir: telegramPairingAccountStateDir(rootDir, accountId),
+        approvedFallbackRootDir: Some(rootDir)
+    )
+}
+
+public func telegramPairingAccountStateDir(
+    rootDir: Path,
+    accountId: String
+): Path {
+    let root = rootDir.join("gateway-telegram")
+    if (!exists(root)) {
+        Directory.create(root, recursive: true)
+    }
+    let dir = root.join("accounts").join(safeTelegramPairingStateSegment(normalizeTelegramPairingAccountId(accountId)))
+    if (!exists(dir)) {
+        Directory.create(dir, recursive: true)
+    }
+    dir
+}
 
 public class TelegramPairingStore {
     private let rootDir: Path
+    private let approvedFallbackRootDir: Option<Path>
 
-    public init(rootDir!: Path = CliConfig.dotDir) {
+    public init(rootDir!: Path = CliConfig.dotDir, approvedFallbackRootDir!: Option<Path> = None<Path>) {
         this.rootDir = rootDir
+        this.approvedFallbackRootDir = approvedFallbackRootDir
+    }
+
+    public func rootPath(): Path {
+        this.rootDir
     }
 
     public func isApproved(senderId: String): Bool {
@@ -180,26 +212,34 @@ public class TelegramPairingStore {
     }
 
     private func readApprovedSenders(): Array<String> {
-        let path = this.approvedPath()
+        let out = ArrayList<String>()
+        this.appendApprovedSenders(out, this.approvedPath())
+        match (this.approvedFallbackRootDir) {
+            case Some(root) =>
+                this.appendApprovedSenders(out, root.join("credentials").join("telegram-allowFrom.json"))
+            case None => ()
+        }
+        out.toArray()
+    }
+
+    private func appendApprovedSenders(out: ArrayList<String>, path: Path): Unit {
         if (!exists(path)) {
-            return []
+            return
         }
         try {
             let arr = JsonValue.fromStr(String.fromUtf8(File.readFrom(path))).asArray()
-            let out = ArrayList<String>()
             for (item in arr.getItems()) {
                 try {
-                    let text = item.asString().getValue().trimAscii()
-                    if (!text.isEmpty()) {
-                        out.add(text)
+                    let normalized = normalizeTelegramPairingSenderId(item.asString().getValue())
+                    if (!normalized.isEmpty() && !telegramPairingStringListContains(out, normalized)) {
+                        out.add(normalized)
                     }
                 } catch (_: Exception) {
                     ()
                 }
             }
-            out.toArray()
         } catch (_: Exception) {
-            []
+            ()
         }
     }
 
@@ -210,6 +250,44 @@ public class TelegramPairingStore {
         }
         File.writeTo(this.approvedPath(), arr.toJsonString().toArray())
     }
+}
+
+private func telegramPairingStringListContains(values: ArrayList<String>, target: String): Bool {
+    let normalized = target.trimAscii()
+    for (value in values) {
+        if (value.trimAscii() == normalized) {
+            return true
+        }
+    }
+    false
+}
+
+private func normalizeTelegramPairingAccountId(raw: String): String {
+    let trimmed = raw.trimAscii()
+    if (trimmed.isEmpty() || trimmed == "telegram:default") {
+        return TELEGRAM_PAIRING_DEFAULT_ACCOUNT_ID
+    }
+    if (trimmed.startsWith("telegram:")) {
+        return trimmed["telegram:".size..].trimAscii().toAsciiLower()
+    }
+    trimmed.toAsciiLower()
+}
+
+private func safeTelegramPairingStateSegment(raw: String): String {
+    let trimmed = raw.trimAscii()
+    if (trimmed.isEmpty()) {
+        return TELEGRAM_PAIRING_DEFAULT_ACCOUNT_ID
+    }
+    let out = StringBuilder()
+    for (r in trimmed.runes()) {
+        if ((r >= r'a' && r <= r'z') || (r >= r'A' && r <= r'Z') || (r >= r'0' && r <= r'9') || r == r'.' || r == r'_' || r == r'-') {
+            out.append(r)
+        } else {
+            out.append(r'_')
+        }
+    }
+    let normalized = out.toString().trimAscii()
+    if (normalized.isEmpty()) { TELEGRAM_PAIRING_DEFAULT_ACCOUNT_ID } else { normalized }
 }
 
 private func readPairingString(row: JsonObject, key: String): String {

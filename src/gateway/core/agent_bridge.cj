@@ -14,7 +14,7 @@ import metis.core.prompting.{MetisBootstrapBudgetResult, MetisSystemPromptParams
 import metis.core.skills.SkillsPrompt
 import metis.core.skills.tryHandleSkillsCommand
 import metis.cron.{executeGatewayCronCommand, parseSlashCronLine}
-import metis.gateway.tools.{GatewayCronToolset, GatewayFSToolset, GatewayGatewayToolset, GatewayManagedSessionsToolset, GatewayMemoryToolset, GatewayMessageToolset, GatewayPlanToolset, GatewaySessionTranscriptToolset, GatewayShellToolset, GatewayWeatherToolset, gatewayHandleSubagentsCommandLine}
+import metis.gateway.tools.{GatewayCronToolset, GatewayFSToolset, GatewayGatewayToolset, GatewayManagedSessionsToolset, GatewayMemoryToolset, GatewayMessageToolset, GatewayPlanToolset, GatewaySessionTranscriptToolset, GatewayShellToolset, GatewayWeatherToolset, gatewayHandleNativeCommandLine, gatewayHandleSubagentsCommandLine}
 import metis.io.{PrintUtils, AnsiColor, WithColor}
 
 import std.collection.{HashMap, ArrayList, enumerate}
@@ -352,6 +352,10 @@ public class AgentBridge {
                         case Some(out) => return out
                         case None => ()
                     }
+                }
+                match (gatewayHandleNativeCommandLine(trimmedPrompt)) {
+                    case Some(out) => return out
+                    case None => ()
                 }
                 if (trimmedPrompt.startsWith("/skills ")) {
                     if (let Some(out) <- tryHandleSkillsCommand(trimmedPrompt)) {

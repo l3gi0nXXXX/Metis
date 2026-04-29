@@ -9,7 +9,7 @@ import metis.core.config.CliConfig
 import magic.log.LogUtils
 import magic.jsonable.*
 
-import std.collection.{ArrayList, HashMap}
+import std.collection.{ArrayList, HashMap, HashSet}
 import std.convert.Parsable
 import std.fs.{Directory, File, Path, exists}
 import std.sync.Mutex
@@ -88,13 +88,28 @@ public class TelegramAdapter <: ChannelAdapter {
     private let stateRoot: Path
     private let registerNativeCommandsOnStart: Bool
     private let queueMutex = Mutex()
+    private let offsetMutex = Mutex()
     private let inboundQueue = ArrayList<InboundMessage>()
     private let outboundLog = ArrayList<OutboundMessage>()
+    private let pendingUpdateIds = HashSet<String>()
+    private let completedUpdateIds = HashSet<String>()
+    private let completedUpdateIdOrder = ArrayList<String>()
     private var pollingRunner: Option<TelegramPollingRunner> = None<TelegramPollingRunner>
     private var telegramTransportRebuildCount: Int64 = 0
     private var running = false
     private var webhookServer: Option<Server> = None
     private var lastSendError: String = ""
+    private var nativeCommandsLastSyncStatus: String = "not-attempted"
+    private var nativeCommandsLastSyncError: String = ""
+    private var nativeCommandsLastSyncAtMs: Int64 = 0
+    private var nativeCommandsLastSyncCommandCount: Int64 = 0
+    private var webhookRegistrationStatus: String = "not-attempted"
+    private var webhookRegistrationError: String = ""
+    private var webhookRegistrationAtMs: Int64 = 0
+    private var webhookCleanupStatus: String = "not-attempted"
+    private var webhookCleanupError: String = ""
+    private var webhookCleanupAtMs: Int64 = 0
+    private var pollingWebhookCleared: Bool = false
 
     public init(
         config!: TelegramConfig = TelegramConfig(),
@@ -105,8 +120,9 @@ public class TelegramAdapter <: ChannelAdapter {
         this.config = config
         this.registerNativeCommandsOnStart = registerNativeCommandsOnStart
         this.stateRoot = resolvedStateRoot
-        this.pairingStore = TelegramPairingStore(
-            rootDir: telegramAccountStateDirFor(resolvedStateRoot, config.accountId)
+        this.pairingStore = telegramPairingAccountStore(
+            rootDir: resolvedStateRoot,
+            accountId: config.accountId
         )
         this.pollingRunner = Some(TelegramPollingRunner(
             { => this.fetchTelegramUpdates() },
@@ -131,15 +147,16 @@ public class TelegramAdapter <: ChannelAdapter {
         }
         this.running = true
         this.markPollingIdle()
-        if (this.registerNativeCommandsOnStart) {
-            this.syncNativeCommands()
-        }
         if (this.usesWebhookMode()) {
+            this.registerWebhookWithTelegram()
             this.startWebhookServer()
+            this.startNativeCommandSyncIfNeeded()
             PrintUtils.printLine("Telegram adapter started in webhook mode")
             return
         }
+        this.ensurePollingWebhookCleared("polling-start")
         this.startPollingLoop()
+        this.startNativeCommandSyncIfNeeded()
         PrintUtils.printLine("Telegram adapter started in polling mode")
     }
 
@@ -306,6 +323,26 @@ public class TelegramAdapter <: ChannelAdapter {
         this.buildWebhookRegistrationPayload()
     }
 
+    public func debugBuildWebhookDeletePayload(): JsonObject {
+        this.buildWebhookDeletePayload(dropPendingUpdates: false)
+    }
+
+    public func debugRegisterWebhookForTest(): Bool {
+        this.registerWebhookWithTelegram()
+    }
+
+    public func debugEnsurePollingWebhookClearedForTest(reason!: String = "test"): Bool {
+        this.ensurePollingWebhookCleared(reason)
+    }
+
+    public func debugBuildWebhookLifecycleDiagnostics(): JsonObject {
+        this.buildWebhookLifecycleDiagnostics()
+    }
+
+    public func debugValidateWebhookSecretForTest(secretHeader: String): Bool {
+        this.validateWebhookSecretHeader(secretHeader)
+    }
+
     public func debugBuildHealthSnapshot(
         getMeRaw!: String = "{\"ok\":true,\"result\":{\"id\":1,\"is_bot\":true,\"username\":\"bot\"}}",
         webhookInfoRaw!: String = "{\"ok\":true,\"result\":{\"url\":\"\",\"pending_update_count\":0}}"
@@ -381,6 +418,10 @@ public class TelegramAdapter <: ChannelAdapter {
         this.readLastInboundUpdateId()
     }
 
+    public func debugOffsetDiagnosticsForTest(): JsonObject {
+        this.buildOffsetDiagnostics()
+    }
+
     public func debugReadMediaState(): JsonObject {
         this.readMediaState()
     }
@@ -397,23 +438,49 @@ public class TelegramAdapter <: ChannelAdapter {
     }
 
     public func ingestWebhookPayload(payload: String): String {
+        this.ingestTelegramUpdatePayload(payload, dedupeByOffset: false)
+    }
+
+    public func ingestWebhookPayloadWithSecret(payload: String, secretHeader: String): String {
+        if (!this.validateWebhookSecretHeader(secretHeader)) {
+            return "{\"ok\":false,\"error\":\"webhook_secret_mismatch\"}"
+        }
+        this.ingestWebhookPayload(payload)
+    }
+
+    private func validateWebhookSecretHeader(secretHeader: String): Bool {
+        let expected = this.config.webhookSecret.trimAscii()
+        if (expected.isEmpty()) {
+            return true
+        }
+        secretHeader.trimAscii() == expected
+    }
+
+    private func ingestTelegramUpdatePayload(payload: String, dedupeByOffset!: Bool = false): String {
         let root = try {
             JsonValue.fromStr(payload).asObject()
         } catch (_e: Exception) {
             return "{\"ok\":false,\"error\":\"invalid_json\"}"
         }
         let updateId = this.readIntStringField(root, "update_id")
-        if (!updateId.isEmpty()) {
-            this.persistLastInboundUpdateId(updateId)
+        if (!this.beginUpdateProcessing(updateId, dedupeByOffset: dedupeByOffset)) {
+            return "{\"ok\":true,\"ignored\":true,\"duplicate\":true}"
         }
-        if (let Some(inbound) <- this.mapWebhookToInbound(root, payload)) {
-            synchronized(this.queueMutex) {
-                this.inboundQueue.add(inbound)
+        try {
+            if (let Some(inbound) <- this.mapWebhookToInbound(root, payload)) {
+                synchronized(this.queueMutex) {
+                    this.inboundQueue.add(inbound)
+                }
+                this.maybeAckInboundReaction(inbound)
+                this.completeUpdateProcessing(updateId)
+                return "{\"ok\":true}"
             }
-            this.maybeAckInboundReaction(inbound)
-            return "{\"ok\":true}"
+            this.completeUpdateProcessing(updateId)
+            "{\"ok\":true,\"ignored\":true}"
+        } catch (e: Exception) {
+            this.finishUpdateProcessingWithoutWatermark(updateId)
+            "{\"ok\":false,\"error\":\"update_processing_failed\",\"message\":\"${e.message}\"}"
         }
-        "{\"ok\":true,\"ignored\":true}"
     }
 
     private func usesWebhookMode(): Bool {
@@ -439,6 +506,12 @@ public class TelegramAdapter <: ChannelAdapter {
             out.put("secret_token", JsonString(this.config.webhookSecret.trimAscii()))
         }
         out.put("allowed_updates", this.buildAllowedUpdates())
+        out
+    }
+
+    private func buildWebhookDeletePayload(dropPendingUpdates!: Bool = false): JsonObject {
+        let out = JsonObject()
+        out.put("drop_pending_updates", dropPendingUpdates.toJsonValue())
         out
     }
 
@@ -575,6 +648,14 @@ public class TelegramAdapter <: ChannelAdapter {
             .port(this.config.webhookPort)
             .build()
         server.distributor.register(this.config.webhookPath, { ctx =>
+            let secret = ctx.request.headers.getFirst("X-Telegram-Bot-Api-Secret-Token") ??
+                ctx.request.headers.getFirst("x-telegram-bot-api-secret-token") ??
+                ""
+            if (!this.validateWebhookSecretHeader(secret)) {
+                ctx.responseBuilder.status(403)
+                ctx.responseBuilder.body("{\"ok\":false,\"error\":\"webhook_secret_mismatch\"}")
+                return
+            }
             let payload = this.readRequestBody(ctx)
             let ack = this.ingestWebhookPayload(payload)
             ctx.responseBuilder.body(ack)
@@ -594,6 +675,83 @@ public class TelegramAdapter <: ChannelAdapter {
 
     private func startPollingLoop(): Unit {
         this.pollingRunnerOrThrow().start()
+    }
+
+    private func registerWebhookWithTelegram(): Bool {
+        let token = this.effectiveBotToken()
+        this.webhookRegistrationAtMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
+        if (token.isEmpty()) {
+            this.webhookRegistrationStatus = "error"
+            this.webhookRegistrationError = "bot token is empty"
+            return false
+        }
+        let responseOpt = this.telegramJsonPost(
+            this.normalizeApiRoot() + "/bot${token}/setWebhook",
+            this.buildWebhookRegistrationPayload(),
+            context: "setWebhook"
+        )
+        let raw = match (responseOpt) {
+            case Some(v) => v
+            case None =>
+                this.webhookRegistrationStatus = "error"
+                this.webhookRegistrationError = this.lastSendError
+                LogUtils.info("Telegram setWebhook failed: ${this.webhookRegistrationError}")
+                return false
+        }
+        if (this.parseTelegramBoolSuccess(raw, missingDetail: "telegram setWebhook returned ok=false")) {
+            this.webhookRegistrationStatus = "ok"
+            this.webhookRegistrationError = ""
+            return true
+        }
+        this.webhookRegistrationStatus = "error"
+        this.webhookRegistrationError = this.lastSendError
+        LogUtils.info("Telegram setWebhook failed: ${this.webhookRegistrationError}")
+        false
+    }
+
+    private func ensurePollingWebhookCleared(reason: String): Bool {
+        if (this.pollingWebhookCleared) {
+            return true
+        }
+        let token = this.effectiveBotToken()
+        this.webhookCleanupAtMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
+        if (token.isEmpty()) {
+            this.webhookCleanupStatus = "error"
+            this.webhookCleanupError = "bot token is empty"
+            return false
+        }
+        let responseOpt = this.telegramJsonPost(
+            this.normalizeApiRoot() + "/bot${token}/deleteWebhook",
+            this.buildWebhookDeletePayload(dropPendingUpdates: false),
+            context: "deleteWebhook:${reason}"
+        )
+        let raw = match (responseOpt) {
+            case Some(v) => v
+            case None =>
+                this.webhookCleanupStatus = "error"
+                this.webhookCleanupError = this.lastSendError
+                LogUtils.info("Telegram deleteWebhook failed: ${this.webhookCleanupError}")
+                return false
+        }
+        if (this.parseTelegramBoolSuccess(raw, missingDetail: "telegram deleteWebhook returned ok=false")) {
+            this.webhookCleanupStatus = "ok"
+            this.webhookCleanupError = ""
+            this.pollingWebhookCleared = true
+            return true
+        }
+        this.webhookCleanupStatus = "error"
+        this.webhookCleanupError = this.lastSendError
+        LogUtils.info("Telegram deleteWebhook failed: ${this.webhookCleanupError}")
+        false
+    }
+
+    private func startNativeCommandSyncIfNeeded(): Unit {
+        if (!this.registerNativeCommandsOnStart) {
+            return
+        }
+        spawn {
+            this.syncNativeCommands()
+        }
     }
 
     private func runPollingLoop(): Unit {
@@ -672,7 +830,7 @@ public class TelegramAdapter <: ChannelAdapter {
         }
         let msg = message.getOrThrow()
         let messageId = this.readIntStringField(msg, "message_id")
-        let text = this.readInboundTelegramText(msg)
+        let text = this.normalizeInboundTelegramCommandText(this.readInboundTelegramText(msg))
         if (messageId.isEmpty() || text.isEmpty()) {
             return None
         }
@@ -721,6 +879,7 @@ public class TelegramAdapter <: ChannelAdapter {
         if (token.isEmpty()) {
             return ""
         }
+        this.ensurePollingWebhookCleared("before-getUpdates")
         let payload = JsonObject()
         let lastInbound = this.readLastInboundUpdateId()
         if (!lastInbound.isEmpty()) {
@@ -767,7 +926,12 @@ public class TelegramAdapter <: ChannelAdapter {
                 } else {
                     "getUpdates returned ok=false: ${desc}"
                 }
-                this.recordPollError(detail, outcome: "api-error")
+                let outcome = if (this.isTelegramConflictError(root, desc)) { "conflict" } else { "api-error" }
+                this.recordPollError(detail, outcome: outcome)
+                if (outcome == "conflict") {
+                    this.pollingWebhookCleared = false
+                    this.ensurePollingWebhookCleared("conflict-recovery")
+                }
                 LogUtils.info("Telegram getUpdates failed: ${detail}")
                 return 0
             }
@@ -779,8 +943,8 @@ public class TelegramAdapter <: ChannelAdapter {
                         for (item in arr.getItems()) {
                             try {
                                 let update = item.asObject()
-                                let ack = this.ingestWebhookPayload(update.toJsonString())
-                                if (ack.contains("\"ok\":true")) {
+                                let ack = this.ingestTelegramUpdatePayload(update.toJsonString(), dedupeByOffset: true)
+                                if (ack.contains("\"ok\":true") && !ack.contains("\"ignored\":true")) {
                                     accepted += 1
                                 }
                             } catch (_: Exception) {
@@ -963,11 +1127,11 @@ public class TelegramAdapter <: ChannelAdapter {
         }
         let method = this.telegramApiMethodForPayloadKind(kind)
         let url = this.normalizeApiRoot() + "/bot${token}/${method}"
-        let responseOpt = this.telegramJsonPost(url, JsonObject(payload), context: "send:${kind}")
+        let responseOpt = this.telegramJsonPost(url, this.telegramApiBodyForPayload(payload, plainFallback: false), context: "send:${kind}")
         let responseRaw = match (responseOpt) {
             case Some(resp) => resp
             case None =>
-                this.lastSendError = "empty http response"
+                this.setLastSendError("empty http response")
                 return ""
         }
         if (let Some(messageId) <- this.parseTelegramPayloadSuccess(kind, responseRaw)) {
@@ -986,14 +1150,41 @@ public class TelegramAdapter <: ChannelAdapter {
             }
             plainPayload[key] = value
         }
-        let plainResponseOpt = this.telegramJsonPost(url, JsonObject(plainPayload), context: "send:${kind}:plain")
+        let plainResponseOpt = this.telegramJsonPost(url, this.telegramApiBodyForPayload(plainPayload, plainFallback: true), context: "send:${kind}:plain")
         let plainResponseRaw = match (plainResponseOpt) {
             case Some(resp) => resp
             case None =>
-                this.lastSendError = "empty http response"
+                this.setLastSendError("empty http response")
                 return ""
         }
         this.parseTelegramPayloadSuccess(kind, plainResponseRaw) ?? ""
+    }
+
+    private func telegramApiBodyForPayload(payload: HashMap<String, JsonValue>, plainFallback!: Bool): JsonObject {
+        let out = JsonObject()
+        for ((key, value) in payload) {
+            if (key == "kind" || key == "peer" || key == "plain_text" || key == "plain_caption") {
+                continue
+            }
+            if (plainFallback && key == "text") {
+                match (payload.get("plain_text")) {
+                    case Some(plain) =>
+                        out.put("text", plain)
+                        continue
+                    case None => ()
+                }
+            }
+            if (plainFallback && key == "caption") {
+                match (payload.get("plain_caption")) {
+                    case Some(plain) =>
+                        out.put("caption", plain)
+                        continue
+                    case None => ()
+                }
+            }
+            out.put(key, value)
+        }
+        out
     }
 
     private func parseTelegramPayloadSuccess(kind: String, raw: String): Option<String> {
@@ -1018,19 +1209,19 @@ public class TelegramAdapter <: ChannelAdapter {
             }
             if (!ok) {
                 let desc = this.readStringField(jo, "description")
-                this.lastSendError = if (desc.isEmpty()) { "telegram api returned ok=false" } else { desc }
+                this.setLastSendError(if (desc.isEmpty()) { "telegram api returned ok=false" } else { desc })
                 return None<String>
             }
             let result = this.readObjectField(jo, "result")
             let messageId = this.readIntStringField(result, "message_id")
             if (messageId.isEmpty()) {
-                this.lastSendError = "telegram api missing result.message_id"
+                this.setLastSendError("telegram api missing result.message_id")
                 return None<String>
             }
             this.lastSendError = ""
             Some(messageId)
         } catch (e: Exception) {
-            this.lastSendError = "telegram send parse failed: ${e.message}"
+            this.setLastSendError("telegram send parse failed: ${e.message}")
             None<String>
         }
     }
@@ -1044,13 +1235,13 @@ public class TelegramAdapter <: ChannelAdapter {
             }
             if (!ok) {
                 let desc = this.readStringField(jo, "description")
-                this.lastSendError = if (desc.isEmpty()) { missingDetail } else { desc }
+                this.setLastSendError(if (desc.isEmpty()) { missingDetail } else { desc })
                 return false
             }
             this.lastSendError = ""
             true
         } catch (e: Exception) {
-            this.lastSendError = "telegram bool parse failed: ${e.message}"
+            this.setLastSendError("telegram bool parse failed: ${e.message}")
             false
         }
     }
@@ -1064,19 +1255,19 @@ public class TelegramAdapter <: ChannelAdapter {
             }
             if (!ok) {
                 let desc = this.readStringField(jo, "description")
-                this.lastSendError = if (desc.isEmpty()) { "telegram api returned ok=false" } else { desc }
+                this.setLastSendError(if (desc.isEmpty()) { "telegram api returned ok=false" } else { desc })
                 return false
             }
             let result = this.readObjectField(jo, "result")
             let threadId = this.readIntStringField(result, "message_thread_id")
             if (threadId.isEmpty()) {
-                this.lastSendError = "telegram api missing result.message_thread_id"
+                this.setLastSendError("telegram api missing result.message_thread_id")
                 return false
             }
             this.lastSendError = ""
             true
         } catch (e: Exception) {
-            this.lastSendError = "telegram topic parse failed: ${e.message}"
+            this.setLastSendError("telegram topic parse failed: ${e.message}")
             false
         }
     }
@@ -1171,12 +1362,31 @@ public class TelegramAdapter <: ChannelAdapter {
         offset.put("persistenceEnabled", true.toJsonValue())
         offset.put("accountId", JsonString(this.effectiveAccountId()))
         offset.put("botId", JsonString(this.effectiveBotId()))
+        let offsetDiagnostics = this.buildOffsetDiagnostics()
+        offset.put("pendingUpdateCount", offsetDiagnostics.get("pendingUpdateCount") ?? 0.toJsonValue())
+        offset.put("dedupeCacheSize", offsetDiagnostics.get("dedupeCacheSize") ?? 0.toJsonValue())
         out.put("offset", offset)
         out.put("account", account)
         out.put("media", media)
         out.put("polling", polling)
+        out.put("webhookLifecycle", this.buildWebhookLifecycleDiagnostics())
+        out.put("nativeCommands", this.buildNativeCommandDiagnostics())
         out.put("getMe", getMe)
         out.put("webhookInfo", webhookInfo)
+        out
+    }
+
+    private func buildWebhookLifecycleDiagnostics(): JsonObject {
+        let out = JsonObject()
+        out.put("mode", JsonString(if (this.usesWebhookMode()) { "webhook" } else { "polling" }))
+        out.put("registrationStatus", JsonString(this.webhookRegistrationStatus))
+        out.put("registrationError", JsonString(this.webhookRegistrationError))
+        out.put("registrationAtMs", this.webhookRegistrationAtMs.toJsonValue())
+        out.put("cleanupStatus", JsonString(this.webhookCleanupStatus))
+        out.put("cleanupError", JsonString(this.webhookCleanupError))
+        out.put("cleanupAtMs", this.webhookCleanupAtMs.toJsonValue())
+        out.put("pollingWebhookCleared", this.pollingWebhookCleared.toJsonValue())
+        out.put("secretConfigured", (!this.config.webhookSecret.trimAscii().isEmpty()).toJsonValue())
         out
     }
 
@@ -1212,6 +1422,19 @@ public class TelegramAdapter <: ChannelAdapter {
         this.telegramAccountStateDir().join("offset-state.json")
     }
 
+    private func buildOffsetDiagnostics(): JsonObject {
+        synchronized(this.offsetMutex) {
+            let out = JsonObject()
+            out.put("lastInboundUpdateId", JsonString(this.readLastInboundUpdateId()))
+            out.put("pendingUpdateCount", this.pendingUpdateIds.size.toJsonValue())
+            out.put("dedupeCacheSize", this.completedUpdateIds.size.toJsonValue())
+            out.put("statePath", JsonString(this.offsetStatePath().toString()))
+            out.put("accountId", JsonString(this.effectiveAccountId()))
+            out.put("botId", JsonString(this.effectiveBotId()))
+            out
+        }
+    }
+
     private func mediaStatePath(): Path {
         this.telegramAccountStateDir().join("media-state.json")
     }
@@ -1241,6 +1464,78 @@ public class TelegramAdapter <: ChannelAdapter {
             ""
         } catch (_: Exception) {
             ""
+        }
+    }
+
+    private func beginUpdateProcessing(updateId: String, dedupeByOffset!: Bool = false): Bool {
+        let normalized = updateId.trimAscii()
+        if (normalized.isEmpty()) {
+            return true
+        }
+        synchronized(this.offsetMutex) {
+            if (this.pendingUpdateIds.contains(normalized)) {
+                return false
+            }
+            if (dedupeByOffset) {
+                if (this.completedUpdateIds.contains(normalized)) {
+                    return false
+                }
+                let watermark = this.readLastInboundUpdateId()
+                if (this.updateIdLessThanOrEqual(normalized, watermark)) {
+                    this.rememberCompletedUpdateId(normalized)
+                    return false
+                }
+            }
+            this.pendingUpdateIds.add(normalized)
+            true
+        }
+    }
+
+    private func completeUpdateProcessing(updateId: String): Unit {
+        let normalized = updateId.trimAscii()
+        if (normalized.isEmpty()) {
+            return
+        }
+        synchronized(this.offsetMutex) {
+            this.pendingUpdateIds.remove(normalized)
+            this.rememberCompletedUpdateId(normalized)
+            this.persistLastInboundUpdateId(normalized)
+        }
+    }
+
+    private func finishUpdateProcessingWithoutWatermark(updateId: String): Unit {
+        let normalized = updateId.trimAscii()
+        if (normalized.isEmpty()) {
+            return
+        }
+        synchronized(this.offsetMutex) {
+            this.pendingUpdateIds.remove(normalized)
+        }
+    }
+
+    private func rememberCompletedUpdateId(updateId: String): Unit {
+        if (updateId.isEmpty() || this.completedUpdateIds.contains(updateId)) {
+            return
+        }
+        this.completedUpdateIds.add(updateId)
+        this.completedUpdateIdOrder.add(updateId)
+        while (this.completedUpdateIdOrder.size > 256) {
+            let evicted = this.completedUpdateIdOrder[0]
+            this.completedUpdateIdOrder.remove(at: 0)
+            this.completedUpdateIds.remove(evicted)
+        }
+    }
+
+    private func updateIdLessThanOrEqual(updateId: String, watermark: String): Bool {
+        let left = updateId.trimAscii()
+        let right = watermark.trimAscii()
+        if (left.isEmpty() || right.isEmpty()) {
+            return false
+        }
+        try {
+            return Int64.parse(left) <= Int64.parse(right)
+        } catch (_: Exception) {
+            false
         }
     }
 
@@ -1417,15 +1712,30 @@ public class TelegramAdapter <: ChannelAdapter {
         }
     }
 
+    private func isTelegramConflictError(root: JsonObject, desc: String): Bool {
+        let lower = desc.toAsciiLower()
+        if (lower.contains("conflict") || lower.contains("409")) {
+            return true
+        }
+        match (root.get("error_code")) {
+            case Some(v) =>
+                try { return v.asInt().getValue() == 409 } catch (_: Exception) { () }
+            case None => ()
+        }
+        false
+    }
+
     private func shouldRetryWithoutParseMode(): Bool {
         let reason = this.lastSendError.toAsciiLower()
         reason.contains("parse entities") || reason.contains("can't parse")
     }
 
     private func syncNativeCommands(): Bool {
+        this.nativeCommandsLastSyncAtMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
+        this.nativeCommandsLastSyncCommandCount = this.resolvedTelegramCommandMenu().size
         let token = this.effectiveBotToken()
         if (token.isEmpty()) {
-            this.lastSendError = "bot token is empty"
+            this.setNativeCommandsSyncError("bot token is empty")
             return false
         }
         let responseOpt = this.telegramJsonPost(
@@ -1436,15 +1746,40 @@ public class TelegramAdapter <: ChannelAdapter {
         let responseRaw = match (responseOpt) {
             case Some(resp) => resp
             case None =>
-                this.lastSendError = "empty http response"
+                this.setNativeCommandsSyncError("empty http response")
                 LogUtils.info("Telegram setMyCommands failed: ${this.lastSendError}")
                 return false
         }
         let ok = this.parseTelegramBoolSuccess(responseRaw, missingDetail: "telegram setMyCommands returned ok=false")
         if (!ok) {
+            this.setNativeCommandsSyncError(this.lastSendError)
             LogUtils.info("Telegram setMyCommands failed: ${this.lastSendError}")
+        } else {
+            this.nativeCommandsLastSyncStatus = "ok"
+            this.nativeCommandsLastSyncError = ""
         }
         ok
+    }
+
+    private func setNativeCommandsSyncError(message: String): Unit {
+        this.setLastSendError(message)
+        this.nativeCommandsLastSyncStatus = "error"
+        this.nativeCommandsLastSyncError = this.lastSendError
+    }
+
+    private func buildNativeCommandDiagnostics(): JsonObject {
+        let out = JsonObject()
+        let nativeMode = this.config.commandsNative.trimAscii().toAsciiLower()
+        let builtinsEnabled = nativeMode != "off" && nativeMode != "false" && nativeMode != "disabled"
+        out.put("mode", JsonString(if (nativeMode.isEmpty()) { "auto" } else { nativeMode }))
+        out.put("builtinsEnabled", builtinsEnabled.toJsonValue())
+        out.put("customCommandCount", this.config.customCommands.size.toJsonValue())
+        out.put("resolvedCommandCount", this.resolvedTelegramCommandMenu().size.toJsonValue())
+        out.put("lastSyncStatus", JsonString(this.nativeCommandsLastSyncStatus))
+        out.put("lastSyncError", JsonString(this.nativeCommandsLastSyncError))
+        out.put("lastSyncAtMs", this.nativeCommandsLastSyncAtMs.toJsonValue())
+        out.put("lastSyncCommandCount", this.nativeCommandsLastSyncCommandCount.toJsonValue())
+        out
     }
 
     private func buildNativeCommandsPayload(): JsonObject {
@@ -1507,6 +1842,25 @@ public class TelegramAdapter <: ChannelAdapter {
             }
         }
         normalized
+    }
+
+    private func normalizeInboundTelegramCommandText(raw: String): String {
+        let trimmed = raw.trimAscii()
+        if (!trimmed.startsWith("/")) {
+            return trimmed
+        }
+        let parts = trimmed.split(" ", 2)
+        let token = parts[0]
+        let tail = if (parts.size > 1) { parts[1].trimAscii() } else { "" }
+        let normalizedToken = match (token.indexOf("@")) {
+            case Some(idx) =>
+                if (idx > 1) { token[..idx] } else { token }
+            case None => token
+        }
+        if (tail.isEmpty()) {
+            return normalizedToken
+        }
+        "${normalizedToken} ${tail}"
     }
 
     private func buildSendPayloads(message: OutboundMessage): Array<HashMap<String, JsonValue>> {
@@ -1575,8 +1929,10 @@ public class TelegramAdapter <: ChannelAdapter {
             body["peer"] = JsonString(normalizedPeer)
             body["chat_id"] = JsonString(chatId)
             body["text"] = JsonString(this.telegramEscapeHtml(chunks[i]))
+            body["plain_text"] = JsonString(chunks[i])
             body["disable_web_page_preview"] = (!this.config.linkPreview).toJsonValue()
             body["parse_mode"] = JsonString("HTML")
+            this.applyTelegramSilentOption(body)
             if (!threadId.isEmpty() && replyInThread) {
                 body["message_thread_id"] = JsonString(threadId)
             }
@@ -1602,6 +1958,7 @@ public class TelegramAdapter <: ChannelAdapter {
         body["peer"] = JsonString(normalizedPeer)
         body["chat_id"] = JsonString(chatId)
         body["question"] = JsonString(question)
+        this.applyTelegramSilentOption(body)
         let optionsJson = JsonArray([])
         for (one in options) {
             optionsJson.add(JsonString(one))
@@ -1631,6 +1988,7 @@ public class TelegramAdapter <: ChannelAdapter {
         body["chat_id"] = JsonString(this.normalizePeerId(normalizedPeer))
         body["message_id"] = JsonString(targetMessageId)
         body["text"] = JsonString(this.telegramEscapeHtml(content))
+        body["plain_text"] = JsonString(content)
         body["parse_mode"] = JsonString("HTML")
         body["disable_web_page_preview"] = (!this.config.linkPreview).toJsonValue()
         body
@@ -1683,6 +2041,7 @@ public class TelegramAdapter <: ChannelAdapter {
         body["peer"] = JsonString(normalizedPeer)
         body["chat_id"] = JsonString(chatId)
         body["sticker"] = JsonString(fileId)
+        this.applyTelegramSilentOption(body)
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
@@ -1706,8 +2065,10 @@ public class TelegramAdapter <: ChannelAdapter {
         body["photo"] = JsonString(fileId)
         if (!caption.trimAscii().isEmpty()) {
             body["caption"] = JsonString(this.telegramEscapeHtml(caption))
+            body["plain_caption"] = JsonString(caption)
             body["parse_mode"] = JsonString("HTML")
         }
+        this.applyTelegramSilentOption(body)
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
@@ -1731,8 +2092,10 @@ public class TelegramAdapter <: ChannelAdapter {
         body["document"] = JsonString(fileId)
         if (!caption.trimAscii().isEmpty()) {
             body["caption"] = JsonString(this.telegramEscapeHtml(caption))
+            body["plain_caption"] = JsonString(caption)
             body["parse_mode"] = JsonString("HTML")
         }
+        this.applyTelegramSilentOption(body)
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
@@ -1756,8 +2119,10 @@ public class TelegramAdapter <: ChannelAdapter {
         body["audio"] = JsonString(fileId)
         if (!caption.trimAscii().isEmpty()) {
             body["caption"] = JsonString(this.telegramEscapeHtml(caption))
+            body["plain_caption"] = JsonString(caption)
             body["parse_mode"] = JsonString("HTML")
         }
+        this.applyTelegramSilentOption(body)
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
@@ -1781,8 +2146,10 @@ public class TelegramAdapter <: ChannelAdapter {
         body["voice"] = JsonString(fileId)
         if (!caption.trimAscii().isEmpty()) {
             body["caption"] = JsonString(this.telegramEscapeHtml(caption))
+            body["plain_caption"] = JsonString(caption)
             body["parse_mode"] = JsonString("HTML")
         }
+        this.applyTelegramSilentOption(body)
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
@@ -1806,8 +2173,10 @@ public class TelegramAdapter <: ChannelAdapter {
         body["video"] = JsonString(fileId)
         if (!caption.trimAscii().isEmpty()) {
             body["caption"] = JsonString(this.telegramEscapeHtml(caption))
+            body["plain_caption"] = JsonString(caption)
             body["parse_mode"] = JsonString("HTML")
         }
+        this.applyTelegramSilentOption(body)
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
@@ -1829,6 +2198,7 @@ public class TelegramAdapter <: ChannelAdapter {
         body["peer"] = JsonString(normalizedPeer)
         body["chat_id"] = JsonString(chatId)
         body["video_note"] = JsonString(fileId)
+        this.applyTelegramSilentOption(body)
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
@@ -1917,6 +2287,12 @@ public class TelegramAdapter <: ChannelAdapter {
 
     private func effectiveReplyToMessageId(replyToMessageId: Option<String>): Option<String> {
         replyToMessageId
+    }
+
+    private func applyTelegramSilentOption(body: HashMap<String, JsonValue>): Unit {
+        if (this.config.silent) {
+            body["disable_notification"] = true.toJsonValue()
+        }
     }
 
     private func effectiveReplyInThread(replyInThread: Bool): Bool {
@@ -2543,15 +2919,16 @@ public class TelegramAdapter <: ChannelAdapter {
     }
 
     private func isPollingContext(context: String): Bool {
-        context.trimAscii() == "getUpdates"
+        let normalized = context.trimAscii()
+        normalized == "getUpdates" || normalized.startsWith("deleteWebhook:")
     }
 
     private func recordTelegramRequestError(context: String, detail: String, outcome!: String = "request-error"): Unit {
-        let message = "${context} ${detail}".trimAscii()
+        let message = this.redactTelegramSensitive("${context} ${detail}".trimAscii())
         if (this.isPollingContext(context)) {
             this.recordPollError(message, outcome: outcome)
         } else {
-            this.lastSendError = message
+            this.setLastSendError(message)
         }
     }
 
@@ -2575,10 +2952,40 @@ public class TelegramAdapter <: ChannelAdapter {
             return Some(response.body)
         }
         let outcome = if (response.outcome.trimAscii().isEmpty()) { "request-error" } else { response.outcome.trimAscii() }
-        let detail = if (response.error.trimAscii().isEmpty()) { "transport failed" } else { response.error.trimAscii() }
+        let detail = this.redactTelegramSensitive(if (response.error.trimAscii().isEmpty()) { "transport failed" } else { response.error.trimAscii() })
         this.recordTelegramRequestError(context, "transport failed: ${detail}", outcome: outcome)
         LogUtils.info("Telegram ${context} failed: ${context} transport failed: ${detail}")
         None
+    }
+
+    private func setLastSendError(message: String): Unit {
+        this.lastSendError = this.redactTelegramSensitive(message)
+    }
+
+    private func redactTelegramSensitive(message: String): String {
+        var out = TelegramTransport().redactUrl(message)
+        let token = this.effectiveBotToken().trimAscii()
+        if (!token.isEmpty()) {
+            out = out.replace(token, "<redacted>")
+        }
+        let proxy = this.config.proxy.trimAscii()
+        if (!proxy.isEmpty()) {
+            out = out.replace(proxy, this.redactTelegramProxy(proxy))
+        }
+        out
+    }
+
+    private func redactTelegramProxy(proxy: String): String {
+        match (proxy.indexOf("://")) {
+            case Some(schemeIdx) =>
+                let prefixEnd = schemeIdx + 3
+                let rest = proxy[prefixEnd..]
+                match (rest.indexOf("@")) {
+                    case Some(atIdx) => proxy[..prefixEnd] + "<redacted>@" + rest[atIdx + 1..]
+                    case None => proxy
+                }
+            case None => proxy
+        }
     }
 
     private func readStringField(obj: JsonObject, key: String): String {

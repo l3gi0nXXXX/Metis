@@ -377,6 +377,7 @@ private func mergeTelegram(user: GatewayUserSettings): TelegramConfig {
         blockStreaming: user.telegram.blockStreaming,
         timeoutSeconds: user.telegram.timeoutSeconds,
         linkPreview: user.telegram.linkPreview,
+        silent: user.telegram.silent,
         webhookUrl: webhookUrl,
         webhookSecret: webhookSecret,
         webhookPath: user.telegram.webhookPath.trimAscii(),

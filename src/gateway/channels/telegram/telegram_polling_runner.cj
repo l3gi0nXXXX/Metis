@@ -29,6 +29,7 @@ public class TelegramPollingRunner {
     private var transportRebuildCount: Int64 = 0
     private var watchdogStallMs: Int64 = 45000
     private var watchdogIntervalMs: Int64 = 500
+    private var loopGeneration: Int64 = 0
 
     public init(
         fetchUpdates: () -> String,
@@ -55,9 +56,11 @@ public class TelegramPollingRunner {
             this.pollingState = "idle"
             this.lastOutcome = "idle"
             this.nextRetryAtMs = 0
+            this.loopGeneration += 1
         }
+        let generation = this.currentLoopGeneration()
         spawn {
-            this.runLoop()
+            this.runLoop(generation)
         }
         this.startWatchdog()
     }
@@ -184,15 +187,50 @@ public class TelegramPollingRunner {
         }
     }
 
-    private func runLoop(): Unit {
-        while (this.isActive()) {
-            let _ = this.runIteration()
-            let backoffMs = this.currentBackoffMs()
+    private func runLoop(generation: Int64): Unit {
+        while (this.isActiveForGeneration(generation)) {
+            let _ = this.runIterationForGeneration(generation)
+            if (!this.isActiveForGeneration(generation)) {
+                return
+            }
+            let backoffMs = this.currentBackoffMsWithJitter()
             if (backoffMs > 0) {
                 this.markBackoff(backoffMs)
                 this.waitForBackoff(backoffMs)
             }
         }
+    }
+
+    private func runIterationForGeneration(generation: Int64): Int64 {
+        this.markStarted()
+        try {
+            let raw = this.fetchUpdates()
+            if (!this.isActiveForGeneration(generation)) {
+                return 0
+            }
+            if (!raw.trimAscii().isEmpty()) {
+                return this.ingestUpdates(raw)
+            }
+        } catch (e: Exception) {
+            if (this.isActiveForGeneration(generation)) {
+                this.recordError("polling iteration exception: ${e.message}", outcome: "exception")
+            }
+        }
+        0
+    }
+
+    private func currentBackoffMsWithJitter(): Int64 {
+        let base = this.currentBackoffMs()
+        if (base <= 0) {
+            return 0
+        }
+        let cap = if (base / 4 < 1000) { base / 4 } else { 1000 }
+        if (cap <= 0) {
+            return base
+        }
+        let jitter = this.nowMs() % (cap + 1)
+        let next = base + jitter
+        if (next > 30000) { 30000 } else { next }
     }
 
     private func startWatchdog(): Unit {
@@ -221,6 +259,7 @@ public class TelegramPollingRunner {
     private func checkWatchdogStall(): Unit {
         let now = this.nowMs()
         var shouldRebuild = false
+        var restartGeneration: Int64 = 0
         synchronized(this.stateLock) {
             if (!this.running || !this.shouldContinue()) {
                 return
@@ -243,10 +282,16 @@ public class TelegramPollingRunner {
             this.consecutiveFailures += 1
             this.watchdogRestartCount += 1
             this.transportRebuildCount += 1
+            this.loopGeneration += 1
+            restartGeneration = this.loopGeneration
             shouldRebuild = true
         }
         if (shouldRebuild) {
             this.rebuildTransport()
+            let generationToRestart = restartGeneration
+            spawn {
+                this.runLoop(generationToRestart)
+            }
         }
     }
 
@@ -286,6 +331,24 @@ public class TelegramPollingRunner {
             localRunning = this.running
         }
         localRunning && this.shouldContinue()
+    }
+
+    private func isActiveForGeneration(generation: Int64): Bool {
+        var localRunning = false
+        var localGeneration: Int64 = 0
+        synchronized(this.stateLock) {
+            localRunning = this.running
+            localGeneration = this.loopGeneration
+        }
+        localRunning && localGeneration == generation && this.shouldContinue()
+    }
+
+    private func currentLoopGeneration(): Int64 {
+        var generation: Int64 = 0
+        synchronized(this.stateLock) {
+            generation = this.loopGeneration
+        }
+        generation
     }
 
     private func watchdogShouldRun(): Bool {

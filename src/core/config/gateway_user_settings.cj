@@ -315,6 +315,7 @@ public struct TelegramUserSettings {
     public var blockStreaming: Bool = false
     public var timeoutSeconds: Int64 = 30
     public var linkPreview: Bool = true
+    public var silent: Bool = false
     public var webhookUrl: String = ""
     public var webhookSecret: String = ""
     public var webhookPath: String = "/telegram-webhook"
