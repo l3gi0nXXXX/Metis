@@ -40,11 +40,21 @@ public class TelegramAdapter <: ChannelAdapter {
     private let stateRoot: Path
     private let registerNativeCommandsOnStart: Bool
     private let queueMutex = Mutex()
+    private let pollStateMutex = Mutex()
     private let inboundQueue = ArrayList<InboundMessage>()
     private let outboundLog = ArrayList<OutboundMessage>()
     private var running = false
     private var webhookServer: Option<Server> = None
     private var lastSendError: String = ""
+    private var pollingState: String = "idle"
+    private var lastPollError: String = ""
+    private var lastPollErrorAtMs: Int64 = 0
+    private var lastPollSuccessAtMs: Int64 = 0
+    private var lastPollStartedAtMs: Int64 = 0
+    private var lastPollFinishedAtMs: Int64 = 0
+    private var consecutivePollFailures: Int64 = 0
+    private var nextPollRetryAtMs: Int64 = 0
+    private var lastPollOutcome: String = "idle"
 
     public init(
         config!: TelegramConfig = TelegramConfig(),
@@ -73,6 +83,7 @@ public class TelegramAdapter <: ChannelAdapter {
             return
         }
         this.running = true
+        this.markPollingIdle()
         if (this.registerNativeCommandsOnStart) {
             this.syncNativeCommands()
         }
@@ -87,6 +98,7 @@ public class TelegramAdapter <: ChannelAdapter {
 
     public func stop(): Unit {
         this.running = false
+        this.markPollingStopped()
         if (let Some(server) <- this.webhookServer) {
             try {
                 server.close()
@@ -252,6 +264,18 @@ public class TelegramAdapter <: ChannelAdapter {
         this.buildTelegramHealthSnapshot(getMeRaw, webhookInfoRaw)
     }
 
+    public func debugBuildPollingDiagnosticSnapshot(): JsonObject {
+        this.buildPollingDiagnosticSnapshot()
+    }
+
+    public func debugCurrentPollBackoffMsForTest(): Int64 {
+        this.currentPollBackoffMs()
+    }
+
+    public func debugLastSendErrorForTest(): String {
+        this.lastSendError
+    }
+
     public func debugBuildLiveProbe(): JsonObject {
         let out = JsonObject()
         out.put("supported", true.toJsonValue())
@@ -397,19 +421,142 @@ public class TelegramAdapter <: ChannelAdapter {
     private func runPollingLoop(): Unit {
         while (this.running && !this.usesWebhookMode()) {
             let _ = this.runPollingIteration()
+            let backoffMs = this.currentPollBackoffMs()
+            if (backoffMs > 0) {
+                this.markPollBackoff(backoffMs)
+                this.waitForPollBackoff(backoffMs)
+            }
         }
     }
 
     private func runPollingIteration(): Int64 {
+        this.markPollStarted()
         try {
             let raw = this.fetchTelegramUpdates()
             if (!raw.trimAscii().isEmpty()) {
                 return this.ingestPollingResponse(raw)
             }
         } catch (e: Exception) {
+            this.recordPollError("polling iteration exception: ${e.message}", outcome: "exception")
             LogUtils.info("Telegram polling iteration failed: ${e.message}")
         }
         0
+    }
+
+    private func pollNowMs(): Int64 {
+        DateTime.now().toUnixTimeStamp().toMilliseconds()
+    }
+
+    private func markPollingIdle(): Unit {
+        synchronized(this.pollStateMutex) {
+            this.pollingState = "idle"
+            this.lastPollOutcome = "idle"
+            this.nextPollRetryAtMs = 0
+        }
+    }
+
+    private func markPollingStopped(): Unit {
+        synchronized(this.pollStateMutex) {
+            this.pollingState = "stopped"
+            this.lastPollOutcome = "stopped"
+            this.nextPollRetryAtMs = 0
+        }
+    }
+
+    private func markPollStarted(): Unit {
+        let now = this.pollNowMs()
+        synchronized(this.pollStateMutex) {
+            this.pollingState = "polling"
+            this.lastPollStartedAtMs = now
+            this.lastPollOutcome = "started"
+            this.nextPollRetryAtMs = 0
+        }
+    }
+
+    private func markPollSuccess(outcome!: String = "success"): Unit {
+        let now = this.pollNowMs()
+        synchronized(this.pollStateMutex) {
+            this.pollingState = "polling"
+            this.lastPollSuccessAtMs = now
+            this.lastPollFinishedAtMs = now
+            this.consecutivePollFailures = 0
+            this.nextPollRetryAtMs = 0
+            this.lastPollOutcome = outcome
+        }
+    }
+
+    private func recordPollError(error: String, outcome!: String = "error"): Unit {
+        let now = this.pollNowMs()
+        synchronized(this.pollStateMutex) {
+            this.pollingState = "recovering"
+            this.lastPollError = error.trimAscii()
+            this.lastPollErrorAtMs = now
+            this.lastPollFinishedAtMs = now
+            this.consecutivePollFailures += 1
+            this.lastPollOutcome = outcome
+        }
+    }
+
+    private func markPollBackoff(backoffMs: Int64): Unit {
+        let now = this.pollNowMs()
+        synchronized(this.pollStateMutex) {
+            if (this.consecutivePollFailures > 0) {
+                this.pollingState = "backoff"
+                this.nextPollRetryAtMs = now + backoffMs
+                this.lastPollOutcome = "backoff"
+            }
+        }
+    }
+
+    private func pollErrorRecordedForCurrentIteration(): Bool {
+        var recorded = false
+        synchronized(this.pollStateMutex) {
+            recorded = this.consecutivePollFailures > 0 && this.lastPollErrorAtMs >= this.lastPollStartedAtMs
+        }
+        recorded
+    }
+
+    private func currentPollBackoffMs(): Int64 {
+        var failures: Int64 = 0
+        synchronized(this.pollStateMutex) {
+            failures = this.consecutivePollFailures
+        }
+        if (failures <= 0) {
+            return 0
+        }
+        var delay: Int64 = 2000
+        var i: Int64 = 1
+        while (i < failures) {
+            let next = delay * 2
+            delay = if (next > 30000) { 30000 } else { next }
+            i += 1
+        }
+        delay
+    }
+
+    private func waitForPollBackoff(backoffMs: Int64): Unit {
+        var remaining = backoffMs
+        while (this.running && !this.usesWebhookMode() && remaining > 0) {
+            let chunk = if (remaining < 100) { remaining } else { 100 }
+            sleep(Duration.millisecond * chunk)
+            remaining -= chunk
+        }
+    }
+
+    private func buildPollingDiagnosticSnapshot(): JsonObject {
+        let out = JsonObject()
+        synchronized(this.pollStateMutex) {
+            out.put("state", JsonString(this.pollingState))
+            out.put("lastError", JsonString(this.lastPollError))
+            out.put("lastErrorAtMs", this.lastPollErrorAtMs.toJsonValue())
+            out.put("lastSuccessAtMs", this.lastPollSuccessAtMs.toJsonValue())
+            out.put("lastStartedAtMs", this.lastPollStartedAtMs.toJsonValue())
+            out.put("lastFinishedAtMs", this.lastPollFinishedAtMs.toJsonValue())
+            out.put("consecutiveFailures", this.consecutivePollFailures.toJsonValue())
+            out.put("nextRetryAtMs", this.nextPollRetryAtMs.toJsonValue())
+            out.put("lastOutcome", JsonString(this.lastPollOutcome))
+        }
+        out
     }
 
     private func readRequestBody(ctx: HttpContext): String {
@@ -507,13 +654,15 @@ public class TelegramAdapter <: ChannelAdapter {
         )) {
             case Some(raw) =>
                 if (raw.trimAscii().isEmpty()) {
-                    this.lastSendError = "getUpdates returned empty response"
-                    LogUtils.info("Telegram getUpdates failed: ${this.lastSendError}")
+                    this.recordPollError("getUpdates returned empty response", outcome: "empty-response")
+                    LogUtils.info("Telegram getUpdates failed: getUpdates returned empty response")
                 }
                 raw
             case None =>
-                this.lastSendError = "getUpdates returned no response"
-                LogUtils.info("Telegram getUpdates failed: ${this.lastSendError}")
+                if (!this.pollErrorRecordedForCurrentIteration()) {
+                    this.recordPollError("getUpdates returned no response", outcome: "no-response")
+                    LogUtils.info("Telegram getUpdates failed: getUpdates returned no response")
+                }
                 ""
         }
     }
@@ -527,12 +676,13 @@ public class TelegramAdapter <: ChannelAdapter {
             let root = JsonValue.fromStr(trimmed).asObject()
             if (!this.readJsonBoolField(root, "ok", false)) {
                 let desc = this.readStringField(root, "description").trimAscii()
-                this.lastSendError = if (desc.isEmpty()) {
+                let detail = if (desc.isEmpty()) {
                     "getUpdates returned ok=false"
                 } else {
                     "getUpdates returned ok=false: ${desc}"
                 }
-                LogUtils.info("Telegram getUpdates failed: ${this.lastSendError}")
+                this.recordPollError(detail, outcome: "api-error")
+                LogUtils.info("Telegram getUpdates failed: ${detail}")
                 return 0
             }
             match (root.get("result")) {
@@ -554,15 +704,20 @@ public class TelegramAdapter <: ChannelAdapter {
                         if (accepted > 0) {
                             LogUtils.info("Telegram getUpdates accepted ${accepted} inbound update(s)")
                         }
+                        this.markPollSuccess(outcome: if (accepted > 0) { "success" } else { "empty-result" })
                         accepted
                     } catch (_: Exception) {
+                        this.recordPollError("getUpdates result parse failed", outcome: "parse-error")
                         0
                     }
-                case None => 0
+                case None =>
+                    this.recordPollError("getUpdates missing result", outcome: "parse-error")
+                    0
             }
         } catch (e: Exception) {
-            this.lastSendError = "getUpdates parse failed: ${e.message}"
-            LogUtils.info("Telegram getUpdates failed: ${this.lastSendError}")
+            let detail = "getUpdates parse failed: ${e.message}"
+            this.recordPollError(detail, outcome: "parse-error")
+            LogUtils.info("Telegram getUpdates failed: ${detail}")
             0
         }
     }
@@ -886,6 +1041,10 @@ public class TelegramAdapter <: ChannelAdapter {
         summary.put("mediaPersistenceEnabled", true.toJsonValue())
         summary.put("mediaDownloadEnabled", true.toJsonValue())
         summary.put("lastPersistedMediaId", JsonString(this.readStringField(media, "lastPersistedMediaId")))
+        let polling = this.buildPollingDiagnosticSnapshot()
+        summary.put("pollingState", polling.get("state") ?? JsonString("idle"))
+        summary.put("pollingConsecutiveFailures", polling.get("consecutiveFailures") ?? 0.toJsonValue())
+        summary.put("pollingLastOutcome", polling.get("lastOutcome") ?? JsonString("idle"))
         summary.put("healthy", (this.readJsonBoolField(getMe, "ok", false) && this.readJsonBoolField(webhookInfo, "ok", false)).toJsonValue())
         let bot = JsonObject()
         match (getMe.get("result")) {
@@ -921,6 +1080,7 @@ public class TelegramAdapter <: ChannelAdapter {
         offset.put("persistenceEnabled", true.toJsonValue())
         out.put("offset", offset)
         out.put("media", media)
+        out.put("polling", polling)
         out.put("getMe", getMe)
         out.put("webhookInfo", webhookInfo)
         out
@@ -929,7 +1089,13 @@ public class TelegramAdapter <: ChannelAdapter {
     private func telegramStateDir(): Path {
         let dir = this.stateRoot.join("gateway-telegram")
         if (!exists(dir)) {
-            Directory.create(dir, recursive: true)
+            try {
+                Directory.create(dir, recursive: true)
+            } catch (_e: Exception) {
+                if (!exists(dir)) {
+                    throw _e
+                }
+            }
         }
         dir
     }
@@ -2235,6 +2401,19 @@ public class TelegramAdapter <: ChannelAdapter {
         !this.config.proxy.trimAscii().isEmpty()
     }
 
+    private func isPollingContext(context: String): Bool {
+        context.trimAscii() == "getUpdates"
+    }
+
+    private func recordTelegramRequestError(context: String, detail: String, outcome!: String = "request-error"): Unit {
+        let message = "${context} ${detail}".trimAscii()
+        if (this.isPollingContext(context)) {
+            this.recordPollError(message, outcome: outcome)
+        } else {
+            this.lastSendError = message
+        }
+    }
+
     private func telegramCurlTimeoutSeconds(): Int64 {
         let base = if (this.config.timeoutSeconds > 0) { this.config.timeoutSeconds } else { 30 }
         base + 5
@@ -2248,8 +2427,8 @@ public class TelegramAdapter <: ChannelAdapter {
                 try {
                     HttpUtils.get(url, headers, None)
                 } catch (e: Exception) {
-                    this.lastSendError = "${context} exception: ${e.message}"
-                    LogUtils.info("Telegram ${context} failed: ${this.lastSendError}")
+                    this.recordTelegramRequestError(context, "exception: ${e.message}", outcome: "exception")
+                    LogUtils.info("Telegram ${context} failed: ${context} exception: ${e.message}")
                     None<String>
                 }
             ) {
@@ -2280,8 +2459,8 @@ public class TelegramAdapter <: ChannelAdapter {
                 try {
                     HttpUtils.post(url, headers, body)
                 } catch (e: Exception) {
-                    this.lastSendError = "${context} exception: ${e.message}"
-                    LogUtils.info("Telegram ${context} failed: ${this.lastSendError}")
+                    this.recordTelegramRequestError(context, "exception: ${e.message}", outcome: "exception")
+                    LogUtils.info("Telegram ${context} failed: ${context} exception: ${e.message}")
                     None<String>
                 }
             ) {
@@ -2307,14 +2486,20 @@ public class TelegramAdapter <: ChannelAdapter {
     }
 
     private func runTelegramCurl(args: Array<String>, context: String): Option<String> {
-        let (exitCode, stdout, stderr) = if (telegramCurlRunnerOverride.isSome()) {
-            telegramCurlRunnerOverride.getOrThrow()(args)
-        } else {
-            ShellUtils.execute(
-                args,
-                timeout: Some(Duration.second * this.telegramCurlTimeoutSeconds()),
-                withWrap: false
-            )
+        let (exitCode, stdout, stderr) = try {
+            if (telegramCurlRunnerOverride.isSome()) {
+                telegramCurlRunnerOverride.getOrThrow()(args)
+            } else {
+                ShellUtils.execute(
+                    args,
+                    timeout: Some(Duration.second * this.telegramCurlTimeoutSeconds()),
+                    withWrap: false
+                )
+            }
+        } catch (e: Exception) {
+            this.recordTelegramRequestError(context, "curl exception: ${e.message}", outcome: "exception")
+            LogUtils.info("Telegram ${context} failed: ${context} curl exception: ${e.message}")
+            return None
         }
         if (exitCode != 0) {
             let detail = if (!stderr.trimAscii().isEmpty()) {
@@ -2322,8 +2507,9 @@ public class TelegramAdapter <: ChannelAdapter {
             } else {
                 stdout.trimAscii()
             }
-            this.lastSendError = "${context} curl failed (exit=${exitCode}): ${detail}"
-            LogUtils.info("Telegram ${context} failed: ${this.lastSendError}")
+            let outcome = if (exitCode == 28) { "timeout" } else { "curl-error" }
+            this.recordTelegramRequestError(context, "curl failed (exit=${exitCode}): ${detail}", outcome: outcome)
+            LogUtils.info("Telegram ${context} failed: ${context} curl failed (exit=${exitCode}): ${detail}")
             return None
         }
         Some(stdout)

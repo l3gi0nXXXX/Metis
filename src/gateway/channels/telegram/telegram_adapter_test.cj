@@ -516,6 +516,113 @@ public class TelegramAdapterTest {
     }
 
     @TestCase
+    public func pollingCurlTimeoutRecordsPollingErrorWithoutSendError(): Unit {
+        try {
+            setTelegramCurlRunnerForTest(Some({ _args: Array<String> =>
+                (28, "", "Operation timed out")
+            }))
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    proxy: "http://127.0.0.1:7897"
+                )
+            )
+            @Expect(adapter.debugRunPollingIterationForTest(), 0)
+            let snapshot = adapter.debugBuildPollingDiagnosticSnapshot()
+            @Expect(snapshot.get("state").getOrThrow().asString().getValue(), "recovering")
+            @Expect(snapshot.get("lastOutcome").getOrThrow().asString().getValue(), "timeout")
+            @Expect(snapshot.get("lastError").getOrThrow().asString().getValue().contains("getUpdates curl failed"), true)
+            @Expect(snapshot.get("consecutiveFailures").getOrThrow().asInt().getValue(), 1)
+            @Expect(adapter.debugCurrentPollBackoffMsForTest(), 2000)
+            @Expect(adapter.debugLastSendErrorForTest(), "")
+        } finally {
+            setTelegramCurlRunnerForTest(None)
+        }
+    }
+
+    @TestCase
+    public func pollingSuccessResetsFailureCountAfterTimeout(): Unit {
+        let attempts = ArrayList<Int64>()
+        try {
+            setTelegramCurlRunnerForTest(Some({ _args: Array<String> =>
+                attempts.add(1)
+                if (attempts.size == 1) {
+                    return (28, "", "Operation timed out")
+                }
+                (0, "{\"ok\":true,\"result\":[]}", "")
+            }))
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    proxy: "http://127.0.0.1:7897"
+                )
+            )
+            @Expect(adapter.debugRunPollingIterationForTest(), 0)
+            @Expect(adapter.debugCurrentPollBackoffMsForTest(), 2000)
+            @Expect(adapter.debugRunPollingIterationForTest(), 0)
+            let snapshot = adapter.debugBuildPollingDiagnosticSnapshot()
+            @Expect(snapshot.get("state").getOrThrow().asString().getValue(), "polling")
+            @Expect(snapshot.get("lastOutcome").getOrThrow().asString().getValue(), "empty-result")
+            @Expect(snapshot.get("consecutiveFailures").getOrThrow().asInt().getValue(), 0)
+            @Expect(adapter.debugCurrentPollBackoffMsForTest(), 0)
+        } finally {
+            setTelegramCurlRunnerForTest(None)
+        }
+    }
+
+    @TestCase
+    public func pollingBackoffGrowsAndCapsAcrossConsecutiveFailures(): Unit {
+        try {
+            setTelegramCurlRunnerForTest(Some({ _args: Array<String> =>
+                (28, "", "Operation timed out")
+            }))
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    proxy: "http://127.0.0.1:7897"
+                )
+            )
+            @Expect(adapter.debugRunPollingIterationForTest(), 0)
+            @Expect(adapter.debugCurrentPollBackoffMsForTest(), 2000)
+            @Expect(adapter.debugRunPollingIterationForTest(), 0)
+            @Expect(adapter.debugCurrentPollBackoffMsForTest(), 4000)
+            @Expect(adapter.debugRunPollingIterationForTest(), 0)
+            @Expect(adapter.debugCurrentPollBackoffMsForTest(), 8000)
+        } finally {
+            setTelegramCurlRunnerForTest(None)
+        }
+    }
+
+    @TestCase
+    public func healthSnapshotIncludesPollingDiagnostics(): Unit {
+        try {
+            setTelegramCurlRunnerForTest(Some({ _args: Array<String> =>
+                (28, "", "Operation timed out")
+            }))
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    proxy: "http://127.0.0.1:7897"
+                )
+            )
+            @Expect(adapter.debugRunPollingIterationForTest(), 0)
+            let snapshot = adapter.debugBuildHealthSnapshot()
+            let summary = snapshot.get("summary").getOrThrow().asObject()
+            let polling = snapshot.get("polling").getOrThrow().asObject()
+            @Expect(summary.get("pollingState").getOrThrow().asString().getValue(), "recovering")
+            @Expect(summary.get("pollingConsecutiveFailures").getOrThrow().asInt().getValue(), 1)
+            @Expect(summary.get("pollingLastOutcome").getOrThrow().asString().getValue(), "timeout")
+            @Expect(polling.get("lastError").getOrThrow().asString().getValue().contains("getUpdates curl failed"), true)
+        } finally {
+            setTelegramCurlRunnerForTest(None)
+        }
+    }
+
+    @TestCase
     public func proxyConfiguredNativeCommandsUseCurlProxy(): Unit {
         let seen = ArrayList<String>()
         try {
