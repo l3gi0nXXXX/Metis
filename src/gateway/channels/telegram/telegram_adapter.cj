@@ -284,6 +284,10 @@ public class TelegramAdapter <: ChannelAdapter {
         this.fetchTelegramUpdates()
     }
 
+    public func debugRunPollingIterationForTest(): Int64 {
+        this.runPollingIteration()
+    }
+
     public func debugSyncNativeCommandsForTest(): Bool {
         this.syncNativeCommands()
     }
@@ -392,11 +396,20 @@ public class TelegramAdapter <: ChannelAdapter {
 
     private func runPollingLoop(): Unit {
         while (this.running && !this.usesWebhookMode()) {
+            let _ = this.runPollingIteration()
+        }
+    }
+
+    private func runPollingIteration(): Int64 {
+        try {
             let raw = this.fetchTelegramUpdates()
             if (!raw.trimAscii().isEmpty()) {
-                let _ = this.ingestPollingResponse(raw)
+                return this.ingestPollingResponse(raw)
             }
+        } catch (e: Exception) {
+            LogUtils.info("Telegram polling iteration failed: ${e.message}")
         }
+        0
     }
 
     private func readRequestBody(ctx: HttpContext): String {

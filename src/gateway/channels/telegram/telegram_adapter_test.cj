@@ -486,6 +486,36 @@ public class TelegramAdapterTest {
     }
 
     @TestCase
+    public func pollingIterationCatchesTransportExceptionAndNextIterationCanRecover(): Unit {
+        let attempts = ArrayList<Int64>()
+        let root = Path("/tmp/metis-telegram-polling-recover-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        try {
+            setTelegramCurlRunnerForTest(Some({ _args: Array<String> =>
+                attempts.add(1)
+                if (attempts.size == 1) {
+                    throw Exception("simulated getUpdates timeout")
+                }
+                (0, "{\"ok\":true,\"result\":[{\"update_id\":123,\"message\":{\"message_id\":21,\"text\":\"recovered\",\"chat\":{\"id\":745123456,\"type\":\"private\"},\"from\":{\"id\":745123456}}}]}", "")
+            }))
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    proxy: "http://127.0.0.1:7897",
+                    dmPolicy: "open",
+                    allowFrom: ["*"]
+                ),
+                pairingRoot: root.toString()
+            )
+            @Expect(adapter.debugRunPollingIterationForTest(), 0)
+            @Expect(adapter.debugRunPollingIterationForTest(), 1)
+            @Expect(adapter.debugLastInboundUpdateId(), "123")
+        } finally {
+            setTelegramCurlRunnerForTest(None)
+        }
+    }
+
+    @TestCase
     public func proxyConfiguredNativeCommandsUseCurlProxy(): Unit {
         let seen = ArrayList<String>()
         try {
