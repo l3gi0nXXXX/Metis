@@ -570,6 +570,34 @@ public class TelegramThreadBindingsConfig {
     }
 }
 
+public class TelegramMediaConfig {
+    public let downloadEnabled: Bool
+    public let mediaMaxBytes: Int64
+    public let allowedMimes: Array<String>
+    public let outboundAllowUrl: Bool
+    public let outboundAllowLocalPath: Bool
+    public let outboundLocalRoots: Array<String>
+    public let albumPolicy: String
+
+    public init(
+        downloadEnabled!: Bool = true,
+        mediaMaxBytes!: Int64 = 20 * 1024 * 1024,
+        allowedMimes!: Array<String> = [],
+        outboundAllowUrl!: Bool = false,
+        outboundAllowLocalPath!: Bool = false,
+        outboundLocalRoots!: Array<String> = [],
+        albumPolicy!: String = "single-largest"
+    ) {
+        this.downloadEnabled = downloadEnabled
+        this.mediaMaxBytes = mediaMaxBytes
+        this.allowedMimes = allowedMimes
+        this.outboundAllowUrl = outboundAllowUrl
+        this.outboundAllowLocalPath = outboundAllowLocalPath
+        this.outboundLocalRoots = outboundLocalRoots
+        this.albumPolicy = albumPolicy
+    }
+}
+
 public class TelegramNetworkConfig {
     public let autoSelectFamily: Bool
     public let dnsResultOrder: String
@@ -632,6 +660,7 @@ public class TelegramConfig {
     public let ackReaction: String
     public let actions: TelegramActionConfig
     public let threadBindings: TelegramThreadBindingsConfig
+    public let media: TelegramMediaConfig
     public let network: TelegramNetworkConfig
     public let policy: ChannelPolicyConfig
 
@@ -671,6 +700,7 @@ public class TelegramConfig {
         ackReaction!: String = "👀",
         actions!: TelegramActionConfig = TelegramActionConfig(),
         threadBindings!: TelegramThreadBindingsConfig = TelegramThreadBindingsConfig(),
+        media!: TelegramMediaConfig = TelegramMediaConfig(),
         network!: TelegramNetworkConfig = TelegramNetworkConfig(),
         policy!: ChannelPolicyConfig = ChannelPolicyConfig()
     ) {
@@ -709,6 +739,7 @@ public class TelegramConfig {
         this.ackReaction = ackReaction
         this.actions = actions
         this.threadBindings = threadBindings
+        this.media = media
         this.network = network
         this.policy = policy
     }

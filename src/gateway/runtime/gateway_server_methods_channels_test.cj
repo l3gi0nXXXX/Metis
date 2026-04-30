@@ -170,6 +170,13 @@ public class GatewayServerMethodsChannelsTest {
         user.telegram.actions.document = true
         user.telegram.actions.inlineKeyboard = true
         user.telegram.actions.callbackQuery = true
+        user.telegram.media.downloadEnabled = false
+        user.telegram.media.mediaMaxBytes = 4096
+        user.telegram.media.allowedMimes = ["image/*", "application/pdf"]
+        user.telegram.media.outboundAllowUrl = true
+        user.telegram.media.outboundAllowLocalPath = true
+        user.telegram.media.outboundLocalRoots = ["/tmp/metis-media"]
+        user.telegram.media.albumPolicy = "metadata-only"
 
         let channel = gatewayChannelGetJson(user, "telegram")
         @Expect(channelsTestString(channel, "kind"), "builtin")
@@ -183,9 +190,19 @@ public class GatewayServerMethodsChannelsTest {
         @Expect(channelsTestBool(actions, "inlineKeyboard"), true)
         @Expect(channelsTestBool(actions, "callbackQuery"), true)
         let actionSchemas = channel.get("actionSchemas").getOrThrow().asArray()
-        @Expect(actionSchemas.size() >= 7, true)
+        @Expect(actionSchemas.size() >= 14, true)
         @Expect(actionSchemas.toJsonString().contains("inlineKeyboard"), true)
         @Expect(actionSchemas.toJsonString().contains("callbackQuery"), true)
+        @Expect(actionSchemas.toJsonString().contains("sendPhoto"), true)
+        @Expect(actionSchemas.toJsonString().contains("sendVideoNote"), true)
+        let media = channel.get("media").getOrThrow().asObject()
+        @Expect(channelsTestBool(media, "downloadEnabled"), false)
+        @Expect(channelsTestInt(media, "mediaMaxBytes"), 4096)
+        @Expect(media.get("allowedMimes").getOrThrow().asArray().toJsonString().contains("application/pdf"), true)
+        @Expect(channelsTestBool(media, "outboundAllowUrl"), true)
+        @Expect(channelsTestBool(media, "outboundAllowLocalPath"), true)
+        @Expect(media.get("outboundLocalRoots").getOrThrow().asArray().toJsonString().contains("/tmp/metis-media"), true)
+        @Expect(channelsTestString(media, "albumPolicy"), "metadata-only")
         let supports = channel.get("supports").getOrThrow().asObject()
         @Expect(channelsTestBool(supports, "allowedUpdatesAuto"), true)
     }

@@ -411,6 +411,15 @@ private func mergeTelegram(user: GatewayUserSettings): TelegramConfig {
             spawnSubagentSessions: user.telegram.threadBindings.spawnSubagentSessions,
             spawnAcpSessions: user.telegram.threadBindings.spawnAcpSessions
         ),
+        media: TelegramMediaConfig(
+            downloadEnabled: user.telegram.media.downloadEnabled,
+            mediaMaxBytes: user.telegram.media.mediaMaxBytes,
+            allowedMimes: user.telegram.media.allowedMimes,
+            outboundAllowUrl: user.telegram.media.outboundAllowUrl,
+            outboundAllowLocalPath: user.telegram.media.outboundAllowLocalPath,
+            outboundLocalRoots: user.telegram.media.outboundLocalRoots,
+            albumPolicy: user.telegram.media.albumPolicy.trimAscii()
+        ),
         network: TelegramNetworkConfig(
             autoSelectFamily: user.telegram.network.autoSelectFamily,
             dnsResultOrder: user.telegram.network.dnsResultOrder.trimAscii(),

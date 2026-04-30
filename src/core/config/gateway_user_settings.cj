@@ -282,6 +282,17 @@ public struct TelegramThreadBindingsUserSettings {
 }
 
 @jsonable
+public struct TelegramMediaUserSettings {
+    public var downloadEnabled: Bool = true
+    public var mediaMaxBytes: Int64 = 20 * 1024 * 1024
+    public var allowedMimes: Array<String> = []
+    public var outboundAllowUrl: Bool = false
+    public var outboundAllowLocalPath: Bool = false
+    public var outboundLocalRoots: Array<String> = []
+    public var albumPolicy: String = "single-largest"
+}
+
+@jsonable
 public struct TelegramNetworkUserSettings {
     public var autoSelectFamily: Bool = true
     public var dnsResultOrder: String = "ipv4first"
@@ -330,6 +341,7 @@ public struct TelegramUserSettings {
     public var ackReaction: String = "👀"
     public var actions: TelegramActionUserSettings = TelegramActionUserSettings()
     public var threadBindings: TelegramThreadBindingsUserSettings = TelegramThreadBindingsUserSettings()
+    public var media: TelegramMediaUserSettings = TelegramMediaUserSettings()
     public var network: TelegramNetworkUserSettings = TelegramNetworkUserSettings()
 }
 

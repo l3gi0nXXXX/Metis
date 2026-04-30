@@ -559,6 +559,23 @@ private func gatewayTelegramChannelJson(user: GatewayUserSettings): JsonObject {
     actions.put("inlineKeyboard", user.telegram.actions.inlineKeyboard.toJsonValue())
     actions.put("callbackQuery", user.telegram.actions.callbackQuery.toJsonValue())
     result.put("actions", actions)
+    let media = JsonObject()
+    media.put("downloadEnabled", user.telegram.media.downloadEnabled.toJsonValue())
+    media.put("mediaMaxBytes", user.telegram.media.mediaMaxBytes.toJsonValue())
+    let allowedMimes = JsonArray([])
+    for (mime in user.telegram.media.allowedMimes) {
+        allowedMimes.add(JsonString(mime))
+    }
+    media.put("allowedMimes", allowedMimes)
+    media.put("outboundAllowUrl", user.telegram.media.outboundAllowUrl.toJsonValue())
+    media.put("outboundAllowLocalPath", user.telegram.media.outboundAllowLocalPath.toJsonValue())
+    let localRoots = JsonArray([])
+    for (root in user.telegram.media.outboundLocalRoots) {
+        localRoots.add(JsonString(root))
+    }
+    media.put("outboundLocalRoots", localRoots)
+    media.put("albumPolicy", JsonString(user.telegram.media.albumPolicy))
+    result.put("media", media)
     result.put("actionSchemas", gatewayTelegramActionSchemasJson())
     result.put("supports", gatewayChannelSupportsJson(user, "telegram"))
     result
@@ -584,6 +601,13 @@ private func gatewayTelegramActionSchemasJson(): JsonArray {
     out.add(gatewayTelegramActionSchema("deleteMessage", "deleteMessage", "telegram.actions.deleteMessage", ["chat_id", "message_id"]))
     out.add(gatewayTelegramActionSchema("editMessage", "editMessageText", "telegram.actions.editMessage", ["chat_id", "message_id", "text"]))
     out.add(gatewayTelegramActionSchema("reaction", "setMessageReaction", "telegram.actions.reactions", ["chat_id", "message_id", "reaction"]))
+    out.add(gatewayTelegramActionSchema("photo", "sendPhoto", "telegram.actions.photo", ["chat_id", "photo"]))
+    out.add(gatewayTelegramActionSchema("document", "sendDocument", "telegram.actions.document", ["chat_id", "document"]))
+    out.add(gatewayTelegramActionSchema("audio", "sendAudio", "telegram.actions.audio", ["chat_id", "audio"]))
+    out.add(gatewayTelegramActionSchema("voice", "sendVoice", "telegram.actions.voice", ["chat_id", "voice"]))
+    out.add(gatewayTelegramActionSchema("video", "sendVideo", "telegram.actions.video", ["chat_id", "video"]))
+    out.add(gatewayTelegramActionSchema("videoNote", "sendVideoNote", "telegram.actions.videoNote", ["chat_id", "video_note"]))
+    out.add(gatewayTelegramActionSchema("sticker", "sendSticker", "telegram.actions.sticker", ["chat_id", "sticker"]))
     out.add(gatewayTelegramActionSchema("inlineKeyboard", "sendMessage", "telegram.actions.inlineKeyboard", ["chat_id", "text", "reply_markup.inline_keyboard"]))
     out.add(gatewayTelegramActionSchema("callbackQuery", "inbound:callback_query", "telegram.actions.callbackQuery", ["callback_query.id", "callback_query.message", "callback_query.from"]))
     return out

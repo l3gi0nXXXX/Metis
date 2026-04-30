@@ -561,6 +561,93 @@ public class TelegramAdapterTest {
         @Expect(lastMedia.get("downloadPath").getOrThrow().asString().getValue().contains(".download"), true)
     }
 
+    @TestCase
+    public func mediaPersistenceHonorsDownloadDisabledWithoutNetwork(): Unit {
+        let root = Path("/tmp/metis-telegram-media-disabled-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        let seen = ArrayList<String>()
+        try {
+            setTelegramTransportRunnerForTest(Some({ request: TelegramTransportRequest =>
+                seen.add(request.context)
+                TelegramTransportResponse(false, error: "network should not be called", outcome: "test")
+            }))
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    media: TelegramMediaConfig(downloadEnabled: false)
+                ),
+                pairingRoot: root.toString()
+            )
+            let media = adapter.debugPersistInboundMediaForTest(
+                "photo",
+                "photo-file-id",
+                mimeType: "image/jpeg",
+                fileSize: 128
+            )
+            let lastMedia = media.get("lastMedia").getOrThrow().asObject()
+            @Expect(media.get("downloadEnabled").getOrThrow().asBool().getValue(), false)
+            @Expect(lastMedia.get("downloaded").getOrThrow().asBool().getValue(), false)
+            @Expect(lastMedia.get("skippedReason").getOrThrow().asString().getValue(), "download_disabled")
+            @Expect(seen.size, 0)
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+        }
+    }
+
+    @TestCase
+    public func mediaPersistenceRejectsDisallowedMimeAndOversizeBeforeDownload(): Unit {
+        let root = Path("/tmp/metis-telegram-media-policy-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(
+                enabled: true,
+                botToken: "telegram-token",
+                media: TelegramMediaConfig(
+                    mediaMaxBytes: 100,
+                    allowedMimes: ["image/*"]
+                )
+            ),
+            pairingRoot: root.toString()
+        )
+        let badMime = adapter.debugPersistInboundMediaForTest(
+            "document",
+            "doc-file-id",
+            mimeType: "application/pdf",
+            fileSize: 20,
+            getFileRaw: "{\"ok\":true,\"result\":{\"file_path\":\"docs/report.pdf\"}}",
+            downloadRaw: "bytes"
+        )
+        @Expect(badMime.get("lastMedia").getOrThrow().asObject().get("skippedReason").getOrThrow().asString().getValue(), "mime_not_allowed")
+
+        let tooLarge = adapter.debugPersistInboundMediaForTest(
+            "photo",
+            "photo-file-id",
+            mimeType: "image/jpeg",
+            fileSize: 200,
+            getFileRaw: "{\"ok\":true,\"result\":{\"file_path\":\"photos/file.jpg\"}}",
+            downloadRaw: "bytes"
+        )
+        @Expect(tooLarge.get("lastMedia").getOrThrow().asObject().get("skippedReason").getOrThrow().asString().getValue(), "size_limit_exceeded")
+    }
+
+    @TestCase
+    public func mediaPersistenceRejectsUnsafeTelegramFilePath(): Unit {
+        let root = Path("/tmp/metis-telegram-media-path-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(enabled: true, botToken: "telegram-token"),
+            pairingRoot: root.toString()
+        )
+        let media = adapter.debugPersistInboundMediaForTest(
+            "photo",
+            "photo-file-id",
+            mimeType: "image/jpeg",
+            getFileRaw: "{\"ok\":true,\"result\":{\"file_path\":\"../secret.jpg\"}}",
+            downloadRaw: "bytes"
+        )
+        let lastMedia = media.get("lastMedia").getOrThrow().asObject()
+        @Expect(lastMedia.get("downloaded").getOrThrow().asBool().getValue(), false)
+        @Expect(lastMedia.get("skippedReason").getOrThrow().asString().getValue(), "unsafe_file_path")
+    }
+
     /*
     @TestCase
     public func webhookTopicMessagesPreserveTopicScopedPeerAndThreadMetadata(): Unit {
@@ -751,12 +838,14 @@ public class TelegramAdapterTest {
         @Expect(inbound[0].mentioned, false)
     }
 
-    /*
     @TestCase
     public func webhookPhotoMessagesMapToStructuredInboundMediaText(): Unit {
         let groups = JsonObject()
         let groupRule = JsonObject()
+        let allowFrom = JsonArray([])
+        allowFrom.add("8734062810".toJsonValue())
         groupRule.put("requireMention", false.toJsonValue())
+        groupRule.put("allowFrom", allowFrom)
         groups.put("-1001234567890", groupRule)
         let adapter = TelegramAdapter(
             config: TelegramConfig(
@@ -777,7 +866,6 @@ public class TelegramAdapterTest {
         @Expect(inbound[0].text, "[photo]\nfileId=large\ncaption=hello photo")
         @Expect(inbound[0].threadId.getOrThrow(), "42")
     }
-    */
 
     @TestCase
     public func webhookStickerMessagesMapToStructuredInboundMediaText(): Unit {
@@ -798,6 +886,34 @@ public class TelegramAdapterTest {
         @Expect(inbound.size, 1)
         @Expect(inbound[0].peerId, "user:745123456")
         @Expect(inbound[0].text, "[sticker]\nfileId=sticker-file-id")
+    }
+
+    @TestCase
+    public func webhookDocumentMessagesPreserveMediaMetadataInInboundText(): Unit {
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(
+                enabled: true,
+                botToken: "telegram-token",
+                dmPolicy: "open",
+                allowFrom: ["*"]
+            )
+        )
+        adapter.start()
+        let payload = "{\"update_id\":1,\"message\":{\"message_id\":102,\"caption\":\"report\",\"media_group_id\":\"album-1\",\"document\":{\"file_id\":\"doc-file-id\",\"file_unique_id\":\"doc-unique\",\"mime_type\":\"application/pdf\",\"file_size\":1024,\"file_name\":\"report.pdf\"},\"chat\":{\"id\":745123456,\"type\":\"private\"},\"from\":{\"id\":745123456}}}"
+        let ack = adapter.ingestWebhookPayload(payload)
+        @Expect(ack.contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 1)
+        @Expect(inbound[0].text.contains("[document]"), true)
+        @Expect(inbound[0].text.contains("fileId=doc-file-id"), true)
+        @Expect(inbound[0].text.contains("fileUniqueId=doc-unique"), true)
+        @Expect(inbound[0].text.contains("mimeType=application/pdf"), true)
+        @Expect(inbound[0].text.contains("fileSize=1024"), true)
+        @Expect(inbound[0].text.contains("fileName=report.pdf"), true)
+        @Expect(inbound[0].text.contains("mediaGroupId=album-1"), true)
+        @Expect(inbound[0].text.contains("albumPolicy=single-largest"), true)
+        @Expect(inbound[0].text.contains("caption=report"), true)
     }
 
     @TestCase
@@ -979,6 +1095,7 @@ public class TelegramAdapterTest {
                 config: TelegramConfig(
                     enabled: true,
                     botToken: "telegram-token",
+                    webhookUrl: "https://example.test/telegram-webhook",
                     proxy: "http://127.0.0.1:7897"
                 )
             )
@@ -1679,10 +1796,9 @@ public class TelegramAdapterTest {
         @Expect(secondButton.get("url").getOrThrow().asString().getValue(), "https://example.test")
     }
 
-    /*
     @TestCase
     public func sendPayloadsRenderNativeTelegramStickerPayload(): Unit {
-        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
+        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token", replyToMode: "thread"))
         let payloads = adapter.debugBuildSendPayloads(
             OutboundMessage(
                 ChannelType.Telegram,
@@ -1699,12 +1815,10 @@ public class TelegramAdapterTest {
         @Expect(first.get("message_thread_id").getOrThrow().asString().getValue(), "42")
         @Expect(first.get("reply_to_message_id").getOrThrow().asString().getValue(), "55")
     }
-    */
 
-    /*
     @TestCase
     public func sendPayloadsRenderNativeTelegramPhotoPayload(): Unit {
-        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
+        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token", replyToMode: "thread"))
         let payloads = adapter.debugBuildSendPayloads(
             OutboundMessage(
                 ChannelType.Telegram,
@@ -1721,7 +1835,6 @@ public class TelegramAdapterTest {
         @Expect(first.get("caption").getOrThrow().asString().getValue(), "hello")
         @Expect(first.get("message_thread_id").getOrThrow().asString().getValue(), "42")
     }
-    */
 
     @TestCase
     public func sendPayloadsRenderNativeTelegramDocumentPayload(): Unit {
@@ -1774,10 +1887,9 @@ public class TelegramAdapterTest {
         @Expect(first.get("caption").getOrThrow().asString().getValue(), "memo")
     }
 
-    /*
     @TestCase
     public func sendPayloadsRenderNativeTelegramVideoPayload(): Unit {
-        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
+        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token", replyToMode: "thread"))
         let payloads = adapter.debugBuildSendPayloads(
             OutboundMessage(
                 ChannelType.Telegram,
@@ -1793,12 +1905,10 @@ public class TelegramAdapterTest {
         @Expect(first.get("caption").getOrThrow().asString().getValue(), "clip")
         @Expect(first.get("message_thread_id").getOrThrow().asString().getValue(), "42")
     }
-    */
 
-    /*
     @TestCase
     public func sendPayloadsRenderNativeTelegramVideoNotePayload(): Unit {
-        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
+        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token", replyToMode: "thread"))
         let payloads = adapter.debugBuildSendPayloads(
             OutboundMessage(
                 ChannelType.Telegram,
@@ -1813,7 +1923,60 @@ public class TelegramAdapterTest {
         @Expect(first.get("video_note").getOrThrow().asString().getValue(), "video-note-file-id")
         @Expect(first.get("message_thread_id").getOrThrow().asString().getValue(), "42")
     }
-    */
+
+    @TestCase
+    public func outboundMediaUrlRequiresExplicitPolicy(): Unit {
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(
+                enabled: true,
+                botToken: "telegram-token",
+                actions: TelegramActionConfig(photo: true)
+            )
+        )
+        adapter.start()
+        let result = adapter.send(OutboundMessage(ChannelType.Telegram, "user:8734062810", "[photo]\nfileId=https://example.test/photo.jpg"))
+        match (result) {
+            case SendResult.Success => @Expect(false, true)
+            case SendResult.Failed(reason) => @Expect(reason.contains("outbound media URL is disabled"), true)
+        }
+    }
+
+    @TestCase
+    public func outboundMediaUrlCanBeEnabledForBotApiUrlReference(): Unit {
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(
+                enabled: true,
+                botToken: "telegram-token",
+                actions: TelegramActionConfig(photo: true),
+                media: TelegramMediaConfig(outboundAllowUrl: true)
+            )
+        )
+        let payloads = adapter.debugBuildSendPayloads(
+            OutboundMessage(ChannelType.Telegram, "user:8734062810", "[photo]\nfileId=https://example.test/photo.jpg")
+        )
+        @Expect(payloads.size(), 1)
+        let first = payloads[0].asObject()
+        @Expect(first.get("kind").getOrThrow().asString().getValue(), "photo")
+        @Expect(first.get("photo").getOrThrow().asString().getValue(), "https://example.test/photo.jpg")
+    }
+
+    @TestCase
+    public func outboundLocalMediaPathIsRejectedBeforeNetwork(): Unit {
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(
+                enabled: true,
+                botToken: "telegram-token",
+                actions: TelegramActionConfig(document: true),
+                media: TelegramMediaConfig(outboundAllowLocalPath: false)
+            )
+        )
+        adapter.start()
+        let result = adapter.send(OutboundMessage(ChannelType.Telegram, "user:8734062810", "[document]\nfileId=/tmp/report.pdf"))
+        match (result) {
+            case SendResult.Success => @Expect(false, true)
+            case SendResult.Failed(reason) => @Expect(reason.contains("outbound local media path is disabled"), true)
+        }
+    }
 
     @TestCase
     public func disabledReactionActionFailsFastBeforeNetwork(): Unit {
