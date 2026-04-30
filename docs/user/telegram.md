@@ -430,6 +430,41 @@ callback 入站会转成结构化文本，例如包含：
 data=approve-1
 ```
 
+审批按钮可使用 `[approval]` 格式发送。该格式会生成两枚 inline button，callback 数据会携带审批 id、决策和过期时间。必须开启 `actions.inlineKeyboard`；接收入站审批结果时还必须开启 `actions.callbackQuery`。
+
+```text
+[approval]
+id=tool-call-123
+text=Allow this tool call?
+allowLabel=Allow
+denyLabel=Deny
+allow=allow-once
+deny=deny
+expiresAtMs=1770000000000
+```
+
+审批 callback 入站会转成结构化文本：
+
+```text
+[telegram-approval]
+approvalId=tool-call-123
+decision=allow-once
+```
+
+Metis 会拒绝过期或重复消费的审批 callback，并在入站策略诊断中记录 `approval_callback_expired` 或 `approval_callback_replayed`。
+
+## Draft / Preview
+
+开启 `actions.editMessage=true` 后，可用 `[draft]` 先发送预览文本，再通过 `editMessageText` 收敛为最终文本。该能力用于长任务或长回复的预览/最终态收口。
+
+```text
+[draft]
+preview=Working...
+final=Done
+```
+
+如果 `final` 为空，或未开启 `actions.editMessage`，发送会在网络请求前失败并返回明确错误。
+
 ## Reactions
 
 配置：
@@ -524,6 +559,32 @@ telegram:group:<chatId>:topic:<threadId>
 | `spawnSubagentSessions` | `false` | subagent spawn 是否记录 topic/thread 绑定。 |
 | `spawnAcpSessions` | `false` | ACP session 是否记录 topic/thread 绑定。 |
 
+群配置支持 topic 级覆盖。topic 配置会优先于群配置生效，可覆盖 `requireMention`、`groupPolicy`、`allowFrom`：
+
+```json
+{
+  "gateway": {
+    "telegram": {
+      "groupPolicy": "allowlist",
+      "groups": {
+        "-1001234567890": {
+          "requireMention": true,
+          "allowFrom": ["111"],
+          "topics": {
+            "42": {
+              "requireMention": false,
+              "allowFrom": ["222"]
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+上例中 topic `42` 会允许 sender `222` 不提及 bot 直接入站；sender `111` 仍只匹配群级配置，不匹配该 topic 的覆盖规则。
+
 Subagent 用法见 `docs/user/subagents.md`。
 
 ## 多账号
@@ -553,6 +614,23 @@ Subagent 用法见 `docs/user/subagents.md`。
 ```text
 ~/.metis/gateway-telegram/accounts/<accountId>/
 ```
+
+## Setup、Directory 与 Account Ops
+
+Telegram 的 setup、directory、account ops 通过 Gateway channel surface 暴露给 CLI、Control UI 和 RPC，不在 Telegram adapter 内直接写配置。
+
+```bash
+cjpm run --skip-build --name metis --run-args "gateway channels get telegram"
+cjpm run --skip-build --name metis --run-args "gateway channels runtime telegram"
+```
+
+`channels get telegram` 会包含：
+
+- `setup`：是否 configured、当前 mode、必填字段、是否可 probe。
+- `directory`：`defaultTo`、已配置 groups、accounts、可推断 targets。
+- `accountOps`：setup、probe、directory、logout 等操作能力声明。
+
+这些字段是只读投影；真实配置修改仍必须走 Gateway 配置更新路径，测试和运行态都不应直接改写真实 `~/.metis/metis.json`。
 
 ## 网络配置
 

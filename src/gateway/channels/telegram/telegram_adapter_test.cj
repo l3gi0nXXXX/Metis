@@ -60,7 +60,7 @@ private class TelegramFakeBotApi {
                 }
                 return TelegramTransportResponse(true, body: "{\"ok\":true,\"result\":[]}", outcome: "ok")
             }
-            if (request.context.startsWith("send:delete") || request.context.startsWith("send:reaction") || request.context.startsWith("send:topic-edit")) {
+            if (request.context.startsWith("send:delete") || request.context.startsWith("send:reaction") || request.context.startsWith("send:topic-edit") || request.context.startsWith("send:draft:final")) {
                 return TelegramTransportResponse(true, body: "{\"ok\":true,\"result\":true}", outcome: "ok")
             }
             if (request.context.startsWith("send:topic-create")) {
@@ -119,6 +119,7 @@ private class TelegramFakeBotApi {
         if (url.contains("/setMessageReaction")) { return "setMessageReaction" }
         if (url.contains("/createForumTopic")) { return "createForumTopic" }
         if (url.contains("/editForumTopic")) { return "editForumTopic" }
+        if (url.contains("/editMessageText")) { return "editMessageText" }
         if (url.contains("/sendPhoto")) { return "sendPhoto" }
         if (url.contains("/sendDocument")) { return "sendDocument" }
         if (url.contains("/sendAudio")) { return "sendAudio" }
@@ -1112,6 +1113,47 @@ public class TelegramAdapterTest {
         @Expect(inbound.size, 1)
         @Expect(inbound[0].peerId, "group:-1001234567890:topic:42")
         @Expect(inbound[0].mentioned, false)
+    }
+
+    @TestCase
+    public func topicEntryOverridesGroupMentionAndAllowFromPolicy(): Unit {
+        let groups = JsonObject()
+        let groupRule = JsonObject()
+        let groupAllow = JsonArray([])
+        groupAllow.add("111".toJsonValue())
+        groupRule.put("requireMention", true.toJsonValue())
+        groupRule.put("allowFrom", groupAllow)
+        let topics = JsonObject()
+        let topicRule = JsonObject()
+        let topicAllow = JsonArray([])
+        topicAllow.add("222".toJsonValue())
+        topicRule.put("requireMention", false.toJsonValue())
+        topicRule.put("allowFrom", topicAllow)
+        topics.put("42", topicRule)
+        groupRule.put("topics", topics)
+        groups.put("-1001234567890", groupRule)
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(
+                enabled: true,
+                botToken: "telegram-token",
+                groupPolicy: "allowlist",
+                groups: Some(groups)
+            )
+        )
+        adapter.start()
+        let allowedPayload = "{\"update_id\":11,\"message\":{\"message_id\":201,\"message_thread_id\":42,\"text\":\"status\",\"chat\":{\"id\":-1001234567890,\"type\":\"supergroup\"},\"from\":{\"id\":222}}}"
+        let allowedAck = adapter.ingestWebhookPayload(allowedPayload)
+        @Expect(allowedAck.contains("\"ok\":true"), true)
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 1)
+        @Expect(inbound[0].peerId, "group:-1001234567890:topic:42")
+
+        let rejectedPayload = "{\"update_id\":12,\"message\":{\"message_id\":202,\"message_thread_id\":42,\"text\":\"status\",\"chat\":{\"id\":-1001234567890,\"type\":\"supergroup\"},\"from\":{\"id\":111}}}"
+        let rejectedAck = adapter.ingestWebhookPayload(rejectedPayload)
+        @Expect(rejectedAck.contains("\"ignored\":true"), true)
+        @Expect(adapter.pullInbound().isEmpty(), true)
+        let policy = adapter.debugBuildInboundPolicyDiagnostics()
+        @Expect(policy.get("lastReason").getOrThrow().asString().getValue(), "group_sender_not_allowed")
     }
 
     @TestCase
@@ -2326,6 +2368,69 @@ public class TelegramAdapterTest {
     }
 
     @TestCase
+    public func draftPayloadSendsPreviewThenEditsFinalText(): Unit {
+        let fake = TelegramFakeBotApi()
+        setTelegramTransportRunnerForTest(Some({ request => fake.handle(request) }))
+        try {
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    actions: TelegramActionConfig(editMessage: true)
+                )
+            )
+            adapter.start()
+            let result = adapter.send(
+                OutboundMessage(ChannelType.Telegram, "user:8734062810", "[draft]\npreview=Working...\nfinal=Done")
+            )
+            match (result) {
+                case SendResult.Success => ()
+                case SendResult.Failed(reason) => @Expect(reason, "")
+            }
+            @Expect(fake.saw("sendMessage"), true)
+            @Expect(fake.saw("editMessageText"), true)
+            @Expect(fake.sawBodyContaining("Working..."), true)
+            @Expect(fake.sawBodyContaining("Done"), true)
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+        }
+    }
+
+    @TestCase
+    public func approvalPayloadBuildsInlineButtonsAndCallbackData(): Unit {
+        let future = DateTime.now().toUnixTimeStamp().toMilliseconds() + 60000
+        let fake = TelegramFakeBotApi()
+        setTelegramTransportRunnerForTest(Some({ request => fake.handle(request) }))
+        try {
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    actions: TelegramActionConfig(inlineKeyboard: true)
+                )
+            )
+            adapter.start()
+            let result = adapter.send(
+                OutboundMessage(
+                    ChannelType.Telegram,
+                    "user:8734062810",
+                    "[approval]\nid=appr-1\ntext=Run tool?\nallowLabel=Allow\ndenyLabel=Deny\nallow=allow-once\ndeny=deny\nexpiresAtMs=${future}"
+                )
+            )
+            match (result) {
+                case SendResult.Success => ()
+                case SendResult.Failed(reason) => @Expect(reason, "")
+            }
+            @Expect(fake.saw("sendMessage"), true)
+            @Expect(fake.sawBodyContaining("Run tool?"), true)
+            @Expect(fake.sawBodyContaining("approval:appr-1:allow-once:${future}"), true)
+            @Expect(fake.sawBodyContaining("approval:appr-1:deny:${future}"), true)
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+        }
+    }
+
+    @TestCase
     public func disabledReactionActionFailsFastBeforeNetwork(): Unit {
         let cfg = TelegramConfig(
             enabled: true,
@@ -2661,6 +2766,55 @@ public class TelegramAdapterTest {
         @Expect(inbound[0].replyTargetMessageId.getOrThrow(), "101")
         @Expect(inbound[0].text.contains("[telegram-callback]"), true)
         @Expect(inbound[0].text.contains("data=approve-1"), true)
+    }
+
+    @TestCase
+    public func approvalCallbackQueuesStructuredDecisionAndRejectsReplay(): Unit {
+        let future = DateTime.now().toUnixTimeStamp().toMilliseconds() + 60000
+        let cfg = TelegramConfig(
+            enabled: true,
+            botToken: "telegram-token",
+            dmPolicy: "open",
+            allowFrom: ["*"],
+            actions: TelegramActionConfig(callbackQuery: true)
+        )
+        let adapter = TelegramAdapter(config: cfg)
+        adapter.start()
+        let payload = "{\"update_id\":4,\"callback_query\":{\"id\":\"cb-approval-1\",\"from\":{\"id\":8734062810},\"message\":{\"message_id\":103,\"chat\":{\"id\":8734062810,\"type\":\"private\"}},\"data\":\"approval:appr-1:allow-once:${future}\"}}"
+        let ack = adapter.ingestWebhookPayload(payload)
+        @Expect(ack.contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 1)
+        @Expect(inbound[0].text.contains("[telegram-approval]"), true)
+        @Expect(inbound[0].text.contains("approvalId=appr-1"), true)
+        @Expect(inbound[0].text.contains("decision=allow-once"), true)
+
+        let replayAck = adapter.ingestWebhookPayload(payload.replace("\"update_id\":4", "\"update_id\":5"))
+        @Expect(replayAck.contains("\"ignored\":true"), true)
+        @Expect(adapter.pullInbound().isEmpty(), true)
+        let policy = adapter.debugBuildInboundPolicyDiagnostics()
+        @Expect(policy.get("lastReason").getOrThrow().asString().getValue(), "approval_callback_replayed")
+    }
+
+    @TestCase
+    public func approvalCallbackRejectsExpiredDecisionBeforeQueueing(): Unit {
+        let expired = DateTime.now().toUnixTimeStamp().toMilliseconds() - 1000
+        let cfg = TelegramConfig(
+            enabled: true,
+            botToken: "telegram-token",
+            dmPolicy: "open",
+            allowFrom: ["*"],
+            actions: TelegramActionConfig(callbackQuery: true)
+        )
+        let adapter = TelegramAdapter(config: cfg)
+        adapter.start()
+        let payload = "{\"update_id\":6,\"callback_query\":{\"id\":\"cb-expired\",\"from\":{\"id\":8734062810},\"message\":{\"message_id\":104,\"chat\":{\"id\":8734062810,\"type\":\"private\"}},\"data\":\"approval:appr-2:deny:${expired}\"}}"
+        let ack = adapter.ingestWebhookPayload(payload)
+        @Expect(ack.contains("\"ignored\":true"), true)
+        @Expect(adapter.pullInbound().isEmpty(), true)
+        let policy = adapter.debugBuildInboundPolicyDiagnostics()
+        @Expect(policy.get("lastReason").getOrThrow().asString().getValue(), "approval_callback_expired")
     }
 
     @TestCase

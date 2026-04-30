@@ -20,7 +20,7 @@ import std.convert.Parsable
 import std.env.{getVariable, setVariable}
 import std.fs.{Directory, Path, remove}
 import std.unittest.testmacro.*
-import stdx.encoding.json.{JsonObject, JsonString}
+import stdx.encoding.json.{JsonArray, JsonObject, JsonString}
 
 private func channelsTestBool(obj: JsonObject, key: String): Bool {
     match (obj.get(key)) {
@@ -203,8 +203,48 @@ public class GatewayServerMethodsChannelsTest {
         @Expect(channelsTestBool(media, "outboundAllowLocalPath"), true)
         @Expect(media.get("outboundLocalRoots").getOrThrow().asArray().toJsonString().contains("/tmp/metis-media"), true)
         @Expect(channelsTestString(media, "albumPolicy"), "metadata-only")
+        let setup = channel.get("setup").getOrThrow().asObject()
+        @Expect(channelsTestBool(setup, "probeAvailable"), true)
+        @Expect(channelsTestBool(setup, "configMutationSafe"), true)
+        @Expect(channelsTestBool(setup, "writesConfig"), false)
+        let directory = channel.get("directory").getOrThrow().asObject()
+        @Expect(directory.get("groups").isSome(), true)
+        @Expect(directory.get("accounts").isSome(), true)
+        @Expect(directory.get("targets").isSome(), true)
+        let accountOps = channel.get("accountOps").getOrThrow().asObject()
+        @Expect(channelsTestBool(accountOps, "setup"), true)
+        @Expect(channelsTestBool(accountOps, "probe"), true)
+        @Expect(channelsTestBool(accountOps, "directory"), true)
+        @Expect(channelsTestBool(accountOps, "logout"), true)
         let supports = channel.get("supports").getOrThrow().asObject()
         @Expect(channelsTestBool(supports, "allowedUpdatesAuto"), true)
+    }
+
+    @TestCase
+    public func telegramChannelDirectoryIncludesConfiguredGroupsTopicsAndAccounts(): Unit {
+        var user = GatewayUserSettings()
+        user.telegram.enabled = true
+        user.telegram.botToken = "telegram-token"
+        user.telegram.defaultTo = "user:8734062810"
+        let groups = JsonObject()
+        let groupRule = JsonObject()
+        let topics = JsonObject()
+        topics.put("42", JsonObject())
+        groupRule.put("topics", topics)
+        groups.put("-1001234567890", groupRule)
+        user.telegram.groups = Some(groups)
+        let accounts = JsonObject()
+        accounts.put("main", JsonObject())
+        user.telegram.accounts = Some(accounts)
+
+        let channel = gatewayChannelGetJson(user, "telegram")
+        let directory = channel.get("directory").getOrThrow().asObject()
+        @Expect(directory.get("groups").getOrThrow().asArray().toJsonString().contains("-1001234567890"), true)
+        @Expect(directory.get("accounts").getOrThrow().asArray().toJsonString().contains("main"), true)
+        let targets = directory.get("targets").getOrThrow().asArray().toJsonString()
+        @Expect(targets.contains("user:8734062810"), true)
+        @Expect(targets.contains("group:-1001234567890"), true)
+        @Expect(targets.contains("group:-1001234567890:topic:42"), true)
     }
 
     @TestCase

@@ -576,9 +576,86 @@ private func gatewayTelegramChannelJson(user: GatewayUserSettings): JsonObject {
     media.put("outboundLocalRoots", localRoots)
     media.put("albumPolicy", JsonString(user.telegram.media.albumPolicy))
     result.put("media", media)
+    result.put("setup", gatewayTelegramSetupJson(user))
+    result.put("directory", gatewayTelegramDirectoryJson(user))
+    result.put("accountOps", gatewayTelegramAccountOpsJson())
     result.put("actionSchemas", gatewayTelegramActionSchemasJson())
     result.put("supports", gatewayChannelSupportsJson(user, "telegram"))
     result
+}
+
+private func gatewayTelegramSetupJson(user: GatewayUserSettings): JsonObject {
+    let out = JsonObject()
+    out.put("configured", (!user.telegram.botToken.trimAscii().isEmpty() || !user.telegram.tokenFile.trimAscii().isEmpty()).toJsonValue())
+    out.put("enabled", user.telegram.enabled.toJsonValue())
+    out.put("mode", JsonString(if (!user.telegram.webhookUrl.trimAscii().isEmpty()) { "webhook" } else { "polling" }))
+    out.put("probeAvailable", true.toJsonValue())
+    out.put("configMutationSafe", true.toJsonValue())
+    out.put("writesConfig", false.toJsonValue())
+    let required = JsonArray([])
+    required.add(JsonString("botToken|tokenFile"))
+    out.put("requiredFields", required)
+    return out
+}
+
+private func gatewayTelegramDirectoryJson(user: GatewayUserSettings): JsonObject {
+    let out = JsonObject()
+    out.put("defaultTo", JsonString(user.telegram.defaultTo))
+    out.put("groups", gatewayTelegramObjectKeysJson(user.telegram.groups))
+    out.put("accounts", gatewayTelegramObjectKeysJson(user.telegram.accounts))
+    out.put("targets", gatewayTelegramTargetsJson(user))
+    return out
+}
+
+private func gatewayTelegramObjectKeysJson(objOpt: Option<JsonObject>): JsonArray {
+    let out = JsonArray([])
+    match (objOpt) {
+        case Some(obj) =>
+            for (key in obj.getFields().keys()) {
+                out.add(JsonString(key))
+            }
+        case None => ()
+    }
+    return out
+}
+
+private func gatewayTelegramTargetsJson(user: GatewayUserSettings): JsonArray {
+    let out = JsonArray([])
+    if (!user.telegram.defaultTo.trimAscii().isEmpty()) {
+        out.add(JsonString(user.telegram.defaultTo.trimAscii()))
+    }
+    match (user.telegram.groups) {
+        case Some(groups) =>
+            let groupFields = groups.getFields()
+            for (groupId in groupFields.keys()) {
+                if (groupId != "*") {
+                    out.add(JsonString("group:${groupId}"))
+                }
+                let groupObj = try { groupFields[groupId].asObject() } catch (_e: Exception) { JsonObject() }
+                let topicsOpt = try { Some(groupObj.get("topics").getOrThrow().asObject()) } catch (_e: Exception) { None<JsonObject> }
+                match (topicsOpt) {
+                    case Some(topics) =>
+                        for (topicId in topics.getFields().keys()) {
+                            if (topicId != "*") {
+                                out.add(JsonString("group:${groupId}:topic:${topicId}"))
+                            }
+                        }
+                    case None => ()
+                }
+            }
+        case None => ()
+    }
+    return out
+}
+
+private func gatewayTelegramAccountOpsJson(): JsonObject {
+    let out = JsonObject()
+    out.put("setup", true.toJsonValue())
+    out.put("probe", true.toJsonValue())
+    out.put("directory", true.toJsonValue())
+    out.put("logout", true.toJsonValue())
+    out.put("mutationRequiresGatewayRpc", true.toJsonValue())
+    return out
 }
 
 private func gatewayTelegramActionSchema(name: String, method: String, enabledBy: String, required: Array<String>): JsonObject {

@@ -125,6 +125,7 @@ public class TelegramAdapter <: ChannelAdapter {
     private let pendingUpdateIds = HashSet<String>()
     private let completedUpdateIds = HashSet<String>()
     private let completedUpdateIdOrder = ArrayList<String>()
+    private let consumedApprovalCallbacks = HashSet<String>()
     private var pollingRunner: Option<TelegramPollingRunner> = None<TelegramPollingRunner>
     private var telegramTransportRebuildCount: Int64 = 0
     private var running = false
@@ -266,14 +267,26 @@ public class TelegramAdapter <: ChannelAdapter {
                 this.lastSendError = this.payloadValidationError(payload)
                 return ""
             }
+            if ((this.payloadIsDraft(payload) || this.payloadIsApproval(payload)) && payload.get("validation_error").isSome()) {
+                this.lastSendError = this.payloadValidationError(payload)
+                return ""
+            }
             if (this.payloadIsMediaInvalid(payload)) {
                 this.lastSendError = this.payloadValidationError(payload)
                 return ""
             }
-            if (this.payloadIsInlineKeyboard(payload) && !this.config.actions.inlineKeyboard) {
-                this.lastSendError = "telegram inlineKeyboard action is disabled"
-                return ""
-            }
+        if (this.payloadIsInlineKeyboard(payload) && !this.config.actions.inlineKeyboard) {
+            this.lastSendError = "telegram inlineKeyboard action is disabled"
+            return ""
+        }
+        if (this.payloadIsDraft(payload) && !this.config.actions.editMessage) {
+            this.lastSendError = "telegram draft preview requires editMessage action"
+            return ""
+        }
+        if (this.payloadIsApproval(payload) && !this.config.actions.inlineKeyboard) {
+            this.lastSendError = "telegram approval buttons require inlineKeyboard action"
+            return ""
+        }
             if (this.payloadIsSticker(payload) && !this.config.actions.sticker) {
                 this.lastSendError = "telegram sticker action is disabled"
                 return ""
@@ -1293,10 +1306,17 @@ public class TelegramAdapter <: ChannelAdapter {
             this.recordInboundDecision(this.readIntStringField(root, "update_id"), "callback_query", "ignored", "unsupported_or_empty_callback_query")
             return None
         }
+        let approvalValidation = this.validateApprovalCallbackData(callbackId, data)
+        if (!approvalValidation.isEmpty()) {
+            this.recordInboundDecision(this.readIntStringField(root, "update_id"), "callback_query", "ignored", approvalValidation)
+            return None
+        }
         let threadIdRaw = this.readIntStringField(msg, "message_thread_id")
         let peerId = this.telegramPeerId(chat, threadId: threadIdRaw)
         let chatType = if (this.readStringField(chat, "type") == "private") { ChatType.Direct } else { ChatType.Group }
-        let text = if (data.isEmpty()) {
+        let text = if (data.startsWith("approval:")) {
+            this.renderApprovalCallbackInboundText(callbackId, messageId, data, senderId)
+        } else if (data.isEmpty()) {
             "[telegram-callback]\nid=${callbackId}\nmessageId=${messageId}\nby=${senderId}"
         } else {
             "[telegram-callback]\nid=${callbackId}\nmessageId=${messageId}\ndata=${data}\nby=${senderId}"
@@ -1333,6 +1353,34 @@ public class TelegramAdapter <: ChannelAdapter {
         Some(inbound)
     }
 
+    private func validateApprovalCallbackData(callbackId: String, data: String): String {
+        if (!data.startsWith("approval:")) {
+            return ""
+        }
+        let parts = data.split(":")
+        if (parts.size < 4) {
+            return "approval_callback_invalid"
+        }
+        let expiresAtMs = try { Int64.parse(parts[3].trimAscii()) } catch (_: Exception) { 0 }
+        if (expiresAtMs <= 0 || DateTime.now().toUnixTimeStamp().toMilliseconds() > expiresAtMs) {
+            return "approval_callback_expired"
+        }
+        synchronized(this.queueMutex) {
+            if (this.consumedApprovalCallbacks.contains(callbackId)) {
+                return "approval_callback_replayed"
+            }
+            this.consumedApprovalCallbacks.add(callbackId)
+        }
+        ""
+    }
+
+    private func renderApprovalCallbackInboundText(callbackId: String, messageId: String, data: String, senderId: String): String {
+        let parts = data.split(":")
+        let approvalId = if (parts.size > 1) { parts[1].trimAscii() } else { "" }
+        let decision = if (parts.size > 2) { parts[2].trimAscii() } else { "" }
+        "[telegram-approval]\nid=${callbackId}\nmessageId=${messageId}\napprovalId=${approvalId}\ndecision=${decision}\nby=${senderId}"
+    }
+
     private func sendPayloadToTelegram(payload: HashMap<String, JsonValue>): String {
         let kind = match (payload.get("kind")) {
             case Some(v) => try { v.asString().getValue().trimAscii().toAsciiLower() } catch (_e: Exception) { "text" }
@@ -1357,6 +1405,9 @@ public class TelegramAdapter <: ChannelAdapter {
         }
         let method = this.telegramApiMethodForPayloadKind(kind)
         let url = this.normalizeApiRoot() + "/bot${token}/${method}"
+        if (kind == "draft") {
+            return this.sendDraftPayloadToTelegram(url, payload)
+        }
         let responseOpt = match (this.localMediaUploadForPayload(kind, payload)) {
             case Some(upload) => this.telegramMultipartPost(url, payload, upload[0], upload[1], context: "send:${kind}:multipart")
             case None => this.telegramJsonPost(url, this.telegramApiBodyForPayload(payload, plainFallback: false), context: "send:${kind}")
@@ -1394,6 +1445,49 @@ public class TelegramAdapter <: ChannelAdapter {
                 return ""
         }
         this.parseTelegramPayloadSuccess(kind, plainResponseRaw) ?? ""
+    }
+
+    private func sendDraftPayloadToTelegram(url: String, payload: HashMap<String, JsonValue>): String {
+        let draftPayload = HashMap<String, JsonValue>()
+        for ((key, value) in payload) {
+            if (key == "final_text" || key == "plain_final_text") {
+                continue
+            }
+            draftPayload[key] = value
+        }
+        draftPayload["kind"] = JsonString("text")
+        let responseOpt = this.telegramJsonPost(url, this.telegramApiBodyForPayload(draftPayload, plainFallback: false), context: "send:draft")
+        let responseRaw = match (responseOpt) {
+            case Some(resp) => resp
+            case None =>
+                this.setLastSendError("empty http response")
+                return ""
+        }
+        let messageId = match (this.parseTelegramSendSuccess(responseRaw)) {
+            case Some(id) => id
+            case None => return ""
+        }
+        let editPayload = HashMap<String, JsonValue>()
+        editPayload["kind"] = JsonString("edit")
+        editPayload["peer"] = payload.get("peer") ?? JsonString("")
+        editPayload["chat_id"] = payload.get("chat_id") ?? JsonString("")
+        editPayload["message_id"] = JsonString(messageId)
+        editPayload["text"] = payload.get("final_text") ?? payload.get("text") ?? JsonString("")
+        editPayload["plain_text"] = payload.get("plain_final_text") ?? payload.get("plain_text") ?? JsonString("")
+        editPayload["parse_mode"] = JsonString("HTML")
+        editPayload["disable_web_page_preview"] = (!this.config.linkPreview).toJsonValue()
+        let editUrl = this.normalizeApiRoot() + "/bot${this.effectiveBotToken()}/editMessageText"
+        let editResponseOpt = this.telegramJsonPost(editUrl, this.telegramApiBodyForPayload(editPayload, plainFallback: false), context: "send:draft:final")
+        match (editResponseOpt) {
+            case Some(raw) =>
+                if (this.parseTelegramPayloadSuccess("edit", raw).isSome()) {
+                    return messageId
+                }
+                ""
+            case None =>
+                this.setLastSendError("empty http response")
+                ""
+        }
     }
 
     private func telegramApiBodyForPayload(payload: HashMap<String, JsonValue>, plainFallback!: Bool): JsonObject {
@@ -1473,7 +1567,7 @@ public class TelegramAdapter <: ChannelAdapter {
     }
 
     private func parseTelegramPayloadSuccess(kind: String, raw: String): Option<String> {
-        if (kind == "delete" || kind == "reaction") {
+        if (kind == "delete" || kind == "reaction" || kind == "edit") {
             return if (this.parseTelegramBoolSuccess(raw, missingDetail: "telegram api returned ok=false")) { Some("") } else { None<String> }
         }
         if (kind == "topic-create") {
@@ -2322,6 +2416,14 @@ public class TelegramAdapter <: ChannelAdapter {
             case Some(payload) => return [payload]
             case None => ()
         }
+        match (this.detectDraftPayload(message)) {
+            case Some(payload) => return [payload]
+            case None => ()
+        }
+        match (this.detectApprovalPayload(message)) {
+            case Some(payload) => return [payload]
+            case None => ()
+        }
         match (this.detectStickerPayload(message)) {
             case Some(payload) => return [payload]
             case None => ()
@@ -2525,6 +2627,67 @@ public class TelegramAdapter <: ChannelAdapter {
         markup.put("inline_keyboard", rows)
         body["reply_markup"] = markup
         body
+    }
+
+    private func buildDraftPayload(message: OutboundMessage, preview: String, finalText: String): HashMap<String, JsonValue> {
+        let normalizedPeer = message.peerId.trimAscii()
+        let chatId = this.normalizePeerId(normalizedPeer)
+        let threadId = this.extractThreadId(normalizedPeer)
+        let replyInThread = this.effectiveReplyInThread(message.replyInThread)
+        let body = HashMap<String, JsonValue>()
+        body["kind"] = JsonString("draft")
+        body["peer"] = JsonString(normalizedPeer)
+        body["chat_id"] = JsonString(chatId)
+        body["text"] = JsonString(this.telegramEscapeHtml(preview))
+        body["plain_text"] = JsonString(preview)
+        body["final_text"] = JsonString(this.telegramEscapeHtml(finalText))
+        body["plain_final_text"] = JsonString(finalText)
+        body["disable_web_page_preview"] = (!this.config.linkPreview).toJsonValue()
+        body["parse_mode"] = JsonString("HTML")
+        this.applyTelegramSilentOption(body)
+        if (!threadId.isEmpty() && replyInThread) {
+            body["message_thread_id"] = JsonString(threadId)
+        }
+        if (let Some(replyId) <- this.effectiveReplyToMessageId(message.replyToMessageId)) {
+            if (!replyId.trimAscii().isEmpty()) {
+                body["reply_to_message_id"] = JsonString(replyId.trimAscii())
+            }
+        }
+        body
+    }
+
+    private func buildApprovalPayload(
+        message: OutboundMessage,
+        approvalId: String,
+        text: String,
+        allowLabel: String,
+        denyLabel: String,
+        allowDecision: String,
+        denyDecision: String,
+        expiresAtMs: Int64
+    ): HashMap<String, JsonValue> {
+        let payload = this.buildInlineKeyboardPayload(message, text, [
+            "${allowLabel}|callback:${this.approvalCallbackData(approvalId, allowDecision, expiresAtMs)}",
+            "${denyLabel}|callback:${this.approvalCallbackData(approvalId, denyDecision, expiresAtMs)}"
+        ])
+        payload["kind"] = JsonString("approval")
+        payload["approval_id"] = JsonString(approvalId)
+        payload["expires_at_ms"] = expiresAtMs.toJsonValue()
+        payload
+    }
+
+    private func approvalCallbackData(approvalId: String, decision: String, expiresAtMs: Int64): String {
+        "approval:${this.approvalTokenPart(approvalId)}:${this.approvalTokenPart(decision)}:${expiresAtMs}"
+    }
+
+    private func approvalTokenPart(raw: String): String {
+        let cleaned = raw.trimAscii()
+            .replace(":", "_")
+            .replace("|", "_")
+            .replace("\n", "_")
+            .replace("\r", "_")
+            .replace(" ", "_")
+        if (cleaned.isEmpty()) { "id" } else { cleaned }
     }
 
     private func buildStickerPayload(message: OutboundMessage, fileId: String): HashMap<String, JsonValue> {
@@ -2848,6 +3011,20 @@ public class TelegramAdapter <: ChannelAdapter {
         }
     }
 
+    private func payloadIsDraft(payload: HashMap<String, JsonValue>): Bool {
+        match (payload.get("kind")) {
+            case Some(v) => try { v.asString().getValue().trimAscii().toAsciiLower() == "draft" } catch (_e: Exception) { false }
+            case None => false
+        }
+    }
+
+    private func payloadIsApproval(payload: HashMap<String, JsonValue>): Bool {
+        match (payload.get("kind")) {
+            case Some(v) => try { v.asString().getValue().trimAscii().toAsciiLower() == "approval" } catch (_e: Exception) { false }
+            case None => false
+        }
+    }
+
     private func payloadIsInlineKeyboardInvalid(payload: HashMap<String, JsonValue>): Bool {
         this.payloadIsInlineKeyboard(payload) && payload.get("validation_error").isSome()
     }
@@ -2948,6 +3125,12 @@ public class TelegramAdapter <: ChannelAdapter {
         }
         if (kind == "reaction") {
             return "setMessageReaction"
+        }
+        if (kind == "draft") {
+            return "sendMessage"
+        }
+        if (kind == "approval") {
+            return "sendMessage"
         }
         if (kind == "sticker") {
             return "sendSticker"
@@ -3088,6 +3271,73 @@ public class TelegramAdapter <: ChannelAdapter {
             return Some(invalid)
         }
         Some(this.buildInlineKeyboardPayload(message, text, parsed[1]))
+    }
+
+    private func detectDraftPayload(message: OutboundMessage): Option<HashMap<String, JsonValue>> {
+        let normalized = message.text.replace("\r\n", "\n").replace("\r", "\n").trimAscii()
+        if (!normalized.startsWith("[draft]")) {
+            return None
+        }
+        var preview = "Processing..."
+        var finalText = ""
+        for (line0 in normalized.split("\n")) {
+            let line = line0.trimAscii()
+            if (line.startsWith("preview=")) {
+                preview = line["preview=".size..].trimAscii()
+            } else if (line.startsWith("final=")) {
+                finalText = line["final=".size..].trimAscii()
+            }
+        }
+        if (finalText.isEmpty()) {
+            let invalid = HashMap<String, JsonValue>()
+            invalid["kind"] = JsonString("draft")
+            invalid["validation_error"] = JsonString("telegram draft requires final text")
+            return Some(invalid)
+        }
+        Some(this.buildDraftPayload(message, preview, finalText))
+    }
+
+    private func detectApprovalPayload(message: OutboundMessage): Option<HashMap<String, JsonValue>> {
+        let normalized = message.text.replace("\r\n", "\n").replace("\r", "\n").trimAscii()
+        if (!normalized.startsWith("[approval]")) {
+            return None
+        }
+        var approvalId = ""
+        var text = "Approval required"
+        var allowLabel = "Approve"
+        var denyLabel = "Deny"
+        var allowDecision = "allow-once"
+        var denyDecision = "deny"
+        var expiresAtMs = DateTime.now().toUnixTimeStamp().toMilliseconds() + 600000
+        for (line0 in normalized.split("\n")) {
+            let line = line0.trimAscii()
+            if (line.startsWith("id=")) {
+                approvalId = line["id=".size..].trimAscii()
+            } else if (line.startsWith("text=")) {
+                text = line["text=".size..].trimAscii()
+            } else if (line.startsWith("allowLabel=")) {
+                allowLabel = line["allowLabel=".size..].trimAscii()
+            } else if (line.startsWith("denyLabel=")) {
+                denyLabel = line["denyLabel=".size..].trimAscii()
+            } else if (line.startsWith("allow=")) {
+                allowDecision = line["allow=".size..].trimAscii()
+            } else if (line.startsWith("deny=")) {
+                denyDecision = line["deny=".size..].trimAscii()
+            } else if (line.startsWith("expiresAtMs=")) {
+                try {
+                    expiresAtMs = Int64.parse(line["expiresAtMs=".size..].trimAscii())
+                } catch (_: Exception) {
+                    ()
+                }
+            }
+        }
+        if (approvalId.isEmpty()) {
+            let invalid = HashMap<String, JsonValue>()
+            invalid["kind"] = JsonString("approval")
+            invalid["validation_error"] = JsonString("telegram approval requires id")
+            return Some(invalid)
+        }
+        Some(this.buildApprovalPayload(message, approvalId, text, allowLabel, denyLabel, allowDecision, denyDecision, expiresAtMs))
     }
 
     private func detectStickerPayload(message: OutboundMessage): Option<HashMap<String, JsonValue>> {
@@ -3494,18 +3744,19 @@ public class TelegramAdapter <: ChannelAdapter {
             return "group_not_allowed"
         }
         let entry = this.resolveGroupEntry(message.peerId)
-        let requireMention = this.groupRequiresMention(entry)
+        let topicEntry = this.resolveTopicEntry(message.peerId, entry)
+        let requireMention = this.groupRequiresMention(entry, topicEntry)
         if (requireMention && !message.mentioned) {
             return "group_mention_required"
         }
-        let senderPolicy = this.effectiveGroupSenderPolicy(entry)
+        let senderPolicy = this.effectiveGroupSenderPolicy(entry, topicEntry)
         if (senderPolicy == "disabled") {
             return "group_sender_policy_disabled"
         }
         if (senderPolicy == "open") {
             return ""
         }
-        let allowFrom = this.effectiveGroupAllowFrom(entry)
+        let allowFrom = this.effectiveGroupAllowFrom(entry, topicEntry)
         if (this.senderAllowed(allowFrom, message.senderId)) {
             return ""
         }
@@ -3525,7 +3776,15 @@ public class TelegramAdapter <: ChannelAdapter {
         }
     }
 
-    private func groupRequiresMention(entry: Option<JsonObject>): Bool {
+    private func groupRequiresMention(entry: Option<JsonObject>, topicEntry: Option<JsonObject>): Bool {
+        match (topicEntry) {
+            case Some(topicCfg) =>
+                match (this.readBoolFieldOpt(topicCfg, "requireMention")) {
+                    case Some(v) => return v
+                    case None => ()
+                }
+            case None => ()
+        }
         match (entry) {
             case Some(groupCfg) =>
                 match (this.readBoolFieldOpt(groupCfg, "requireMention")) {
@@ -3537,7 +3796,15 @@ public class TelegramAdapter <: ChannelAdapter {
         this.config.policy.requireMentionInGroup
     }
 
-    private func effectiveGroupSenderPolicy(entry: Option<JsonObject>): String {
+    private func effectiveGroupSenderPolicy(entry: Option<JsonObject>, topicEntry: Option<JsonObject>): String {
+        match (topicEntry) {
+            case Some(topicCfg) =>
+                let override = this.readStringField(topicCfg, "groupPolicy").trimAscii().toAsciiLower()
+                if (!override.isEmpty()) {
+                    return override
+                }
+            case None => ()
+        }
         match (entry) {
             case Some(groupCfg) =>
                 let override = this.readStringField(groupCfg, "groupPolicy").trimAscii().toAsciiLower()
@@ -3549,7 +3816,15 @@ public class TelegramAdapter <: ChannelAdapter {
         this.config.groupPolicy.trimAscii().toAsciiLower()
     }
 
-    private func effectiveGroupAllowFrom(entry: Option<JsonObject>): Array<String> {
+    private func effectiveGroupAllowFrom(entry: Option<JsonObject>, topicEntry: Option<JsonObject>): Array<String> {
+        match (topicEntry) {
+            case Some(topicCfg) =>
+                let topicAllow = this.readStringArrayField(topicCfg, "allowFrom")
+                if (!topicAllow.isEmpty()) {
+                    return topicAllow
+                }
+            case None => ()
+        }
         match (entry) {
             case Some(groupCfg) =>
                 let groupAllow = this.readStringArrayField(groupCfg, "allowFrom")
@@ -3622,6 +3897,25 @@ public class TelegramAdapter <: ChannelAdapter {
                 match (this.readObjectFieldOpt(groups, normalizedGroupId)) {
                     case Some(v) => return Some(v)
                     case None => return this.readObjectFieldOpt(groups, "*")
+                }
+            case None => return None
+        }
+    }
+
+    private func resolveTopicEntry(peerId: String, groupEntry: Option<JsonObject>): Option<JsonObject> {
+        let threadId = this.extractThreadId(peerId)
+        if (threadId.isEmpty()) {
+            return None
+        }
+        match (groupEntry) {
+            case Some(groupCfg) =>
+                match (this.readObjectFieldOpt(groupCfg, "topics")) {
+                    case Some(topics) =>
+                        match (this.readObjectFieldOpt(topics, threadId)) {
+                            case Some(v) => return Some(v)
+                            case None => return this.readObjectFieldOpt(topics, "*")
+                        }
+                    case None => return None
                 }
             case None => return None
         }
