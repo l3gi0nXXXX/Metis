@@ -2,8 +2,8 @@ package metis.gateway.runtime
 
 import magic.jsonable.*
 
-import metis.core.config.{CliSettingManager, GatewayPluginUserSettings, GatewayUserSettings}
-import metis.gateway.channels.telegram.TelegramAdapter
+import metis.core.config.{CliConfig, CliSettingManager, GatewayPluginUserSettings, GatewayUserSettings}
+import metis.gateway.channels.telegram.{TelegramAdapter, telegramPairingAccountStore}
 import metis.gateway.core.{
     gatewayChannelRuntimeMarkFailure,
     gatewayChannelRuntimeMarkRunning,
@@ -18,7 +18,8 @@ import metis.gateway.core.{
     gatewayChannelRuntimeSummary,
     gatewayPluginManagerSummary,
     gatewayPluginRuntimeAccountsJson,
-    gatewayPluginRuntimeSummary
+    gatewayPluginRuntimeSummary,
+    gatewayListSessionCatalogViewsForUser
 }
 import metis.gateway.config.{
     GatewayChannelPluginRegistry,
@@ -604,7 +605,112 @@ private func gatewayTelegramDirectoryJson(user: GatewayUserSettings): JsonObject
     out.put("groups", gatewayTelegramObjectKeysJson(user.telegram.groups))
     out.put("accounts", gatewayTelegramObjectKeysJson(user.telegram.accounts))
     out.put("targets", gatewayTelegramTargetsJson(user))
+    let rows = gatewayTelegramDirectoryRowsJson(user)
+    out.put("rows", rows)
+    out.put("rowCount", rows.size().toJsonValue())
+    out.put("aggregationSources", JsonArray([
+        JsonString("defaultTo"),
+        JsonString("groups"),
+        JsonString("accounts"),
+        JsonString("pairing"),
+        JsonString("session-catalog"),
+        JsonString("delivery-history")
+    ]))
     return out
+}
+
+private func gatewayTelegramDirectoryRow(
+    kind: String,
+    id: String,
+    displayName: String,
+    accountId: String,
+    source: String,
+    sessionKey!: String = "",
+    lastSeenAtMs!: Int64 = 0,
+    canSend!: Bool = true,
+    policyState!: String = "allowed"
+): JsonObject {
+    let row = JsonObject()
+    row.put("kind", JsonString(kind))
+    row.put("id", JsonString(id))
+    row.put("displayName", JsonString(displayName))
+    row.put("accountId", JsonString(accountId))
+    row.put("source", JsonString(source))
+    row.put("lastSeenAtMs", lastSeenAtMs.toJsonValue())
+    row.put("sessionKey", JsonString(sessionKey))
+    row.put("canSend", canSend.toJsonValue())
+    row.put("policyState", JsonString(policyState))
+    row
+}
+
+private func gatewayTelegramDirectoryAddRow(rows: JsonArray, seen: HashMap<String, Bool>, row: JsonObject): Unit {
+    let key = gatewayBindingStringParam(row, ["kind"], "") + ":" +
+        gatewayBindingStringParam(row, ["accountId"], "") + ":" +
+        gatewayBindingStringParam(row, ["id"], "")
+    if (seen.contains(key)) {
+        return
+    }
+    seen[key] = true
+    rows.add(row)
+}
+
+private func gatewayTelegramDirectoryRowsJson(user: GatewayUserSettings): JsonArray {
+    let rows = JsonArray([])
+    let seen = HashMap<String, Bool>()
+    let defaultAccountId = "default"
+    if (!user.telegram.defaultTo.trimAscii().isEmpty()) {
+        gatewayTelegramDirectoryAddRow(
+            rows,
+            seen,
+            gatewayTelegramDirectoryRow("user", user.telegram.defaultTo.trimAscii(), user.telegram.defaultTo.trimAscii(), defaultAccountId, "defaultTo")
+        )
+    }
+    match (user.telegram.groups) {
+        case Some(groups) =>
+            for (groupId in groups.getFields().keys()) {
+                if (groupId != "*") {
+                    gatewayTelegramDirectoryAddRow(rows, seen, gatewayTelegramDirectoryRow("group", "group:${groupId}", "group:${groupId}", defaultAccountId, "groups"))
+                }
+                let groupObj = try { groups.getFields()[groupId].asObject() } catch (_: Exception) { JsonObject() }
+                let topics = try { groupObj.get("topics").getOrThrow().asObject() } catch (_: Exception) { JsonObject() }
+                for (topicId in topics.getFields().keys()) {
+                    if (topicId != "*") {
+                        gatewayTelegramDirectoryAddRow(rows, seen, gatewayTelegramDirectoryRow("topic", "group:${groupId}:topic:${topicId}", "group:${groupId}:topic:${topicId}", defaultAccountId, "groups"))
+                    }
+                }
+            }
+        case None => ()
+    }
+    for (senderId in telegramPairingAccountStore(rootDir: CliConfig.dotDir, accountId: defaultAccountId).approvedSenders()) {
+        gatewayTelegramDirectoryAddRow(
+            rows,
+            seen,
+            gatewayTelegramDirectoryRow("user", "user:${senderId}", "user:${senderId}", defaultAccountId, "pairing")
+        )
+    }
+    for (view in gatewayListSessionCatalogViewsForUser(user)) {
+        if (view.channel != "telegram" || view.peer.trimAscii().isEmpty()) {
+            continue
+        }
+        let kind = if (view.peer.contains(":topic:")) { "topic" } else if (view.peer.startsWith("group:")) { "group" } else { "user" }
+        let acct = if (!view.row.lastAccountId.trimAscii().isEmpty()) { view.row.lastAccountId.trimAscii() } else { defaultAccountId }
+        gatewayTelegramDirectoryAddRow(
+            rows,
+            seen,
+            gatewayTelegramDirectoryRow(
+                kind,
+                view.peer,
+                if (view.displayName.trimAscii().isEmpty()) { view.peer } else { view.displayName },
+                acct,
+                if (view.row.deliverySnapshot.size() > 0) { "delivery-history" } else { "session-catalog" },
+                sessionKey: view.row.sessionKey,
+                lastSeenAtMs: view.row.updatedAt,
+                canSend: view.row.sendPolicy.trimAscii().toAsciiLower() != "deny",
+                policyState: if (view.row.sendPolicy.trimAscii().toAsciiLower() == "deny") { "blocked" } else { "allowed" }
+            )
+        )
+    }
+    rows
 }
 
 private func gatewayTelegramObjectKeysJson(objOpt: Option<JsonObject>): JsonArray {
@@ -720,6 +826,13 @@ private func gatewayTelegramRuntimeJson(user: GatewayUserSettings, liveProbe!: B
     out.put("healthSnapshot", healthSnapshot)
     out.put("media", healthSnapshot.get("media") ?? JsonObject())
     out.put("actions", gatewayTelegramChannelJson(user).get("actions") ?? JsonObject())
+    let capabilityState = JsonObject()
+    capabilityState.put("mediaUnderstandingState", JsonString(if (user.telegram.media.downloadEnabled) { "context-ready" } else { "metadata-only" }))
+    capabilityState.put("approvalResolverState", JsonString(if (user.telegram.actions.callbackQuery && user.telegram.actions.inlineKeyboard) { "button-resolver-ready" } else { "callback-or-button-disabled" }))
+    capabilityState.put("lastDraftState", JsonString(if (user.telegram.actions.editMessage && user.telegram.streaming.trimAscii().toAsciiLower() != "off") { "streaming-draft-ready" } else { "send-only" }))
+    capabilityState.put("directoryAggregationState", JsonString("config-session-history-ready"))
+    capabilityState.put("modelButtonState", JsonString(if (user.telegram.actions.inlineKeyboard && user.telegram.actions.callbackQuery) { "available" } else { "disabled" }))
+    out.put("capabilityState", capabilityState)
     out.put("liveProbe", if (liveProbe) {
         adapter.debugBuildLiveProbe()
     } else {

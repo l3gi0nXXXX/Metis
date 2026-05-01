@@ -940,7 +940,8 @@ public class TelegramAdapter <: ChannelAdapter {
         }
         let msg = message.getOrThrow()
         let messageId = this.readIntStringField(msg, "message_id")
-        let text = this.normalizeInboundTelegramCommandText(this.readInboundTelegramText(msg))
+        let mediaInfo = this.readTelegramMediaInfo(msg)
+        var text = this.normalizeInboundTelegramCommandText(this.readInboundTelegramText(msg, mediaInfo: mediaInfo))
         if (messageId.isEmpty() || text.isEmpty()) {
             this.recordInboundDecision(
                 this.readIntStringField(root, "update_id"),
@@ -957,6 +958,12 @@ public class TelegramAdapter <: ChannelAdapter {
         let peerId = this.telegramPeerId(chat, threadId: threadIdRaw)
         let senderId = this.readIntStringField(from, "id")
         let chatType = if (this.readStringField(chat, "type") == "private") { ChatType.Direct } else { ChatType.Group }
+        match (mediaInfo) {
+            case Some(info) =>
+                let mediaState = this.persistInboundMedia(info)
+                text = this.appendTelegramMediaContextBlock(text, info, mediaState, peerId, messageId)
+            case None => ()
+        }
         let replyTarget: Option<String> = match (this.readObjectFieldOpt(msg, "reply_to_message")) {
             case Some(reply) =>
                 let replyId = this.readIntStringField(reply, "message_id")
@@ -980,11 +987,6 @@ public class TelegramAdapter <: ChannelAdapter {
             raw: Some(raw),
             accountId: this.effectiveAccountId()
         )
-        match (this.readTelegramMediaInfo(msg)) {
-            case Some(info) =>
-                this.persistInboundMedia(info)
-            case None => ()
-        }
         let rejectReason = this.inboundRejectReason(inbound)
         if (!rejectReason.isEmpty()) {
             this.recordInboundDecision(
@@ -1099,12 +1101,15 @@ public class TelegramAdapter <: ChannelAdapter {
         }
     }
 
-    private func readInboundTelegramText(msg: JsonObject): String {
+    private func readInboundTelegramText(
+        msg: JsonObject,
+        mediaInfo!: Option<TelegramInboundMediaInfo> = None<TelegramInboundMediaInfo>
+    ): String {
         let text = this.readStringField(msg, "text").trimAscii()
         if (!text.isEmpty()) {
             return text
         }
-        match (this.readTelegramMediaInfo(msg)) {
+        match (mediaInfo) {
             case Some(info) =>
                 let lines = ArrayList<String>()
                 lines.add("[${info.kind}]")
@@ -1130,6 +1135,81 @@ public class TelegramAdapter <: ChannelAdapter {
                 }
                 return String.join(lines.toArray(), delimiter: "\n")
             case None => ""
+        }
+    }
+
+    private func appendTelegramMediaContextBlock(
+        baseText: String,
+        info: TelegramInboundMediaInfo,
+        mediaState: JsonObject,
+        peerId: String,
+        messageId: String
+    ): String {
+        let lastMedia = this.readObjectField(mediaState, "lastMedia")
+        let localPath = this.readStringField(lastMedia, "downloadPath").trimAscii()
+        let skippedReason = this.readStringField(lastMedia, "skippedReason").trimAscii()
+        let downloaded = this.readBoolFieldOpt(lastMedia, "downloaded") == Some(true)
+        let effectiveMime = this.readStringField(lastMedia, "mimeType").trimAscii()
+        let effectiveSize = this.readJsonIntField(lastMedia, "fileSize", info.fileSize)
+        let safetyStatus = if (downloaded) {
+            "downloaded"
+        } else if (!skippedReason.isEmpty()) {
+            "skipped:${skippedReason}"
+        } else {
+            "metadata-only"
+        }
+        let eligibility = if (info.kind == "photo") {
+            "vision"
+        } else if (info.kind == "voice" || info.kind == "audio") {
+            "transcription"
+        } else if (info.kind == "document") {
+            "file-context"
+        } else {
+            "metadata-only"
+        }
+        let lines = ArrayList<String>()
+        lines.add(baseText)
+        lines.add("[media-context]")
+        lines.add("channel=telegram")
+        lines.add("accountId=${this.effectiveAccountId()}")
+        lines.add("peerId=${peerId}")
+        lines.add("messageId=${messageId}")
+        lines.add("mediaKind=${info.kind}")
+        lines.add("fileId=${info.fileId}")
+        if (!localPath.isEmpty()) {
+            lines.add("localPath=${localPath}")
+        }
+        let filePath = this.readStringField(lastMedia, "filePath").trimAscii()
+        if (!filePath.isEmpty()) {
+            lines.add("telegramFilePath=${filePath}")
+        }
+        if (!effectiveMime.isEmpty()) {
+            lines.add("mimeType=${effectiveMime}")
+        }
+        if (effectiveSize > 0) {
+            lines.add("fileSize=${effectiveSize}")
+        }
+        if (!info.fileName.trimAscii().isEmpty()) {
+            lines.add("fileName=${info.fileName.trimAscii()}")
+        }
+        if (!info.caption.trimAscii().isEmpty()) {
+            lines.add("caption=${info.caption.trimAscii()}")
+        }
+        lines.add("safetyStatus=${safetyStatus}")
+        lines.add("eligibleFor=${eligibility}")
+        lines.add("modelHandling=${this.telegramMediaModelHandling(eligibility, downloaded)}")
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func telegramMediaModelHandling(eligibility: String, downloaded: Bool): String {
+        if (eligibility == "vision") {
+            if (downloaded) { "vision-input-ready" } else { "vision-metadata-only" }
+        } else if (eligibility == "transcription") {
+            if (downloaded) { "asr-input-ready" } else { "asr-metadata-only" }
+        } else if (eligibility == "file-context") {
+            if (downloaded) { "file-context-ready" } else { "file-metadata-only" }
+        } else {
+            "metadata-only"
         }
     }
 
@@ -2014,11 +2094,11 @@ public class TelegramAdapter <: ChannelAdapter {
         info: TelegramInboundMediaInfo,
         getFileRaw!: String = "",
         downloadRaw!: String = ""
-    ): Unit {
+    ): JsonObject {
         let normalizedKind = info.kind.trimAscii().toAsciiLower()
         let normalizedFileId = info.fileId.trimAscii()
         if (normalizedKind.isEmpty() || normalizedFileId.isEmpty()) {
-            return
+            return JsonObject()
         }
         var filePath = ""
         var downloadPath = ""
@@ -2090,6 +2170,7 @@ public class TelegramAdapter <: ChannelAdapter {
         root.put("lastPersistedMediaId", JsonString(normalizedFileId))
         root.put("lastMedia", lastMedia)
         File.writeTo(this.mediaStatePath(), root.toJsonString().toArray())
+        root
     }
 
     private func tryTelegramGetFile(fileId: String): String {
@@ -2335,6 +2416,10 @@ public class TelegramAdapter <: ChannelAdapter {
             for ((command, description) in [
                 ("help", "Show help"),
                 ("status", "Show status"),
+                ("models", "Switch model"),
+                ("subagents", "Manage subagents"),
+                ("sessions", "Manage sessions"),
+                ("approvals", "Review approvals"),
                 ("activation", "Set activation mode"),
                 ("pair", "Manage pairing")
             ]) {

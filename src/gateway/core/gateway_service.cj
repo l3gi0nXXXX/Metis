@@ -1,9 +1,10 @@
 package metis.gateway.core
 
-import metis.core.config.CliSettingManager
+import metis.core.config.{CliSettingManager, GatewayUserSettings, cliSetupVisibleModelProviders}
 import metis.gateway.model.*
 import metis.gateway.session.{GatewaySessionContext, gatewaySessionRequestFromInbound}
 import magic.log.LogUtils
+import std.collection.ArrayList
 import std.time.DateTime
 import stdx.encoding.json.JsonObject
 
@@ -121,8 +122,24 @@ public class GatewayService {
         }
 
         let conversationKey = decision.conversationKey.getOrThrow()
-        let request = gatewaySessionRequestFromInbound(message, sessionHint: conversationKey, accountId: effectiveAccountId)
         let user = CliSettingManager.readGatewaySettings()
+        if (channelToString(message.channel) == "telegram" && message.text.trimAscii().startsWith("[telegram-approval]")) {
+            let result = gatewayResolveTelegramApprovalCallback(message.text, user)
+            let reply = gatewayTelegramApprovalResolverReply(result)
+            this.sendTextToPeerDetailed(
+                "telegram",
+                message.peerId,
+                reply,
+                replyToMessageId: message.replyTargetMessageId,
+                replyInThread: message.replyInThread,
+                accountId: effectiveAccountId
+            )
+            return
+        }
+        if (channelToString(message.channel) == "telegram" && this.handleTelegramNativeCommand(message, effectiveAccountId, user)) {
+            return
+        }
+        let request = gatewaySessionRequestFromInbound(message, sessionHint: conversationKey, accountId: effectiveAccountId)
         let turn = gatewayExecuteSessionRequestTurnForUser(
             user,
             request,
@@ -161,6 +178,123 @@ public class GatewayService {
             return
         }
         LogUtils.error("Gateway.send: deliveryStatus=${execution.deliveryStatus} err=${execution.deliveryError}")
+    }
+
+    private func handleTelegramNativeCommand(message: InboundMessage, accountId: String, user: GatewayUserSettings): Bool {
+        let text = message.text.trimAscii()
+        if (text == "/models" || text.startsWith("/models ")) {
+            this.sendTextToPeerDetailed(
+                "telegram",
+                message.peerId,
+                this.renderTelegramModelsEntry(user),
+                replyToMessageId: message.replyTargetMessageId,
+                replyInThread: message.replyInThread,
+                accountId: accountId
+            )
+            return true
+        }
+        if (text.startsWith("[telegram-callback]")) {
+            let data = this.telegramNativeField(text, "data").trimAscii()
+            if (data.startsWith("models:set:")) {
+                let reply = this.resolveTelegramModelCallback(data, message.senderId, user)
+                this.sendTextToPeerDetailed(
+                    "telegram",
+                    message.peerId,
+                    reply,
+                    replyToMessageId: message.replyTargetMessageId,
+                    replyInThread: message.replyInThread,
+                    accountId: accountId
+                )
+                return true
+            }
+        }
+        false
+    }
+
+    private func renderTelegramModelsEntry(user: GatewayUserSettings): String {
+        let current = user.channelModels.get("telegram") ?? ""
+        let currentText = if (current.trimAscii().isEmpty()) { "global default" } else { current.trimAscii() }
+        if (!user.telegram.actions.inlineKeyboard || !user.telegram.actions.callbackQuery) {
+            let lines = ArrayList<String>()
+            lines.add("Telegram model")
+            lines.add("Current: ${currentText}")
+            for (descriptor in cliSetupVisibleModelProviders()) {
+                if (descriptor.highPriority) {
+                    lines.add("- ${descriptor.displayName}: ${descriptor.defaultModelRef}")
+                }
+            }
+            return String.join(lines.toArray(), delimiter: "\n")
+        }
+        let lines = ArrayList<String>()
+        lines.add("[inline-keyboard]")
+        lines.add("text=Telegram model\nCurrent: ${currentText}\nSelect a model for the Telegram channel.")
+        var count = 0
+        for (descriptor in cliSetupVisibleModelProviders()) {
+            if (descriptor.highPriority || count < 8) {
+                lines.add("button=${descriptor.displayName}|callback:models:set:${descriptor.defaultModelRef}")
+                count += 1
+            }
+            if (count >= 10) {
+                break
+            }
+        }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func resolveTelegramModelCallback(data: String, senderId: String, user: GatewayUserSettings): String {
+        if (!this.telegramSenderCanOperate(senderId, user)) {
+            return "Model switch denied: sender ${senderId} is not authorized."
+        }
+        let modelRef = data["models:set:".size..].trimAscii()
+        if (modelRef.isEmpty() || modelRef.size > 48 || !modelRef.contains(":")) {
+            return "Model switch failed: invalid model reference."
+        }
+        var next = user
+        next.channelModels["telegram"] = modelRef
+        CliSettingManager.writeGatewaySettings(next)
+        "Telegram model switched to ${modelRef}."
+    }
+
+    private func telegramSenderCanOperate(senderId: String, user: GatewayUserSettings): Bool {
+        let normalized = senderId.trimAscii()
+        if (normalized.isEmpty()) {
+            return false
+        }
+        let accepted = ["${normalized}", "tg:${normalized}", "telegram:${normalized}", "user:${normalized}"]
+        for (candidate in user.telegram.allowFrom) {
+            let c = candidate.trimAscii()
+            if (c == "*") {
+                return true
+            }
+            for (id in accepted) {
+                if (c == id) {
+                    return true
+                }
+            }
+        }
+        for (candidate in user.telegram.groupAllowFrom) {
+            let c = candidate.trimAscii()
+            if (c == "*") {
+                return true
+            }
+            for (id in accepted) {
+                if (c == id) {
+                    return true
+                }
+            }
+        }
+        false
+    }
+
+    private func telegramNativeField(text: String, key: String): String {
+        let prefix = "${key}="
+        for (line in text.split("\n")) {
+            let t = line.trimAscii()
+            if (t.startsWith(prefix)) {
+                return t[prefix.size..]
+            }
+        }
+        ""
     }
 
     /**

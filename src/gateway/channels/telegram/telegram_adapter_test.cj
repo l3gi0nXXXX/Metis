@@ -179,12 +179,16 @@ public class TelegramAdapterTest {
         let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
         let payload = adapter.debugBuildNativeCommandsPayload()
         let commands = payload.get("commands").getOrThrow().asArray()
-        @Expect(commands.size(), 4)
+        @Expect(commands.size(), 8)
         let first = commands[0].asObject()
         let second = commands[1].asObject()
+        let models = commands[2].asObject()
+        let subagents = commands[3].asObject()
         @Expect(first.get("command").getOrThrow().asString().getValue(), "help")
         @Expect(first.get("description").getOrThrow().asString().getValue(), "Show help")
         @Expect(second.get("command").getOrThrow().asString().getValue(), "status")
+        @Expect(models.get("command").getOrThrow().asString().getValue(), "models")
+        @Expect(subagents.get("command").getOrThrow().asString().getValue(), "subagents")
     }
 
     @TestCase
@@ -222,8 +226,8 @@ public class TelegramAdapterTest {
         )
         let payload = adapter.debugBuildNativeCommandsPayload()
         let commands = payload.get("commands").getOrThrow().asArray()
-        @Expect(commands.size(), 5)
-        let last = commands[4].asObject()
+        @Expect(commands.size(), 9)
+        let last = commands[8].asObject()
         @Expect(last.get("command").getOrThrow().asString().getValue(), "generate")
         @Expect(last.get("description").getOrThrow().asString().getValue(), "Create image")
     }
@@ -254,7 +258,7 @@ public class TelegramAdapterTest {
             let commands = snapshot.get("nativeCommands").getOrThrow().asObject()
             @Expect(commands.get("lastSyncStatus").getOrThrow().asString().getValue(), "error")
             @Expect(commands.get("lastSyncError").getOrThrow().asString().getValue().contains("Bad Request"), true)
-            @Expect(commands.get("lastSyncCommandCount").getOrThrow().asInt().getValue(), 4)
+            @Expect(commands.get("lastSyncCommandCount").getOrThrow().asInt().getValue(), 8)
         } finally {
             setTelegramTransportRunnerForTest(None)
         }
@@ -1181,7 +1185,12 @@ public class TelegramAdapterTest {
         let inbound = adapter.pullInbound()
         @Expect(inbound.size, 1)
         @Expect(inbound[0].peerId, "group:-1001234567890:topic:42")
-        @Expect(inbound[0].text, "[photo]\nfileId=large\ncaption=hello photo")
+        @Expect(inbound[0].text.contains("[photo]"), true)
+        @Expect(inbound[0].text.contains("fileId=large"), true)
+        @Expect(inbound[0].text.contains("caption=hello photo"), true)
+        @Expect(inbound[0].text.contains("[media-context]"), true)
+        @Expect(inbound[0].text.contains("mediaKind=photo"), true)
+        @Expect(inbound[0].text.contains("eligibleFor=vision"), true)
         @Expect(inbound[0].threadId.getOrThrow(), "42")
     }
 
@@ -1203,7 +1212,11 @@ public class TelegramAdapterTest {
         let inbound = adapter.pullInbound()
         @Expect(inbound.size, 1)
         @Expect(inbound[0].peerId, "user:745123456")
-        @Expect(inbound[0].text, "[sticker]\nfileId=sticker-file-id")
+        @Expect(inbound[0].text.contains("[sticker]"), true)
+        @Expect(inbound[0].text.contains("fileId=sticker-file-id"), true)
+        @Expect(inbound[0].text.contains("[media-context]"), true)
+        @Expect(inbound[0].text.contains("mediaKind=sticker"), true)
+        @Expect(inbound[0].text.contains("eligibleFor=metadata-only"), true)
     }
 
     @TestCase
@@ -1232,6 +1245,8 @@ public class TelegramAdapterTest {
         @Expect(inbound[0].text.contains("mediaGroupId=album-1"), true)
         @Expect(inbound[0].text.contains("albumPolicy=single-largest"), true)
         @Expect(inbound[0].text.contains("caption=report"), true)
+        @Expect(inbound[0].text.contains("[media-context]"), true)
+        @Expect(inbound[0].text.contains("eligibleFor=file-context"), true)
     }
 
     @TestCase

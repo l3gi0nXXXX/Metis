@@ -119,6 +119,13 @@ public class GatewayServerMethodsChannelsTest {
         @Expect(channelsTestBool(telegram, "mediaVoice"), true)
         @Expect(channelsTestBool(telegram, "mediaVideo"), true)
         @Expect(channelsTestBool(telegram, "mediaVideoNote"), true)
+        @Expect(channelsTestBool(telegram, "mediaUnderstanding"), true)
+        @Expect(channelsTestBool(telegram, "mediaContextBlock"), true)
+        @Expect(channelsTestBool(telegram, "approvalResolver"), true)
+        @Expect(channelsTestBool(telegram, "streamingDraft"), true)
+        @Expect(channelsTestBool(telegram, "directoryAggregation"), true)
+        @Expect(channelsTestBool(telegram, "modelButtons"), true)
+        @Expect(channelsTestBool(telegram, "nativeCommandButtons"), true)
         @Expect(channelsTestBool(telegram, "allowedUpdatesAuto"), true)
     }
 
@@ -211,6 +218,8 @@ public class GatewayServerMethodsChannelsTest {
         @Expect(directory.get("groups").isSome(), true)
         @Expect(directory.get("accounts").isSome(), true)
         @Expect(directory.get("targets").isSome(), true)
+        @Expect(directory.get("rows").isSome(), true)
+        @Expect(directory.get("aggregationSources").isSome(), true)
         let accountOps = channel.get("accountOps").getOrThrow().asObject()
         @Expect(channelsTestBool(accountOps, "setup"), true)
         @Expect(channelsTestBool(accountOps, "probe"), true)
@@ -245,6 +254,10 @@ public class GatewayServerMethodsChannelsTest {
         @Expect(targets.contains("user:8734062810"), true)
         @Expect(targets.contains("group:-1001234567890"), true)
         @Expect(targets.contains("group:-1001234567890:topic:42"), true)
+        let rows = directory.get("rows").getOrThrow().asArray().toJsonString()
+        @Expect(rows.contains("8734062810"), true)
+        @Expect(rows.contains("-1001234567890"), true)
+        @Expect(rows.contains("topic:42"), true)
     }
 
     @TestCase
@@ -257,6 +270,7 @@ public class GatewayServerMethodsChannelsTest {
         user.telegram.reactionLevel = "ack"
         user.telegram.ackReaction = "👀"
         user.telegram.actions.callbackQuery = true
+        user.telegram.actions.inlineKeyboard = true
         let params = JsonObject()
         params.put("channelId", JsonString("telegram"))
         params.put("probe", true.toJsonValue())
@@ -278,6 +292,10 @@ public class GatewayServerMethodsChannelsTest {
         let health = telegram.get("healthSnapshot").getOrThrow().asObject()
         @Expect(health.get("summary").isSome(), true)
         @Expect(health.get("webhook").isSome(), true)
+        let capabilityState = telegram.get("capabilityState").getOrThrow().asObject()
+        @Expect(channelsTestString(capabilityState, "approvalResolverState"), "button-resolver-ready")
+        @Expect(channelsTestString(capabilityState, "directoryAggregationState"), "config-session-history-ready")
+        @Expect(channelsTestString(capabilityState, "modelButtonState"), "available")
         let summary = health.get("summary").getOrThrow().asObject()
         @Expect(channelsTestBool(summary, "offsetPersistenceEnabled"), true)
         @Expect(summary.get("lastInboundUpdateId").isSome(), true)

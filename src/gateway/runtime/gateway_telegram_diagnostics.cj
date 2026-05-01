@@ -298,6 +298,50 @@ private func gatewayTelegramBuildDiagnosticFindings(user: GatewayUserSettings, r
             "Set allowedMimes to the smallest required MIME set, for example image/* or application/pdf."
         )
     }
+    if (!user.telegram.actions.photo) {
+        gatewayTelegramAddFinding(
+            findings,
+            "telegram-vision-action-disabled",
+            "info",
+            "skipped",
+            "Telegram photo sending is disabled.",
+            "Inbound image media still gets a media-context block, but outbound photo actions are disabled.",
+            "Enable gateway.telegram.actions.photo only when outbound photo delivery is required."
+        )
+    }
+    if (!user.telegram.actions.voice && !user.telegram.actions.audio) {
+        gatewayTelegramAddFinding(
+            findings,
+            "telegram-asr-audio-actions-disabled",
+            "info",
+            "skipped",
+            "Telegram audio/voice sending is disabled.",
+            "Inbound voice/audio media still gets a transcription-eligible media-context block when received.",
+            "Enable voice/audio actions only when outbound audio delivery is required."
+        )
+    }
+    if (!user.telegram.actions.inlineKeyboard || !user.telegram.actions.callbackQuery) {
+        gatewayTelegramAddFinding(
+            findings,
+            "telegram-approval-resolver-ui-disabled",
+            "warning",
+            "failed",
+            "Telegram approval resolver buttons are not fully enabled.",
+            "approval resolver requires inlineKeyboard=true and callbackQuery=true.",
+            "Enable gateway.telegram.actions.inlineKeyboard and gateway.telegram.actions.callbackQuery to resolve approval buttons from Telegram."
+        )
+    }
+    if (!user.telegram.actions.editMessage || user.telegram.streaming.trimAscii().toAsciiLower() == "off") {
+        gatewayTelegramAddFinding(
+            findings,
+            "telegram-streaming-draft-disabled",
+            "info",
+            "skipped",
+            "Telegram streaming draft delivery is not fully enabled.",
+            "editMessage=false or streaming=off makes long responses fall back to regular sendMessage delivery.",
+            "Enable editMessage and keep streaming enabled when Telegram draft preview is desired."
+        )
+    }
     if (user.telegram.media.mediaMaxBytes <= 0) {
         gatewayTelegramAddFinding(
             findings,
@@ -390,6 +434,11 @@ public func gatewayTelegramDiagnosticsJson(user: GatewayUserSettings, runtime!: 
         "allowFrom",
         "groupAllowFrom",
         "media",
+        "mediaUnderstanding",
+        "approvalResolver",
+        "streamingDraft",
+        "directoryAggregation",
+        "modelButtons",
         "actions",
         "transport"
     ]))

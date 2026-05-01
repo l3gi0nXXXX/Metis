@@ -285,6 +285,34 @@ fileSize=20480
 | `allowedMimes` | `[]` | 允许下载的 MIME。为空表示不按 MIME 限制；支持 `image/*` 和 `*`。 |
 | `albumPolicy` | `single-largest` | album/media group 策略。支持 `single-largest`、`first`、`metadata-only`。 |
 
+下载成功或降级后，入站消息会附加 `[media-context]` block。该 block 会进入 Gateway session，让 agent 能看到媒体类型、下载路径、MIME、大小、caption 和可处理能力：
+
+```text
+[media-context]
+channel=telegram
+accountId=default
+peerId=8734062810
+messageId=101
+mediaKind=photo
+fileId=<telegram-file-id>
+localPath=~/.metis/gateway-telegram/accounts/default/media/<file>
+mimeType=image/jpeg
+fileSize=123456
+caption=please inspect this image
+safetyStatus=downloaded
+eligibleFor=vision
+modelHandling=vision-input-ready
+```
+
+能力标记：
+
+| 媒体 | `eligibleFor` | 说明 |
+|---|---|---|
+| `photo` | `vision` | 图片可作为视觉上下文；模型不支持视觉时保留路径和元数据。 |
+| `voice` / `audio` | `transcription` | 语音/音频可作为转写输入；未配置 ASR 时保留元数据。 |
+| `document` | `file-context` | 文件可作为文件上下文；不可读或未下载时保留元数据。 |
+| `sticker` / 其他 | `metadata-only` | 仅作为结构化事件和元数据进入上下文。 |
+
 ### 出站图片
 
 需要开启：
@@ -453,6 +481,8 @@ decision=allow-once
 
 Metis 会拒绝过期或重复消费的审批 callback，并在入站策略诊断中记录 `approval_callback_expired` 或 `approval_callback_replayed`。
 
+审批 callback 会在 GatewayService 中解析并写入 Gateway approval store。TelegramAdapter 只负责把 Bot API callback 转成 `[telegram-approval]` 入站事件，不直接修改审批状态。
+
 ## Draft / Preview
 
 开启 `actions.editMessage=true` 后，可用 `[draft]` 先发送预览文本，再通过 `editMessageText` 收敛为最终文本。该能力用于长任务或长回复的预览/最终态收口。
@@ -526,6 +556,19 @@ render=👍
 ```
 
 Telegram 中 `/subagents` 等命令仍走 Gateway 统一命令路径，不在 Telegram adapter 内单独执行 agent 逻辑。
+
+内置 command menu 当前包含：
+
+- `/help`
+- `/status`
+- `/models`
+- `/subagents`
+- `/sessions`
+- `/approvals`
+- `/activation`
+- `/pair`
+
+开启 `actions.inlineKeyboard=true` 和 `actions.callbackQuery=true` 后，`/models` 会返回 Telegram inline buttons。点击模型按钮后，Gateway 会校验 sender 是否在 `allowFrom` / `groupAllowFrom` 中，然后通过现有 `gateway.channelModels.telegram` 写入路径切换 Telegram channel 绑定模型。TelegramAdapter 不直接写配置。
 
 ## Topic、Thread 与 Subagent
 
@@ -627,8 +670,20 @@ cjpm run --skip-build --name metis --run-args "gateway channels runtime telegram
 `channels get telegram` 会包含：
 
 - `setup`：是否 configured、当前 mode、必填字段、是否可 probe。
-- `directory`：`defaultTo`、已配置 groups、accounts、可推断 targets。
+- `directory`：`defaultTo`、已配置 groups、accounts、已批准 pairing sender、session/delivery 历史、可推断 targets 与统一 `rows`。
 - `accountOps`：setup、probe、directory、logout 等操作能力声明。
+
+`directory.rows` 的统一字段包括：
+
+- `kind`: `user` / `group` / `topic`
+- `id`
+- `displayName`
+- `accountId`
+- `source`: `config` / `pairing` / `session-catalog` / `delivery-history`
+- `lastSeenAtMs`
+- `sessionKey`
+- `canSend`
+- `policyState`
 
 这些字段是只读投影；真实配置修改仍必须走 Gateway 配置更新路径，测试和运行态都不应直接改写真实 `~/.metis/metis.json`。
 
@@ -715,6 +770,16 @@ cjpm run --skip-build --name metis --run-args "doctor"
 cjpm run --skip-build --name metis --run-args "gateway channels health"
 cjpm run --skip-build --name metis --run-args "gateway channels audit"
 ```
+
+`channels health` / `channels runtime` 会暴露 Telegram 能力状态，例如：
+
+- `mediaUnderstandingState`
+- `approvalResolverState`
+- `lastDraftState`
+- `directoryAggregationState`
+- `modelButtonState`
+
+`doctor` / `channels audit` 会检查 token、webhook secret、proxy、媒体下载限制、本地媒体白名单、高风险 action、approval resolver、streaming draft、directory aggregation 等项。
 
 常见问题：
 

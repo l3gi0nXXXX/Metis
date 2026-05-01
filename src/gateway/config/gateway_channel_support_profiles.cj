@@ -83,6 +83,18 @@ private func gatewayBuiltinChannelSupportsJson(user: GatewayUserSettings, channe
         out.put("mediaVoice", JsonBool(true))
         out.put("mediaVideo", JsonBool(true))
         out.put("mediaVideoNote", JsonBool(true))
+        out.put("mediaUnderstanding", JsonBool(true))
+        out.put("mediaContextBlock", JsonBool(true))
+        out.put("visionEligible", JsonBool(true))
+        out.put("transcriptionEligible", JsonBool(true))
+        out.put("fileContextEligible", JsonBool(true))
+        out.put("approvalResolver", JsonBool(true))
+        out.put("streamingDraft", JsonBool(true))
+        out.put("laneDelivery", JsonBool(true))
+        out.put("setupWizard", JsonBool(true))
+        out.put("directoryAggregation", JsonBool(true))
+        out.put("modelButtons", JsonBool(true))
+        out.put("nativeCommandButtons", JsonBool(true))
         out.put("allowedUpdatesAuto", JsonBool(true))
         return out
     }
