@@ -394,6 +394,7 @@ private func mergeTelegram(user: GatewayUserSettings): TelegramConfig {
         reactionNotifications: user.telegram.reactionNotifications.trimAscii(),
         reactionLevel: user.telegram.reactionLevel.trimAscii(),
         ackReaction: user.telegram.ackReaction,
+        removeAckAfterReply: user.telegram.removeAckAfterReply,
         actions: TelegramActionConfig(
             reactions: user.telegram.actions.reactions,
             sendMessage: user.telegram.actions.sendMessage,

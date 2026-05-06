@@ -45,6 +45,7 @@ private func withGatewayChannelRuntimeTestHome<T>(block: () -> T): T {
 
 private class GatewayChannelRuntimeFailingInboundAdapter <: ChannelAdapter {
     private let inbound = ArrayList<InboundMessage>()
+    public var sentCount: Int64 = 0
 
     public prop name: String {
         get() { "telegram" }
@@ -74,10 +75,12 @@ private class GatewayChannelRuntimeFailingInboundAdapter <: ChannelAdapter {
     }
 
     public func send(_message: OutboundMessage): SendResult {
+        this.sentCount += 1
         SendResult.Success
     }
 
     public func sendWithMessageId(_message: OutboundMessage): String {
+        this.sentCount += 1
         "msg-out"
     }
 }
@@ -124,6 +127,12 @@ public class GatewayChannelRuntimeTest {
             @Expect(row.get("phase").getOrThrow().asString().getValue(), "active")
             @Expect(row.get("taskState").getOrThrow().asString().getValue(), "running")
             @Expect(row.get("lastError").getOrThrow().asString().getValue(), "delivery failed")
+
+            adapter.queue("second")
+            manager.processOnce({ message, _accountId =>
+                let _ = adapter.send(OutboundMessage(message.channel, message.peerId, "ok"))
+            })
+            @Expect(adapter.sentCount, 1)
         }
     }
 }

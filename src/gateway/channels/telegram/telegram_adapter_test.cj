@@ -1,9 +1,12 @@
 package metis.gateway.channels.telegram
 
+import metis.core.config.CliConfig
+import metis.gateway.core.gatewayBuildMediaContextPrompt
 import metis.gateway.model.*
 
 import magic.jsonable.*
 import std.collection.ArrayList
+import std.env.setVariable
 import std.fs.{Directory, File, Path, remove}
 import std.sync.Mutex
 import std.time.*
@@ -15,6 +18,7 @@ private class TelegramFakeBotApi {
     public var bodies: ArrayList<String> = ArrayList<String>()
     public var contentTypes: ArrayList<String> = ArrayList<String>()
     public var bodySizes: ArrayList<Int64> = ArrayList<Int64>()
+    public var pollingUpdatesEnabled: Bool = true
     private let lock: Mutex = Mutex()
     private var getUpdatesCount: Int64 = 0
     private var nextMessageId: Int64 = 500
@@ -57,6 +61,9 @@ private class TelegramFakeBotApi {
                 return TelegramTransportResponse(true, body: "{\"ok\":true,\"result\":true}", outcome: "ok")
             }
             if (request.context == "getUpdates") {
+                if (!this.pollingUpdatesEnabled) {
+                    return TelegramTransportResponse(true, body: "{\"ok\":true,\"result\":[]}", outcome: "ok")
+                }
                 this.getUpdatesCount += 1
                 if (this.getUpdatesCount == 1) {
                     return TelegramTransportResponse(
@@ -247,6 +254,15 @@ private class TelegramGetFileRetryFakeBotApi {
 
 @Test
 public class TelegramAdapterTest {
+    @BeforeAll
+    public func isolateMetisHomeForTelegramAdapterTests(): Unit {
+        let testHome = "/tmp/metis-telegram-adapter-test-home"
+        try { remove(Path(testHome), recursive: true) } catch (_e: Exception) { () }
+        Directory.create(Path(testHome), recursive: true)
+        setVariable("METIS_HOME", testHome)
+        CliConfig.invalidatePathCache()
+    }
+
     public init() {
         setTelegramTransportRunnerForTest(None)
         setTelegramAsrRunnerForTest(None)
@@ -344,6 +360,81 @@ public class TelegramAdapterTest {
         let last = commands[8].asObject()
         @Expect(last.get("command").getOrThrow().asString().getValue(), "generate")
         @Expect(last.get("description").getOrThrow().asString().getValue(), "Create image")
+    }
+
+    @TestCase
+    public func nativeCommandsPayloadCapsAtTelegramLimitAndTruncatesDescriptions(): Unit {
+        let custom = ArrayList<TelegramCustomCommandConfig>()
+        let sb = StringBuilder()
+        for (_ in 0..300) {
+            sb.append("x")
+        }
+        let longDescription = sb.toString()
+        for (i in 0..120) {
+            custom.add(TelegramCustomCommandConfig(command: "cmd${i}", description: longDescription))
+        }
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(
+                enabled: true,
+                botToken: "telegram-token",
+                customCommands: custom.toArray()
+            )
+        )
+        let payload = adapter.debugBuildNativeCommandsPayload()
+        let commands = payload.get("commands").getOrThrow().asArray()
+        @Expect(commands.size(), 100)
+        let last = commands[99].asObject()
+        @Expect(last.get("description").getOrThrow().asString().getValue().size, 256)
+    }
+
+    @TestCase
+    public func textEntitiesExpandLinksAndMentionDetectionUsesTelegramEntities(): Unit {
+        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token", dmPolicy: "open", allowFrom: ["*"]))
+        adapter.start()
+        let linked = "{\"update_id\":1,\"message\":{\"message_id\":101,\"text\":\"hello @metis_bot see docs\",\"entities\":[{\"type\":\"mention\",\"offset\":6,\"length\":10},{\"type\":\"text_link\",\"offset\":21,\"length\":4,\"url\":\"https://example.com/docs\"}],\"chat\":{\"id\":8734062810,\"type\":\"private\"},\"from\":{\"id\":8734062810}}}"
+        @Expect(adapter.ingestWebhookPayload(linked).contains("\"ok\":true"), true)
+        let first = adapter.pullInbound()
+        @Expect(first.size, 1)
+        @Expect(first[0].mentioned, true)
+        @Expect(first[0].text.contains("[entities]"), true)
+        @Expect(first[0].text.contains("textLink=docs|url=https://example.com/docs"), true)
+
+        let rawAt = "{\"update_id\":2,\"message\":{\"message_id\":102,\"text\":\"hello @metis_bot without entity\",\"chat\":{\"id\":8734062810,\"type\":\"private\"},\"from\":{\"id\":8734062810}}}"
+        @Expect(adapter.ingestWebhookPayload(rawAt).contains("\"ok\":true"), true)
+        let second = adapter.pullInbound()
+        @Expect(second.size, 1)
+        @Expect(second[0].mentioned, false)
+    }
+
+    @TestCase
+    public func groupMentionEntityMustTargetCurrentBotWhenBotUsernameKnown(): Unit {
+        let fake = TelegramFakeBotApi()
+        fake.pollingUpdatesEnabled = false
+        setTelegramTransportRunnerForTest(Some({ request => fake.handle(request) }))
+        try {
+            let groups = JsonObject()
+            let groupRule = JsonObject()
+            let allowFrom = JsonArray([])
+            allowFrom.add("8734062810".toJsonValue())
+            groupRule.put("requireMention", false.toJsonValue())
+            groupRule.put("allowFrom", allowFrom)
+            groups.put("-100123", groupRule)
+            let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "10001:telegram-token", groupPolicy: "allowlist", groups: Some(groups)))
+            adapter.start()
+            let other = "{\"update_id\":1,\"message\":{\"message_id\":201,\"text\":\"@other_bot hello\",\"entities\":[{\"type\":\"mention\",\"offset\":0,\"length\":10}],\"chat\":{\"id\":-100123,\"type\":\"supergroup\"},\"from\":{\"id\":8734062810}}}"
+            @Expect(adapter.ingestWebhookPayload(other).contains("\"ok\":true"), true)
+            let first = adapter.pullInbound()
+            @Expect(first.size, 1)
+            @Expect(first[0].mentioned, false)
+
+            let current = "{\"update_id\":2,\"message\":{\"message_id\":202,\"text\":\"@metis_fake_bot hello\",\"entities\":[{\"type\":\"mention\",\"offset\":0,\"length\":15}],\"chat\":{\"id\":-100123,\"type\":\"supergroup\"},\"from\":{\"id\":8734062810}}}"
+            @Expect(adapter.ingestWebhookPayload(current).contains("\"ok\":true"), true)
+            let second = adapter.pullInbound()
+            @Expect(second.size, 1)
+            @Expect(second[0].mentioned, true)
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+        }
     }
 
     @TestCase
@@ -1649,13 +1740,77 @@ public class TelegramAdapterTest {
     }
 
     @TestCase
-    public func webhookStickerMessagesMapToStructuredInboundMediaText(): Unit {
+    public func webhookTextMessagesCarryTelegramMediaToolScopeWithoutPromptMediaBlock(): Unit {
         let adapter = TelegramAdapter(
             config: TelegramConfig(
                 enabled: true,
                 botToken: "telegram-token",
                 dmPolicy: "open",
                 allowFrom: ["*"]
+            )
+        )
+        adapter.start()
+        let payload = "{\"update_id\":1,\"message\":{\"message_id\":202,\"text\":\"保存图片\",\"chat\":{\"id\":745123456,\"type\":\"private\"},\"from\":{\"id\":745123456}}}"
+        let ack = adapter.ingestWebhookPayload(payload)
+        @Expect(ack.contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 1)
+        let media = inbound[0].mediaContext
+        @Expect(media.get("channel").getOrThrow().asString().getValue(), "telegram")
+        @Expect(media.get("accountId").getOrThrow().asString().getValue(), "default")
+        @Expect(media.get("peerId").getOrThrow().asString().getValue(), "user:745123456")
+        @Expect(media.get("messageId").getOrThrow().asString().getValue(), "202")
+        @Expect(media.get("records").isNone(), true)
+        @Expect(gatewayBuildMediaContextPrompt(media), "")
+    }
+
+    @TestCase
+    public func telegramHtmlRendererHandlesChineseAndMarkdownSafely(): Unit {
+        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
+        @Expect(adapter.debugTelegramRenderHtmlForTest("图片已经保存").contains("图片已经保存"), true)
+        @Expect(adapter.debugTelegramRenderHtmlForTest("[[reply_to_current]]图片已经保存").contains("图片已经保存"), true)
+        @Expect(adapter.debugTelegramRenderHtmlForTest("**粗体**"), "<b>粗体</b>")
+    }
+
+    @TestCase
+    public func sendMessageWithChineseTextDoesNotFailBeforeTransport(): Unit {
+        let root = Path("/tmp/metis-telegram-chinese-send-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root, recursive: true)
+        let fake = TelegramFakeBotApi()
+        setTelegramTransportRunnerForTest(Some({ request => fake.handle(request) }))
+        try {
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    actions: TelegramActionConfig(sendMessage: true)
+                ),
+                pairingRoot: root.toString()
+            )
+            adapter.start()
+            let result = adapter.send(OutboundMessage(ChannelType.Telegram, "user:745123456", "图片已经保存"))
+            match (result) {
+                case SendResult.Success => ()
+                case SendResult.Failed(reason) => @Expect(reason, "")
+            }
+            @Expect(fake.saw("sendMessage"), true)
+            @Expect(fake.sawBodyContaining("图片已经保存"), true)
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func webhookStickerMessagesMapToStructuredInboundMediaText(): Unit {
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(
+                enabled: true,
+                botToken: "telegram-token",
+                dmPolicy: "open",
+                allowFrom: ["*"],
+                media: TelegramMediaConfig(downloadEnabled: false)
             )
         )
         adapter.start()
@@ -1686,7 +1841,8 @@ public class TelegramAdapterTest {
                 enabled: true,
                 botToken: "telegram-token",
                 dmPolicy: "open",
-                allowFrom: ["*"]
+                allowFrom: ["*"],
+                media: TelegramMediaConfig(downloadEnabled: false)
             )
         )
         adapter.start()
@@ -1694,7 +1850,11 @@ public class TelegramAdapterTest {
         let ack = adapter.ingestWebhookPayload(payload)
         @Expect(ack.contains("\"ok\":true"), true)
 
-        let inbound = adapter.pullInbound()
+        var inbound = adapter.pullInbound()
+        if (inbound.size == 0) {
+            sleep(Duration.millisecond * 760)
+            inbound = adapter.pullInbound()
+        }
         @Expect(inbound.size, 1)
         @Expect(inbound[0].text.contains("[document]"), true)
         @Expect(inbound[0].text.contains("fileId=doc-file-id"), true)
@@ -1827,6 +1987,84 @@ public class TelegramAdapterTest {
         @Expect(records[1].asObject().get("fileId").getOrThrow().asString().getValue(), "p2-large")
         @Expect(records[0].asObject().get("mediaGroupId").getOrThrow().asString().getValue(), "album-1")
         @Expect(records[1].asObject().get("mediaGroupId").getOrThrow().asString().getValue(), "album-1")
+    }
+
+    @TestCase
+    public func webhookMediaGroupMessagesCanMergeAcrossPullBoundaries(): Unit {
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(
+                enabled: true,
+                botToken: "telegram-token",
+                dmPolicy: "open",
+                allowFrom: ["*"],
+                media: TelegramMediaConfig(downloadEnabled: false)
+            )
+        )
+        adapter.start()
+        let first = "{\"update_id\":1,\"message\":{\"message_id\":311,\"caption\":\"album caption\",\"media_group_id\":\"album-cross\",\"photo\":[{\"file_id\":\"p1-small\"},{\"file_id\":\"p1-large\"}],\"chat\":{\"id\":745123456,\"type\":\"private\"},\"from\":{\"id\":745123456}}}"
+        let second = "{\"update_id\":2,\"message\":{\"message_id\":312,\"media_group_id\":\"album-cross\",\"photo\":[{\"file_id\":\"p2-small\"},{\"file_id\":\"p2-large\"}],\"chat\":{\"id\":745123456,\"type\":\"private\"},\"from\":{\"id\":745123456}}}"
+        @Expect(adapter.ingestWebhookPayload(first).contains("\"ok\":true"), true)
+        @Expect(adapter.pullInbound().size, 0)
+        @Expect(adapter.ingestWebhookPayload(second).contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 1)
+        @Expect(inbound[0].messageId, "312")
+        let records = inbound[0].mediaContext.get("records").getOrThrow().asArray()
+        @Expect(records.size(), 2)
+        @Expect(records[0].asObject().get("fileId").getOrThrow().asString().getValue(), "p1-large")
+        @Expect(records[1].asObject().get("fileId").getOrThrow().asString().getValue(), "p2-large")
+    }
+
+    @TestCase
+    public func webhookExternalReplyMediaIsInjectedIntoMediaContext(): Unit {
+        let root = Path("/tmp/metis-telegram-external-reply-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root, recursive: true)
+        let fake = TelegramFakeBotApi()
+        fake.pollingUpdatesEnabled = false
+        setTelegramTransportRunnerForTest(Some({ request => fake.handle(request) }))
+        try {
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    dmPolicy: "open",
+                    allowFrom: ["*"]
+                ),
+                pairingRoot: root.toString()
+            )
+            adapter.start()
+            let payload = "{\"update_id\":1,\"message\":{\"message_id\":502,\"text\":\"save external\",\"external_reply\":{\"message_id\":501,\"caption\":\"external photo\",\"photo\":[{\"file_id\":\"external-small\"},{\"file_id\":\"external-large\"}],\"from\":{\"id\":111,\"username\":\"source_user\"}},\"chat\":{\"id\":745123456,\"type\":\"private\"},\"from\":{\"id\":745123456}}}"
+            @Expect(adapter.ingestWebhookPayload(payload).contains("\"ok\":true"), true)
+
+            let inbound = adapter.pullInbound()
+            @Expect(inbound.size, 1)
+            @Expect(inbound[0].text.contains("[external-reply-context]"), true)
+            let records = inbound[0].mediaContext.get("records").getOrThrow().asArray()
+            @Expect(records.size(), 1)
+            let record = records[0].asObject()
+            @Expect(record.get("relation").getOrThrow().asString().getValue(), "externalReply")
+            @Expect(record.get("fileId").getOrThrow().asString().getValue(), "external-large")
+            let context = inbound[0].mediaContext.get("context").getOrThrow().asObject()
+            @Expect(context.get("externalReply").isSome(), true)
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func telegramTextBurstDoesNotMergeNonAdjacentMessageIds(): Unit {
+        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token", dmPolicy: "open", allowFrom: ["*"]))
+        adapter.start()
+        let first = "{\"update_id\":1,\"message\":{\"message_id\":601,\"text\":\"first\",\"chat\":{\"id\":745123456,\"type\":\"private\"},\"from\":{\"id\":745123456}}}"
+        let second = "{\"update_id\":2,\"message\":{\"message_id\":610,\"text\":\"second\",\"chat\":{\"id\":745123456,\"type\":\"private\"},\"from\":{\"id\":745123456}}}"
+        @Expect(adapter.ingestWebhookPayload(first).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(second).contains("\"ok\":true"), true)
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 2)
+        @Expect(inbound[0].text, "first")
+        @Expect(inbound[1].text, "second")
     }
 
     @TestCase
@@ -2908,6 +3146,85 @@ public class TelegramAdapterTest {
             let reaction = payloads[0].asObject().get("reaction").getOrThrow().asArray()[0].asObject()
             @Expect(reaction.get("emoji").getOrThrow().asString().getValue(), "👍")
             @Expect(fake.saw("getChat"), true)
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+        }
+    }
+
+    @TestCase
+    public func sentMessageStateRecordsSuccessfulTelegramReplies(): Unit {
+        let root = Path("/tmp/metis-telegram-sent-state-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root, recursive: true)
+        let fake = TelegramFakeBotApi()
+        setTelegramTransportRunnerForTest(Some({ request => fake.handle(request) }))
+        try {
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(enabled: true, botToken: "telegram-token"),
+                pairingRoot: root.toString()
+            )
+            adapter.start()
+            let sentId = adapter.sendWithMessageId(
+                OutboundMessage(ChannelType.Telegram, "user:8734062810", "hello", replyToMessageId: Some("44"))
+            )
+            @Expect(sentId.isEmpty(), false)
+            let state = adapter.debugReadSentMessageStateForTest()
+            let last = state.get("lastMessage").getOrThrow().asObject()
+            @Expect(last.get("peerId").getOrThrow().asString().getValue(), "user:8734062810")
+            @Expect(last.get("messageId").getOrThrow().asString().getValue(), sentId)
+            @Expect(last.get("replyToMessageId").getOrThrow().asString().getValue(), "44")
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func removeAckAfterReplyClearsTelegramAckReaction(): Unit {
+        let fake = TelegramFakeBotApi()
+        setTelegramTransportRunnerForTest(Some({ request => fake.handle(request) }))
+        try {
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    removeAckAfterReply: true,
+                    actions: TelegramActionConfig(reactions: true)
+                )
+            )
+            adapter.start()
+            let sentId = adapter.sendWithMessageId(
+                OutboundMessage(ChannelType.Telegram, "user:8734062810", "reply", replyToMessageId: Some("77"))
+            )
+            @Expect(sentId.isEmpty(), false)
+            @Expect(fake.saw("setMessageReaction"), true)
+            @Expect(fake.sawBodyContaining("\"reaction\""), true)
+            @Expect(fake.sawBodyContaining("[]"), true)
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+        }
+    }
+
+    @TestCase
+    public func telegramTransportRequestCarriesDnsResultOrderForNativeRunner(): Unit {
+        let seen = ArrayList<String>()
+        setTelegramTransportRunnerForTest(Some({ request: TelegramTransportRequest =>
+            seen.add("${request.autoSelectFamily}|${request.dnsResultOrder}|${request.proxy}")
+            TelegramTransportResponse(true, body: "{\"ok\":true,\"result\":{\"message_id\":900}}", outcome: "ok")
+        }))
+        try {
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    proxy: "http://127.0.0.1:7897",
+                    network: TelegramNetworkConfig(autoSelectFamily: false, dnsResultOrder: "verbatim")
+                )
+            )
+            adapter.start()
+            let sentId = adapter.sendWithMessageId(OutboundMessage(ChannelType.Telegram, "user:8734062810", "hello"))
+            @Expect(sentId, "900")
+            @Expect(seen.size > 0, true)
+            @Expect(seen[0], "false|verbatim|http://127.0.0.1:7897")
         } finally {
             setTelegramTransportRunnerForTest(None)
         }

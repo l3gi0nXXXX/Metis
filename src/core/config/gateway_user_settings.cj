@@ -350,6 +350,7 @@ public struct TelegramUserSettings {
     public var reactionNotifications: String = "off"
     public var reactionLevel: String = "ack"
     public var ackReaction: String = "👀"
+    public var removeAckAfterReply: Bool = false
     public var actions: TelegramActionUserSettings = TelegramActionUserSettings()
     public var threadBindings: TelegramThreadBindingsUserSettings = TelegramThreadBindingsUserSettings()
     public var media: TelegramMediaUserSettings = TelegramMediaUserSettings()

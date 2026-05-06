@@ -76,6 +76,20 @@ private class TelegramInboundMediaInfo {
     }
 }
 
+private class TelegramPendingMediaGroup {
+    public let key: String
+    public var firstSeenAtMs: Int64
+    public var lastSeenAtMs: Int64
+    public let messages: ArrayList<InboundMessage>
+
+    public init(key: String, firstSeenAtMs: Int64) {
+        this.key = key
+        this.firstSeenAtMs = firstSeenAtMs
+        this.lastSeenAtMs = firstSeenAtMs
+        this.messages = ArrayList<InboundMessage>()
+    }
+}
+
 private var telegramAsrRunnerOverride: Option<(String, String) -> String> = None<(String, String) -> String>
 
 public func setTelegramAsrRunnerForTest(runner: Option<(String, String) -> String>): Unit {
@@ -156,6 +170,7 @@ public class TelegramAdapter <: ChannelAdapter {
     private let completedUpdateIds = HashSet<String>()
     private let completedUpdateIdOrder = ArrayList<String>()
     private let consumedApprovalCallbacks = HashSet<String>()
+    private let pendingMediaGroups = HashMap<String, TelegramPendingMediaGroup>()
     private let webhookGuardMutex = Mutex()
     private let webhookRateWindowStartedAtBySource = HashMap<String, Int64>()
     private let webhookRateCountBySource = HashMap<String, Int64>()
@@ -164,6 +179,8 @@ public class TelegramAdapter <: ChannelAdapter {
     private var running = false
     private var webhookServer: Option<Server> = None
     private var lastSendError: String = ""
+    private var botUsernameLookupAttempted: Bool = false
+    private var cachedBotUsername: String = ""
     private var nativeCommandsLastSyncStatus: String = "not-attempted"
     private var nativeCommandsLastSyncError: String = ""
     private var nativeCommandsLastSyncAtMs: Int64 = 0
@@ -257,13 +274,14 @@ public class TelegramAdapter <: ChannelAdapter {
 
     public func pullInbound(): Array<InboundMessage> {
         synchronized(this.queueMutex) {
-            if (!this.running || this.inboundQueue.isEmpty()) {
+            if (!this.running) {
                 return []
             }
-            let out = this.mergeTelegramTextBurstInboundMessages(
-                this.mergeTelegramMediaGroupInboundMessages(this.inboundQueue.toArray())
-            )
+            let drained = this.inboundQueue.toArray()
             this.inboundQueue.clear()
+            let out = this.mergeTelegramTextBurstInboundMessages(
+                this.collectTelegramMediaGroupsForPull(drained)
+            )
             out
         }
     }
@@ -275,7 +293,7 @@ public class TelegramAdapter <: ChannelAdapter {
                 out.add(msg)
                 continue
             }
-            if (out.size > 0 && this.telegramInboundCanTextBurstMerge(out[out.size - 1]) && this.telegramInboundBurstKey(out[out.size - 1]) == this.telegramInboundBurstKey(msg)) {
+            if (out.size > 0 && this.telegramInboundShouldTextBurstMerge(out[out.size - 1], msg)) {
                 out[out.size - 1] = this.mergeTelegramTextBurstMessage(out[out.size - 1], msg)
             } else {
                 out.add(msg)
@@ -284,12 +302,55 @@ public class TelegramAdapter <: ChannelAdapter {
         out.toArray()
     }
 
+    private func telegramMediaContextAllowsTextBurstMerge(mediaContext: JsonObject): Bool {
+        if (mediaContext.size() == 0) {
+            return true
+        }
+        match (mediaContext.get("records")) {
+            case Some(_) => return false
+            case None => ()
+        }
+        match (mediaContext.get("context")) {
+            case Some(_) => return false
+            case None => ()
+        }
+        true
+    }
+
     private func telegramInboundCanTextBurstMerge(msg: InboundMessage): Bool {
         let text = msg.text.trimAscii()
         if (text.isEmpty() || text.startsWith("/") || text.startsWith("[")) {
             return false
         }
-        this.mediaContextRecords(msg.mediaContext).size() == 0
+        if (text.contains("\n[")) {
+            return false
+        }
+        this.telegramMediaContextAllowsTextBurstMerge(msg.mediaContext)
+    }
+
+    private func telegramInboundShouldTextBurstMerge(first: InboundMessage, next: InboundMessage): Bool {
+        if (!this.telegramInboundCanTextBurstMerge(first) || !this.telegramInboundCanTextBurstMerge(next)) {
+            return false
+        }
+        if (this.telegramInboundBurstKey(first) != this.telegramInboundBurstKey(next)) {
+            return false
+        }
+        if (first.text.size + next.text.size > 12000) {
+            return false
+        }
+        if (first.text.split("\n").size + next.text.split("\n").size > 12) {
+            return false
+        }
+        try {
+            let firstId = Int64.parse(first.messageId.trimAscii())
+            let nextId = Int64.parse(next.messageId.trimAscii())
+            if (nextId <= firstId || nextId - firstId > 1) {
+                return false
+            }
+        } catch (_e: Exception) {
+            ()
+        }
+        true
     }
 
     private func telegramInboundBurstKey(msg: InboundMessage): String {
@@ -300,7 +361,24 @@ public class TelegramAdapter <: ChannelAdapter {
         "${msg.peerId}|${msg.senderId}|${thread}"
     }
 
+    private func mergeTelegramTextBurstMediaContext(first: JsonObject, next: JsonObject, messageId: String): JsonObject {
+        if (first.size() == 0 && next.size() == 0) {
+            return first
+        }
+        let merged = JsonObject()
+        for (key in ["channel", "accountId", "peerId", "mediaStatePath"]) {
+            let nextValue = this.readStringField(next, key)
+            let value = if (!nextValue.isEmpty()) { nextValue } else { this.readStringField(first, key) }
+            if (!value.isEmpty()) {
+                merged.put(key, JsonString(value))
+            }
+        }
+        merged.put("messageId", JsonString(messageId))
+        merged
+    }
+
     private func mergeTelegramTextBurstMessage(first: InboundMessage, next: InboundMessage): InboundMessage {
+        let mergedContext = this.mergeTelegramTextBurstMediaContext(first.mediaContext, next.mediaContext, next.messageId)
         InboundMessage(
             first.channel,
             next.messageId,
@@ -316,8 +394,60 @@ public class TelegramAdapter <: ChannelAdapter {
             replyInThread: first.replyInThread,
             raw: first.raw,
             accountId: first.accountId,
-            mediaContext: first.mediaContext
+            mediaContext: mergedContext
         )
+    }
+
+    private func collectTelegramMediaGroupsForPull(messages: Array<InboundMessage>): Array<InboundMessage> {
+        let out = ArrayList<InboundMessage>()
+        let nowMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
+        this.flushTelegramPendingMediaGroups(out, nowMs, force: false)
+        for (msg in messages) {
+            let groupId = this.inboundPrimaryMediaGroupId(msg)
+            if (groupId.isEmpty()) {
+                this.flushTelegramPendingMediaGroups(out, nowMs, force: true)
+                out.add(msg)
+                continue
+            }
+            let key = this.telegramInboundBurstKey(msg) + "|album:" + groupId
+            if (this.pendingMediaGroups.get(key).isNone() && this.pendingMediaGroups.size > 0) {
+                this.flushTelegramPendingMediaGroups(out, nowMs, force: true)
+            }
+            let pending = match (this.pendingMediaGroups.get(key)) {
+                case Some(existing) => existing
+                case None =>
+                    let created = TelegramPendingMediaGroup(key, nowMs)
+                    this.pendingMediaGroups[key] = created
+                    created
+            }
+            pending.messages.add(msg)
+            pending.lastSeenAtMs = nowMs
+        }
+        this.flushTelegramPendingMediaGroups(out, nowMs, force: false)
+        out.toArray()
+    }
+
+    private func flushTelegramPendingMediaGroups(out: ArrayList<InboundMessage>, nowMs: Int64, force!: Bool): Unit {
+        let flushKeys = ArrayList<String>()
+        for ((key, pending) in this.pendingMediaGroups) {
+            if (force || pending.messages.size > 1 || nowMs - pending.firstSeenAtMs >= 700) {
+                out.add(this.mergeTelegramMediaGroupPending(pending))
+                flushKeys.add(key)
+            }
+        }
+        for (key in flushKeys) {
+            this.pendingMediaGroups.remove(key)
+        }
+    }
+
+    private func mergeTelegramMediaGroupPending(pending: TelegramPendingMediaGroup): InboundMessage {
+        var merged = pending.messages[0]
+        var idx: Int64 = 1
+        while (idx < pending.messages.size) {
+            merged = this.mergeTelegramMediaGroupMessage(merged, pending.messages[idx])
+            idx += 1
+        }
+        merged
     }
 
     private func mergeTelegramMediaGroupInboundMessages(messages: Array<InboundMessage>): Array<InboundMessage> {
@@ -544,6 +674,10 @@ public class TelegramAdapter <: ChannelAdapter {
             }
             lastMessageId = sentMessageId
         }
+        if (!lastMessageId.trimAscii().isEmpty()) {
+            this.recordSentTelegramMessage(message, lastMessageId)
+            this.maybeRemoveAckAfterReply(message)
+        }
         lastMessageId
     }
 
@@ -724,6 +858,10 @@ public class TelegramAdapter <: ChannelAdapter {
         this.telegramTransport().redactUrl(url)
     }
 
+    public func debugTelegramRenderHtmlForTest(text: String): String {
+        this.telegramRenderHtml(text)
+    }
+
     public func debugIngestPollingResponse(raw: String): Int64 {
         this.ingestPollingResponse(raw)
     }
@@ -766,6 +904,10 @@ public class TelegramAdapter <: ChannelAdapter {
 
     public func debugReadMediaState(): JsonObject {
         this.readMediaState()
+    }
+
+    public func debugReadSentMessageStateForTest(): JsonObject {
+        this.readSentMessageState()
     }
 
     public func debugPersistInboundMediaForTest(
@@ -1434,6 +1576,11 @@ public class TelegramAdapter <: ChannelAdapter {
         let senderId = this.readIntStringField(from, "id")
         let chatType = if (this.readStringField(chat, "type") == "private") { ChatType.Direct } else { ChatType.Group }
         let mediaContext = JsonObject()
+        mediaContext.put("channel", JsonString("telegram"))
+        mediaContext.put("accountId", JsonString(this.effectiveAccountId()))
+        mediaContext.put("peerId", JsonString(peerId))
+        mediaContext.put("messageId", JsonString(messageId))
+        mediaContext.put("mediaStatePath", JsonString(this.mediaStatePath().toString()))
         let contextRecords = JsonArray([])
         let persistedMediaStates = ArrayList<JsonObject>()
         match (mediaInfo) {
@@ -1463,6 +1610,24 @@ public class TelegramAdapter <: ChannelAdapter {
                 }
                 if (replyId.isEmpty()) { None<String> } else { Some(replyId) }
             case None => None<String>
+        }
+        match (this.readObjectFieldOpt(msg, "external_reply")) {
+            case Some(externalReply) =>
+                let externalId = this.readIntStringField(externalReply, "message_id")
+                match (this.readTelegramMediaInfo(externalReply)) {
+                    case Some(externalInfo) =>
+                        let externalMediaState = this.persistInboundMedia(
+                            externalInfo,
+                            peerId: peerId,
+                            messageId: if (externalId.isEmpty()) { messageId } else { externalId },
+                            relation: "externalReply",
+                            replyToMessageId: externalId
+                        )
+                        contextRecords.add(this.readObjectField(externalMediaState, "lastMedia"))
+                        persistedMediaStates.add(externalMediaState)
+                    case None => ()
+                }
+            case None => ()
         }
         if (contextRecords.size() > 0) {
             mediaContext.put("channel", JsonString("telegram"))
@@ -1498,7 +1663,7 @@ public class TelegramAdapter <: ChannelAdapter {
                 mediaContext.put("context", context)
             }
         }
-        let mentioned = this.detectMention(text)
+        let mentioned = this.detectMentionInMessage(msg, text)
         let inbound = InboundMessage(
             ChannelType.Telegram,
             messageId,
@@ -1689,7 +1854,7 @@ public class TelegramAdapter <: ChannelAdapter {
     ): String {
         let text = this.readStringField(msg, "text").trimAscii()
         if (!text.isEmpty()) {
-            return this.appendTelegramSupplementalContext(text, msg)
+            return this.appendTelegramSupplementalContext(this.telegramTextWithEntities(msg, text, "entities"), msg)
         }
         match (mediaInfo) {
             case Some(info) =>
@@ -1714,6 +1879,10 @@ public class TelegramAdapter <: ChannelAdapter {
                 }
                 if (!info.caption.isEmpty() && info.kind != "sticker" && info.kind != "video-note") {
                     lines.add("caption=${info.caption}")
+                    let captionEntities = this.telegramEntityContextBlock(info.caption, msg, "caption_entities")
+                    if (!captionEntities.isEmpty()) {
+                        lines.add(captionEntities)
+                    }
                 }
                 if (info.kind == "sticker") {
                     if (!info.stickerEmoji.isEmpty()) {
@@ -1733,6 +1902,61 @@ public class TelegramAdapter <: ChannelAdapter {
                 }
                 ""
         }
+    }
+
+    private func telegramTextWithEntities(msg: JsonObject, text: String, entityField: String): String {
+        let entities = this.telegramEntityContextBlock(text, msg, entityField)
+        if (entities.isEmpty()) {
+            return text
+        }
+        text + "\n" + entities
+    }
+
+    private func telegramEntityContextBlock(text: String, msg: JsonObject, entityField: String): String {
+        let lines = ArrayList<String>()
+        match (msg.get(entityField)) {
+            case Some(rawEntities) =>
+                try {
+                    let arr = rawEntities.asArray()
+                    for (item in arr.getItems()) {
+                        try {
+                            let entity = item.asObject()
+                            let entityType = this.readStringField(entity, "type").trimAscii()
+                            let offset = this.readJsonIntField(entity, "offset", -1)
+                            let length = this.readJsonIntField(entity, "length", 0)
+                            let segment = this.telegramEntitySlice(text, offset, length)
+                            if (entityType == "text_link") {
+                                let url = this.readStringField(entity, "url").trimAscii()
+                                if (!url.isEmpty()) {
+                                    if (lines.isEmpty()) {
+                                        lines.add("[entities]")
+                                    }
+                                    lines.add("textLink=${segment}|url=${url}")
+                                }
+                            } else if (entityType == "url" || entityType == "mention" || entityType == "text_mention") {
+                                if (lines.isEmpty()) {
+                                    lines.add("[entities]")
+                                }
+                                lines.add("${entityType}=${segment}")
+                            }
+                        } catch (_e: Exception) {
+                            ()
+                        }
+                    }
+                } catch (_e: Exception) {
+                    ()
+                }
+            case None => ()
+        }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func telegramEntitySlice(text: String, offset: Int64, length: Int64): String {
+        if (offset < 0 || length <= 0 || offset >= text.size) {
+            return ""
+        }
+        let end = if (offset + length > text.size) { text.size } else { offset + length }
+        try { text[offset..end] } catch (_e: Exception) { "" }
     }
 
     private func appendTelegramSupplementalContext(baseText: String, msg: JsonObject): String {
@@ -1757,6 +1981,18 @@ public class TelegramAdapter <: ChannelAdapter {
                 }
             case None => ()
         }
+        match (this.readObjectFieldOpt(msg, "external_reply")) {
+            case Some(externalReply) =>
+                let extText = this.readStringField(externalReply, "text").trimAscii()
+                let extCaption = this.readStringField(externalReply, "caption").trimAscii()
+                let extBody = if (!extText.isEmpty()) { extText } else { extCaption }
+                lines.add("[external-reply-context]")
+                lines.add("messageId=${this.readIntStringField(externalReply, "message_id")}")
+                if (!extBody.isEmpty()) {
+                    lines.add("body=${extBody}")
+                }
+            case None => ()
+        }
         match (this.readObjectFieldOpt(msg, "forward_origin")) {
             case Some(origin) =>
                 lines.add("[forward-context]")
@@ -1769,6 +2005,19 @@ public class TelegramAdapter <: ChannelAdapter {
                 let title = this.readStringField(chat, "title")
                 if (!title.isEmpty()) {
                     lines.add("chatTitle=${title}")
+                }
+                let senderChat = this.readObjectField(origin, "sender_chat")
+                let senderChatTitle = this.readStringField(senderChat, "title").trimAscii()
+                if (!senderChatTitle.isEmpty()) {
+                    lines.add("senderChatTitle=${senderChatTitle}")
+                }
+                let originMessageId = this.readIntStringField(origin, "message_id")
+                if (!originMessageId.isEmpty()) {
+                    lines.add("originMessageId=${originMessageId}")
+                }
+                let authorSignature = this.readStringField(origin, "author_signature").trimAscii()
+                if (!authorSignature.isEmpty()) {
+                    lines.add("authorSignature=${authorSignature}")
                 }
             case None => ()
         }
@@ -1814,12 +2063,26 @@ public class TelegramAdapter <: ChannelAdapter {
                 out.put("replyTo", obj)
             case None => ()
         }
+        match (this.readObjectFieldOpt(msg, "external_reply")) {
+            case Some(externalReply) =>
+                let obj = JsonObject()
+                obj.put("messageId", JsonString(this.readIntStringField(externalReply, "message_id")))
+                obj.put("text", JsonString(this.readStringField(externalReply, "text").trimAscii()))
+                obj.put("caption", JsonString(this.readStringField(externalReply, "caption").trimAscii()))
+                let from = this.readObjectField(externalReply, "from")
+                obj.put("senderId", JsonString(this.readIntStringField(from, "id")))
+                obj.put("senderUsername", JsonString(this.readStringField(from, "username").trimAscii()))
+                out.put("externalReply", obj)
+            case None => ()
+        }
         match (this.readObjectFieldOpt(msg, "forward_origin")) {
             case Some(origin) =>
                 let obj = JsonObject()
                 obj.put("type", JsonString(this.readStringField(origin, "type").trimAscii()))
                 obj.put("senderUserName", JsonString(this.readStringField(origin, "sender_user_name").trimAscii()))
                 obj.put("date", JsonString(this.readIntStringField(origin, "date")))
+                obj.put("messageId", JsonString(this.readIntStringField(origin, "message_id")))
+                obj.put("authorSignature", JsonString(this.readStringField(origin, "author_signature").trimAscii()))
                 let senderUser = this.readObjectField(origin, "sender_user")
                 if (senderUser.size() > 0) {
                     obj.put("senderId", JsonString(this.readIntStringField(senderUser, "id")))
@@ -1830,6 +2093,13 @@ public class TelegramAdapter <: ChannelAdapter {
                     obj.put("chatId", JsonString(this.readIntStringField(chat, "id")))
                     obj.put("chatTitle", JsonString(this.readStringField(chat, "title").trimAscii()))
                     obj.put("chatType", JsonString(this.readStringField(chat, "type").trimAscii()))
+                }
+                let senderChat = this.readObjectField(origin, "sender_chat")
+                if (senderChat.size() > 0) {
+                    obj.put("senderChatId", JsonString(this.readIntStringField(senderChat, "id")))
+                    obj.put("senderChatTitle", JsonString(this.readStringField(senderChat, "title").trimAscii()))
+                    obj.put("senderChatType", JsonString(this.readStringField(senderChat, "type").trimAscii()))
+                    obj.put("senderChatUsername", JsonString(this.readStringField(senderChat, "username").trimAscii()))
                 }
                 out.put("forwarded", obj)
             case None => ()
@@ -3065,6 +3335,10 @@ public class TelegramAdapter <: ChannelAdapter {
         this.telegramAccountStateDir().join("media-state.json")
     }
 
+    private func sentMessageStatePath(): Path {
+        this.telegramAccountStateDir().join("sent-message-state.json")
+    }
+
     private func groupMigrationStatePath(): Path {
         this.telegramAccountStateDir().join("group-migrations.json")
     }
@@ -3432,6 +3706,91 @@ public class TelegramAdapter <: ChannelAdapter {
                 }
             case None => JsonArray([])
         }
+    }
+
+    private func readSentMessageState(): JsonObject {
+        let path = this.sentMessageStatePath()
+        if (!exists(path)) {
+            let empty = JsonObject()
+            empty.put("statePath", JsonString(path.toString()))
+            empty.put("persistenceEnabled", true.toJsonValue())
+            empty.put("accountId", JsonString(this.effectiveAccountId()))
+            empty.put("lastMessage", JsonObject())
+            empty.put("records", JsonArray([]))
+            return empty
+        }
+        return try {
+            let root = JsonValue.fromStr(String.fromUtf8(File.readFrom(path))).asObject()
+            root.put("statePath", JsonString(path.toString()))
+            root.put("persistenceEnabled", true.toJsonValue())
+            root.put("accountId", JsonString(this.effectiveAccountId()))
+            root
+        } catch (_e: Exception) {
+            let empty = JsonObject()
+            empty.put("statePath", JsonString(path.toString()))
+            empty.put("persistenceEnabled", true.toJsonValue())
+            empty.put("accountId", JsonString(this.effectiveAccountId()))
+            empty.put("lastMessage", JsonObject())
+            empty.put("records", JsonArray([]))
+            empty
+        }
+    }
+
+    private func readSentMessageRecords(root: JsonObject): JsonArray {
+        match (root.get("records")) {
+            case Some(v) => try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
+            case None => JsonArray([])
+        }
+    }
+
+    private func recordSentTelegramMessage(message: OutboundMessage, telegramMessageId: String): Unit {
+        let id = telegramMessageId.trimAscii()
+        if (id.isEmpty()) {
+            return
+        }
+        try {
+            let nowMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
+            let root = this.readSentMessageState()
+            let record = JsonObject()
+            record.put("channel", JsonString("telegram"))
+            record.put("accountId", JsonString(this.effectiveAccountId()))
+            record.put("peerId", JsonString(message.peerId.trimAscii()))
+            record.put("messageId", JsonString(id))
+            record.put("textPreview", JsonString(this.truncateForTelegramState(message.text.trimAscii(), 240)))
+            record.put("createdAtMs", nowMs.toJsonValue())
+            match (message.replyToMessageId) {
+                case Some(target) => record.put("replyToMessageId", JsonString(target.trimAscii()))
+                case None => record.put("replyToMessageId", JsonString(""))
+            }
+            record.put("replyInThread", message.replyInThread.toJsonValue())
+            let records = this.readSentMessageRecords(root)
+            records.add(record)
+            root.put("lastMessage", record)
+            root.put("records", this.capJsonArrayTail(records, 100))
+            File.writeTo(this.sentMessageStatePath(), root.toJsonString().toArray())
+        } catch (_e: Exception) {
+            ()
+        }
+    }
+
+    private func truncateForTelegramState(text: String, maxChars: Int64): String {
+        if (maxChars <= 0 || text.size <= maxChars) {
+            return text
+        }
+        text[..maxChars]
+    }
+
+    private func capJsonArrayTail(items: JsonArray, maxItems: Int64): JsonArray {
+        if (maxItems <= 0 || items.size() <= maxItems) {
+            return items
+        }
+        let out = JsonArray([])
+        var idx = items.size() - maxItems
+        while (idx < items.size()) {
+            out.add(items[idx])
+            idx += 1
+        }
+        out
     }
 
     private func telegramMediaRecordId(accountId: String, peerId: String, messageId: String, kind: String, fileId: String): String {
@@ -3910,7 +4269,7 @@ public class TelegramAdapter <: ChannelAdapter {
 
     private func syncNativeCommands(): Bool {
         this.nativeCommandsLastSyncAtMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
-        this.nativeCommandsLastSyncCommandCount = this.resolvedTelegramCommandMenu().size
+        this.nativeCommandsLastSyncCommandCount = this.resolvedTelegramCommandMenuForTelegramApi().size
         let token = this.effectiveBotToken()
         if (token.isEmpty()) {
             this.setNativeCommandsSyncError("bot token is empty")
@@ -3953,6 +4312,8 @@ public class TelegramAdapter <: ChannelAdapter {
         out.put("builtinsEnabled", builtinsEnabled.toJsonValue())
         out.put("customCommandCount", this.config.customCommands.size.toJsonValue())
         out.put("resolvedCommandCount", this.resolvedTelegramCommandMenu().size.toJsonValue())
+        out.put("apiCommandCount", this.resolvedTelegramCommandMenuForTelegramApi().size.toJsonValue())
+        out.put("apiCommandLimit", 100.toJsonValue())
         out.put("lastSyncStatus", JsonString(this.nativeCommandsLastSyncStatus))
         out.put("lastSyncError", JsonString(this.nativeCommandsLastSyncError))
         out.put("lastSyncAtMs", this.nativeCommandsLastSyncAtMs.toJsonValue())
@@ -3962,10 +4323,10 @@ public class TelegramAdapter <: ChannelAdapter {
 
     private func buildNativeCommandsPayload(): JsonObject {
         let commands = JsonArray([])
-        for ((command, description) in this.resolvedTelegramCommandMenu()) {
+        for ((command, description) in this.resolvedTelegramCommandMenuForTelegramApi()) {
             let item = JsonObject()
             item.put("command", JsonString(command))
-            item.put("description", JsonString(description))
+            item.put("description", JsonString(this.telegramCommandDescription(description)))
             commands.add(item)
         }
         let obj = JsonObject()
@@ -4005,6 +4366,28 @@ public class TelegramAdapter <: ChannelAdapter {
             seen[normalizedCommand] = true
         }
         rows.toArray()
+    }
+
+    private func resolvedTelegramCommandMenuForTelegramApi(): Array<(String, String)> {
+        let rows = ArrayList<(String, String)>()
+        for (row in this.resolvedTelegramCommandMenu()) {
+            if (rows.size >= 100) {
+                break
+            }
+            rows.add(row)
+        }
+        rows.toArray()
+    }
+
+    private func telegramCommandDescription(raw: String): String {
+        let trimmed = raw.trimAscii()
+        if (trimmed.isEmpty()) {
+            return "Command"
+        }
+        if (trimmed.size <= 256) {
+            return trimmed
+        }
+        trimmed[..256]
     }
 
     private func normalizeTelegramCommandName(raw: String): String {
@@ -5700,6 +6083,33 @@ public class TelegramAdapter <: ChannelAdapter {
         let _ = this.sendPayloadToTelegram(payload)
     }
 
+    private func maybeRemoveAckAfterReply(message: OutboundMessage): Unit {
+        if (!this.config.removeAckAfterReply || !this.config.actions.reactions) {
+            return
+        }
+        match (message.replyToMessageId) {
+            case Some(target0) =>
+                let target = target0.trimAscii()
+                if (target.isEmpty()) {
+                    return
+                }
+                let payload = this.buildReactionPayload(
+                    OutboundMessage(
+                        ChannelType.Telegram,
+                        message.peerId,
+                        "[reaction]\nremove=true\nrender=remove",
+                        replyToMessageId: Some(target),
+                        replyInThread: message.replyInThread,
+                        accountId: message.accountId
+                    ),
+                    target,
+                    ""
+                )
+                let _ = this.sendPayloadToTelegram(payload)
+            case None => ()
+        }
+    }
+
     private func telegramEscapeHtml(text: String): String {
         text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     }
@@ -5709,7 +6119,17 @@ public class TelegramAdapter <: ChannelAdapter {
     }
 
     private func startsWithAt(text: String, idx: Int64, token: String): Bool {
-        idx >= 0 && idx + token.size <= text.size && text[idx..idx + token.size] == token
+        if (idx < 0 || idx + token.size > text.size) {
+            return false
+        }
+        var i: Int64 = 0
+        while (i < token.size) {
+            if (text[idx + i] != token[i]) {
+                return false
+            }
+            i += 1
+        }
+        true
     }
 
     private func appendEscapedHtmlSegment(sb: StringBuilder, segment: String): Unit {
@@ -5717,6 +6137,15 @@ public class TelegramAdapter <: ChannelAdapter {
     }
 
     private func telegramRenderHtml(text: String): String {
+        try {
+            this.telegramRenderHtmlUnsafe(text)
+        } catch (e: Exception) {
+            LogUtils.info("Telegram HTML render failed; using escaped plain text: ${e.message}")
+            this.telegramEscapeHtml(text.replace("\r\n", "\n").replace("\r", "\n"))
+        }
+    }
+
+    private func telegramRenderHtmlUnsafe(text: String): String {
         let raw = text.replace("\r\n", "\n").replace("\r", "\n")
         if (raw.isEmpty()) {
             return ""
@@ -5724,12 +6153,12 @@ public class TelegramAdapter <: ChannelAdapter {
         let sb = StringBuilder()
         var cursor: Int64 = 0
         while (cursor < raw.size) {
-            if (raw[cursor..cursor + 1] == "\n" && cursor + 1 < raw.size && this.startsWithAt(raw, cursor + 1, "> ")) {
+            if (raw[cursor] == UInt8(10) && cursor + 1 < raw.size && this.startsWithAt(raw, cursor + 1, "> ")) {
                 sb.append("\n")
                 cursor += 1
                 continue
             }
-            if ((cursor == 0 || raw[cursor - 1..cursor] == "\n") && this.startsWithAt(raw, cursor, "> ")) {
+            if ((cursor == 0 || raw[cursor - 1] == UInt8(10)) && this.startsWithAt(raw, cursor, "> ")) {
                 let lineEnd = match (raw.indexOf("\n", cursor)) {
                     case Some(idx) => idx
                     case None => raw.size
@@ -5830,11 +6259,21 @@ public class TelegramAdapter <: ChannelAdapter {
                     case None => ()
                 }
             }
-            let next = this.nextTelegramMarkdownMarker(raw, cursor + 1)
+            let next = this.nextTelegramMarkdownMarker(raw, this.nextTelegramMarkdownSearchStart(raw, cursor))
             this.appendEscapedHtmlSegment(sb, raw[cursor..next])
             cursor = next
         }
         sb.toString()
+    }
+
+    private func nextTelegramMarkdownSearchStart(text: String, cursor: Int64): Int64 {
+        if (cursor < 0 || cursor >= text.size) {
+            return text.size
+        }
+        if (text[cursor] < UInt8(128)) {
+            return cursor + 1
+        }
+        cursor
     }
 
     private func nextTelegramMarkdownMarker(text: String, start: Int64): Int64 {
@@ -5888,18 +6327,91 @@ public class TelegramAdapter <: ChannelAdapter {
         this.lastInboundMessageIdForPolicy = messageId.trimAscii()
     }
 
-    private func detectMention(text: String): Bool {
+    private func detectMentionInMessage(msg: JsonObject, text: String): Bool {
         let normalized = text.trimAscii()
         if (normalized.isEmpty()) {
             return false
         }
-        if (normalized.contains("@")) {
-            return true
-        }
         if (normalized.startsWith("/")) {
             return true
         }
+        let chat = this.readObjectField(msg, "chat")
+        let strictBotTarget = this.readStringField(chat, "type") != "private"
+        if (this.telegramMessageHasMentionEntity(msg, normalized, "entities", strictBotTarget: strictBotTarget)) {
+            return true
+        }
+        if (this.telegramMessageHasMentionEntity(msg, normalized, "caption_entities", strictBotTarget: strictBotTarget)) {
+            return true
+        }
         false
+    }
+
+    private func telegramMessageHasMentionEntity(msg: JsonObject, text: String, entityField: String, strictBotTarget!: Bool): Bool {
+        match (msg.get(entityField)) {
+            case Some(rawEntities) =>
+                try {
+                    let arr = rawEntities.asArray()
+                    for (item in arr.getItems()) {
+                        try {
+                            let entity = item.asObject()
+                            let entityType = this.readStringField(entity, "type").trimAscii()
+                            if (entityType == "text_mention") {
+                                if (!strictBotTarget) {
+                                    return true
+                                }
+                                let botId = this.effectiveBotId()
+                                let user = this.readObjectField(entity, "user")
+                                let userId = this.readIntStringField(user, "id")
+                                if (botId.isEmpty() || userId.isEmpty() || userId == botId) {
+                                    return true
+                                }
+                            }
+                            if (entityType == "mention") {
+                                let segment = this.telegramEntitySlice(
+                                    text,
+                                    this.readJsonIntField(entity, "offset", -1),
+                                    this.readJsonIntField(entity, "length", 0)
+                                ).trimAscii()
+                                if (segment.startsWith("@")) {
+                                    if (!strictBotTarget) {
+                                        return true
+                                    }
+                                    let botUsername = this.effectiveBotUsername().trimAscii().toAsciiLower()
+                                    let mentionedUsername = segment[1..].trimAscii().toAsciiLower()
+                                    if (botUsername.isEmpty() || mentionedUsername == botUsername) {
+                                        return true
+                                    }
+                                }
+                            }
+                        } catch (_e: Exception) {
+                            ()
+                        }
+                    }
+                } catch (_e: Exception) {
+                    ()
+                }
+            case None => ()
+        }
+        false
+    }
+
+    private func effectiveBotUsername(): String {
+        if (this.botUsernameLookupAttempted) {
+            return this.cachedBotUsername
+        }
+        this.botUsernameLookupAttempted = true
+        let token = this.effectiveBotToken()
+        if (token.isEmpty()) {
+            return ""
+        }
+        let raw = this.tryTelegramGet("${this.normalizeApiRoot()}/bot${token}/getMe")
+        let parsed = this.parseTelegramProbeResult(raw)
+        if (!this.readJsonBoolField(parsed, "ok", false)) {
+            return ""
+        }
+        let result = this.readObjectField(parsed, "result")
+        this.cachedBotUsername = this.readStringField(result, "username").trimAscii()
+        this.cachedBotUsername
     }
 
     private func acceptsInbound(message: InboundMessage): Bool {
@@ -6212,7 +6724,9 @@ public class TelegramAdapter <: ChannelAdapter {
             proxy: this.config.proxy,
             timeoutSeconds: if (this.config.timeoutSeconds > 0) { this.config.timeoutSeconds } else { 30 },
             insecureSkipTlsVerify: this.config.network.insecureSkipTlsVerify,
-            dangerouslyAllowPrivateNetwork: this.config.network.dangerouslyAllowPrivateNetwork
+            dangerouslyAllowPrivateNetwork: this.config.network.dangerouslyAllowPrivateNetwork,
+            autoSelectFamily: this.config.network.autoSelectFamily,
+            dnsResultOrder: this.config.network.dnsResultOrder
         )
     }
 

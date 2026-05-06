@@ -685,6 +685,7 @@ public class TelegramConfig {
     public let reactionNotifications: String
     public let reactionLevel: String
     public let ackReaction: String
+    public let removeAckAfterReply: Bool
     public let actions: TelegramActionConfig
     public let threadBindings: TelegramThreadBindingsConfig
     public let media: TelegramMediaConfig
@@ -731,6 +732,7 @@ public class TelegramConfig {
         reactionNotifications!: String = "off",
         reactionLevel!: String = "ack",
         ackReaction!: String = "👀",
+        removeAckAfterReply!: Bool = false,
         actions!: TelegramActionConfig = TelegramActionConfig(),
         threadBindings!: TelegramThreadBindingsConfig = TelegramThreadBindingsConfig(),
         media!: TelegramMediaConfig = TelegramMediaConfig(),
@@ -776,6 +778,7 @@ public class TelegramConfig {
         this.reactionNotifications = reactionNotifications
         this.reactionLevel = reactionLevel
         this.ackReaction = ackReaction
+        this.removeAckAfterReply = removeAckAfterReply
         this.actions = actions
         this.threadBindings = threadBindings
         this.media = media

@@ -34,6 +34,7 @@ public func gatewayBuiltinExtraConfig(user: GatewayUserSettings, channelId: Stri
         obj.put("reactionNotifications", user.telegram.reactionNotifications.toJsonValue())
         obj.put("reactionLevel", user.telegram.reactionLevel.toJsonValue())
         obj.put("ackReaction", user.telegram.ackReaction.toJsonValue())
+        obj.put("removeAckAfterReply", user.telegram.removeAckAfterReply.toJsonValue())
         return obj
     }
     match (user.channelsExtra) {

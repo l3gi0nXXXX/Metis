@@ -479,6 +479,18 @@ private func gatewayTelegramBuildDiagnosticFindings(user: GatewayUserSettings, r
             "Keep custom endpoints trusted and avoid logging raw Bot API URLs."
         )
     }
+    let dnsOrder = user.telegram.network.dnsResultOrder.trimAscii().toAsciiLower()
+    if (!dnsOrder.isEmpty() && dnsOrder != "ipv4first") {
+        gatewayTelegramAddFinding(
+            findings,
+            "telegram-network-dns-result-order",
+            "info",
+            "passed",
+            "Telegram native transport received a custom DNS result order setting.",
+            "gateway.telegram.network.dnsResultOrder=${dnsOrder}; stdx DNS selection is still constrained by the Cangjie native socket resolver.",
+            "Use ipv4first when local networks prefer IPv4 proxy paths; keep this setting documented in gateway doctor output."
+        )
+    }
 
     if (user.telegram.actions.deleteMessage || user.telegram.actions.pinMessage || user.telegram.actions.unpinMessage || user.telegram.actions.createForumTopic ||
         user.telegram.actions.editForumTopic || user.telegram.media.outboundAllowLocalPath ||

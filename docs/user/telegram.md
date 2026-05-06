@@ -587,6 +587,7 @@ final=Done
       "reactionNotifications": "all",
       "reactionLevel": "ack",
       "ackReaction": "👀",
+      "removeAckAfterReply": false,
       "actions": {
         "reactions": true
       }
@@ -600,6 +601,7 @@ final=Done
 | `reactionNotifications` | `off` | 是否接收 Telegram reaction update。`all` 会加入 allowed updates。 |
 | `reactionLevel` | `ack` | 自动 ack reaction 策略。`off` 可关闭。 |
 | `ackReaction` | `👀` | ack 使用的 emoji。 |
+| `removeAckAfterReply` | `false` | 回复成功后是否通过空 `setMessageReaction` 移除 ack reaction。失败会降级，不影响正常回复。 |
 
 出站 reaction 格式：
 
@@ -607,6 +609,14 @@ final=Done
 [reaction]
 token=👍
 render=👍
+```
+
+移除 reaction：
+
+```text
+[reaction]
+remove=true
+render=remove
 ```
 
 ## Native Commands
@@ -637,6 +647,8 @@ render=👍
 ```
 
 Telegram 中 `/subagents` 等命令仍走 Gateway 统一命令路径，不在 Telegram adapter 内单独执行 agent 逻辑。
+
+Telegram Bot API 对 command menu 有数量和描述长度限制。Metis 同步菜单前会把命令裁剪到 100 条，并把 description 裁剪到 256 字符；被裁剪的配置不会绕过 Gateway 执行，也不会让启动流程因为 `setMyCommands` payload 过大而中断。
 
 内置 command menu 当前包含：
 
@@ -799,7 +811,7 @@ Metis 提供受控的 Telegram target writeback 工具，用来把已确认的 T
 | 字段 | 默认值 | 说明 |
 |---|---:|---|
 | `autoSelectFamily` | `true` | 自动选择地址族。 |
-| `dnsResultOrder` | `ipv4first` | DNS 结果偏好。 |
+| `dnsResultOrder` | `ipv4first` | DNS 结果偏好。该值会传入 Telegram native transport；受 Cangjie stdx socket resolver 能力限制时，`channels health` / diagnostics 会明确提示。 |
 | `dangerouslyAllowPrivateNetwork` | `false` | 是否允许访问私有网络目标。通常不要开启。 |
 
 ## 完整示例

@@ -13,6 +13,7 @@ import metis.core.{gatewayMediaUnderstandingFirstText, gatewayMediaUnderstanding
 import metis.io.PrintUtils
 
 import std.collection.{ArrayList, HashSet}
+import std.env.getVariable
 import std.fs.{Directory, File, Path, copy, exists}
 import std.process.executeWithOutput
 import std.time.DateTime
@@ -40,13 +41,102 @@ private func telegramMediaToolInt(obj: JsonObject, key: String): Int64 {
     }
 }
 
+private func telegramMediaToolNormalizeAccountId(raw: String): String {
+    let trimmed = raw.trimAscii()
+    if (trimmed.isEmpty()) { "default" } else { trimmed }
+}
+
+private func telegramMediaToolSafeStateSegment(raw: String): String {
+    let trimmed = raw.trimAscii()
+    if (trimmed.isEmpty()) {
+        return "default"
+    }
+    let out = StringBuilder()
+    for (r in trimmed.runes()) {
+        if ((r >= r'a' && r <= r'z') || (r >= r'A' && r <= r'Z') || (r >= r'0' && r <= r'9') || r == r'.' || r == r'_' || r == r'-') {
+            out.append(r)
+        } else {
+            out.append(r'_')
+        }
+    }
+    let normalized = out.toString().trimAscii()
+    if (normalized.isEmpty()) { "default" } else { normalized }
+}
+
+private func telegramMediaToolStatePath(mediaContext: JsonObject, accountId: String): Path {
+    let explicit = telegramMediaToolString(mediaContext, "mediaStatePath")
+    if (!explicit.isEmpty()) {
+        return Path(explicit)
+    }
+    CliConfig.dotDir
+        .join("gateway-telegram")
+        .join("accounts")
+        .join(telegramMediaToolSafeStateSegment(telegramMediaToolNormalizeAccountId(accountId)))
+        .join("media-state.json")
+}
+
+private func telegramMediaToolContextRecords(mediaContext: JsonObject): JsonArray {
+    match (mediaContext.get("records")) {
+        case Some(v) => try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
+        case None => JsonArray([])
+    }
+}
+
+private func telegramMediaToolRecentRecords(mediaContext: JsonObject): JsonArray {
+    let accountId = telegramMediaToolNormalizeAccountId(telegramMediaToolString(mediaContext, "accountId"))
+    let peerId = telegramMediaToolString(mediaContext, "peerId")
+    if (peerId.isEmpty()) {
+        return JsonArray([])
+    }
+    let path = telegramMediaToolStatePath(mediaContext, accountId)
+    if (!exists(path)) {
+        return JsonArray([])
+    }
+    let root = try {
+        JsonValue.fromStr(String.fromUtf8(File.readFrom(path))).asObject()
+    } catch (_e: Exception) {
+        return JsonArray([])
+    }
+    let records = match (root.get("records")) {
+        case Some(v) => try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
+        case None => JsonArray([])
+    }
+    let filtered = ArrayList<JsonObject>()
+    for (item in records.getItems()) {
+        let obj = try { item.asObject() } catch (_e: Exception) { JsonObject() }
+        let recordAccount = telegramMediaToolNormalizeAccountId(telegramMediaToolString(obj, "accountId"))
+        let recordPeer = telegramMediaToolString(obj, "peerId")
+        if (recordAccount == accountId && recordPeer == peerId) {
+            filtered.add(obj)
+        }
+    }
+    let out = JsonArray([])
+    if (filtered.size == 0) {
+        return out
+    }
+    var idx = filtered.size - 1
+    var added: Int64 = 0
+    while (idx >= 0 && added < 20) {
+        let obj = filtered[idx]
+        obj.put("sourceScope", JsonString("recent"))
+        out.add(obj)
+        idx -= 1
+        added += 1
+    }
+    out
+}
+
 private func telegramMediaToolRecords(): JsonArray {
     match (gatewayCurrentToolRuntimeContext()) {
         case Some(ctx) =>
-            match (ctx.mediaContext.get("records")) {
-                case Some(v) => try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
-                case None => JsonArray([])
+            let current = telegramMediaToolContextRecords(ctx.mediaContext)
+            if (current.size() > 0) {
+                return current
             }
+            if (ctx.channelName == "telegram" || ctx.sourceLabel == "telegram" || telegramMediaToolString(ctx.mediaContext, "channel") == "telegram") {
+                return telegramMediaToolRecentRecords(ctx.mediaContext)
+            }
+            JsonArray([])
         case None => JsonArray([])
     }
 }
@@ -57,8 +147,14 @@ private func telegramMediaToolRecordMatches(
     messageId: String,
     relation: String
 ): Bool {
-    if (!mediaId.isEmpty() && telegramMediaToolString(obj, "mediaId") != mediaId) {
-        return false
+    if (!mediaId.isEmpty()) {
+        let idMatch =
+            telegramMediaToolString(obj, "mediaId") == mediaId ||
+            telegramMediaToolString(obj, "fileId") == mediaId ||
+            telegramMediaToolString(obj, "fileUniqueId") == mediaId
+        if (!idMatch) {
+            return false
+        }
     }
     if (!messageId.isEmpty() && telegramMediaToolString(obj, "messageId") != messageId) {
         return false
@@ -153,8 +249,7 @@ private func telegramMediaToolExtensionFromMime(mimeType: String): String {
 private func telegramMediaToolDestinationLooksProtected(raw: String): Bool {
     let value = raw.trimAscii()
     let low = value.toAsciiLower()
-    value.isEmpty() ||
-        value.contains("\u{0}") ||
+    value.contains("\u{0}") ||
         low.contains("/.metis/") ||
         low.endsWith("/metis.json") ||
         low == "metis.json" ||
@@ -167,14 +262,86 @@ private func telegramMediaToolDestinationLooksProtected(raw: String): Bool {
         low.startsWith("/var/db/")
 }
 
-private func telegramMediaToolResolveDestination(destination: String, record: JsonObject): (Bool, Path, String) {
-    let raw = destination.trimAscii()
-    if (telegramMediaToolDestinationLooksProtected(raw)) {
-        return (false, Path(raw), "destination path is protected or empty")
+private func telegramMediaToolLooksLikeImagePlaceholder(raw: String): Bool {
+    let value = raw.trimAscii()
+    let low = value.toAsciiLower()
+    value.isEmpty() ||
+        value == "." ||
+        low == "current" ||
+        low == "default" ||
+        (value.startsWith("[Image #") && value.endsWith("]")) ||
+        (low.startsWith("[image #") && low.endsWith("]"))
+}
+
+private func telegramMediaToolPathInsideOrEqual(path: Path, root: Path): Bool {
+    let pathText = path.toString().trimAscii()
+    let rootText = root.toString().trimAscii()
+    if (pathText.isEmpty() || rootText.isEmpty()) {
+        return false
     }
-    var dest = Path(raw)
-    if (!dest.isAbsolute()) {
-        dest = CliConfig.cwd.join(raw)
+    if (pathText == rootText) {
+        return true
+    }
+    let prefix = if (rootText.endsWith("/")) { rootText } else { rootText + "/" }
+    pathText.startsWith(prefix)
+}
+
+private func telegramMediaToolPathInsideWorkspace(path: Path): Bool {
+    if (telegramMediaToolPathInsideOrEqual(path, CliConfig.cwd)) {
+        return true
+    }
+    match (MetisPaths.projectRoot()) {
+        case Some(root) => telegramMediaToolPathInsideOrEqual(path, root)
+        case None => false
+    }
+}
+
+private func telegramMediaToolArchiveDirForRecord(record: JsonObject): Path {
+    let sourcePath = telegramMediaToolString(record, "localPath")
+    if (!sourcePath.isEmpty()) {
+        return Path(sourcePath).parent
+    }
+    let accountId = telegramMediaToolNormalizeAccountId(telegramMediaToolString(record, "accountId"))
+    CliConfig.dotDir
+        .join("gateway-telegram")
+        .join("accounts")
+        .join(telegramMediaToolSafeStateSegment(accountId))
+        .join("media")
+}
+
+private func telegramMediaToolResolveDestination(destination: String, record: JsonObject): (Bool, Path, String, Bool) {
+    let raw = destination.trimAscii()
+    let sourcePath = telegramMediaToolString(record, "localPath")
+    if (telegramMediaToolLooksLikeImagePlaceholder(raw)) {
+        if (sourcePath.isEmpty()) {
+            return (false, Path(raw), "media resource has no downloaded localPath", false)
+        }
+        return (true, Path(sourcePath), "", false)
+    }
+    if (telegramMediaToolDestinationLooksProtected(raw)) {
+        return (false, Path(raw), "destination path is protected", false)
+    }
+    var dest: Path
+    if (raw.startsWith("~/")) {
+        let home = match (getVariable("HOME")) {
+            case Some(v) => v.trimAscii()
+            case None => ""
+        }
+        if (home.isEmpty()) {
+            return (false, Path(raw), "HOME is not available for ~/ destination", false)
+        }
+        dest = Path(home).join(raw[2..])
+    } else {
+        dest = Path(raw)
+        if (!dest.isAbsolute()) {
+            if (raw.contains("..") || raw.contains("\\")) {
+                return (false, Path(raw), "relative destination is unsafe", false)
+            }
+            dest = telegramMediaToolArchiveDirForRecord(record).join(raw)
+        }
+    }
+    if (telegramMediaToolPathInsideWorkspace(dest)) {
+        return (false, dest, "destination path is inside the Metis workspace; omit destination to keep the Telegram archive path or choose an explicit non-workspace path", false)
     }
     let originalName = telegramMediaToolString(record, "originalFileName")
     let fileName = if (originalName.isEmpty()) { telegramMediaToolString(record, "fileName") } else { originalName }
@@ -187,7 +354,7 @@ private func telegramMediaToolResolveDestination(destination: String, record: Js
     if (!inferredExt.isEmpty()) {
         dest = Path(dest.toString() + inferredExt)
     }
-    (true, dest, "")
+    (true, dest, "", true)
 }
 
 private func telegramMediaToolProviderFromModelRef(modelRef: String): String {
@@ -539,7 +706,7 @@ public class GatewayTelegramMediaToolset {
         this.renderTelegramMediaList()
     }
 
-    public func debugTelegramMediaSaveForTest(destination: String, mediaId: Option<String>, index: Option<Int64>): String {
+    public func debugTelegramMediaSaveForTest(destination: Option<String>, mediaId: Option<String>, index: Option<Int64>): String {
         this.saveTelegramMedia(destination, mediaId, index)
     }
 
@@ -631,7 +798,7 @@ public class GatewayTelegramMediaToolset {
             case None =>
                 out.put("ok", JsonBool(false))
                 out.put("status", JsonString("error"))
-                out.put("error", JsonString("media resource not found in current session turn"))
+                out.put("error", JsonString("media resource not found in current turn or recent same-peer Telegram media"))
                 if (!targetMediaId.isEmpty()) { out.put("mediaId", JsonString(targetMediaId)) }
                 if (!targetMessageId.isEmpty()) { out.put("messageId", JsonString(targetMessageId)) }
                 if (!targetRelation.isEmpty()) { out.put("relation", JsonString(targetRelation)) }
@@ -639,8 +806,11 @@ public class GatewayTelegramMediaToolset {
         out.toJsonString()
     }
 
-    private func saveTelegramMedia(destination: String, mediaId: Option<String>, index: Option<Int64>): String {
-        let targetPathText = destination.trimAscii()
+    private func saveTelegramMedia(destination: Option<String>, mediaId: Option<String>, index: Option<Int64>): String {
+        let targetPathText = match (destination) {
+            case Some(v) => v.trimAscii()
+            case None => ""
+        }
         let targetMediaId = match (mediaId) {
             case Some(v) => v.trimAscii()
             case None => ""
@@ -650,18 +820,12 @@ public class GatewayTelegramMediaToolset {
             case None => 0
         }
         let out = JsonObject()
-        if (targetPathText.isEmpty()) {
-            out.put("ok", JsonBool(false))
-            out.put("status", JsonString("error"))
-            out.put("error", JsonString("destination is required"))
-            return out.toJsonString()
-        }
         let record = match (telegramMediaToolRecordByTarget(targetMediaId, targetIndex)) {
             case Some(v) => v
             case None =>
                 out.put("ok", JsonBool(false))
                 out.put("status", JsonString("error"))
-                out.put("error", JsonString("media resource not found in current session turn"))
+                out.put("error", JsonString("media resource not found in current turn or recent same-peer Telegram media"))
                 return out.toJsonString()
         }
         let sourcePath = telegramMediaToolString(record, "localPath")
@@ -672,7 +836,7 @@ public class GatewayTelegramMediaToolset {
             out.put("mediaId", JsonString(telegramMediaToolString(record, "mediaId")))
             return out.toJsonString()
         }
-        let (allowed, dest, reason) = telegramMediaToolResolveDestination(targetPathText, record)
+        let (allowed, dest, reason, shouldCopy) = telegramMediaToolResolveDestination(targetPathText, record)
         if (!allowed) {
             out.put("ok", JsonBool(false))
             out.put("status", JsonString("denied"))
@@ -680,17 +844,22 @@ public class GatewayTelegramMediaToolset {
             out.put("destination", JsonString(targetPathText))
             return out.toJsonString()
         }
-        let parent = dest.parent
-        if (!exists(parent)) {
-            Directory.create(parent, recursive: true)
+        if (shouldCopy) {
+            let parent = dest.parent
+            if (!exists(parent)) {
+                Directory.create(parent, recursive: true)
+            }
+            copy(Path(sourcePath), to: dest, overwrite: true)
         }
-        copy(Path(sourcePath), to: dest, overwrite: true)
         out.put("ok", JsonBool(true))
         out.put("status", JsonString("saved"))
         out.put("mediaId", JsonString(telegramMediaToolString(record, "mediaId")))
         out.put("mediaKind", JsonString(telegramMediaToolString(record, "mediaKind")))
         out.put("sourcePath", JsonString(sourcePath))
+        out.put("archivePath", JsonString(sourcePath))
         out.put("destination", JsonString(dest.toString()))
+        out.put("copied", JsonBool(shouldCopy))
+        out.put("alreadyArchived", JsonBool(!shouldCopy))
         out.put("savedAtMs", DateTime.now().toUnixTimeStamp().toMilliseconds().toJsonValue())
         out.toJsonString()
     }
@@ -714,7 +883,7 @@ public class GatewayTelegramMediaToolset {
             case None =>
                 out.put("ok", JsonBool(false))
                 out.put("status", JsonString("error"))
-                out.put("error", JsonString("media resource not found in current session turn"))
+                out.put("error", JsonString("media resource not found in current turn or recent same-peer Telegram media"))
                 return out.toJsonString()
         }
         let sourcePath = telegramMediaToolString(record, "localPath")
@@ -768,7 +937,7 @@ public class GatewayTelegramMediaToolset {
             case None =>
                 out.put("ok", JsonBool(false))
                 out.put("status", JsonString("error"))
-                out.put("error", JsonString("media resource not found in current session turn"))
+                out.put("error", JsonString("media resource not found in current turn or recent same-peer Telegram media"))
                 return out.toJsonString()
         }
         let kind = telegramMediaToolString(record, "mediaKind").toAsciiLower()
@@ -846,7 +1015,7 @@ public class GatewayTelegramMediaToolset {
             case None =>
                 out.put("ok", JsonBool(false))
                 out.put("status", JsonString("error"))
-                out.put("error", JsonString("media resource not found in current session turn"))
+                out.put("error", JsonString("media resource not found in current turn or recent same-peer Telegram media"))
                 return out.toJsonString()
         }
         let kind = telegramMediaToolString(record, "mediaKind").toAsciiLower()
@@ -901,7 +1070,7 @@ public class GatewayTelegramMediaToolset {
             case None =>
                 out.put("ok", JsonBool(false))
                 out.put("status", JsonString("error"))
-                out.put("error", JsonString("media resource not found in current session turn"))
+                out.put("error", JsonString("media resource not found in current turn or recent same-peer Telegram media"))
                 return out.toJsonString()
         }
         let kind = telegramMediaToolString(record, "mediaKind").toAsciiLower()
@@ -956,7 +1125,7 @@ public class GatewayTelegramMediaToolset {
             case None =>
                 out.put("ok", JsonBool(false))
                 out.put("status", JsonString("error"))
-                out.put("error", JsonString("media resource not found in current session turn"))
+                out.put("error", JsonString("media resource not found in current turn or recent same-peer Telegram media"))
                 return out.toJsonString()
         }
         let kind = telegramMediaToolString(record, "mediaKind").toAsciiLower()
@@ -1327,14 +1496,14 @@ public class GatewayTelegramMediaToolset {
     }
 
     @tool[
-        description: "Save one Telegram media resource from the current Gateway session turn to a destination path. Select by mediaId or zero-based index; defaults to index 0.",
+        description: "Save one Telegram media resource from the current turn or recent same-peer Telegram media. If destination is omitted or an image placeholder, returns the existing Telegram media archive path. Relative destinations are resolved inside the Telegram media archive, not the workspace. Absolute destinations inside the Metis workspace or protected config paths are denied. Select by mediaId, Telegram fileId/fileUniqueId, or zero-based index; defaults to index 0.",
         parameters: {
-            destination: "Absolute or relative destination file path to write.",
-            mediaId: "Optional mediaId returned by telegram_media_list.",
+            destination: "Optional destination path. Omit to keep and return the existing Telegram media archive path. Relative paths stay inside the Telegram media archive.",
+            mediaId: "Optional mediaId returned by telegram_media_list, or a Telegram fileId/fileUniqueId.",
             index: "Optional zero-based media index. Defaults to 0 when mediaId is omitted."
         }
     ]
-    public func telegram_media_save(destination: String, mediaId: Option<String>, index: Option<Int64>): String {
+    public func telegram_media_save(destination: Option<String>, mediaId: Option<String>, index: Option<Int64>): String {
         PrintUtils.printTool("telegram_media_save", shortMessage: "current")
         let text = this.saveTelegramMedia(destination, mediaId, index)
         PrintUtils.printToolResult(text)
@@ -1342,9 +1511,9 @@ public class GatewayTelegramMediaToolset {
     }
 
     @tool[
-        description: "Get one structured Telegram media resource from the current Gateway session turn. Select by mediaId, messageId, relation, or zero-based index.",
+        description: "Get one structured Telegram media resource from the current turn or recent same-peer Telegram media. Select by mediaId, Telegram fileId/fileUniqueId, messageId, relation, or zero-based index.",
         parameters: {
-            mediaId: "Optional mediaId returned by telegram_media_list.",
+            mediaId: "Optional mediaId returned by telegram_media_list, or a Telegram fileId/fileUniqueId.",
             index: "Optional zero-based media index. Defaults to 0 when other selectors are omitted.",
             messageId: "Optional Telegram source message id.",
             relation: "Optional media relation, such as current or replyTarget."
@@ -1358,9 +1527,9 @@ public class GatewayTelegramMediaToolset {
     }
 
     @tool[
-        description: "Read a text-like Telegram media file from the current Gateway session turn. Binary files return a readable=false result with a clear reason.",
+        description: "Read a text-like Telegram media file from the current turn or recent same-peer Telegram media. Binary files return a readable=false result with a clear reason.",
         parameters: {
-            mediaId: "Optional mediaId returned by telegram_media_list.",
+            mediaId: "Optional mediaId returned by telegram_media_list, or a Telegram fileId/fileUniqueId.",
             index: "Optional zero-based media index. Defaults to 0 when mediaId is omitted.",
             maxBytes: "Optional maximum preview bytes/chars. Defaults to 8192."
         }
@@ -1373,9 +1542,9 @@ public class GatewayTelegramMediaToolset {
     }
 
     @tool[
-        description: "Analyze an image-like Telegram media resource from the current turn. Uses configured/mock vision sidecar when available; otherwise returns unsupported instead of guessing.",
+        description: "Analyze an image-like Telegram media resource from the current turn or recent same-peer Telegram media. Uses configured/mock vision sidecar when available; otherwise returns unsupported instead of guessing.",
         parameters: {
-            mediaId: "Optional mediaId returned by telegram_media_list.",
+            mediaId: "Optional mediaId returned by telegram_media_list, or a Telegram fileId/fileUniqueId.",
             index: "Optional zero-based media index.",
             prompt: "Optional analysis prompt."
         }
@@ -1388,9 +1557,9 @@ public class GatewayTelegramMediaToolset {
     }
 
     @tool[
-        description: "Transcribe a voice/audio Telegram media resource from the current turn. Reads transcript sidecar when present; otherwise returns ASRStatus=not_configured.",
+        description: "Transcribe a voice/audio Telegram media resource from the current turn or recent same-peer Telegram media. Reads transcript sidecar when present; otherwise returns ASRStatus=not_configured.",
         parameters: {
-            mediaId: "Optional mediaId returned by telegram_media_list.",
+            mediaId: "Optional mediaId returned by telegram_media_list, or a Telegram fileId/fileUniqueId.",
             index: "Optional zero-based media index."
         }
     ]
@@ -1402,9 +1571,9 @@ public class GatewayTelegramMediaToolset {
     }
 
     @tool[
-        description: "Describe a Telegram video/video-note media resource from the current turn. Reads configured companion/runtime output when present; otherwise returns videoUnderstandingStatus=not_configured.",
+        description: "Describe a Telegram video/video-note media resource from the current turn or recent same-peer Telegram media. Reads configured companion/runtime output when present; otherwise returns videoUnderstandingStatus=not_configured.",
         parameters: {
-            mediaId: "Optional mediaId returned by telegram_media_list.",
+            mediaId: "Optional mediaId returned by telegram_media_list, or a Telegram fileId/fileUniqueId.",
             index: "Optional zero-based media index."
         }
     ]
@@ -1416,9 +1585,9 @@ public class GatewayTelegramMediaToolset {
     }
 
     @tool[
-        description: "Extract text/preview from a Telegram document media resource. Text-like files are read directly; extracted companion files are used when available; unsupported documents return metadata_only.",
+        description: "Extract text/preview from a Telegram document media resource from the current turn or recent same-peer Telegram media. Text-like files are read directly; extracted companion files are used when available; unsupported documents return metadata_only.",
         parameters: {
-            mediaId: "Optional mediaId returned by telegram_media_list.",
+            mediaId: "Optional mediaId returned by telegram_media_list, or a Telegram fileId/fileUniqueId.",
             index: "Optional zero-based media index.",
             maxBytes: "Optional maximum preview bytes/chars. Defaults to 8192."
         }

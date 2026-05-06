@@ -23,6 +23,8 @@ public class TelegramTransportRequest {
     public let contentType: String
     public let proxy: String
     public let timeoutSeconds: Int64
+    public let autoSelectFamily: Bool
+    public let dnsResultOrder: String
 
     public init(
         method: String,
@@ -33,7 +35,9 @@ public class TelegramTransportRequest {
         bodyBytes!: Array<Byte> = [],
         contentType!: String = "",
         proxy!: String = "",
-        timeoutSeconds!: Int64 = 30
+        timeoutSeconds!: Int64 = 30,
+        autoSelectFamily!: Bool = true,
+        dnsResultOrder!: String = "ipv4first"
     ) {
         this.method = method
         this.url = url
@@ -44,6 +48,8 @@ public class TelegramTransportRequest {
         this.contentType = contentType
         this.proxy = proxy
         this.timeoutSeconds = timeoutSeconds
+        this.autoSelectFamily = autoSelectFamily
+        this.dnsResultOrder = dnsResultOrder
     }
 }
 
@@ -109,17 +115,23 @@ public class TelegramTransport {
     private let timeoutSeconds: Int64
     private let insecureSkipTlsVerify: Bool
     private let dangerouslyAllowPrivateNetwork: Bool
+    private let autoSelectFamily: Bool
+    private let dnsResultOrder: String
 
     public init(
         proxy!: String = "",
         timeoutSeconds!: Int64 = 30,
         insecureSkipTlsVerify!: Bool = false,
-        dangerouslyAllowPrivateNetwork!: Bool = false
+        dangerouslyAllowPrivateNetwork!: Bool = false,
+        autoSelectFamily!: Bool = true,
+        dnsResultOrder!: String = "ipv4first"
     ) {
         this.proxy = proxy.trimAscii()
         this.timeoutSeconds = if (timeoutSeconds > 0) { timeoutSeconds } else { 30 }
         this.insecureSkipTlsVerify = insecureSkipTlsVerify
         this.dangerouslyAllowPrivateNetwork = dangerouslyAllowPrivateNetwork
+        this.autoSelectFamily = autoSelectFamily
+        this.dnsResultOrder = if (dnsResultOrder.trimAscii().isEmpty()) { "ipv4first" } else { dnsResultOrder.trimAscii().toAsciiLower() }
     }
 
     public func get(url: String, accept!: String = "application/json", context!: String = "get"): TelegramTransportResponse {
@@ -129,7 +141,9 @@ public class TelegramTransport {
             context: context,
             accept: accept,
             proxy: this.proxy,
-            timeoutSeconds: this.timeoutSeconds
+            timeoutSeconds: this.timeoutSeconds,
+            autoSelectFamily: this.autoSelectFamily,
+            dnsResultOrder: this.dnsResultOrder
         )
         match (telegramTransportRunnerOverride) {
             case Some(runner) => return runner(request)
@@ -149,7 +163,9 @@ public class TelegramTransport {
             body: body.toJsonString(),
             contentType: "application/json; charset=utf-8",
             proxy: this.proxy,
-            timeoutSeconds: this.timeoutSeconds
+            timeoutSeconds: this.timeoutSeconds,
+            autoSelectFamily: this.autoSelectFamily,
+            dnsResultOrder: this.dnsResultOrder
         )
         match (telegramTransportRunnerOverride) {
             case Some(runner) => return runner(request)
@@ -188,7 +204,9 @@ public class TelegramTransport {
             bodyBytes: bodyBytes,
             contentType: "multipart/form-data; boundary=${boundary}",
             proxy: this.proxy,
-            timeoutSeconds: this.timeoutSeconds
+            timeoutSeconds: this.timeoutSeconds,
+            autoSelectFamily: this.autoSelectFamily,
+            dnsResultOrder: this.dnsResultOrder
         )
         match (telegramTransportRunnerOverride) {
             case Some(runner) => return runner(request)

@@ -4,6 +4,7 @@ import metis.core.{GatewayToolRuntimeContext, gatewayWithToolRuntimeContext}
 import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager}
 import magic.core.message.Message
 import magic.core.model.{AsyncChatResponse, ChatModel, ChatRequest, ChatResponse}
+import magic.jsonable.*
 import magic.model.ModelManager
 
 import std.env.{getVariable, setVariable}
@@ -97,6 +98,49 @@ public class GatewayTelegramMediaToolsetTest {
         media
     }
 
+    private func telegramScopeContext(accountId: String, peerId: String, messageId: String): JsonObject {
+        let media = JsonObject()
+        media.put("channel", JsonString("telegram"))
+        media.put("accountId", JsonString(accountId))
+        media.put("peerId", JsonString(peerId))
+        media.put("messageId", JsonString(messageId))
+        media
+    }
+
+    private func recentRecord(localPath: String, accountId: String, peerId: String, messageId: String, mediaId: String, fileId: String): JsonObject {
+        let record = JsonObject()
+        record.put("mediaId", JsonString(mediaId))
+        record.put("channel", JsonString("telegram"))
+        record.put("accountId", JsonString(accountId))
+        record.put("peerId", JsonString(peerId))
+        record.put("messageId", JsonString(messageId))
+        record.put("relation", JsonString("current"))
+        record.put("mediaKind", JsonString("photo"))
+        record.put("mimeType", JsonString("image/jpeg"))
+        record.put("originalFileName", JsonString("photo.jpg"))
+        record.put("fileName", JsonString("photo.jpg"))
+        record.put("fileId", JsonString(fileId))
+        record.put("fileUniqueId", JsonString("unique-${fileId}"))
+        record.put("localPath", JsonString(localPath))
+        record.put("downloaded", JsonBool(true))
+        record.put("persistedAtMs", DateTime.now().toUnixTimeStamp().toMilliseconds().toJsonValue())
+        record
+    }
+
+    private func writeTelegramMediaState(accountId: String, records: JsonArray): Unit {
+        let accountDir = CliConfig.dotDir.join("gateway-telegram").join("accounts").join(accountId)
+        Directory.create(accountDir, recursive: true)
+        let root = JsonObject()
+        root.put("accountId", JsonString(accountId))
+        root.put("records", records)
+        if (records.size() > 0) {
+            root.put("lastMedia", records[records.size() - 1])
+        } else {
+            root.put("lastMedia", JsonObject())
+        }
+        File.writeTo(accountDir.join("media-state.json"), root.toJsonString().toArray())
+    }
+
     @TestCase
     public func telegramMediaListReadsCurrentRuntimeContext(): Unit {
         let toolset = GatewayTelegramMediaToolset()
@@ -112,6 +156,81 @@ public class GatewayTelegramMediaToolsetTest {
     }
 
     @TestCase
+    public func telegramMediaListFallsBackToRecentSamePeerMediaState(): Unit {
+        this.withTelegramMediaToolsetConfigHome({ =>
+            let source = CliConfig.dotDir.join("recent.jpg")
+            File.writeTo(source, "recent-image".toArray())
+            let records = JsonArray([])
+            records.add(this.recentRecord(source.toString(), "default", "user:100", "101", "media-old", "file-old"))
+            records.add(this.recentRecord("/tmp/other-peer.jpg", "default", "user:200", "102", "media-other", "file-other"))
+            this.writeTelegramMediaState("default", records)
+
+            let toolset = GatewayTelegramMediaToolset()
+            let out = gatewayWithToolRuntimeContext(
+                GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:100", mediaContext: this.telegramScopeContext("default", "user:100", "202")),
+                { => toolset.debugTelegramMediaListForTest() }
+            )
+            let json = JsonValue.fromStr(out).asObject()
+            @Expect(json.get("count").getOrThrow().asInt().getValue(), 1)
+            let first = json.get("records").getOrThrow().asArray()[0].asObject()
+            @Expect(first.get("mediaId").getOrThrow().asString().getValue(), "media-old")
+            @Expect(first.get("sourceScope").getOrThrow().asString().getValue(), "recent")
+            @Expect(first.get("localPath").getOrThrow().asString().getValue(), source.toString())
+        })
+    }
+
+    @TestCase
+    public func telegramMediaSaveFindsRecentMediaByTelegramFileId(): Unit {
+        this.withTelegramMediaToolsetConfigHome({ =>
+            let source = CliConfig.dotDir.join("recent-save.jpg")
+            let dest = CliConfig.dotDir.join("saved").join("recent-save.jpg")
+            File.writeTo(source, "recent-save-image".toArray())
+            let records = JsonArray([])
+            records.add(this.recentRecord(source.toString(), "default", "user:100", "101", "media-recent", "telegram-file-id"))
+            this.writeTelegramMediaState("default", records)
+
+            let toolset = GatewayTelegramMediaToolset()
+            let out = gatewayWithToolRuntimeContext(
+                GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:100", mediaContext: this.telegramScopeContext("default", "user:100", "202")),
+                { => toolset.debugTelegramMediaSaveForTest(Some(dest.toString()), Some("telegram-file-id"), None<Int64>) }
+            )
+            let json = JsonValue.fromStr(out).asObject()
+            @Expect(json.get("status").getOrThrow().asString().getValue(), "saved")
+            @Expect(json.get("mediaId").getOrThrow().asString().getValue(), "media-recent")
+            @Expect(exists(dest), true)
+            @Expect(String.fromUtf8(File.readFrom(dest)), "recent-save-image")
+        })
+    }
+
+    @TestCase
+    public func telegramRecentMediaFallbackDoesNotCrossAccountOrPeer(): Unit {
+        this.withTelegramMediaToolsetConfigHome({ =>
+            let defaultSource = CliConfig.dotDir.join("default.jpg")
+            let workSource = CliConfig.dotDir.join("work.jpg")
+            File.writeTo(defaultSource, "default-image".toArray())
+            File.writeTo(workSource, "work-image".toArray())
+            let defaultRecords = JsonArray([])
+            defaultRecords.add(this.recentRecord(defaultSource.toString(), "default", "user:100", "101", "media-default", "file-default"))
+            defaultRecords.add(this.recentRecord("/tmp/other-peer.jpg", "default", "user:200", "102", "media-other", "file-other"))
+            this.writeTelegramMediaState("default", defaultRecords)
+            let workRecords = JsonArray([])
+            workRecords.add(this.recentRecord(workSource.toString(), "work", "user:100", "201", "media-work", "file-work"))
+            this.writeTelegramMediaState("work", workRecords)
+
+            let toolset = GatewayTelegramMediaToolset()
+            let out = gatewayWithToolRuntimeContext(
+                GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:100", mediaContext: this.telegramScopeContext("work", "user:100", "202")),
+                { => toolset.debugTelegramMediaListForTest() }
+            )
+            let json = JsonValue.fromStr(out).asObject()
+            @Expect(json.get("count").getOrThrow().asInt().getValue(), 1)
+            let first = json.get("records").getOrThrow().asArray()[0].asObject()
+            @Expect(first.get("mediaId").getOrThrow().asString().getValue(), "media-work")
+            @Expect(first.get("accountId").getOrThrow().asString().getValue(), "work")
+        })
+    }
+
+    @TestCase
     public func telegramMediaSaveCopiesDownloadedCurrentMedia(): Unit {
         let root = Path("/tmp/metis-telegram-media-tool-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
         Directory.create(root, recursive: true)
@@ -122,7 +241,7 @@ public class GatewayTelegramMediaToolsetTest {
             let toolset = GatewayTelegramMediaToolset()
             let out = gatewayWithToolRuntimeContext(
                 GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:1", mediaContext: this.mediaContext(source.toString())),
-                { => toolset.debugTelegramMediaSaveForTest(dest.toString(), None<String>, None<Int64>) }
+                { => toolset.debugTelegramMediaSaveForTest(Some(dest.toString()), None<String>, None<Int64>) }
             )
             let json = JsonValue.fromStr(out).asObject()
             @Expect(json.get("status").getOrThrow().asString().getValue(), "saved")
@@ -131,6 +250,103 @@ public class GatewayTelegramMediaToolsetTest {
         } finally {
             try { remove(root, recursive: true) } catch (_e: Exception) { () }
         }
+    }
+
+    @TestCase
+    public func telegramMediaSaveWithoutDestinationKeepsTelegramArchivePath(): Unit {
+        this.withTelegramMediaToolsetConfigHome({ =>
+            let stamp = DateTime.now().toUnixTimeStamp().toMilliseconds().toString()
+            let archiveDir = CliConfig.dotDir.join("gateway-telegram").join("accounts").join("default").join("media").join("2026-05-07").join("user-100")
+            Directory.create(archiveDir, recursive: true)
+            let source = archiveDir.join("archive-default-${stamp}.jpg")
+            File.writeTo(source, "archive-image".toArray())
+            let workspaceTarget = CliConfig.cwd.join("archive-default-${stamp}.jpg")
+
+            let toolset = GatewayTelegramMediaToolset()
+            let out = gatewayWithToolRuntimeContext(
+                GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:100", mediaContext: this.mediaContext(source.toString())),
+                { => toolset.debugTelegramMediaSaveForTest(None<String>, None<String>, None<Int64>) }
+            )
+            let json = JsonValue.fromStr(out).asObject()
+            @Expect(json.get("status").getOrThrow().asString().getValue(), "saved")
+            @Expect(json.get("destination").getOrThrow().asString().getValue(), source.toString())
+            @Expect(json.get("archivePath").getOrThrow().asString().getValue(), source.toString())
+            @Expect(json.get("copied").getOrThrow().asBool().getValue(), false)
+            @Expect(json.get("alreadyArchived").getOrThrow().asBool().getValue(), true)
+            @Expect(exists(source), true)
+            @Expect(exists(workspaceTarget), false)
+        })
+    }
+
+    @TestCase
+    public func telegramMediaSaveRelativeDestinationStaysInsideTelegramArchive(): Unit {
+        this.withTelegramMediaToolsetConfigHome({ =>
+            let stamp = DateTime.now().toUnixTimeStamp().toMilliseconds().toString()
+            let archiveDir = CliConfig.dotDir.join("gateway-telegram").join("accounts").join("default").join("media").join("2026-05-07").join("user-100")
+            Directory.create(archiveDir, recursive: true)
+            let source = archiveDir.join("archive-relative-source-${stamp}.jpg")
+            File.writeTo(source, "archive-relative-image".toArray())
+            let relativeName = "archive-relative-copy-${stamp}.jpg"
+            let expectedDest = archiveDir.join(relativeName)
+            let workspaceTarget = CliConfig.cwd.join(relativeName)
+
+            let toolset = GatewayTelegramMediaToolset()
+            let out = gatewayWithToolRuntimeContext(
+                GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:100", mediaContext: this.mediaContext(source.toString())),
+                { => toolset.debugTelegramMediaSaveForTest(Some(relativeName), None<String>, None<Int64>) }
+            )
+            let json = JsonValue.fromStr(out).asObject()
+            @Expect(json.get("status").getOrThrow().asString().getValue(), "saved")
+            @Expect(json.get("destination").getOrThrow().asString().getValue(), expectedDest.toString())
+            @Expect(json.get("copied").getOrThrow().asBool().getValue(), true)
+            @Expect(exists(expectedDest), true)
+            @Expect(String.fromUtf8(File.readFrom(expectedDest)), "archive-relative-image")
+            @Expect(exists(workspaceTarget), false)
+        })
+    }
+
+    @TestCase
+    public func telegramMediaSaveImagePlaceholderKeepsTelegramArchivePath(): Unit {
+        this.withTelegramMediaToolsetConfigHome({ =>
+            let stamp = DateTime.now().toUnixTimeStamp().toMilliseconds().toString()
+            let archiveDir = CliConfig.dotDir.join("gateway-telegram").join("accounts").join("default").join("media").join("2026-05-07").join("user-100")
+            Directory.create(archiveDir, recursive: true)
+            let source = archiveDir.join("archive-placeholder-${stamp}.jpg")
+            File.writeTo(source, "archive-placeholder-image".toArray())
+
+            let toolset = GatewayTelegramMediaToolset()
+            let out = gatewayWithToolRuntimeContext(
+                GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:100", mediaContext: this.mediaContext(source.toString())),
+                { => toolset.debugTelegramMediaSaveForTest(Some("[Image #1]"), None<String>, None<Int64>) }
+            )
+            let json = JsonValue.fromStr(out).asObject()
+            @Expect(json.get("status").getOrThrow().asString().getValue(), "saved")
+            @Expect(json.get("destination").getOrThrow().asString().getValue(), source.toString())
+            @Expect(json.get("copied").getOrThrow().asBool().getValue(), false)
+            @Expect(json.get("alreadyArchived").getOrThrow().asBool().getValue(), true)
+        })
+    }
+
+    @TestCase
+    public func telegramMediaSaveRejectsMetisWorkspaceDestination(): Unit {
+        this.withTelegramMediaToolsetConfigHome({ =>
+            let stamp = DateTime.now().toUnixTimeStamp().toMilliseconds().toString()
+            let archiveDir = CliConfig.dotDir.join("gateway-telegram").join("accounts").join("default").join("media").join("2026-05-07").join("user-100")
+            Directory.create(archiveDir, recursive: true)
+            let source = archiveDir.join("archive-workspace-denied-${stamp}.jpg")
+            File.writeTo(source, "archive-workspace-image".toArray())
+            let workspaceDest = CliConfig.cwd.join("telegram-media-save-denied-${stamp}.jpg")
+
+            let toolset = GatewayTelegramMediaToolset()
+            let out = gatewayWithToolRuntimeContext(
+                GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:100", mediaContext: this.mediaContext(source.toString())),
+                { => toolset.debugTelegramMediaSaveForTest(Some(workspaceDest.toString()), None<String>, None<Int64>) }
+            )
+            let json = JsonValue.fromStr(out).asObject()
+            @Expect(json.get("status").getOrThrow().asString().getValue(), "denied")
+            @Expect(json.get("error").getOrThrow().asString().getValue().contains("Metis workspace"), true)
+            @Expect(exists(workspaceDest), false)
+        })
     }
 
     @TestCase
@@ -206,7 +422,7 @@ public class GatewayTelegramMediaToolsetTest {
             let toolset = GatewayTelegramMediaToolset()
             let out = gatewayWithToolRuntimeContext(
                 GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:1", mediaContext: this.mediaContext(source.toString())),
-                { => toolset.debugTelegramMediaSaveForTest("/Users/test/.metis/metis.json", None<String>, None<Int64>) }
+                { => toolset.debugTelegramMediaSaveForTest(Some("/Users/test/.metis/metis.json"), None<String>, None<Int64>) }
             )
             let json = JsonValue.fromStr(out).asObject()
             @Expect(json.get("status").getOrThrow().asString().getValue(), "denied")

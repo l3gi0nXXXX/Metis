@@ -542,6 +542,7 @@ private func gatewayTelegramChannelJson(user: GatewayUserSettings): JsonObject {
     result.put("reactionNotifications", JsonString(user.telegram.reactionNotifications))
     result.put("reactionLevel", JsonString(user.telegram.reactionLevel))
     result.put("ackReaction", JsonString(user.telegram.ackReaction))
+    result.put("removeAckAfterReply", user.telegram.removeAckAfterReply.toJsonValue())
     result.put("configured", (!user.telegram.botToken.trimAscii().isEmpty() || !user.telegram.tokenFile.trimAscii().isEmpty()).toJsonValue())
     let actions = JsonObject()
     actions.put("sendMessage", user.telegram.actions.sendMessage.toJsonValue())
@@ -815,6 +816,7 @@ private func gatewayTelegramRuntimeJson(user: GatewayUserSettings, liveProbe!: B
     out.put("reactionNotifications", JsonString(user.telegram.reactionNotifications))
     out.put("reactionLevel", JsonString(user.telegram.reactionLevel))
     out.put("ackReaction", JsonString(user.telegram.ackReaction))
+    out.put("removeAckAfterReply", user.telegram.removeAckAfterReply.toJsonValue())
     out.put("allowedUpdatesAuto", true.toJsonValue())
     let allowed = JsonArray([])
     for (kind in ["message", "edited_message", "channel_post", "edited_channel_post"]) {
