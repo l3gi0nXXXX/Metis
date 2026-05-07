@@ -250,6 +250,7 @@ function normalizeIntent(value) {
     text: String(value.text ?? value.message ?? ""),
     targetMessageId: String(value.targetMessageId ?? value.messageId ?? ""),
     reason: String(value.reason ?? ""),
+    ...(Array.isArray(value.buttons) ? { buttons: value.buttons } : {}),
   };
 }
 

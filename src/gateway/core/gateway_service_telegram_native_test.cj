@@ -7,7 +7,8 @@ import magic.jsonable.*
 
 import std.collection.{ArrayList, HashMap}
 import std.env.setVariable
-import std.fs.{Directory, Path, remove}
+import std.fs.{Directory, File, Path, remove}
+import std.sync.Mutex
 import std.time.DateTime
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
@@ -79,6 +80,8 @@ private class GatewayTelegramSidecarMethodRecorder {
     }
 }
 
+private let gatewayTelegramNativeTestLock: Mutex = Mutex()
+
 private func gatewayTelegramNativeTestConfigRoot(): JsonObject {
     let root = JsonObject()
     let agents = JsonObject()
@@ -100,21 +103,23 @@ private func gatewayTelegramNativeTestConfigRoot(): JsonObject {
 }
 
 private func withGatewayTelegramNativeTestHome<T>(block: () -> T): T {
-    let testHome = "/tmp/metis-gateway-telegram-native-test-home"
-    try { remove(Path(testHome), recursive: true) } catch (_: Exception) { () }
-    Directory.create(testHome, recursive: true)
-    setVariable("METIS_HOME", testHome)
-    MetisConfigManager.invalidate()
-    CliSettingManager.invalidate()
-    MetisConfigManager.writeRoot(gatewayTelegramNativeTestConfigRoot())
-    CliSettingManager.applyPersistedFieldsToCliConfig()
-    try {
-        return block()
-    } finally {
-        setGatewayOpenClawPluginSidecarRunnerForTest(None)
+    synchronized(gatewayTelegramNativeTestLock) {
+        let testHome = "/tmp/metis-gateway-telegram-native-test-home"
         try { remove(Path(testHome), recursive: true) } catch (_: Exception) { () }
+        Directory.create(testHome, recursive: true)
+        setVariable("METIS_HOME", testHome)
         MetisConfigManager.invalidate()
         CliSettingManager.invalidate()
+        MetisConfigManager.writeRoot(gatewayTelegramNativeTestConfigRoot())
+        CliSettingManager.applyPersistedFieldsToCliConfig()
+        try {
+            return block()
+        } finally {
+            setGatewayOpenClawPluginSidecarRunnerForTest(None)
+            try { remove(Path(testHome), recursive: true) } catch (_: Exception) { () }
+            MetisConfigManager.invalidate()
+            CliSettingManager.invalidate()
+        }
     }
 }
 
@@ -199,6 +204,27 @@ public class GatewayServiceTelegramNativeTest {
     }
 
     @TestCase
+    public func t44ModelCallbackHonorsTelegramConfigWritesGate(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["tg:8734062810"]
+            user.telegram.configWrites = false
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("[telegram-callback]\nid=cb-configwrites\nmessageId=1\ndata=models:set:qwen:qwen3.5-plus\nby=8734062810")
+            service.processOnce()
+
+            @Expect(adapter.sentText(0).contains("configWrites is disabled"), true)
+            let updated = CliSettingManager.readGatewaySettings()
+            @Expect(updated.channelModels.get("telegram:telegram:direct:8734062810") ?? "", "")
+        }
+    }
+
+    @TestCase
     public func modelCallbackRejectsUnauthorizedSenderBeforeMutation(): Unit {
         withGatewayTelegramNativeTestHome {
             var user = GatewayUserSettings()
@@ -276,6 +302,10 @@ public class GatewayServiceTelegramNativeTest {
                 out.put("matched", (method == "interactive.dispatch").toJsonValue())
                 if (method == "interactive.dispatch") {
                     @Expect(payload.get("data").getOrThrow().asString().getValue(), "plugin:demo:run")
+                    @Expect(payload.get("callbackId").getOrThrow().asString().getValue(), "cb-plugin")
+                    @Expect(payload.get("callbackMessage").getOrThrow().asObject().get("messageId").getOrThrow().asString().getValue(), "77")
+                    @Expect(payload.get("auth").getOrThrow().asObject().get("isAuthorizedSender").getOrThrow().asBool().getValue(), true)
+                    @Expect(payload.get("isForum").getOrThrow().asBool().getValue(), false)
                     let intents = JsonArray([])
                     let reply = JsonObject()
                     reply.put("type", JsonString("reply"))
@@ -478,11 +508,21 @@ public class GatewayServiceTelegramNativeTest {
                 out.put("matched", (method == "interactive.dispatch").toJsonValue())
                 if (method == "interactive.dispatch") {
                     let intents = JsonArray([])
-                    for ((kind, text) in [("edit", "edited"), ("clear-buttons", ""), ("delete", "")]) {
+                    for ((kind, text) in [("edit", "edited"), ("edit-buttons", ""), ("clear-buttons", ""), ("delete", "")]) {
                         let intent = JsonObject()
                         intent.put("type", JsonString(kind))
                         if (!text.isEmpty()) {
                             intent.put("text", JsonString(text))
+                        }
+                        if (kind == "edit-buttons") {
+                            let rows = JsonArray([])
+                            let row = JsonArray([])
+                            let button = JsonObject()
+                            button.put("text", JsonString("OK"))
+                            button.put("callback_data", JsonString("plugin:demo:ok"))
+                            row.add(button)
+                            rows.add(row)
+                            intent.put("buttons", rows)
                         }
                         intents.add(intent)
                     }
@@ -502,8 +542,78 @@ public class GatewayServiceTelegramNativeTest {
             service.processOnce()
 
             @Expect(adapter.sentText(0), "[edit]\nedited")
-            @Expect(adapter.sentText(1), "[clear-buttons]")
-            @Expect(adapter.sentText(2), "[delete]")
+            @Expect(adapter.sentText(1).contains("[edit-buttons]"), true)
+            @Expect(adapter.sentText(1).contains("button=OK|callback:plugin:demo:ok"), true)
+            @Expect(adapter.sentText(2), "[clear-buttons]")
+            @Expect(adapter.sentText(3), "[delete]")
+        }
+    }
+
+    @TestCase
+    public func t44OpenClawPluginSidecarLoadsLocalPluginAndDispatchesRuntimeFacets(): Unit {
+        withGatewayTelegramNativeTestHome {
+            let root = Path("/tmp/metis-openclaw-plugin-sidecar-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+            let pluginRoot = root.join("demo-plugin")
+            Directory.create(pluginRoot, recursive: true)
+            File.writeTo(
+                pluginRoot.join("package.json"),
+                "{\"name\":\"demo-openclaw-plugin\",\"type\":\"module\",\"main\":\"index.mjs\"}".toArray()
+            )
+            File.writeTo(
+                pluginRoot.join("index.mjs"),
+                (
+                    "export default function(api) {\n" +
+                    "  api.commands.register({ command: 'demo', description: 'Demo command' }, async () => ({ type: 'reply', text: 'command ok' }));\n" +
+                    "  api.interactive.register({ namespace: 'demo', channel: 'telegram' }, async () => ({ intents: [{ type: 'reply', text: 'interactive ok', buttons: [[{ text: 'OK', callback_data: 'plugin:demo:ok' }]] }] }));\n" +
+                    "  api.approvals.register({ namespace: 'demo', channel: 'telegram' }, async (ctx) => ({ type: 'reply', text: 'approval ' + ctx.decision }));\n" +
+                    "  api.hooks.message_sending(async (ctx) => ({ text: '[hooked] ' + ctx.text }));\n" +
+                    "}\n"
+                ).toArray()
+            )
+
+            try {
+                var user = GatewayUserSettings()
+                let plugins = JsonArray([])
+                plugins.add(JsonString(pluginRoot.toString()))
+                let compat = JsonObject()
+                compat.put("enabled", true.toJsonValue())
+                compat.put("scriptPath", JsonString("scripts/openclaw-plugin-sidecar.mjs"))
+                compat.put("plugins", plugins)
+                let extra = JsonObject()
+                extra.put("openclawPluginCompatibility", compat)
+                user.channelsExtra = Some(extra)
+
+                let health = gatewayOpenClawPluginSidecarInvoke(user, "lifecycle.health", JsonObject())
+                @Expect(health.get("ok").getOrThrow().asBool().getValue(), true)
+                @Expect(health.get("pluginCount").getOrThrow().asInt().getValue(), 1)
+
+                let commands = gatewayOpenClawPluginSidecarInvoke(user, "commands.list", JsonObject())
+                let commandRows = commands.get("commands").getOrThrow().asArray()
+                @Expect(commandRows.size(), 1)
+                @Expect(commandRows[0].asObject().get("command").getOrThrow().asString().getValue(), "demo")
+
+                let callbackPayload = JsonObject()
+                callbackPayload.put("data", JsonString("plugin:demo:ok"))
+                let callback = gatewayOpenClawPluginSidecarInvoke(user, "interactive.dispatch", callbackPayload)
+                @Expect(callback.get("matched").getOrThrow().asBool().getValue(), true)
+                let callbackIntent = callback.get("intents").getOrThrow().asArray()[0].asObject()
+                @Expect(callbackIntent.get("text").getOrThrow().asString().getValue(), "interactive ok")
+                @Expect(callbackIntent.get("buttons").getOrThrow().asArray().size(), 1)
+
+                let approvalPayload = JsonObject()
+                approvalPayload.put("data", JsonString("plugin-approval:demo:allow"))
+                let approval = gatewayOpenClawPluginSidecarInvoke(user, "approval.dispatch", approvalPayload)
+                @Expect(approval.get("matched").getOrThrow().asBool().getValue(), true)
+                @Expect(approval.get("intents").getOrThrow().asArray()[0].asObject().get("text").getOrThrow().asString().getValue(), "approval allow")
+
+                let hookPayload = JsonObject()
+                hookPayload.put("channel", JsonString("telegram"))
+                hookPayload.put("text", JsonString("hello"))
+                let hook = gatewayOpenClawPluginSidecarInvoke(user, "hook.message_sending", hookPayload)
+                @Expect(hook.get("text").getOrThrow().asString().getValue(), "[hooked] hello")
+            } finally {
+                try { remove(root, recursive: true) } catch (_e: Exception) { () }
+            }
         }
     }
 

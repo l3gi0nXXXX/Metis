@@ -1,6 +1,6 @@
 package metis.gateway.channels.telegram
 
-import metis.core.{GatewayMediaGroupItem, gatewayMediaTranscribeAudioPathForRuntime, parseGatewayAudioParts, parseGatewayChatAction, parseGatewayDocumentParts, parseGatewayEditMediaParts, parseGatewayEditText, parseGatewayInlineKeyboardParts, parseGatewayMediaGroupItems, parseGatewayPhotoParts, parseGatewayPinAction, parseGatewayReactionRemove, parseGatewayReactionToken, parseGatewayStickerFileId, parseGatewayTopicCreateText, parseGatewayTopicEditText, parseGatewayVideoNoteFileId, parseGatewayVideoParts, parseGatewayVoiceParts}
+import metis.core.{GatewayMediaGroupItem, gatewayMediaTranscribeAudioPathForRuntime, parseGatewayAudioParts, parseGatewayChatAction, parseGatewayDocumentParts, parseGatewayEditButtonsParts, parseGatewayEditMediaParts, parseGatewayEditText, parseGatewayInlineKeyboardParts, parseGatewayMediaGroupItems, parseGatewayPhotoParts, parseGatewayPinAction, parseGatewayReactionRemove, parseGatewayReactionToken, parseGatewayStickerFileId, parseGatewayTopicCreateText, parseGatewayTopicEditText, parseGatewayVideoNoteFileId, parseGatewayVideoParts, parseGatewayVoiceParts}
 import metis.gateway.core.{ChannelAdapter, gatewayOpenClawPluginSidecarCommandCatalogForMenu}
 import metis.gateway.model.*
 import metis.io.PrintUtils
@@ -11,7 +11,7 @@ import magic.jsonable.*
 
 import std.collection.{ArrayList, HashMap, HashSet}
 import std.convert.Parsable
-import std.fs.{Directory, File, Path, canonicalize, exists}
+import std.fs.{Directory, File, FileInfo, Path, canonicalize, exists}
 import std.sync.Mutex
 import std.time.*
 import stdx.encoding.json.*
@@ -581,6 +581,10 @@ public class TelegramAdapter <: ChannelAdapter {
                 this.lastSendError = "telegram clear-buttons action requires editMessage action"
                 return ""
             }
+            if (this.payloadIsEditButtons(payload) && !this.config.actions.editMessage) {
+                this.lastSendError = "telegram editButtons action requires editMessage action"
+                return ""
+            }
             if (this.payloadIsEdit(payload) && !this.config.actions.editMessage) {
                 this.lastSendError = "telegram editMessage action is disabled"
                 return ""
@@ -1061,6 +1065,9 @@ public class TelegramAdapter <: ChannelAdapter {
             out.put("secret_token", JsonString(this.config.webhookSecret.trimAscii()))
         }
         out.put("allowed_updates", this.buildAllowedUpdates())
+        if (!this.config.webhookCertPath.trimAscii().isEmpty()) {
+            out.put("certificatePath", JsonString(this.config.webhookCertPath.trimAscii()))
+        }
         out
     }
 
@@ -1272,11 +1279,7 @@ public class TelegramAdapter <: ChannelAdapter {
             this.webhookRegistrationError = "bot token is empty"
             return false
         }
-        let responseOpt = this.telegramJsonPost(
-            this.normalizeApiRoot() + "/bot${token}/setWebhook",
-            this.buildWebhookRegistrationPayload(),
-            context: "setWebhook"
-        )
+        let responseOpt = this.sendWebhookRegistrationRequest(token)
         let raw = match (responseOpt) {
             case Some(v) => v
             case None =>
@@ -1294,6 +1297,36 @@ public class TelegramAdapter <: ChannelAdapter {
         this.webhookRegistrationError = this.lastSendError
         LogUtils.info("Telegram setWebhook failed: ${this.webhookRegistrationError}")
         false
+    }
+
+    private func sendWebhookRegistrationRequest(token: String): Option<String> {
+        let url = this.normalizeApiRoot() + "/bot${token}/setWebhook"
+        let certPath = this.config.webhookCertPath.trimAscii()
+        if (certPath.isEmpty()) {
+            return this.telegramJsonPost(url, this.buildWebhookRegistrationPayload(), context: "setWebhook")
+        }
+        let path = Path(certPath)
+        if (!exists(path)) {
+            this.setLastSendError("telegram webhook certificate path does not exist")
+            return None<String>
+        }
+        let isRegular = try { FileInfo(path).isRegular() } catch (_e: Exception) { false }
+        if (!isRegular) {
+            this.setLastSendError("telegram webhook certificate path is not a regular file")
+            return None<String>
+        }
+        let fields = HashMap<String, String>()
+        fields["url"] = this.config.webhookUrl.trimAscii()
+        if (!this.config.webhookSecret.trimAscii().isEmpty()) {
+            fields["secret_token"] = this.config.webhookSecret.trimAscii()
+        }
+        fields["allowed_updates"] = this.buildAllowedUpdates().toJsonString()
+        this.telegramMultipartFilesPost(
+            url,
+            fields,
+            [TelegramMultipartFile("certificate", filePath: certPath)],
+            context: "setWebhook"
+        )
     }
 
     private func ensurePollingWebhookCleared(reason: String): Bool {
@@ -2618,7 +2651,7 @@ public class TelegramAdapter <: ChannelAdapter {
                     }
             }
         }
-        if (kind == "poll" || kind == "delete" || kind == "pin" || kind == "unpin" || kind == "topic-create" || kind == "reaction" || kind == "sticker") {
+        if (kind == "poll" || kind == "delete" || kind == "clear-buttons" || kind == "edit-buttons" || kind == "pin" || kind == "unpin" || kind == "topic-create" || kind == "reaction" || kind == "sticker") {
             return ""
         }
         if (!this.shouldRetryWithoutParseMode()) {
@@ -3010,7 +3043,7 @@ public class TelegramAdapter <: ChannelAdapter {
     }
 
     private func parseTelegramPayloadSuccess(kind: String, raw: String): Option<String> {
-        if (kind == "delete" || kind == "clear-buttons" || kind == "pin" || kind == "unpin" || kind == "reaction" || kind == "edit" || kind == "edit-media" || kind == "chat-action") {
+        if (kind == "delete" || kind == "clear-buttons" || kind == "edit-buttons" || kind == "pin" || kind == "unpin" || kind == "reaction" || kind == "edit" || kind == "edit-media" || kind == "chat-action") {
             return if (this.parseTelegramBoolSuccess(raw, missingDetail: "telegram api returned ok=false")) { Some("") } else { None<String> }
         }
         if (kind == "topic-create") {
@@ -3251,6 +3284,7 @@ public class TelegramAdapter <: ChannelAdapter {
         out.put("cleanupAtMs", this.webhookCleanupAtMs.toJsonValue())
         out.put("pollingWebhookCleared", this.pollingWebhookCleared.toJsonValue())
         out.put("secretConfigured", (!this.config.webhookSecret.trimAscii().isEmpty()).toJsonValue())
+        out.put("certificateConfigured", (!this.config.webhookCertPath.trimAscii().isEmpty()).toJsonValue())
         out.put("webhookAndPollingMutuallyExclusive", true.toJsonValue())
         out
     }
@@ -4254,6 +4288,13 @@ public class TelegramAdapter <: ChannelAdapter {
         }
     }
 
+    private func readJsonArrayField(obj: JsonObject, key: String): JsonArray {
+        match (obj.get(key)) {
+            case Some(v) => try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
+            case None => JsonArray([])
+        }
+    }
+
     private func isTelegramConflictError(root: JsonObject, desc: String): Bool {
         let lower = desc.toAsciiLower()
         if (lower.contains("conflict") || lower.contains("409")) {
@@ -4467,6 +4508,10 @@ public class TelegramAdapter <: ChannelAdapter {
             case None => ()
         }
         match (this.detectClearButtonsPayload(message)) {
+            case Some(payload) => return [payload]
+            case None => ()
+        }
+        match (this.detectEditButtonsPayload(message)) {
             case Some(payload) => return [payload]
             case None => ()
         }
@@ -4704,6 +4749,22 @@ public class TelegramAdapter <: ChannelAdapter {
         body
     }
 
+    private func buildEditButtonsPayload(message: OutboundMessage, targetMessageId: String, specs: Array<String>): HashMap<String, JsonValue> {
+        let normalizedPeer = message.peerId.trimAscii()
+        let body = HashMap<String, JsonValue>()
+        body["kind"] = JsonString("edit-buttons")
+        body["peer"] = JsonString(normalizedPeer)
+        body["chat_id"] = JsonString(this.normalizePeerId(normalizedPeer))
+        body["message_id"] = JsonString(targetMessageId)
+        let markup = this.telegramInlineKeyboardMarkupFromSpecs(specs)
+        if (this.readJsonArrayField(markup, "inline_keyboard").size() <= 0) {
+            body["validation_error"] = JsonString("telegram editButtons requires at least one valid button")
+            return body
+        }
+        body["reply_markup"] = markup
+        body
+    }
+
     private func buildPinPayload(message: OutboundMessage, targetMessageId: String, unpin!: Bool = false): HashMap<String, JsonValue> {
         let normalizedPeer = message.peerId.trimAscii()
         let body = HashMap<String, JsonValue>()
@@ -4846,6 +4907,17 @@ public class TelegramAdapter <: ChannelAdapter {
                 body["reply_to_message_id"] = JsonString(replyId.trimAscii())
             }
         }
+        let markup = this.telegramInlineKeyboardMarkupFromSpecs(specs)
+        let rows = this.readJsonArrayField(markup, "inline_keyboard")
+        if (rows.size() <= 0) {
+            body["validation_error"] = JsonString("telegram inlineKeyboard requires at least one valid button")
+            return body
+        }
+        body["reply_markup"] = markup
+        body
+    }
+
+    private func telegramInlineKeyboardMarkupFromSpecs(specs: Array<String>): JsonObject {
         let rows = JsonArray([])
         var current = JsonArray([])
         for (spec0 in specs) {
@@ -4868,14 +4940,9 @@ public class TelegramAdapter <: ChannelAdapter {
         if (current.size() > 0) {
             rows.add(current)
         }
-        if (rows.size() <= 0) {
-            body["validation_error"] = JsonString("telegram inlineKeyboard requires at least one valid button")
-            return body
-        }
         let markup = JsonObject()
         markup.put("inline_keyboard", rows)
-        body["reply_markup"] = markup
-        body
+        markup
     }
 
     private func buildDraftPayload(message: OutboundMessage, preview: String, finalText: String): HashMap<String, JsonValue> {
@@ -5326,6 +5393,13 @@ public class TelegramAdapter <: ChannelAdapter {
         }
     }
 
+    private func payloadIsEditButtons(payload: HashMap<String, JsonValue>): Bool {
+        match (payload.get("kind")) {
+            case Some(v) => try { v.asString().getValue().trimAscii().toAsciiLower() == "edit-buttons" } catch (_e: Exception) { false }
+            case None => false
+        }
+    }
+
     private func payloadIsEdit(payload: HashMap<String, JsonValue>): Bool {
         match (payload.get("kind")) {
             case Some(v) => try { v.asString().getValue().trimAscii().toAsciiLower() == "edit" } catch (_e: Exception) { false }
@@ -5504,6 +5578,9 @@ public class TelegramAdapter <: ChannelAdapter {
         if (kind == "clear-buttons") {
             return "editMessageReplyMarkup"
         }
+        if (kind == "edit-buttons") {
+            return "editMessageReplyMarkup"
+        }
         if (kind == "edit") {
             return "editMessageText"
         }
@@ -5639,6 +5716,19 @@ public class TelegramAdapter <: ChannelAdapter {
             case Some(target) =>
                 let trimmed = target.trimAscii()
                 if (trimmed.isEmpty()) { None } else { Some(this.buildClearButtonsPayload(message, trimmed)) }
+            case None => None
+        }
+    }
+
+    private func detectEditButtonsPayload(message: OutboundMessage): Option<HashMap<String, JsonValue>> {
+        let specs = parseGatewayEditButtonsParts(message.text)
+        if (specs.isEmpty()) {
+            return None
+        }
+        match (message.replyToMessageId) {
+            case Some(target) =>
+                let trimmed = target.trimAscii()
+                if (trimmed.isEmpty()) { None } else { Some(this.buildEditButtonsPayload(message, trimmed, specs)) }
             case None => None
         }
     }
@@ -6748,12 +6838,34 @@ public class TelegramAdapter <: ChannelAdapter {
         if (peerId.startsWith("group:")) {
             let pure = peerId["group:".size..]
             match (pure.indexOf(":topic:")) {
-                case Some(topicIdx) => return pure[..topicIdx]
+                case Some(topicIdx) => return this.resolveMigratedTelegramChatId(pure[..topicIdx])
                 case None => ()
             }
-            return pure
+            return this.resolveMigratedTelegramChatId(pure)
         }
         peerId
+    }
+
+    private func resolveMigratedTelegramChatId(chatId: String): String {
+        let normalized = chatId.trimAscii()
+        if (normalized.isEmpty()) {
+            return normalized
+        }
+        let path = this.groupMigrationStatePath()
+        if (!exists(path)) {
+            return normalized
+        }
+        let migrations = try { JsonValue.fromStr(String.fromUtf8(File.readFrom(path))).asArray() } catch (_e: Exception) { JsonArray([]) }
+        var latest = normalized
+        for (item in migrations.getItems()) {
+            let row = try { item.asObject() } catch (_e: Exception) { JsonObject() }
+            let oldChatId = this.readStringField(row, "oldChatId").trimAscii()
+            let newChatId = this.readStringField(row, "newChatId").trimAscii()
+            if (oldChatId == latest && !newChatId.isEmpty() && newChatId != latest) {
+                latest = newChatId
+            }
+        }
+        latest
     }
 
     private func extractThreadId(peerId: String): String {

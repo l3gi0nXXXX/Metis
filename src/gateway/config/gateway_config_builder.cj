@@ -380,6 +380,7 @@ private func mergeTelegram(user: GatewayUserSettings): TelegramConfig {
         silent: user.telegram.silent,
         webhookUrl: webhookUrl,
         webhookSecret: webhookSecret,
+        webhookCertPath: user.telegram.webhookCertPath.trimAscii(),
         webhookPath: user.telegram.webhookPath.trimAscii(),
         webhookHost: user.telegram.webhookHost.trimAscii(),
         webhookPort: gatewayBuilderPortToUInt16(user.telegram.webhookPort, 8787u16),
@@ -395,6 +396,7 @@ private func mergeTelegram(user: GatewayUserSettings): TelegramConfig {
         reactionLevel: user.telegram.reactionLevel.trimAscii(),
         ackReaction: user.telegram.ackReaction,
         removeAckAfterReply: user.telegram.removeAckAfterReply,
+        configWrites: user.telegram.configWrites,
         actions: TelegramActionConfig(
             reactions: user.telegram.actions.reactions,
             sendMessage: user.telegram.actions.sendMessage,

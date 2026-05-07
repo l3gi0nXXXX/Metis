@@ -24,6 +24,7 @@ public func gatewayBuiltinExtraConfig(user: GatewayUserSettings, channelId: Stri
         obj.put("silent", user.telegram.silent.toJsonValue())
         obj.put("webhookUrl", user.telegram.webhookUrl.toJsonValue())
         obj.put("webhookSecret", user.telegram.webhookSecret.toJsonValue())
+        obj.put("webhookCertPath", user.telegram.webhookCertPath.toJsonValue())
         obj.put("webhookPath", user.telegram.webhookPath.toJsonValue())
         obj.put("webhookHost", user.telegram.webhookHost.toJsonValue())
         obj.put("webhookPort", user.telegram.webhookPort.toJsonValue())
@@ -35,6 +36,7 @@ public func gatewayBuiltinExtraConfig(user: GatewayUserSettings, channelId: Stri
         obj.put("reactionLevel", user.telegram.reactionLevel.toJsonValue())
         obj.put("ackReaction", user.telegram.ackReaction.toJsonValue())
         obj.put("removeAckAfterReply", user.telegram.removeAckAfterReply.toJsonValue())
+        obj.put("configWrites", user.telegram.configWrites.toJsonValue())
         return obj
     }
     match (user.channelsExtra) {

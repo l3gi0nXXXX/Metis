@@ -446,6 +446,28 @@ private func gatewayTelegramBuildDiagnosticFindings(user: GatewayUserSettings, r
             "Set gateway.telegram.webhookSecret and keep it out of chat-visible outputs."
         )
     }
+    if (!user.telegram.webhookCertPath.trimAscii().isEmpty()) {
+        gatewayTelegramAddFinding(
+            findings,
+            "telegram-webhook-cert-configured",
+            "info",
+            "passed",
+            "Telegram webhook certificate upload is configured.",
+            "gateway.telegram.webhookCertPath is set; setWebhook will use multipart certificate upload.",
+            "Keep the certificate path readable by the Gateway process and outside chat-visible outputs."
+        )
+    }
+    if (!user.telegram.configWrites) {
+        gatewayTelegramAddFinding(
+            findings,
+            "telegram-config-writes-disabled",
+            "info",
+            "passed",
+            "Telegram config writes are disabled.",
+            "gateway.telegram.configWrites=false prevents Telegram callbacks such as /models selection from mutating metis.json.",
+            "Enable configWrites only if Telegram operators are allowed to change Gateway settings."
+        )
+    }
     if (user.telegram.media.outboundAllowLocalPath && user.telegram.media.outboundLocalRoots.isEmpty()) {
         gatewayTelegramAddFinding(
             findings,
@@ -577,6 +599,8 @@ public func gatewayTelegramDiagnosticsJson(user: GatewayUserSettings, runtime!: 
         "chatActionBackoff",
         "directoryAggregation",
         "modelButtons",
+        "configWrites",
+        "webhookCertPath",
         "actions",
         "transport"
     ]))

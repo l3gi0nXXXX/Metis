@@ -338,6 +338,7 @@ public struct TelegramUserSettings {
     public var silent: Bool = false
     public var webhookUrl: String = ""
     public var webhookSecret: String = ""
+    public var webhookCertPath: String = ""
     public var webhookPath: String = "/telegram-webhook"
     public var webhookHost: String = "127.0.0.1"
     public var webhookPort: Int64 = 8787
@@ -351,6 +352,7 @@ public struct TelegramUserSettings {
     public var reactionLevel: String = "ack"
     public var ackReaction: String = "👀"
     public var removeAckAfterReply: Bool = false
+    public var configWrites: Bool = true
     public var actions: TelegramActionUserSettings = TelegramActionUserSettings()
     public var threadBindings: TelegramThreadBindingsUserSettings = TelegramThreadBindingsUserSettings()
     public var media: TelegramMediaUserSettings = TelegramMediaUserSettings()

@@ -6,10 +6,20 @@ import std.fs.{File, Path, exists}
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 
 private var gatewayMediaAsrRunnerOverride: Option<(String, String) -> String> = None<(String, String) -> String>
+private var gatewayMediaVisionRunnerOverride: Option<(String, String, String, String, Int64) -> String> = None<(String, String, String, String, Int64) -> String>
+private var gatewayMediaVideoRunnerOverride: Option<(String, String, String, Int64) -> String> = None<(String, String, String, Int64) -> String>
 private var gatewayMediaDocumentExtractorOverride: Option<(String, String, String, Int64) -> String> = None<(String, String, String, Int64) -> String>
 
 public func setGatewayMediaAsrRunnerForTest(runner: Option<(String, String) -> String>): Unit {
     gatewayMediaAsrRunnerOverride = runner
+}
+
+public func setGatewayMediaVisionRunnerForTest(runner: Option<(String, String, String, String, Int64) -> String>): Unit {
+    gatewayMediaVisionRunnerOverride = runner
+}
+
+public func setGatewayMediaVideoRunnerForTest(runner: Option<(String, String, String, Int64) -> String>): Unit {
+    gatewayMediaVideoRunnerOverride = runner
 }
 
 public func setGatewayMediaDocumentExtractorForTest(extractor: Option<(String, String, String, Int64) -> String>): Unit {
@@ -34,6 +44,28 @@ private func gatewayMediaExtractDocumentPathForRuntime(path: String, mime: Strin
     }
     match (gatewayMediaDocumentExtractorOverride) {
         case Some(extractor) => try { extractor(normalizedPath, mime.trimAscii().toAsciiLower(), fileName.trimAscii(), maxBytes).trimAscii() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func gatewayMediaDescribeImagePathForRuntime(path: String, mime: String, kind: String, prompt: String, maxBytes: Int64): String {
+    let normalizedPath = path.trimAscii()
+    if (normalizedPath.isEmpty() || !exists(Path(normalizedPath))) {
+        return ""
+    }
+    match (gatewayMediaVisionRunnerOverride) {
+        case Some(runner) => try { runner(normalizedPath, mime.trimAscii().toAsciiLower(), kind.trimAscii().toAsciiLower(), prompt, maxBytes).trimAscii() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func gatewayMediaDescribeVideoPathForRuntime(path: String, mime: String, prompt: String, maxBytes: Int64): String {
+    let normalizedPath = path.trimAscii()
+    if (normalizedPath.isEmpty() || !exists(Path(normalizedPath))) {
+        return ""
+    }
+    match (gatewayMediaVideoRunnerOverride) {
+        case Some(runner) => try { runner(normalizedPath, mime.trimAscii().toAsciiLower(), prompt, maxBytes).trimAscii() } catch (_e: Exception) { "" }
         case None => ""
     }
 }
@@ -282,17 +314,34 @@ public func gatewayMediaUnderstandingForRecord(
         }
         let recordDescription = gatewayMediaRuntimeString(record, "description")
         let recordAnalysis = gatewayMediaRuntimeString(record, "analysis")
-        let companionAnalysis = gatewayMediaRuntimeCompanionText(localPath, [".analysis.txt", ".vision.txt", ".description.txt"], maxBytes: 4096)
+        let nativeAnalysis = if (recordAnalysis.isEmpty() && recordDescription.isEmpty()) {
+            gatewayMediaDescribeImagePathForRuntime(localPath, mime, kind, prompt, maxBytes)
+        } else {
+            ""
+        }
+        let companionAnalysis = if (nativeAnalysis.isEmpty()) {
+            gatewayMediaRuntimeCompanionText(localPath, [".analysis.txt", ".vision.txt", ".description.txt"], maxBytes: 4096)
+        } else {
+            ""
+        }
         let text = if (!recordAnalysis.isEmpty()) {
             recordAnalysis
         } else if (!recordDescription.isEmpty()) {
             recordDescription
+        } else if (!nativeAnalysis.isEmpty()) {
+            nativeAnalysis
         } else {
             companionAnalysis
         }
         if (!text.isEmpty()) {
             let outputKind = if (resolvedCapability == "sticker" || kind == "sticker") { "sticker.description" } else { "image.description" }
-            let source = if (!recordAnalysis.isEmpty() || !recordDescription.isEmpty()) { "media_record_cache" } else { "analysis_companion_file" }
+            let source = if (!recordAnalysis.isEmpty() || !recordDescription.isEmpty()) {
+                "media_record_cache"
+            } else if (!nativeAnalysis.isEmpty()) {
+                "native_vision_runtime"
+            } else {
+                "analysis_companion_file"
+            }
             outputs.add(gatewayMediaRuntimeOutput(outputKind, text, source))
             let out = gatewayMediaRuntimeResult(record, resolvedCapability, "ok", outputs, gatewayMediaRuntimeDecision(resolvedCapability, "applied", source))
             out.put("analysis", JsonString(text))
@@ -328,16 +377,33 @@ public func gatewayMediaUnderstandingForRecord(
         }
         let recordDescription = gatewayMediaRuntimeString(record, "description")
         let recordAnalysis = gatewayMediaRuntimeString(record, "analysis")
-        let companionVideo = gatewayMediaRuntimeCompanionText(localPath, [".video.txt", ".analysis.txt", ".description.txt"], maxBytes: 4096)
+        let nativeVideo = if (recordAnalysis.isEmpty() && recordDescription.isEmpty()) {
+            gatewayMediaDescribeVideoPathForRuntime(localPath, mime, prompt, maxBytes)
+        } else {
+            ""
+        }
+        let companionVideo = if (nativeVideo.isEmpty()) {
+            gatewayMediaRuntimeCompanionText(localPath, [".video.txt", ".analysis.txt", ".description.txt"], maxBytes: 4096)
+        } else {
+            ""
+        }
         let videoText = if (!recordAnalysis.isEmpty()) {
             recordAnalysis
         } else if (!recordDescription.isEmpty()) {
             recordDescription
+        } else if (!nativeVideo.isEmpty()) {
+            nativeVideo
         } else {
             companionVideo
         }
         if (!videoText.isEmpty()) {
-            let source = if (!recordAnalysis.isEmpty() || !recordDescription.isEmpty()) { "media_record_cache" } else { "video_companion_file" }
+            let source = if (!recordAnalysis.isEmpty() || !recordDescription.isEmpty()) {
+                "media_record_cache"
+            } else if (!nativeVideo.isEmpty()) {
+                "native_video_runtime"
+            } else {
+                "video_companion_file"
+            }
             outputs.add(gatewayMediaRuntimeOutput("video.description", videoText, source))
             let out = gatewayMediaRuntimeResult(record, resolvedCapability, "ok", outputs, gatewayMediaRuntimeDecision(resolvedCapability, "applied", source))
             out.put("videoDescription", JsonString(videoText))

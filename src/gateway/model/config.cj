@@ -671,6 +671,7 @@ public class TelegramConfig {
     public let silent: Bool
     public let webhookUrl: String
     public let webhookSecret: String
+    public let webhookCertPath: String
     public let webhookPath: String
     public let webhookHost: String
     public let webhookPort: UInt16
@@ -686,6 +687,7 @@ public class TelegramConfig {
     public let reactionLevel: String
     public let ackReaction: String
     public let removeAckAfterReply: Bool
+    public let configWrites: Bool
     public let actions: TelegramActionConfig
     public let threadBindings: TelegramThreadBindingsConfig
     public let media: TelegramMediaConfig
@@ -718,6 +720,7 @@ public class TelegramConfig {
         silent!: Bool = false,
         webhookUrl!: String = "",
         webhookSecret!: String = "",
+        webhookCertPath!: String = "",
         webhookPath!: String = "/telegram-webhook",
         webhookHost!: String = "127.0.0.1",
         webhookPort!: UInt16 = 8787u16,
@@ -733,6 +736,7 @@ public class TelegramConfig {
         reactionLevel!: String = "ack",
         ackReaction!: String = "👀",
         removeAckAfterReply!: Bool = false,
+        configWrites!: Bool = true,
         actions!: TelegramActionConfig = TelegramActionConfig(),
         threadBindings!: TelegramThreadBindingsConfig = TelegramThreadBindingsConfig(),
         media!: TelegramMediaConfig = TelegramMediaConfig(),
@@ -764,6 +768,7 @@ public class TelegramConfig {
         this.silent = silent
         this.webhookUrl = webhookUrl
         this.webhookSecret = webhookSecret
+        this.webhookCertPath = webhookCertPath
         this.webhookPath = webhookPath
         this.webhookHost = webhookHost
         this.webhookPort = webhookPort
@@ -779,6 +784,7 @@ public class TelegramConfig {
         this.reactionLevel = reactionLevel
         this.ackReaction = ackReaction
         this.removeAckAfterReply = removeAckAfterReply
+        this.configWrites = configWrites
         this.actions = actions
         this.threadBindings = threadBindings
         this.media = media

@@ -1,7 +1,7 @@
 package metis.gateway.core
 
 import metis.core.gatewayCurrentToolRuntimeContext
-import metis.core.{gatewayMediaUnderstandingFirstText, gatewayMediaUnderstandingForRecord, setGatewayMediaAsrRunnerForTest, setGatewayMediaDocumentExtractorForTest}
+import metis.core.{gatewayMediaUnderstandingFirstText, gatewayMediaUnderstandingForRecord, setGatewayMediaAsrRunnerForTest, setGatewayMediaDocumentExtractorForTest, setGatewayMediaVideoRunnerForTest, setGatewayMediaVisionRunnerForTest}
 import metis.core.config.GatewayUserSettings
 import metis.gateway.session.{GatewayIngressSource, GatewaySessionRequest}
 
@@ -197,6 +197,34 @@ public class GatewaySessionTurnRunnerTest {
     }
 
     @TestCase
+    public func t44MediaUnderstandingRuntimeUsesNativeVisionProvider(): Unit {
+        let root = Path("/tmp/metis-media-understanding-native-vision-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root, recursive: true)
+        let image = root.join("image.jpg")
+        File.writeTo(image, "fake-image".toArray())
+        setGatewayMediaVisionRunnerForTest(Some({ _path: String, _mime: String, kind: String, prompt: String, _maxBytes: Int64 =>
+            "${kind}: native vision: ${prompt.trimAscii()}"
+        }))
+        try {
+            let record = JsonObject()
+            record.put("mediaId", JsonString("tg-image-native"))
+            record.put("mediaKind", JsonString("photo"))
+            record.put("mimeType", JsonString("image/jpeg"))
+            record.put("localPath", JsonString(image.toString()))
+            record.put("downloaded", JsonBool(true))
+
+            let result = gatewayMediaUnderstandingForRecord(record, prompt: "describe")
+            @Expect(result.get("status").getOrThrow().asString().getValue(), "ok")
+            @Expect(gatewayMediaUnderstandingFirstText(result), "photo: native vision: describe")
+            let outputs = result.get("outputs").getOrThrow().asArray()
+            @Expect(outputs[0].asObject().get("source").getOrThrow().asString().getValue(), "native_vision_runtime")
+        } finally {
+            setGatewayMediaVisionRunnerForTest(None<(String, String, String, String, Int64) -> String>)
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
     public func mediaContextPromptIncludesUnifiedImageDescription(): Unit {
         let root = Path("/tmp/metis-media-context-image-understanding-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
         Directory.create(root, recursive: true)
@@ -241,6 +269,33 @@ public class GatewaySessionTurnRunnerTest {
             @Expect(result.get("capability").getOrThrow().asString().getValue(), "video")
             @Expect(result.get("videoUnderstandingStatus").getOrThrow().asString().getValue(), "not_configured")
         } finally {
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func t44MediaUnderstandingRuntimeUsesNativeVideoProvider(): Unit {
+        let root = Path("/tmp/metis-media-understanding-native-video-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root, recursive: true)
+        let video = root.join("clip.mp4")
+        File.writeTo(video, "fake-video".toArray())
+        setGatewayMediaVideoRunnerForTest(Some({ _path: String, mime: String, prompt: String, _maxBytes: Int64 =>
+            "native video ${mime}: ${prompt.trimAscii()}"
+        }))
+        try {
+            let record = JsonObject()
+            record.put("mediaKind", JsonString("video"))
+            record.put("mimeType", JsonString("video/mp4"))
+            record.put("localPath", JsonString(video.toString()))
+            record.put("downloaded", JsonBool(true))
+
+            let result = gatewayMediaUnderstandingForRecord(record, capability: "video", prompt: "summarize")
+            @Expect(result.get("status").getOrThrow().asString().getValue(), "ok")
+            @Expect(gatewayMediaUnderstandingFirstText(result), "native video video/mp4: summarize")
+            let outputs = result.get("outputs").getOrThrow().asArray()
+            @Expect(outputs[0].asObject().get("source").getOrThrow().asString().getValue(), "native_video_runtime")
+        } finally {
+            setGatewayMediaVideoRunnerForTest(None<(String, String, String, Int64) -> String>)
             try { remove(root, recursive: true) } catch (_e: Exception) { () }
         }
     }

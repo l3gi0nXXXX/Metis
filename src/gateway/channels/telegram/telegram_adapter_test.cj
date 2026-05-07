@@ -615,6 +615,65 @@ public class TelegramAdapterTest {
     }
 
     @TestCase
+    public func t44WebhookRegistrationWithCertificateUsesMultipartSetWebhook(): Unit {
+        let root = Path("/tmp/metis-telegram-webhook-cert-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root, recursive: true)
+        let cert = root.join("cert.pem")
+        File.writeTo(cert, "fake-cert".toArray())
+        let fake = TelegramFakeBotApi()
+        try {
+            setTelegramTransportRunnerForTest(Some({ request: TelegramTransportRequest => fake.handle(request) }))
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    webhookUrl: "https://example.test/telegram-webhook",
+                    webhookSecret: "secret-token",
+                    webhookCertPath: cert.toString()
+                )
+            )
+
+            @Expect(adapter.debugRegisterWebhookForTest(), true)
+            @Expect(fake.saw("setWebhook"), true)
+            @Expect(fake.sawContentTypeContaining("multipart/form-data"), true)
+            @Expect(fake.sawBodyContaining("name=\"certificate\""), true)
+            @Expect(fake.sawBodyContaining("filename=\"cert.pem\""), true)
+            @Expect(fake.sawBodyContaining("name=\"secret_token\""), true)
+            let lifecycle = adapter.debugBuildWebhookLifecycleDiagnostics()
+            @Expect(lifecycle.get("certificateConfigured").getOrThrow().asBool().getValue(), true)
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func t44WebhookRegistrationRejectsNonRegularCertificatePath(): Unit {
+        let root = Path("/tmp/metis-telegram-webhook-cert-dir-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root, recursive: true)
+        let fake = TelegramFakeBotApi()
+        try {
+            setTelegramTransportRunnerForTest(Some({ request: TelegramTransportRequest => fake.handle(request) }))
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    webhookUrl: "https://example.test/telegram-webhook",
+                    webhookSecret: "secret-token",
+                    webhookCertPath: root.toString()
+                )
+            )
+
+            @Expect(adapter.debugRegisterWebhookForTest(), false)
+            @Expect(fake.saw("setWebhook"), false)
+            @Expect(adapter.debugLastSendErrorForTest().contains("not a regular file"), true)
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
     public func sendTransportInvalidUtf8FailureDoesNotThrow(): Unit {
         try {
             setTelegramTransportRunnerForTest(Some({ request: TelegramTransportRequest =>
@@ -1485,7 +1544,7 @@ public class TelegramAdapterTest {
     public func groupMigrationUpdateIsRecordedAndDoesNotQueueEmptyTurn(): Unit {
         let root = Path("/tmp/metis-telegram-group-migration-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
         let adapter = TelegramAdapter(
-            config: TelegramConfig(enabled: true, botToken: "telegram-token"),
+            config: TelegramConfig(enabled: true, botToken: "telegram-token", replyToMode: "thread"),
             pairingRoot: root.toString()
         )
         let payload = "{\"update_id\":88,\"message\":{\"message_id\":44,\"migrate_to_chat_id\":\"-100222333444\",\"chat\":{\"id\":\"-222333444\",\"type\":\"group\"},\"from\":{\"id\":8734062810}}}"
@@ -1497,6 +1556,17 @@ public class TelegramAdapterTest {
         let row = migrations[0].asObject()
         @Expect(row.get("oldPeerId").getOrThrow().asString().getValue(), "group:-222333444")
         @Expect(row.get("newPeerId").getOrThrow().asString().getValue(), "group:-100222333444")
+        let payloads = adapter.debugBuildSendPayloads(
+            OutboundMessage(
+                ChannelType.Telegram,
+                "group:-222333444:topic:9",
+                "after migration",
+                replyInThread: true
+            )
+        )
+        let sendPayload = payloads[0].asObject()
+        @Expect(sendPayload.get("chat_id").getOrThrow().asString().getValue(), "-100222333444")
+        @Expect(sendPayload.get("message_thread_id").getOrThrow().asString().getValue(), "9")
     }
 
     /*
@@ -3364,6 +3434,32 @@ public class TelegramAdapterTest {
         @Expect(firstButton.get("callback_data").getOrThrow().asString().getValue(), "approve-1")
         let secondButton = rows[1].asArray()[0].asObject()
         @Expect(secondButton.get("url").getOrThrow().asString().getValue(), "https://example.test")
+    }
+
+    @TestCase
+    public func t44EditButtonsPayloadUsesEditMessageReplyMarkup(): Unit {
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(
+                enabled: true,
+                botToken: "telegram-token",
+                actions: TelegramActionConfig(editMessage: true)
+            )
+        )
+        let payloads = adapter.debugBuildSendPayloads(
+            OutboundMessage(
+                ChannelType.Telegram,
+                "user:8734062810",
+                "[edit-buttons]\nbutton=Approve|callback:plugin:ok\nrow\nbutton=Docs|url:https://example.test",
+                replyToMessageId: Some("77")
+            )
+        )
+        @Expect(payloads.size(), 1)
+        let payload = payloads[0].asObject()
+        @Expect(payload.get("kind").getOrThrow().asString().getValue(), "edit-buttons")
+        @Expect(payload.get("message_id").getOrThrow().asString().getValue(), "77")
+        let rows = payload.get("reply_markup").getOrThrow().asObject().get("inline_keyboard").getOrThrow().asArray()
+        @Expect(rows.size(), 2)
+        @Expect(rows[0].asArray()[0].asObject().get("callback_data").getOrThrow().asString().getValue(), "plugin:ok")
     }
 
     @TestCase

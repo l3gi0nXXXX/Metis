@@ -466,6 +466,49 @@ public func parseGatewayInlineKeyboardParts(raw: String): (String, Array<String>
     (text, buttons.toArray())
 }
 
+public func renderGatewayEditButtonsText(buttons: Array<String>): String {
+    if (buttons.isEmpty()) {
+        return ""
+    }
+    let lines = ArrayList<String>()
+    lines.add("[edit-buttons]")
+    for (button in buttons) {
+        let one = button.trimAscii()
+        if (one.isEmpty()) {
+            continue
+        }
+        if (one == "---" || one.toAsciiLower() == "row") {
+            lines.add("row")
+        } else {
+            lines.add("button=${one}")
+        }
+    }
+    if (lines.size == 1) {
+        return ""
+    }
+    String.join(lines.toArray(), delimiter: "\n")
+}
+
+public func parseGatewayEditButtonsParts(raw: String): Array<String> {
+    let normalized = raw.replace("\r\n", "\n").replace("\r", "\n").trimAscii()
+    if (!normalized.startsWith("[edit-buttons]")) {
+        return []
+    }
+    let buttons = ArrayList<String>()
+    for (line0 in normalized.split("\n")) {
+        let line = line0.trimAscii()
+        if (line.startsWith("button=")) {
+            let spec = line["button=".size..].trimAscii()
+            if (!spec.isEmpty()) {
+                buttons.add(spec)
+            }
+        } else if (line == "row" || line == "---") {
+            buttons.add("row")
+        }
+    }
+    buttons.toArray()
+}
+
 public func parseGatewayStickerFileId(raw: String): String {
     let normalized = raw.replace("\r\n", "\n").replace("\r", "\n").trimAscii()
     if (!normalized.startsWith("[sticker]")) {

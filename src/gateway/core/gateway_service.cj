@@ -631,8 +631,15 @@ public class GatewayService {
         let payload = this.telegramPluginBasePayload(message, accountId, sessionKey)
         payload.put("callbackId", JsonString(callbackId))
         payload.put("data", JsonString(data.trimAscii()))
-        payload.put("messageId", JsonString(this.telegramNativeField(message.text, "messageId").trimAscii()))
-        payload.put("callbackSenderId", JsonString(this.telegramNativeField(message.text, "by").trimAscii()))
+        let callbackMessageId = this.telegramNativeField(message.text, "messageId").trimAscii()
+        let callbackSenderId = this.telegramNativeField(message.text, "by").trimAscii()
+        payload.put("messageId", JsonString(callbackMessageId))
+        payload.put("callbackSenderId", JsonString(callbackSenderId))
+        let callbackMessage = JsonObject()
+        callbackMessage.put("messageId", JsonString(callbackMessageId))
+        callbackMessage.put("chatId", JsonString(this.telegramCallbackChatIdFromPeer(message.peerId)))
+        callbackMessage.put("messageText", JsonString(message.raw ?? message.text))
+        payload.put("callbackMessage", callbackMessage)
         let method = if (data.startsWith("plugin-approval:")) { "approval.dispatch" } else { "interactive.dispatch" }
         let result = gatewayOpenClawPluginSidecarInvoke(user, method, payload)
         if (!this.telegramJsonBool(result, "matched", false)) {
@@ -658,14 +665,25 @@ public class GatewayService {
         payload.put("channel", JsonString("telegram"))
         payload.put("accountId", JsonString(accountId.trimAscii()))
         payload.put("sessionKey", JsonString(sessionKey.trimAscii()))
-        payload.put("conversationId", JsonString(message.conversationId ?? message.peerId))
+        let conversationId = message.conversationId ?? message.peerId
+        payload.put("conversationId", JsonString(conversationId))
+        payload.put("parentConversationId", JsonString(this.telegramParentConversationId(message.peerId, conversationId)))
         payload.put("peerId", JsonString(message.peerId.trimAscii()))
         payload.put("senderId", JsonString(message.senderId.trimAscii()))
+        payload.put("senderUsername", JsonString(""))
+        let sender = JsonObject()
+        sender.put("id", JsonString(message.senderId.trimAscii()))
+        sender.put("username", JsonString(""))
+        payload.put("sender", sender)
         let isGroup = match (message.chatType) {
             case ChatType.Group => true
             case ChatType.Direct => false
         }
         payload.put("isGroup", isGroup.toJsonValue())
+        payload.put("isForum", (message.threadId.isSome() || message.peerId.contains(":topic:")).toJsonValue())
+        let auth = JsonObject()
+        auth.put("isAuthorizedSender", true.toJsonValue())
+        payload.put("auth", auth)
         match (message.threadId) {
             case Some(v) => payload.put("threadId", JsonString(v.trimAscii()))
             case None => payload.put("threadId", JsonString(""))
@@ -676,6 +694,33 @@ public class GatewayService {
         }
         payload.put("replyInThread", message.replyInThread.toJsonValue())
         payload
+    }
+
+    private func telegramParentConversationId(peerId: String, conversationId: String): String {
+        let normalized = peerId.trimAscii()
+        match (normalized.indexOf(":topic:")) {
+            case Some(idx) => normalized[..idx]
+            case None =>
+                match (conversationId.trimAscii().indexOf(":topic:")) {
+                    case Some(idx2) => conversationId.trimAscii()[..idx2]
+                    case None => ""
+                }
+        }
+    }
+
+    private func telegramCallbackChatIdFromPeer(peerId: String): String {
+        let normalized = peerId.trimAscii()
+        if (normalized.startsWith("user:")) {
+            return normalized["user:".size..]
+        }
+        if (normalized.startsWith("group:")) {
+            let pure = normalized["group:".size..]
+            match (pure.indexOf(":topic:")) {
+                case Some(idx) => return pure[..idx]
+                case None => return pure
+            }
+        }
+        normalized
     }
 
     private func deliverTelegramPluginSidecarResult(
@@ -728,12 +773,18 @@ public class GatewayService {
         let kind = this.telegramJsonString(intent, "type", this.telegramJsonString(intent, "kind", "")).trimAscii().toAsciiLower()
         let text = this.telegramJsonString(intent, "text", "").trimAscii()
         let target = this.telegramJsonString(intent, "targetMessageId", "").trimAscii()
+        let buttonSpecs = this.telegramPluginButtonSpecs(intent)
         if (kind == "reply" || kind == "send" || kind == "message") {
             if (text.isEmpty()) { return false }
+            let sendText = if (buttonSpecs.isEmpty()) {
+                text
+            } else {
+                this.renderTelegramPluginInlineKeyboardText(text, buttonSpecs)
+            }
             this.sendTextToPeerDetailed(
                 "telegram",
                 message.peerId,
-                text,
+                sendText,
                 replyToMessageId: message.replyTargetMessageId,
                 replyInThread: message.replyInThread,
                 accountId: accountId
@@ -746,6 +797,18 @@ public class GatewayService {
                 "telegram",
                 message.peerId,
                 "[edit]\n${text}",
+                replyToMessageId: this.telegramPluginTargetMessageId(message, target),
+                replyInThread: message.replyInThread,
+                accountId: accountId
+            )
+            return true
+        }
+        if (kind == "editbuttons" || kind == "edit-buttons") {
+            if (buttonSpecs.isEmpty()) { return false }
+            this.sendTextToPeerDetailed(
+                "telegram",
+                message.peerId,
+                this.renderTelegramPluginEditButtonsText(buttonSpecs),
                 replyToMessageId: this.telegramPluginTargetMessageId(message, target),
                 replyInThread: message.replyInThread,
                 accountId: accountId
@@ -775,6 +838,79 @@ public class GatewayService {
             return true
         }
         false
+    }
+
+    private func renderTelegramPluginInlineKeyboardText(text: String, buttonSpecs: Array<String>): String {
+        let lines = ArrayList<String>()
+        lines.add("[inline-keyboard]")
+        lines.add("text=${text.trimAscii()}")
+        for (spec in buttonSpecs) {
+            if (spec == "row") {
+                lines.add("row")
+            } else {
+                lines.add("button=${spec}")
+            }
+        }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramPluginEditButtonsText(buttonSpecs: Array<String>): String {
+        let lines = ArrayList<String>()
+        lines.add("[edit-buttons]")
+        for (spec in buttonSpecs) {
+            if (spec == "row") {
+                lines.add("row")
+            } else {
+                lines.add("button=${spec}")
+            }
+        }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func telegramPluginButtonSpecs(intent: JsonObject): Array<String> {
+        let specs = ArrayList<String>()
+        let buttons = this.telegramJsonArray(intent, "buttons")
+        for (rowValue in buttons.getItems()) {
+            var addedInRow = false
+            try {
+                let row = rowValue.asArray()
+                if (!specs.isEmpty() && row.size() > 0) {
+                    specs.add("row")
+                }
+                for (buttonValue in row.getItems()) {
+                    let spec = this.telegramPluginButtonSpec(try { buttonValue.asObject() } catch (_e: Exception) { JsonObject() })
+                    if (!spec.isEmpty()) {
+                        specs.add(spec)
+                        addedInRow = true
+                    }
+                }
+            } catch (_e: Exception) {
+                let spec = this.telegramPluginButtonSpec(try { rowValue.asObject() } catch (_e2: Exception) { JsonObject() })
+                if (!spec.isEmpty()) {
+                    if (!specs.isEmpty() && !addedInRow) {
+                        ()
+                    }
+                    specs.add(spec)
+                }
+            }
+        }
+        specs.toArray()
+    }
+
+    private func telegramPluginButtonSpec(button: JsonObject): String {
+        let text = this.telegramJsonString(button, "text", "").trimAscii()
+        if (text.isEmpty()) {
+            return ""
+        }
+        let data = this.telegramJsonString(button, "callback_data", this.telegramJsonString(button, "callbackData", "")).trimAscii()
+        if (!data.isEmpty()) {
+            return "${text}|callback:${data}"
+        }
+        let url = this.telegramJsonString(button, "url", "").trimAscii()
+        if (!url.isEmpty()) {
+            return "${text}|url:${url}"
+        }
+        ""
     }
 
     private func telegramPluginTargetMessageId(message: InboundMessage, target: String): Option<String> {
@@ -890,6 +1026,9 @@ public class GatewayService {
     private func resolveTelegramModelCallback(data: String, senderId: String, user: GatewayUserSettings, sessionKey: String): String {
         if (!this.telegramSenderCanOperate(senderId, user)) {
             return "Model switch denied: sender ${senderId} is not authorized."
+        }
+        if (!user.telegram.configWrites) {
+            return "Model switch denied: gateway.telegram.configWrites is disabled."
         }
         let modelRef = data["models:set:".size..].trimAscii()
         if (modelRef.isEmpty() || modelRef.size > 48 || !modelRef.contains(":")) {
