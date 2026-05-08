@@ -1,10 +1,10 @@
 package metis.gateway.channels.telegram
 
 import metis.core.{GatewayMediaGroupItem, gatewayMediaTranscribeAudioPathForRuntime, parseGatewayAudioParts, parseGatewayChatAction, parseGatewayDocumentParts, parseGatewayEditButtonsParts, parseGatewayEditMediaParts, parseGatewayEditText, parseGatewayInlineKeyboardParts, parseGatewayMediaGroupItems, parseGatewayPhotoParts, parseGatewayPinAction, parseGatewayReactionRemove, parseGatewayReactionStatus, parseGatewayReactionToken, parseGatewayStickerFileId, parseGatewayTopicCreateText, parseGatewayTopicEditText, parseGatewayVideoNoteFileId, parseGatewayVideoParts, parseGatewayVoiceParts}
-import metis.gateway.core.{ChannelAdapter, gatewayOpenClawPluginSidecarApplyCurrentMessageReceivedHook, gatewayOpenClawPluginSidecarCommandCatalogForMenu, gatewayTelegramNativeCommandMenuRows}
+import metis.gateway.core.{ChannelAdapter, gatewayOpenClawPluginSidecarApplyCurrentMessageReceivedHook, gatewayOpenClawPluginSidecarCommandCatalogForMenu, gatewayTelegramClassifySendError, gatewayTelegramNativeCommandMenuRows}
 import metis.gateway.model.*
 import metis.io.PrintUtils
-import metis.core.config.CliConfig
+import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager}
 
 import magic.log.LogUtils
 import magic.jsonable.*
@@ -1019,6 +1019,17 @@ public class TelegramAdapter <: ChannelAdapter {
 
     public func debugRetryAfterSecondsForTest(raw: String): Int64 {
         this.telegramRetryAfterSeconds(raw)
+    }
+
+    public func debugClassifyTelegramSendErrorForTest(kind: String, raw: String, transportOutcome!: String = "", statusCode!: Int64 = 0): JsonObject {
+        let decision = gatewayTelegramClassifySendError(kind, raw, transportOutcome: transportOutcome, statusCode: statusCode)
+        let out = JsonObject()
+        out.put("classification", JsonString(decision.classification))
+        out.put("retryable", decision.retryable.toJsonValue())
+        out.put("softSuccess", decision.softSuccess.toJsonValue())
+        out.put("retryAfterSeconds", decision.retryAfterSeconds.toJsonValue())
+        out.put("diagnostic", JsonString(decision.diagnostic))
+        out
     }
 
     public func debugSupportedUpdateTypesForTest(): JsonArray {
@@ -2795,6 +2806,20 @@ public class TelegramAdapter <: ChannelAdapter {
             this.sendTelegramPayloadFollowUpText(payload)
             return messageId
         }
+        if (this.telegramPayloadShouldRetryAfterFailure(kind)) {
+            let retryResponseOpt = match (this.localMediaUploadForPayload(kind, payload)) {
+                case Some(upload) => this.telegramMultipartPost(url, payload, upload[0], upload[1], context: "send:${kind}:retry:multipart")
+                case None => this.telegramJsonPost(url, this.telegramApiBodyForPayload(payload, plainFallback: false), context: "send:${kind}:retry")
+            }
+            match (retryResponseOpt) {
+                case Some(retryRaw) =>
+                    if (let Some(messageId) <- this.parseTelegramPayloadSuccess(kind, retryRaw)) {
+                        this.sendTelegramPayloadFollowUpText(payload)
+                        return messageId
+                    }
+                case None => ()
+            }
+        }
         if (kind == "voice") {
             let fallbackId = this.trySendVoiceForbiddenFallback(payload)
             if (!fallbackId.isEmpty()) {
@@ -2855,6 +2880,20 @@ public class TelegramAdapter <: ChannelAdapter {
             this.sendTelegramPayloadFollowUpText(plainPayload)
         }
         plainMessageId
+    }
+
+    private func telegramPayloadKindSafeToRetry(kind: String): Bool {
+        let k = kind.trimAscii().toAsciiLower()
+        k == "edit" || k == "clear-buttons" || k == "edit-buttons" || k == "chat-action" ||
+            k == "reaction" || k == "topic-edit"
+    }
+
+    private func telegramPayloadShouldRetryAfterFailure(kind: String): Bool {
+        if (!this.telegramPayloadKindSafeToRetry(kind)) {
+            return false
+        }
+        let low = this.lastSendError.trimAscii().toAsciiLower()
+        low.contains("retryable=true") && !low.contains("retry_after=")
     }
 
     private func trySendVoiceForbiddenFallback(payload: HashMap<String, JsonValue>): String {
@@ -3219,13 +3258,13 @@ public class TelegramAdapter <: ChannelAdapter {
 
     private func parseTelegramPayloadSuccess(kind: String, raw: String): Option<String> {
         if (kind == "delete" || kind == "clear-buttons" || kind == "edit-buttons" || kind == "pin" || kind == "unpin" || kind == "reaction" || kind == "edit" || kind == "edit-media" || kind == "chat-action") {
-            return if (this.parseTelegramBoolSuccess(raw, missingDetail: "telegram api returned ok=false")) { Some("") } else { None<String> }
+            return if (this.parseTelegramBoolSuccess(raw, missingDetail: "telegram api returned ok=false", kind: kind)) { Some("") } else { None<String> }
         }
         if (kind == "topic-create") {
             return if (this.parseTelegramTopicCreateSuccess(raw)) { Some("") } else { None<String> }
         }
         if (kind == "topic-edit") {
-            return if (this.parseTelegramBoolSuccess(raw, missingDetail: "telegram api returned ok=false")) { Some("") } else { None<String> }
+            return if (this.parseTelegramBoolSuccess(raw, missingDetail: "telegram api returned ok=false", kind: kind)) { Some("") } else { None<String> }
         }
         return this.parseTelegramSendSuccess(raw)
     }
@@ -3238,8 +3277,7 @@ public class TelegramAdapter <: ChannelAdapter {
                 case None => false
             }
             if (!ok) {
-                let desc = this.readStringField(jo, "description")
-                this.setLastSendError(if (desc.isEmpty()) { "telegram media group returned ok=false" } else { desc })
+                this.setTelegramSendApiError("media-group", raw, "telegram media group returned ok=false")
                 return false
             }
             this.lastSendError = ""
@@ -3258,8 +3296,7 @@ public class TelegramAdapter <: ChannelAdapter {
                 case None => false
             }
             if (!ok) {
-                let desc = this.readStringField(jo, "description")
-                this.setLastSendError(if (desc.isEmpty()) { "telegram api returned ok=false" } else { desc })
+                this.setTelegramSendApiError("text", raw, "telegram api returned ok=false")
                 return None<String>
             }
             let result = this.readObjectField(jo, "result")
@@ -3276,7 +3313,7 @@ public class TelegramAdapter <: ChannelAdapter {
         }
     }
 
-    private func parseTelegramBoolSuccess(raw: String, missingDetail!: String): Bool {
+    private func parseTelegramBoolSuccess(raw: String, missingDetail!: String, kind!: String = "bool"): Bool {
         return try {
             let jo = JsonValue.fromStr(raw).asObject()
             let ok = match (jo.get("ok")) {
@@ -3284,8 +3321,12 @@ public class TelegramAdapter <: ChannelAdapter {
                 case None => false
             }
             if (!ok) {
-                let desc = this.readStringField(jo, "description")
-                this.setLastSendError(if (desc.isEmpty()) { missingDetail } else { desc })
+                let decision = gatewayTelegramClassifySendError(kind, raw)
+                if (decision.softSuccess) {
+                    this.lastSendError = ""
+                    return true
+                }
+                this.setLastSendError(if (decision.diagnostic.isEmpty()) { missingDetail } else { decision.diagnostic })
                 return false
             }
             this.lastSendError = ""
@@ -3318,8 +3359,7 @@ public class TelegramAdapter <: ChannelAdapter {
                 case None => false
             }
             if (!ok) {
-                let desc = this.readStringField(jo, "description")
-                this.setLastSendError(if (desc.isEmpty()) { "telegram api returned ok=false" } else { desc })
+                this.setTelegramSendApiError("topic-create", raw, "telegram api returned ok=false")
                 return false
             }
             let result = this.readObjectField(jo, "result")
@@ -3576,6 +3616,7 @@ public class TelegramAdapter <: ChannelAdapter {
         row.put("newPeerId", JsonString(if (newChatId.isEmpty()) { "" } else { "group:${newChatId}" }))
         row.put("accountId", JsonString(this.effectiveAccountId()))
         row.put("recordedAtMs", DateTime.now().toUnixTimeStamp().toMilliseconds().toJsonValue())
+        this.maybeMigrateTelegramGroupConfig(row, oldChatId, newChatId)
         let path = this.groupMigrationStatePath()
         let migrations = if (exists(path)) {
             try { JsonValue.fromStr(String.fromUtf8(File.readFrom(path))).asArray() } catch (_e: Exception) { JsonArray([]) }
@@ -3594,6 +3635,66 @@ public class TelegramAdapter <: ChannelAdapter {
         }
         File.writeTo(path, (migrations.toJsonString() + "\n").toArray())
         true
+    }
+
+    private func telegramConfigPathIsSafeForAutomaticMigration(): Bool {
+        let path = MetisConfigManager.configPath().toString()
+        path.startsWith("/tmp/") || path.startsWith("/private/tmp/")
+    }
+
+    private func maybeMigrateTelegramGroupConfig(row: JsonObject, oldChatId: String, newChatId: String): Unit {
+        if (!this.config.configWrites) {
+            row.put("configMigrationStatus", JsonString("diagnostic_only"))
+            row.put("configMigrationReason", JsonString("gateway.telegram.configWrites=false"))
+            return
+        }
+        if (!this.telegramConfigPathIsSafeForAutomaticMigration()) {
+            row.put("configMigrationStatus", JsonString("diagnostic_only"))
+            row.put("configMigrationReason", JsonString("config path is not a temporary/explicit safe path"))
+            row.put("configPath", JsonString(MetisConfigManager.configPath().toString()))
+            return
+        }
+        if (oldChatId.trimAscii().isEmpty() || newChatId.trimAscii().isEmpty() || oldChatId == newChatId) {
+            row.put("configMigrationStatus", JsonString("skipped"))
+            row.put("configMigrationReason", JsonString("missing or unchanged chat id"))
+            return
+        }
+        try {
+            var settings = CliSettingManager.readGatewaySettings()
+            let groups = match (settings.telegram.groups) {
+                case Some(v) => v
+                case None =>
+                    row.put("configMigrationStatus", JsonString("skipped"))
+                    row.put("configMigrationReason", JsonString("no gateway.telegram.groups config"))
+                    return
+            }
+            let oldConfigOpt = groups.get(oldChatId)
+            if (oldConfigOpt.isNone()) {
+                row.put("configMigrationStatus", JsonString("skipped"))
+                row.put("configMigrationReason", JsonString("old group config not found"))
+                return
+            }
+            if (groups.get(newChatId).isSome()) {
+                row.put("configMigrationStatus", JsonString("skippedExisting"))
+                row.put("configMigrationReason", JsonString("new group config already exists"))
+                return
+            }
+            let migrated = JsonObject()
+            for (key in groups.getFields().keys()) {
+                if (key != oldChatId) {
+                    migrated.put(key, groups.get(key).getOrThrow())
+                }
+            }
+            migrated.put(newChatId, oldConfigOpt.getOrThrow())
+            settings.telegram.groups = Some(migrated)
+            let _ = MetisConfigManager.setGatewaySettings(settings)
+            CliSettingManager.invalidate()
+            row.put("configMigrationStatus", JsonString("migrated"))
+            row.put("configPath", JsonString(MetisConfigManager.configPath().toString()))
+        } catch (e: Exception) {
+            row.put("configMigrationStatus", JsonString("warning"))
+            row.put("configMigrationReason", JsonString(e.message))
+        }
     }
 
     private func mediaDownloadDir(): Path {
@@ -7632,7 +7733,9 @@ public class TelegramAdapter <: ChannelAdapter {
         if (this.isPollingContext(context)) {
             this.recordPollError(message, outcome: outcome)
         } else {
-            this.setLastSendError(message)
+            if (!(context.startsWith("send:") && this.lastSendError.trimAscii().startsWith("telegram send error class="))) {
+                this.setLastSendError(message)
+            }
         }
     }
 
@@ -7699,11 +7802,28 @@ public class TelegramAdapter <: ChannelAdapter {
         let detail = this.redactTelegramSensitive(if (response.error.trimAscii().isEmpty()) { "transport failed" } else { response.error.trimAscii() })
         if (context.startsWith("send:") || context == "setWebhook" || context.startsWith("deleteWebhook:") ||
             context == "setMyCommands" || context == "answerCallbackQuery" || context.startsWith("editMessageReplyMarkup:")) {
-            this.setLastSendError(detail)
+            if (context.startsWith("send:")) {
+                let decision = gatewayTelegramClassifySendError(this.telegramSendKindFromContext(context), detail, transportOutcome: outcome, statusCode: response.statusCode)
+                this.setLastSendError(decision.diagnostic)
+            } else {
+                this.setLastSendError(detail)
+            }
         }
         this.recordTelegramRequestError(context, "transport failed: ${detail}", outcome: outcome)
         LogUtils.info("Telegram ${context} failed: ${context} transport failed: ${detail}")
         None
+    }
+
+    private func telegramSendKindFromContext(context: String): String {
+        let normalized = context.trimAscii()
+        if (!normalized.startsWith("send:")) {
+            return ""
+        }
+        let rest = normalized["send:".size..]
+        match (rest.indexOf(":")) {
+            case Some(idx) => rest[..idx].trimAscii()
+            case None => rest.trimAscii()
+        }
     }
 
     private func handleTelegramTransportBytesResponse(response: TelegramTransportResponse, context: String): Option<Array<Byte>> {
@@ -7725,6 +7845,18 @@ public class TelegramAdapter <: ChannelAdapter {
 
     private func setLastSendError(message: String): Unit {
         this.lastSendError = this.redactTelegramSensitive(message)
+    }
+
+    private func setTelegramSendApiError(kind: String, raw: String, fallback: String): Unit {
+        let decision = gatewayTelegramClassifySendError(kind, raw)
+        if (decision.retryAfterSeconds > 0) {
+            this.lastRetryAfterSeconds = decision.retryAfterSeconds
+        }
+        if (decision.diagnostic.trimAscii().isEmpty()) {
+            this.setLastSendError(fallback)
+        } else {
+            this.setLastSendError(decision.diagnostic)
+        }
     }
 
     private func redactTelegramSensitive(message: String): String {

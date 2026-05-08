@@ -839,6 +839,104 @@ public class GatewayTelegramMediaToolsetTest {
     }
 
     @TestCase
+    public func telegramTargetWritebackApplyRespectsConfigWritesPolicy(): Unit {
+        this.withTelegramMediaToolsetConfigHome {
+            var user = GatewayUserSettings()
+            user.telegram.defaultTo = "user:old"
+            user.telegram.configWrites = false
+            MetisConfigManager.setGatewaySettings(user)
+            let out = gatewayWithToolRuntimeContext(
+                GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:1", operatorScopes: ["operator.admin"]),
+                { => GatewayTelegramMediaToolset().debugTelegramTargetWritebackApplyForTest("12345", None<String>) }
+            )
+            let json = JsonValue.fromStr(out).asObject()
+            @Expect(json.get("status").getOrThrow().asString().getValue(), "denied")
+            @Expect(json.get("error").getOrThrow().asString().getValue().contains("configWrites"), true)
+            @Expect(CliSettingManager.readGatewaySettings().telegram.defaultTo, "user:old")
+        }
+    }
+
+    @TestCase
+    public func telegramSendToUsernameTargetResolvesWithGetChatAndSendsWithoutWriteback(): Unit {
+        this.withTelegramMediaToolsetConfigHome {
+            var user = GatewayUserSettings()
+            user.telegram.defaultTo = "user:old"
+            MetisConfigManager.setGatewaySettings(user)
+            let toolset = GatewayTelegramMediaToolset()
+            toolset.debugSetGatewayCallRunnerForTest(Some({ method: String, params: JsonObject =>
+                let out = JsonObject()
+                if (method == "channels.telegram.getChat") {
+                    @Expect(params.get("chatId").getOrThrow().asString().getValue(), "@demo")
+                    out.put("ok", JsonBool(true))
+                    out.put("chatId", JsonString("-1001234567890"))
+                    return out
+                }
+                @Expect(method, "channels.send")
+                @Expect(params.get("peerId").getOrThrow().asString().getValue(), "group:-1001234567890")
+                out.put("ok", JsonBool(true))
+                out.put("messageId", JsonString("501"))
+                out
+            }))
+            try {
+                let out = toolset.debugTelegramSendToTargetForTest("@demo", "hello", None<String>, None<Bool>)
+                let json = JsonValue.fromStr(out).asObject()
+                @Expect(json.get("status").getOrThrow().asString().getValue(), "accepted")
+                @Expect(json.get("resolvedTarget").getOrThrow().asString().getValue(), "group:-1001234567890")
+                @Expect(json.get("writeback").isNone(), true)
+                @Expect(CliSettingManager.readGatewaySettings().telegram.defaultTo, "user:old")
+            } finally {
+                toolset.debugSetGatewayCallRunnerForTest(None<(String, JsonObject) -> JsonObject>)
+            }
+        }
+    }
+
+    @TestCase
+    public func telegramSendToDirectoryDisplayTargetAndDryRunWritebackArePolicyControlled(): Unit {
+        this.withTelegramMediaToolsetConfigHome {
+            var user = GatewayUserSettings()
+            user.telegram.defaultTo = "user:old"
+            MetisConfigManager.setGatewaySettings(user)
+            let toolset = GatewayTelegramMediaToolset()
+            toolset.debugSetGatewayCallRunnerForTest(Some({ method: String, params: JsonObject =>
+                let out = JsonObject()
+                if (method == "channels.audit") {
+                    let row = JsonObject()
+                    row.put("kind", JsonString("group"))
+                    row.put("id", JsonString("group:-10042"))
+                    row.put("displayName", JsonString("Ops Room"))
+                    row.put("accountId", JsonString("default"))
+                    row.put("source", JsonString("directory"))
+                    row.put("canSend", JsonBool(true))
+                    let rows = JsonArray([])
+                    rows.add(row)
+                    let directory = JsonObject()
+                    directory.put("rows", rows)
+                    let telegram = JsonObject()
+                    telegram.put("directory", directory)
+                    let audit = JsonObject()
+                    audit.put("telegram", telegram)
+                    out.put("audit", audit)
+                    return out
+                }
+                @Expect(method, "channels.send")
+                @Expect(params.get("peerId").getOrThrow().asString().getValue(), "group:-10042")
+                out.put("ok", JsonBool(true))
+                out
+            }))
+            try {
+                let out = toolset.debugTelegramSendToTargetForTest("Ops Room", "hello", Some("dry-run"), Some(true))
+                let json = JsonValue.fromStr(out).asObject()
+                @Expect(json.get("status").getOrThrow().asString().getValue(), "accepted")
+                @Expect(json.get("resolvedTarget").getOrThrow().asString().getValue(), "group:-10042")
+                @Expect(json.get("writeback").getOrThrow().asObject().get("status").getOrThrow().asString().getValue(), "dry_run")
+                @Expect(CliSettingManager.readGatewaySettings().telegram.defaultTo, "user:old")
+            } finally {
+                toolset.debugSetGatewayCallRunnerForTest(None<(String, JsonObject) -> JsonObject>)
+            }
+        }
+    }
+
+    @TestCase
     public func telegramTargetWritebackApplyUpdatesMatchingAccountDefaultTarget(): Unit {
         this.withTelegramMediaToolsetConfigHome {
             var user = GatewayUserSettings()

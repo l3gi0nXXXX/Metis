@@ -763,6 +763,10 @@ public class GatewayTelegramMediaToolset {
         this.telegramTargetWritebackApply(target, resolvedChatId)
     }
 
+    public func debugTelegramSendToTargetForTest(target: String, message: String, writeback: Option<String>, dryRun: Option<Bool>): String {
+        this.telegramSendToTargetResolved(target, message, writeback, dryRun)
+    }
+
     public func debugTelegramStickerSearchForTest(query: String, limit: Option<Int64>): String {
         this.searchTelegramStickers(query, limit)
     }
@@ -1519,6 +1523,11 @@ public class GatewayTelegramMediaToolset {
         }
     }
 
+    private func telegramTargetConfigPathIsSafe(): Bool {
+        let path = MetisConfigManager.configPath().toString()
+        path.startsWith("/tmp/") || path.startsWith("/private/tmp/")
+    }
+
     private func telegramTargetWritebackEnvelope(action: String, target: String, resolvedChatId: Option<String>, apply!: Bool): JsonObject {
         let out = JsonObject()
         var effectiveResolvedChatId = resolvedChatId
@@ -1577,11 +1586,33 @@ public class GatewayTelegramMediaToolset {
             denied.put("error", JsonString("telegram target writeback requires operator.admin scope"))
             return denied.toJsonString()
         }
+        let currentSettings = CliSettingManager.readGatewaySettings()
+        if (!currentSettings.telegram.configWrites) {
+            let denied = JsonObject()
+            denied.put("ok", JsonBool(false))
+            denied.put("status", JsonString("denied"))
+            denied.put("action", JsonString("telegram_target_writeback_apply"))
+            denied.put("target", JsonString(target.trimAscii()))
+            denied.put("cronTarget", JsonString("not_applicable"))
+            denied.put("error", JsonString("telegram target writeback requires gateway.telegram.configWrites=true"))
+            return denied.toJsonString()
+        }
+        if (!this.telegramTargetConfigPathIsSafe()) {
+            let denied = JsonObject()
+            denied.put("ok", JsonBool(false))
+            denied.put("status", JsonString("denied"))
+            denied.put("action", JsonString("telegram_target_writeback_apply"))
+            denied.put("target", JsonString(target.trimAscii()))
+            denied.put("cronTarget", JsonString("not_applicable"))
+            denied.put("configPath", JsonString(MetisConfigManager.configPath().toString()))
+            denied.put("error", JsonString("telegram target writeback requires a temporary/explicit safe config path"))
+            return denied.toJsonString()
+        }
         let envelope = this.telegramTargetWritebackEnvelope("telegram_target_writeback_apply", target, resolvedChatId, apply: true)
         if (!(try { envelope.get("ok").getOrThrow().asBool().getValue() } catch (_e: Exception) { false })) {
             return envelope.toJsonString()
         }
-        var settings = CliSettingManager.readGatewaySettings()
+        var settings = currentSettings
         settings.telegram.defaultTo = telegramMediaToolString(envelope, "defaultTo")
         match (settings.telegram.accounts) {
             case Some(accounts) =>
@@ -1599,6 +1630,124 @@ public class GatewayTelegramMediaToolset {
         MetisConfigManager.setGatewaySettings(settings)
         envelope.put("configPath", JsonString(MetisConfigManager.configPath().toString()))
         envelope.toJsonString()
+    }
+
+    private func telegramResolveSendTarget(target: String): JsonObject {
+        let raw = target.trimAscii()
+        let out = JsonObject()
+        out.put("ok", JsonBool(false))
+        out.put("target", JsonString(raw))
+        if (raw.isEmpty()) {
+            out.put("error", JsonString("target is required"))
+            return out
+        }
+        let lookup = this.telegramTargetLookupFromRaw(raw)
+        if (!lookup.isEmpty()) {
+            let (resolvedOk, chatId, resolvedError, detail) = this.telegramTargetResolveViaGetChat(raw)
+            out.put("resolve", detail)
+            if (!resolvedOk) {
+                out.put("error", JsonString(resolvedError))
+                return out
+            }
+            let (normOk, normalized, normError) = this.telegramTargetWritebackNormalize(raw, Some(chatId))
+            if (!normOk) {
+                out.put("error", JsonString(normError))
+                return out
+            }
+            out.put("ok", JsonBool(true))
+            out.put("resolvedTarget", JsonString(normalized))
+            out.put("source", JsonString("getChat"))
+            out.put("resolvedChatId", JsonString(chatId))
+            return out
+        }
+        let normalized = this.telegramTargetWritebackNormalize(raw, None<String>)
+        if (normalized[0]) {
+            out.put("ok", JsonBool(true))
+            out.put("resolvedTarget", JsonString(normalized[1]))
+            out.put("source", JsonString("literal"))
+            return out
+        }
+        let params = JsonObject()
+        params.put("channelId", JsonString("telegram"))
+        let audit = telegramMediaToolInvokeGatewayCall("channels.audit", params: Some(params))
+        let resolved = JsonValue.fromStr(this.renderTelegramTargetResolveFromAudit(raw, audit)).asObject()
+        if (telegramMediaToolBool(resolved, "ok")) {
+            let row = try { resolved.get("target").getOrThrow().asObject() } catch (_e: Exception) { JsonObject() }
+            let id = telegramMediaToolString(row, "id")
+            if (!id.isEmpty() && telegramMediaToolBool(row, "canSend")) {
+                out.put("ok", JsonBool(true))
+                out.put("resolvedTarget", JsonString(id))
+                out.put("source", JsonString(telegramMediaToolString(row, "source")))
+                out.put("directoryTarget", row)
+                return out
+            }
+        }
+        out.put("error", JsonString("Unknown, unauthorized, or blocked Telegram target"))
+        out
+    }
+
+    private func telegramSendToTargetResolved(target: String, message: String, writeback: Option<String>, dryRun: Option<Bool>): String {
+        let targetText = target.trimAscii()
+        let msg = message.trimAscii()
+        if (targetText.isEmpty() || msg.isEmpty()) {
+            return telegramMediaError("telegram_send_to_target", "target and message are required")
+        }
+        let resolved = this.telegramResolveSendTarget(targetText)
+        if (!telegramMediaToolBool(resolved, "ok")) {
+            let err = JsonObject()
+            err.put("ok", JsonBool(false))
+            err.put("status", JsonString("error"))
+            err.put("action", JsonString("telegram_send_to_target"))
+            err.put("target", JsonString(targetText))
+            err.put("resolve", resolved)
+            err.put("error", JsonString(telegramMediaToolString(resolved, "error")))
+            return err.toJsonString()
+        }
+        let resolvedTarget = telegramMediaToolString(resolved, "resolvedTarget")
+        let payload = JsonObject()
+        payload.put("id", JsonString("telegram"))
+        payload.put("channel", JsonString("telegram"))
+        payload.put("peerId", JsonString(resolvedTarget))
+        payload.put("to", JsonString(resolvedTarget))
+        payload.put("text", JsonString(msg))
+        payload.put("message", JsonString(msg))
+        let sent = telegramMediaToolInvokeGatewayCall("channels.send", params: Some(payload))
+        let ok = try { sent.get("ok").getOrThrow().asBool().getValue() } catch (_e: Exception) { false }
+        let out = JsonObject()
+        out.put("ok", ok.toJsonValue())
+        out.put("status", JsonString(if (ok) { "accepted" } else { "error" }))
+        out.put("action", JsonString("telegram_send_to_target"))
+        out.put("target", JsonString(targetText))
+        out.put("resolvedTarget", JsonString(resolvedTarget))
+        out.put("resolve", resolved)
+        out.put("gateway", sent)
+        let writebackMode = match (writeback) {
+            case Some(v) => v.trimAscii().toAsciiLower()
+            case None => ""
+        }
+        let dry = match (dryRun) { case Some(v) => v case None => false }
+        if (dry || writebackMode == "dry-run" || writebackMode == "dry_run") {
+            out.put("writeback", JsonValue.fromStr(this.telegramTargetWritebackDryRun(targetText, Some(this.telegramTargetChatIdForWriteback(resolvedTarget)))).asObject())
+        } else if (writebackMode == "apply" || writebackMode == "true" || writebackMode == "on") {
+            out.put("writeback", JsonValue.fromStr(this.telegramTargetWritebackApply(targetText, Some(this.telegramTargetChatIdForWriteback(resolvedTarget)))).asObject())
+        }
+        out.toJsonString()
+    }
+
+    private func telegramTargetChatIdForWriteback(resolvedTarget: String): String {
+        let target = resolvedTarget.trimAscii()
+        if (target.startsWith("user:")) {
+            return target["user:".size..]
+        }
+        if (target.startsWith("group:")) {
+            let group = target["group:".size..]
+            match (group.indexOf(":topic:")) {
+                case Some(idx) => group[..idx]
+                case None => group
+            }
+        } else {
+            target
+        }
     }
 
     @tool[
@@ -1831,36 +1980,17 @@ public class GatewayTelegramMediaToolset {
     }
 
     @tool[
-        description: "Send a text message to a known Telegram target through Gateway channels.send. This does not write back target configuration.",
+        description: "Send a text message to a Telegram target through Gateway channels.send. Supports known directory/display targets and @username getChat resolution; target writeback is optional and policy-gated.",
         parameters: {
-            target: "Target id from telegram_target_list.",
-            message: "Message text to send."
+            target: "Target id, display name, session key from telegram_target_list, numeric chat id, user:<id>, group:<id>, t.me link, or @username.",
+            message: "Message text to send.",
+            writeback: "Optional target writeback mode: off, dry-run, or apply. apply requires operator.admin, configWrites=true, and a safe config path.",
+            dryRun: "Optional. When true, previews writeback only and never mutates config."
         }
     ]
-    public func telegram_send_to_target(target: String, message: String): String {
+    public func telegram_send_to_target(target: String, message: String, writeback: Option<String>, dryRun: Option<Bool>): String {
         PrintUtils.printTool("telegram_send_to_target", shortMessage: target)
-        let targetText = target.trimAscii()
-        let msg = message.trimAscii()
-        if (targetText.isEmpty() || msg.isEmpty()) {
-            let err = telegramMediaError("telegram_send_to_target", "target and message are required")
-            PrintUtils.printToolResult(err)
-            return err
-        }
-        let payload = JsonObject()
-        payload.put("id", JsonString("telegram"))
-        payload.put("channel", JsonString("telegram"))
-        payload.put("peerId", JsonString(targetText))
-        payload.put("to", JsonString(targetText))
-        payload.put("text", JsonString(msg))
-        payload.put("message", JsonString(msg))
-        let sent = telegramMediaToolInvokeGatewayCall("channels.send", params: Some(payload))
-        let out = JsonObject()
-        out.put("ok", sent.get("ok") ?? JsonBool(false))
-        out.put("status", JsonString(if (try { sent.get("ok").getOrThrow().asBool().getValue() } catch (_e: Exception) { false }) { "accepted" } else { "error" }))
-        out.put("action", JsonString("telegram_send_to_target"))
-        out.put("target", JsonString(targetText))
-        out.put("gateway", sent)
-        let text = out.toJsonString()
+        let text = this.telegramSendToTargetResolved(target, message, writeback, dryRun)
         PrintUtils.printToolResult(text)
         return text
     }

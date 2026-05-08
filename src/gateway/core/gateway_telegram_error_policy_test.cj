@@ -104,4 +104,31 @@ public class GatewayTelegramErrorPolicyTest {
         @Expect(state.shouldReply(user, "user:8734062810", "", "gateway-execution", 1000), false)
         @Expect(state.shouldReply(user, "user:123", "", "gateway-execution", 1000), true)
     }
+
+    @TestCase
+    public func sendErrorClassifierCoversRetryAfterServerPermissionAndSoftFailures(): Unit {
+        let rate = gatewayTelegramClassifySendError(
+            "text",
+            "{\"ok\":false,\"error_code\":429,\"description\":\"Too Many Requests\",\"parameters\":{\"retry_after\":30}}"
+        )
+        @Expect(rate.classification, "rate-limit")
+        @Expect(rate.retryable, true)
+        @Expect(rate.retryAfterSeconds, 30)
+
+        let server = gatewayTelegramClassifySendError("edit", "{\"ok\":false,\"error_code\":500,\"description\":\"Internal Server Error\"}")
+        @Expect(server.classification, "server-error")
+        @Expect(server.retryable, true)
+
+        let denied = gatewayTelegramClassifySendError("chat-action", "{\"ok\":false,\"error_code\":403,\"description\":\"Forbidden: bot was blocked by the user\"}")
+        @Expect(denied.classification, "permission")
+        @Expect(denied.retryable, false)
+
+        let notModified = gatewayTelegramClassifySendError("edit", "{\"ok\":false,\"error_code\":400,\"description\":\"Bad Request: message is not modified\"}")
+        @Expect(notModified.classification, "message-not-modified")
+        @Expect(notModified.softSuccess, true)
+
+        let reactionInvalid = gatewayTelegramClassifySendError("reaction", "{\"ok\":false,\"error_code\":400,\"description\":\"Bad Request: invalid reaction type\"}")
+        @Expect(reactionInvalid.classification, "reaction-invalid")
+        @Expect(reactionInvalid.retryable, false)
+    }
 }
