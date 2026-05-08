@@ -12,6 +12,7 @@ public class OpenClawSandboxGrantsTest {
         @Expect(empty.canSpawnProcess(), false)
         @Expect(empty.canUseBrowser(), false)
         @Expect(empty.canUseRealtime(), false)
+        @Expect(empty.canFetchHttp("https://api.example.test/v1"), false)
         @Expect(granted.canSpawnProcess(), true)
         @Expect(granted.canUseBrowser(), true)
         @Expect(granted.canUseRealtime(), true)
@@ -35,5 +36,23 @@ public class OpenClawSandboxGrantsTest {
         @Expect(granted.realtimeSession("websocket").status, "not_applicable")
         @Expect(granted.notApplicableEvidence().contains("browser:not-applicable"), true)
         @Expect(granted.notApplicableEvidence().contains("realtime:not-applicable"), true)
+    }
+
+    @TestCase
+    public func sandboxManagerRecordsFetchGrantDecisions(): Unit {
+        let empty = OpenClawSandboxManager(OpenClawSandboxGrantSet([]))
+        let granted = OpenClawSandboxManager(OpenClawSandboxGrantSet([
+            "network:https://api.example.test",
+            "network:http://127.0.0.1:8080"
+        ]))
+
+        let denied = empty.fetchHttp("https://api.example.test/v1")
+        let allowed = granted.fetchHttp("https://api.example.test/v1")
+        let invalid = granted.fetchHttp("file:///tmp/token")
+
+        @Expect(denied.status, "permission_denied")
+        @Expect(allowed.status, "authorized")
+        @Expect(allowed.contract, "metis.openclaw-sandbox.v1")
+        @Expect(invalid.status, "invalid_request")
     }
 }

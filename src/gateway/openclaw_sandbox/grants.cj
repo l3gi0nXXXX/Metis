@@ -46,6 +46,29 @@ public class OpenClawSandboxGrantSet {
     public func canUseRealtime(): Bool {
         this.has("realtime:stream") || this.has("realtime:not-applicable")
     }
+
+    public func canFetchHttp(url: String): Bool {
+        let normalized = url.trimAscii().toAsciiLower()
+        if (!(normalized.startsWith("https://") || normalized.startsWith("http://"))) {
+            return false
+        }
+        if (this.has("network:*") || this.has("fetch:*")) {
+            return true
+        }
+        for (grant in this.grants) {
+            if ((grant.startsWith("network:") || grant.startsWith("fetch:")) && grant.endsWith("*")) {
+                let prefix = grant[0..grant.size - 1]
+                if (normalized.startsWith(prefix.replace("network:", "").replace("fetch:", ""))) {
+                    return true
+                }
+            } else if (grant.startsWith("network:") && normalized.startsWith(grant.replace("network:", ""))) {
+                return true
+            } else if (grant.startsWith("fetch:") && normalized.startsWith(grant.replace("fetch:", ""))) {
+                return true
+            }
+        }
+        false
+    }
 }
 
 public class OpenClawSandboxRuntimeResult {
@@ -117,6 +140,18 @@ public class OpenClawSandboxManager {
             return OpenClawSandboxRuntimeResult(false, "permission_denied", "realtime", action, reason: "realtime grant is required")
         }
         OpenClawSandboxRuntimeResult(true, "authorized", "realtime", action)
+    }
+
+    public func fetchHttp(url: String): OpenClawSandboxRuntimeResult {
+        let normalized = url.trimAscii()
+        let lower = normalized.toAsciiLower()
+        if (!(lower.startsWith("https://") || lower.startsWith("http://"))) {
+            return OpenClawSandboxRuntimeResult(false, "invalid_request", "fetch", "http", reason: "only http and https URLs are supported")
+        }
+        if (!this.grants.canFetchHttp(normalized)) {
+            return OpenClawSandboxRuntimeResult(false, "permission_denied", "fetch", "http", reason: "network/fetch grant is required")
+        }
+        OpenClawSandboxRuntimeResult(true, "authorized", "fetch", "http")
     }
 
     public func notApplicableEvidence(): Array<String> {

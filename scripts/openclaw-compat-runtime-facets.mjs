@@ -154,6 +154,10 @@ function urlMatches(pattern, url) {
 }
 
 async function runtimeFetch(state, pluginId, urlValue, init = {}) {
+  if (!allowedByGate(state, pluginId, "fetch")) {
+    return { ok: false, status: "permission_denied", facet: "fetch" };
+  }
+
   const url = normalizeUrl(urlValue);
   if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) {
     addDiagnostic(state, { code: "fetch_denied", pluginId, reason: "invalid_url", url: String(urlValue ?? "") });
@@ -172,11 +176,17 @@ async function runtimeFetch(state, pluginId, urlValue, init = {}) {
     return { ok: false, status: "not_configured", url: url.href };
   }
 
-  const response = await state.fetchImpl(url.href, init);
-  const headers = response?.headers instanceof Map ? Object.fromEntries(response.headers) : Object.fromEntries(response?.headers ?? []);
-  const body = typeof response?.text === "function" ? await response.text() : "";
-  addDiagnostic(state, { code: "fetch_completed", pluginId, url: url.href, status: response?.status ?? 0 });
-  return { ok: Boolean(response?.ok), status: response?.status ?? 0, headers, body };
+  try {
+    const response = await state.fetchImpl(url.href, init);
+    const headers = response?.headers instanceof Map ? Object.fromEntries(response.headers) : Object.fromEntries(response?.headers ?? []);
+    const body = typeof response?.text === "function" ? await response.text() : "";
+    addDiagnostic(state, { code: "fetch_completed", pluginId, url: url.href, status: response?.status ?? 0 });
+    return { ok: Boolean(response?.ok), status: response?.status ?? 0, headers, body };
+  } catch (error) {
+    const message = state.redactor.redactString(error?.message ?? String(error));
+    addDiagnostic(state, { code: "fetch_error", pluginId, url: url.href, message });
+    return { ok: false, status: "runtime_error", facet: "fetch", message };
+  }
 }
 
 function mediaRef(state, request) {
@@ -234,10 +244,16 @@ function gatedAdapter(state, pluginId, facet, action, fallback) {
       return { ok: false, status: "permission_denied", facet };
     }
     const adapter = state.adapters[facet];
-    if (adapter && typeof adapter[action] === "function") {
-      return adapter[action](...args);
+    try {
+      if (adapter && typeof adapter[action] === "function") {
+        return await adapter[action](...args);
+      }
+      return await fallback(...args);
+    } catch (error) {
+      const message = state.redactor.redactString(error?.message ?? String(error));
+      addDiagnostic(state, { code: "runtime_adapter_error", pluginId, facet, action, message });
+      return { ok: false, status: "runtime_error", facet, action, message };
     }
-    return fallback(...args);
   };
 }
 
@@ -250,6 +266,37 @@ function notApplicableFacet(state, pluginId, facet, action) {
     message: `${facet}.${action} requires a Gateway adapter that is not wired in this runtime slice`,
   });
   return { ok: false, status: "not_applicable", facet, action };
+}
+
+function processSandboxDecision(state, pluginId, action, request = {}) {
+  const command = String(request?.command ?? "").trim();
+  const result = command
+    ? {
+        ok: true,
+        status: "authorized",
+        contract: "metis.openclaw-sandbox.v1",
+        facet: "process",
+        action,
+        command,
+        args: Array.isArray(request?.args) ? request.args.map((arg) => String(arg)) : [],
+      }
+    : {
+        ok: false,
+        status: "invalid_request",
+        contract: "metis.openclaw-sandbox.v1",
+        facet: "process",
+        action,
+        reason: "command is required",
+      };
+  addDiagnostic(state, {
+    code: "process_sandbox_decision",
+    pluginId,
+    facet: "process",
+    action,
+    status: result.status,
+    command: command ? command : "",
+  });
+  return result;
 }
 
 export function createRuntimeFacets(state, pluginId) {
@@ -279,8 +326,8 @@ export function createRuntimeFacets(state, pluginId) {
       list: gatedAdapter(state, pluginId, "thread", "list", async () => notApplicableFacet(state, pluginId, "thread", "list")),
     },
     process: {
-      spawn: gatedAdapter(state, pluginId, "process", "spawn", async () =>
-        notApplicableFacet(state, pluginId, "process", "spawn"),
+      spawn: gatedAdapter(state, pluginId, "process", "spawn", async (request = {}) =>
+        processSandboxDecision(state, pluginId, "spawn", request),
       ),
       env: gatedAdapter(state, pluginId, "process", "env", async () => notApplicableFacet(state, pluginId, "process", "env")),
     },
@@ -319,6 +366,14 @@ export function createRuntimeFacets(state, pluginId) {
         status: "not_configured",
         contract: "metis.memory-context-backend.v1",
         key: String(request.key ?? ""),
+      })),
+      embed: gatedAdapter(state, pluginId, "memory", "embed", async (request = {}) => ({
+        ok: false,
+        status: "not_configured",
+        contract: "metis.memory-embedding-provider.v1",
+        model: String(request.model ?? ""),
+        input: String(request.text ?? request.input ?? ""),
+        embedding: [],
       })),
     },
     browser: {

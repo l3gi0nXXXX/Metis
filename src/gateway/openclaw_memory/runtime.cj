@@ -46,6 +46,23 @@ public class OpenClawMemorySearchHit {
     }
 }
 
+public class OpenClawMemoryEmbeddingResult {
+    public let contract: String = "metis.memory-embedding-provider.v1"
+    public let ok: Bool
+    public let status: String
+    public let model: String
+    public let input: String
+    public let embedding: Array<Float64>
+
+    public init(ok: Bool, status: String, model: String, input: String, embedding: Array<Float64>) {
+        this.ok = ok
+        this.status = status.trimAscii()
+        this.model = model.trimAscii()
+        this.input = input
+        this.embedding = embedding
+    }
+}
+
 private class OpenClawMemoryFact {
     public let scope: String
     public let owner: String
@@ -120,5 +137,19 @@ public class OpenClawMemoryRuntime {
             }
         }
         hits.toArray()
+    }
+
+    public func embed(input: String, model!: String = "memory-core-embedding"): OpenClawMemoryEmbeddingResult {
+        let text = input.trimAscii()
+        if (text.isEmpty()) {
+            return OpenClawMemoryEmbeddingResult(false, "invalid_request", model, input, [])
+        }
+        let bytes = text.toArray()
+        let slots = Array<Float64>(8, repeat: 0.0)
+        for (i in 0..bytes.size) {
+            let bucket = i % slots.size
+            slots[bucket] = slots[bucket] + Float64(bytes[i]) / 255.0
+        }
+        OpenClawMemoryEmbeddingResult(true, "ok", model, input, slots)
     }
 }

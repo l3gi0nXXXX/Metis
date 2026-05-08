@@ -36,4 +36,16 @@ public class OpenClawMemoryRuntimeTest {
         @Expect(metis.contract, "metis.memory-context-backend.v1")
         @Expect(metis.purpose, "openclaw-gap09")
     }
+
+    @TestCase
+    public func memoryRuntimeExposesEmbeddingProviderContract(): Unit {
+        let runtime = OpenClawMemoryRuntime()
+        let result = runtime.embed("metis runtime facet", model: "fixture-embedding")
+
+        @Expect(result.contract, "metis.memory-embedding-provider.v1")
+        @Expect(result.ok, true)
+        @Expect(result.model, "fixture-embedding")
+        @Expect(result.input, "metis runtime facet")
+        @Expect(result.embedding.size > 0, true)
+    }
 }

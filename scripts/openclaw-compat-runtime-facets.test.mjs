@@ -31,7 +31,7 @@ test("runtime config is a redacted immutable snapshot and secrets resolve with r
 });
 
 test("runtime fetch enforces allowlist and records deterministic diagnostics", async () => {
-  const deniedState = createRuntimeState({ fetchPolicy: { allow: ["https://allowed.example"] } });
+  const deniedState = createRuntimeState({ permissions: { fetch: true }, fetchPolicy: { allow: ["https://allowed.example"] } });
   const deniedRuntime = createRuntimeFacets(deniedState, "fixture-plugin");
 
   const denied = await deniedRuntime.fetch("https://blocked.example/data");
@@ -40,6 +40,7 @@ test("runtime fetch enforces allowlist and records deterministic diagnostics", a
   assert.ok(deniedState.diagnostics.some((diagnostic) => diagnostic.code === "fetch_denied"));
 
   const allowedState = createRuntimeState({
+    permissions: { fetch: true },
     fetchPolicy: { allow: ["https://allowed.example"] },
     fetchImpl: async (url, init) => ({
       ok: true,
@@ -54,6 +55,24 @@ test("runtime fetch enforces allowlist and records deterministic diagnostics", a
   assert.equal(allowed.ok, true);
   assert.equal(allowed.status, 202);
   assert.deepEqual(JSON.parse(allowed.body), { url: "https://allowed.example/data", method: "POST" });
+});
+
+test("runtime fetch requires an explicit network grant before policy evaluation", async () => {
+  const state = createRuntimeState({
+    permissions: { fetch: false },
+    fetchPolicy: { allow: ["https://allowed.example"] },
+    fetchImpl: async () => {
+      throw new Error("fetchImpl must not run without a grant");
+    },
+  });
+  const runtime = createRuntimeFacets(state, "fixture-plugin");
+
+  const denied = await runtime.fetch("https://allowed.example/data");
+
+  assert.equal(denied.ok, false);
+  assert.equal(denied.status, "permission_denied");
+  assert.equal(denied.facet, "fetch");
+  assert.ok(state.diagnostics.some((diagnostic) => diagnostic.code === "permission_denied" && diagnostic.facet === "fetch"));
 });
 
 test("runtime media creates file refs and resolves stored content", async () => {
@@ -118,10 +137,10 @@ test("allowed but unwired runtime facets return not_applicable diagnostics inste
   assert.equal((await runtime.reply.send({ text: "hi" })).status, "not_applicable");
   assert.equal((await runtime.conversation.get("conversation-1")).status, "not_applicable");
   assert.equal((await runtime.thread.get("thread-1")).status, "not_applicable");
-  assert.equal((await runtime.process.spawn({ command: "node" })).status, "not_applicable");
+  assert.equal((await runtime.process.spawn({ command: "node" })).status, "authorized");
 
   assert.ok(state.diagnostics.some((diagnostic) => diagnostic.code === "runtime_facet_not_applicable" && diagnostic.facet === "reply"));
-  assert.ok(state.diagnostics.some((diagnostic) => diagnostic.code === "runtime_facet_not_applicable" && diagnostic.facet === "process"));
+  assert.ok(state.diagnostics.some((diagnostic) => diagnostic.code === "process_sandbox_decision" && diagnostic.facet === "process"));
 });
 
 test("provider memory browser and realtime facets expose production bridge contracts", async () => {
@@ -178,4 +197,71 @@ test("provider memory browser and realtime facets expose production bridge contr
   assert.equal((await allowedRuntime.memory.search({ query: "metis" })).contract, "metis.memory-context-backend.v1");
   assert.equal((await allowedRuntime.browser.open({ url: "https://example.com" })).status, "not_applicable");
   assert.equal((await allowedRuntime.realtime.connect({ url: "wss://example.com" })).status, "not_applicable");
+});
+
+test("runtime adapters return redacted error evidence instead of leaking secrets", async () => {
+  const state = createRuntimeState({
+    secrets: { OPENCLAW_TOKEN: "super-secret-token" },
+    permissions: { reply: true },
+    adapters: {
+      reply: {
+        send: async () => {
+          throw new Error("backend failed with super-secret-token");
+        },
+      },
+    },
+  });
+  const runtime = createRuntimeFacets(state, "fixture-plugin");
+
+  const result = await runtime.reply.send({ text: "hi" });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "runtime_error");
+  assert.equal(result.facet, "reply");
+  assert.equal(JSON.stringify(result).includes("super-secret-token"), false);
+  assert.ok(state.diagnostics.some((diagnostic) => diagnostic.code === "runtime_adapter_error" && diagnostic.facet === "reply"));
+  assert.equal(JSON.stringify(state.diagnostics).includes("super-secret-token"), false);
+});
+
+test("memory embedding facet exposes Metis embedding contract through grants", async () => {
+  const deniedState = createRuntimeState();
+  const deniedRuntime = createRuntimeFacets(deniedState, "fixture-plugin");
+  assert.equal((await deniedRuntime.memory.embed({ text: "metis" })).status, "permission_denied");
+
+  const allowedState = createRuntimeState({
+    permissions: { memory: true },
+    adapters: {
+      memory: {
+        embed: async (request) => ({
+          ok: true,
+          contract: "metis.memory-embedding-provider.v1",
+          model: "fixture-embedding",
+          input: request.text,
+          embedding: [0.1, 0.2],
+        }),
+      },
+    },
+  });
+  const allowedRuntime = createRuntimeFacets(allowedState, "fixture-plugin");
+
+  assert.deepEqual(await allowedRuntime.memory.embed({ text: "metis" }), {
+    ok: true,
+    contract: "metis.memory-embedding-provider.v1",
+    model: "fixture-embedding",
+    input: "metis",
+    embedding: [0.1, 0.2],
+  });
+});
+
+test("process facet has sandbox evidence for granted but invalid spawn requests", async () => {
+  const state = createRuntimeState({ permissions: { process: true } });
+  const runtime = createRuntimeFacets(state, "fixture-plugin");
+
+  const result = await runtime.process.spawn({ command: "" });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "invalid_request");
+  assert.equal(result.contract, "metis.openclaw-sandbox.v1");
+  assert.equal(result.facet, "process");
+  assert.ok(state.diagnostics.some((diagnostic) => diagnostic.code === "process_sandbox_decision"));
 });
