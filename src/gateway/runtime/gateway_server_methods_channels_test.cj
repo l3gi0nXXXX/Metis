@@ -820,6 +820,64 @@ public class GatewayServerMethodsChannelsTest {
     }
 
     @TestCase
+    public func channelsSendTelegramQuoteTextUsesReplyParameters(): Unit {
+        withGatewayChannelsTestHome {
+            let bodies = ArrayList<String>()
+            setTelegramTransportRunnerForTest(Some({ request: TelegramTransportRequest =>
+                bodies.add(request.body)
+                if (request.url.contains("/sendMessage")) {
+                    return TelegramTransportResponse(true, body: "{\"ok\":true,\"result\":{\"message_id\":8802}}", outcome: "ok")
+                }
+                TelegramTransportResponse(true, body: "{\"ok\":true,\"result\":true}", outcome: "ok")
+            }))
+            setGatewayOpenClawPluginSidecarRunnerForTest(Some({ method: String, payload: JsonObject =>
+                let out = JsonObject()
+                out.put("ok", true.toJsonValue())
+                if (method == "hook.message_sending") {
+                    out.put("cancelled", false.toJsonValue())
+                    out.put("text", payload.get("text").getOrThrow())
+                }
+                out
+            }))
+            try {
+                var user = GatewayUserSettings()
+                user.telegram.enabled = true
+                user.telegram.botToken = "telegram-token"
+                user.telegram.replyToMode = "all"
+                let params = JsonObject()
+                params.put("channel", JsonString("telegram"))
+                params.put("to", JsonString("user:8734062810"))
+                params.put("message", JsonString("quoted reply"))
+                params.put("replyToMessageId", JsonString("88"))
+                params.put("quoteText", JsonString("original quote"))
+                let response = handleGatewayChannelsFamily(
+                    "channels.send",
+                    user,
+                    request: Some(GatewayRpcRequest("channels.send", params: params, clientId: "telegram-native-send-quote"))
+                ).getOrThrow().result.asObject()
+
+                @Expect(channelsTestBool(response, "ok"), true)
+                var sawReplyParameters = false
+                for (body in bodies) {
+                    if (
+                        body.contains("\"reply_parameters\"") &&
+                        body.contains("\"quote\"") &&
+                        body.contains("original quote") &&
+                        body.contains("\"message_id\"") &&
+                        body.contains("\"88\"")
+                    ) {
+                        sawReplyParameters = true
+                    }
+                }
+                @Expect(sawReplyParameters, true)
+            } finally {
+                setTelegramTransportRunnerForTest(None)
+                setGatewayOpenClawPluginSidecarRunnerForTest(None)
+            }
+        }
+    }
+
+    @TestCase
     public func pluginsLogoutMarksRuntimeAsLoggedOutWhenHostClearsSession(): Unit {
         withGatewayChannelsTestHome {
             let user = GatewayUserSettings()

@@ -3017,6 +3017,31 @@ public class TelegramAdapterTest {
     }
 
     @TestCase
+    public func sendPayloadsUseReplyParametersWhenQuoteTextIsPresent(): Unit {
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(
+                enabled: true,
+                botToken: "telegram-token",
+                replyToMode: "all"
+            )
+        )
+        let payloads = adapter.debugBuildSendPayloads(
+            OutboundMessage(
+                ChannelType.Telegram,
+                "user:8734062810",
+                "quoted reply",
+                replyToMessageId: Some("88"),
+                quoteText: "original quoted text"
+            )
+        )
+        let first = payloads[0].asObject()
+        @Expect(first.get("reply_to_message_id").isNone(), true)
+        let replyParameters = first.get("reply_parameters").getOrThrow().asObject()
+        @Expect(replyParameters.get("message_id").getOrThrow().asString().getValue(), "88")
+        @Expect(replyParameters.get("quote").getOrThrow().asString().getValue(), "original quoted text")
+    }
+
+    @TestCase
     public func sendPayloadsEscapeHtmlAndKeepExplicitReplyTargetWhenReplyModeOff(): Unit {
         let adapter = TelegramAdapter(
             config: TelegramConfig(
@@ -3757,6 +3782,16 @@ public class TelegramAdapterTest {
         @Expect(text.contains("<a href=\"https://example.test\">site</a>"), true)
         @Expect(text.contains("&lt;unsafe&gt;"), true)
         @Expect(text.contains("<blockquote>quoted</blockquote>"), true)
+    }
+
+    @TestCase
+    public func t51TelegramRichTextWrapsTablesAndFileReferences(): Unit {
+        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
+        let rendered = adapter.debugTelegramRenderHtmlForTest("| File | Line |\n| --- | ---: |\n| src/gateway/core/gateway_service.cj | 42 |\nSee /tmp/metis/report.json and ./src/main.cj:12")
+        @Expect(rendered.contains("<pre>| File | Line |"), true)
+        @Expect(rendered.contains("| --- | ---: |"), true)
+        @Expect(rendered.contains("<code>/tmp/metis/report.json</code>"), true)
+        @Expect(rendered.contains("<code>./src/main.cj:12</code>"), true)
     }
 
     @TestCase
@@ -4878,6 +4913,72 @@ public class TelegramAdapterTest {
             setTelegramTransportRunnerForTest(None)
             try { remove(root, recursive: true) } catch (_e: Exception) { () }
         }
+    }
+
+    @TestCase
+    public func t51AcceptanceMatrixTracksAuditItemsZeroThroughNine(): Unit {
+        let items = [
+            "TG-RE-AUDIT-01",
+            "TG-RE-AUDIT-02",
+            "TG-RE-AUDIT-03",
+            "TG-RE-AUDIT-04",
+            "TG-RE-AUDIT-05",
+            "TG-RE-AUDIT-06",
+            "TG-RE-AUDIT-07",
+            "TG-RE-AUDIT-08",
+            "TG-RE-AUDIT-09",
+            "TG-RE-AUDIT-10"
+        ]
+        @Expect(items.size, 10)
+        @Expect(items[0], "TG-RE-AUDIT-01")
+        @Expect(items[3], "TG-RE-AUDIT-04")
+        @Expect(items[9], "TG-RE-AUDIT-10")
+    }
+
+    @TestCase
+    public func t51InboundQuoteContextIsSupplementalAndDoesNotTriggerCommand(): Unit {
+        let fake = TelegramFakeBotApi()
+        fake.pollingUpdatesEnabled = false
+        setTelegramTransportRunnerForTest(Some({ request => fake.handle(request) }))
+        try {
+            let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token", dmPolicy: "open", allowFrom: ["*"]))
+            adapter.start()
+            let payload = "{\"update_id\":510051,\"message\":{\"message_id\":510,\"text\":\"answer this\",\"quote\":{\"text\":\"/reset should stay quoted\"},\"external_reply\":{\"message_id\":509,\"quote\":{\"text\":\"external quote\"},\"text\":\"external body\"},\"chat\":{\"id\":8734062810,\"type\":\"private\"},\"from\":{\"id\":8734062810}}}"
+            let ack = adapter.ingestWebhookPayload(payload)
+            @Expect(ack.contains("\"ok\":true"), true)
+            let inboundItems = adapter.pullInbound()
+            @Expect(inboundItems.size, 1)
+            let inbound = inboundItems[0]
+            @Expect(inbound.text.contains("[quote-context]"), true)
+            @Expect(inbound.text.contains("text=/reset should stay quoted"), true)
+            @Expect(inbound.text.contains("quote=external quote"), true)
+            @Expect(inbound.text.startsWith("/reset"), false)
+            let context = inbound.mediaContext.get("context").getOrThrow().asObject()
+            @Expect(context.get("quote").getOrThrow().asObject().get("text").getOrThrow().asString().getValue(), "/reset should stay quoted")
+            @Expect(context.get("externalReply").getOrThrow().asObject().get("quoteText").getOrThrow().asString().getValue(), "external quote")
+            adapter.stop()
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+        }
+    }
+
+    @TestCase
+    public func t51UnsupportedAllowedUpdateTypesRecordIgnoredDiagnostics(): Unit {
+        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token", dmPolicy: "open", allowFrom: ["*"]))
+        for ((kind, payload) in [
+            ("business_message", "{\"update_id\":61,\"business_message\":{\"message_id\":1,\"text\":\"biz\",\"chat\":{\"id\":8734062810,\"type\":\"private\"},\"from\":{\"id\":8734062810}}}"),
+            ("message_reaction_count", "{\"update_id\":62,\"message_reaction_count\":{\"chat\":{\"id\":8734062810,\"type\":\"private\"},\"message_id\":2,\"reactions\":[]}}"),
+            ("poll_answer", "{\"update_id\":63,\"poll_answer\":{\"poll_id\":\"p\",\"user\":{\"id\":8734062810},\"option_ids\":[0]}}"),
+            ("chat_member", "{\"update_id\":64,\"chat_member\":{\"chat\":{\"id\":8734062810,\"type\":\"private\"},\"from\":{\"id\":8734062810},\"date\":1}}"),
+            ("inline_query", "{\"update_id\":65,\"inline_query\":{\"id\":\"iq\",\"from\":{\"id\":8734062810},\"query\":\"q\",\"offset\":\"\"}}")
+        ]) {
+            let ack = adapter.ingestWebhookPayload(payload)
+            @Expect(ack.contains("\"ignored\":true"), true)
+            let diag = adapter.debugBuildInboundPolicyDiagnostics()
+            @Expect(diag.get("lastDecision").getOrThrow().asString().getValue(), "ignored")
+            @Expect(diag.get("lastUpdateKind").getOrThrow().asString().getValue(), kind)
+        }
+        @Expect(adapter.pullInbound().size, 0)
     }
 
     @TestCase

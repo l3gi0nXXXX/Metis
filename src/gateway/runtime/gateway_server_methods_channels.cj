@@ -1187,6 +1187,7 @@ private func gatewayChannelActionByNativeAdapter(
     let peerId = gatewayRpcStringParam(request, ["peerId", "to", "target"], "")
     let text = gatewayRpcStringParam(request, ["text", "message", "body"], "")
     let replyTo = gatewayRpcStringParam(request, ["replyToMessageId", "replyTo"], "")
+    let quoteText = gatewayRpcStringParam(request, ["quoteText", "replyQuoteText"], "")
     let replyInThread = gatewayRpcBoolParam(request, ["replyInThread"], false)
     let result = JsonObject()
     result.put("channelId", JsonString(normalized))
@@ -1226,6 +1227,7 @@ private func gatewayChannelActionByNativeAdapter(
             peerId,
             effectiveText,
             replyToMessageId: if (replyTo.isEmpty()) { None<String> } else { Some(replyTo) },
+            quoteText: quoteText,
             replyInThread: replyInThread,
             accountId: accountId
         )

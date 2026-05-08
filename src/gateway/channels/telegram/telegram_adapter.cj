@@ -2027,6 +2027,12 @@ public class TelegramAdapter <: ChannelAdapter {
 
     private func telegramSupplementalContextText(msg: JsonObject): String {
         let lines = ArrayList<String>()
+        let messageQuote = this.telegramQuoteText(msg)
+        if (!messageQuote.isEmpty()) {
+            lines.add("[quote-context]")
+            lines.add("kind=quote")
+            lines.add("text=${messageQuote}")
+        }
         match (this.readObjectFieldOpt(msg, "reply_to_message")) {
             case Some(reply) =>
                 let replyText = this.readStringField(reply, "text").trimAscii()
@@ -2044,8 +2050,12 @@ public class TelegramAdapter <: ChannelAdapter {
                 let extText = this.readStringField(externalReply, "text").trimAscii()
                 let extCaption = this.readStringField(externalReply, "caption").trimAscii()
                 let extBody = if (!extText.isEmpty()) { extText } else { extCaption }
+                let extQuote = this.telegramQuoteText(externalReply)
                 lines.add("[external-reply-context]")
                 lines.add("messageId=${this.readIntStringField(externalReply, "message_id")}")
+                if (!extQuote.isEmpty()) {
+                    lines.add("quote=${extQuote}")
+                }
                 if (!extBody.isEmpty()) {
                     lines.add("body=${extBody}")
                 }
@@ -2107,8 +2117,22 @@ public class TelegramAdapter <: ChannelAdapter {
         String.join(lines.toArray(), delimiter: "\n")
     }
 
+    private func telegramQuoteText(msg: JsonObject): String {
+        match (this.readObjectFieldOpt(msg, "quote")) {
+            case Some(quoteObj) => this.readStringField(quoteObj, "text").trimAscii()
+            case None => ""
+        }
+    }
+
     private func telegramStructuredSupplementalContext(msg: JsonObject): JsonObject {
         let out = JsonObject()
+        let messageQuote = this.telegramQuoteText(msg)
+        if (!messageQuote.isEmpty()) {
+            let obj = JsonObject()
+            obj.put("kind", JsonString("quote"))
+            obj.put("text", JsonString(messageQuote))
+            out.put("quote", obj)
+        }
         match (this.readObjectFieldOpt(msg, "reply_to_message")) {
             case Some(reply) =>
                 let obj = JsonObject()
@@ -2127,6 +2151,7 @@ public class TelegramAdapter <: ChannelAdapter {
                 obj.put("messageId", JsonString(this.readIntStringField(externalReply, "message_id")))
                 obj.put("text", JsonString(this.readStringField(externalReply, "text").trimAscii()))
                 obj.put("caption", JsonString(this.readStringField(externalReply, "caption").trimAscii()))
+                obj.put("quoteText", JsonString(this.telegramQuoteText(externalReply)))
                 let from = this.readObjectField(externalReply, "from")
                 obj.put("senderId", JsonString(this.readIntStringField(from, "id")))
                 obj.put("senderUsername", JsonString(this.readStringField(from, "username").trimAscii()))
@@ -2730,10 +2755,7 @@ public class TelegramAdapter <: ChannelAdapter {
             case Some(v) => fallback["message_thread_id"] = v
             case None => ()
         }
-        match (payload.get("reply_to_message_id")) {
-            case Some(v) => fallback["reply_to_message_id"] = v
-            case None => ()
-        }
+        this.copyTelegramReplyTarget(fallback, payload)
         let previousError = this.lastSendError
         let sent = this.sendPayloadToTelegram(fallback)
         if (!sent.isEmpty()) {
@@ -2777,9 +2799,13 @@ public class TelegramAdapter <: ChannelAdapter {
             case Some(v) => body.put("message_thread_id", v)
             case None => ()
         }
-        match (payload.get("reply_to_message_id")) {
-            case Some(v) => body.put("reply_to_message_id", v)
-            case None => ()
+        match (payload.get("reply_parameters")) {
+            case Some(v) => body.put("reply_parameters", v)
+            case None =>
+                match (payload.get("reply_to_message_id")) {
+                    case Some(v) => body.put("reply_to_message_id", v)
+                    case None => ()
+                }
         }
         let url = this.normalizeApiRoot() + "/bot${this.effectiveBotToken()}/sendMessage"
         let previousError = this.lastSendError
@@ -4696,7 +4722,6 @@ public class TelegramAdapter <: ChannelAdapter {
         let normalizedPeer = message.peerId.trimAscii()
         let chatId = this.normalizePeerId(normalizedPeer)
         let threadId = this.extractThreadId(normalizedPeer)
-        let replyToMessageId = this.effectiveReplyToMessageId(message.replyToMessageId)
         let replyInThread = this.effectiveReplyInThread(message.replyInThread)
         for (i in 0..chunks.size) {
             let body = HashMap<String, JsonValue>()
@@ -4712,11 +4737,7 @@ public class TelegramAdapter <: ChannelAdapter {
                 body["message_thread_id"] = JsonString(threadId)
             }
             if (this.shouldAttachReplyTargetToChunk(i)) {
-                if (let Some(replyId) <- replyToMessageId) {
-                    if (!replyId.trimAscii().isEmpty()) {
-                        body["reply_to_message_id"] = JsonString(replyId.trimAscii())
-                    }
-                }
+                this.applyTelegramReplyTarget(body, message)
             }
             out.add(body)
         }
@@ -4789,11 +4810,7 @@ public class TelegramAdapter <: ChannelAdapter {
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
-        if (let Some(replyId) <- this.effectiveReplyToMessageId(message.replyToMessageId)) {
-            if (!replyId.trimAscii().isEmpty()) {
-                body["reply_to_message_id"] = JsonString(replyId.trimAscii())
-            }
-        }
+        this.applyTelegramReplyTarget(body, message)
         body
     }
 
@@ -5006,11 +5023,7 @@ public class TelegramAdapter <: ChannelAdapter {
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
-        if (let Some(replyId) <- this.effectiveReplyToMessageId(message.replyToMessageId)) {
-            if (!replyId.trimAscii().isEmpty()) {
-                body["reply_to_message_id"] = JsonString(replyId.trimAscii())
-            }
-        }
+        this.applyTelegramReplyTarget(body, message)
         let markup = this.telegramInlineKeyboardMarkupFromSpecs(specs)
         let rows = this.readJsonArrayField(markup, "inline_keyboard")
         if (rows.size() <= 0) {
@@ -5068,11 +5081,7 @@ public class TelegramAdapter <: ChannelAdapter {
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
-        if (let Some(replyId) <- this.effectiveReplyToMessageId(message.replyToMessageId)) {
-            if (!replyId.trimAscii().isEmpty()) {
-                body["reply_to_message_id"] = JsonString(replyId.trimAscii())
-            }
-        }
+        this.applyTelegramReplyTarget(body, message)
         body
     }
 
@@ -5124,11 +5133,7 @@ public class TelegramAdapter <: ChannelAdapter {
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
-        if (let Some(replyId) <- this.effectiveReplyToMessageId(message.replyToMessageId)) {
-            if (!replyId.trimAscii().isEmpty()) {
-                body["reply_to_message_id"] = JsonString(replyId.trimAscii())
-            }
-        }
+        this.applyTelegramReplyTarget(body, message)
         body
     }
 
@@ -5179,11 +5184,7 @@ public class TelegramAdapter <: ChannelAdapter {
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
-        if (let Some(replyId) <- this.effectiveReplyToMessageId(message.replyToMessageId)) {
-            if (!replyId.trimAscii().isEmpty()) {
-                body["reply_to_message_id"] = JsonString(replyId.trimAscii())
-            }
-        }
+        this.applyTelegramReplyTarget(body, message)
         body
     }
 
@@ -5269,11 +5270,7 @@ public class TelegramAdapter <: ChannelAdapter {
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
-        if (let Some(replyId) <- this.effectiveReplyToMessageId(message.replyToMessageId)) {
-            if (!replyId.trimAscii().isEmpty()) {
-                body["reply_to_message_id"] = JsonString(replyId.trimAscii())
-            }
-        }
+        this.applyTelegramReplyTarget(body, message)
         body
     }
 
@@ -5292,11 +5289,7 @@ public class TelegramAdapter <: ChannelAdapter {
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
-        if (let Some(replyId) <- this.effectiveReplyToMessageId(message.replyToMessageId)) {
-            if (!replyId.trimAscii().isEmpty()) {
-                body["reply_to_message_id"] = JsonString(replyId.trimAscii())
-            }
-        }
+        this.applyTelegramReplyTarget(body, message)
         body
     }
 
@@ -5316,11 +5309,7 @@ public class TelegramAdapter <: ChannelAdapter {
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
-        if (let Some(replyId) <- this.effectiveReplyToMessageId(message.replyToMessageId)) {
-            if (!replyId.trimAscii().isEmpty()) {
-                body["reply_to_message_id"] = JsonString(replyId.trimAscii())
-            }
-        }
+        this.applyTelegramReplyTarget(body, message)
         body
     }
 
@@ -5339,11 +5328,7 @@ public class TelegramAdapter <: ChannelAdapter {
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
-        if (let Some(replyId) <- this.effectiveReplyToMessageId(message.replyToMessageId)) {
-            if (!replyId.trimAscii().isEmpty()) {
-                body["reply_to_message_id"] = JsonString(replyId.trimAscii())
-            }
-        }
+        this.applyTelegramReplyTarget(body, message)
         body
     }
 
@@ -5361,11 +5346,7 @@ public class TelegramAdapter <: ChannelAdapter {
         if (!threadId.isEmpty() && replyInThread) {
             body["message_thread_id"] = JsonString(threadId)
         }
-        if (let Some(replyId) <- this.effectiveReplyToMessageId(message.replyToMessageId)) {
-            if (!replyId.trimAscii().isEmpty()) {
-                body["reply_to_message_id"] = JsonString(replyId.trimAscii())
-            }
-        }
+        this.applyTelegramReplyTarget(body, message)
         body
     }
 
@@ -5446,6 +5427,37 @@ public class TelegramAdapter <: ChannelAdapter {
 
     private func effectiveReplyToMessageId(replyToMessageId: Option<String>): Option<String> {
         replyToMessageId
+    }
+
+    private func applyTelegramReplyTarget(body: HashMap<String, JsonValue>, message: OutboundMessage): Unit {
+        match (this.effectiveReplyToMessageId(message.replyToMessageId)) {
+            case Some(replyId0) =>
+                let replyId = replyId0.trimAscii()
+                if (replyId.isEmpty()) {
+                    return
+                }
+                let quoteText = message.quoteText.trimAscii()
+                if (quoteText.isEmpty()) {
+                    body["reply_to_message_id"] = JsonString(replyId)
+                    return
+                }
+                let params = JsonObject()
+                params.put("message_id", JsonString(replyId))
+                params.put("quote", JsonString(quoteText))
+                body["reply_parameters"] = params
+            case None => ()
+        }
+    }
+
+    private func copyTelegramReplyTarget(dst: HashMap<String, JsonValue>, src: HashMap<String, JsonValue>): Unit {
+        match (src.get("reply_parameters")) {
+            case Some(v) => dst["reply_parameters"] = v
+            case None =>
+                match (src.get("reply_to_message_id")) {
+                    case Some(v) => dst["reply_to_message_id"] = v
+                    case None => ()
+                }
+        }
     }
 
     private func applyTelegramSilentOption(body: HashMap<String, JsonValue>): Unit {
@@ -6482,6 +6494,77 @@ public class TelegramAdapter <: ChannelAdapter {
         sb.append(this.telegramEscapeHtml(segment))
     }
 
+    private func appendEscapedHtmlPlainSegment(sb: StringBuilder, segment: String): Unit {
+        var cursor: Int64 = 0
+        while (cursor < segment.size) {
+            let b = segment[cursor]
+            if (b == UInt8(32) || b == UInt8(9) || b == UInt8(10)) {
+                sb.append(segment[cursor..cursor + 1])
+                cursor += 1
+                continue
+            }
+            var end = cursor
+            while (end < segment.size) {
+                let eb = segment[end]
+                if (eb == UInt8(32) || eb == UInt8(9) || eb == UInt8(10)) {
+                    break
+                }
+                end += 1
+            }
+            let token = segment[cursor..end]
+            if (this.telegramPlainTokenLooksFileRef(token)) {
+                sb.append("<code>")
+                sb.append(this.telegramEscapeHtml(token))
+                sb.append("</code>")
+            } else {
+                sb.append(this.telegramEscapeHtml(token))
+            }
+            cursor = end
+        }
+    }
+
+    private func telegramPlainTokenLooksFileRef(token: String): Bool {
+        let t = token.trimAscii()
+        if (t.isEmpty() || t.startsWith("http://") || t.startsWith("https://")) {
+            return false
+        }
+        let lower = t.toAsciiLower()
+        let hasPathPrefix = t.startsWith("/") || t.startsWith("./") || t.startsWith("../") || t.startsWith("~/")
+        let hasKnownExtension = lower.endsWith(".cj") || lower.contains(".cj:") ||
+            lower.endsWith(".ts") || lower.contains(".ts:") ||
+            lower.endsWith(".js") || lower.contains(".js:") ||
+            lower.endsWith(".mjs") || lower.contains(".mjs:") ||
+            lower.endsWith(".json") || lower.contains(".json:") ||
+            lower.endsWith(".md") || lower.contains(".md:") ||
+            lower.endsWith(".txt") || lower.contains(".txt:") ||
+            lower.endsWith(".py") || lower.contains(".py:") ||
+            lower.endsWith(".sh") || lower.contains(".sh:")
+        hasPathPrefix && (hasKnownExtension || t.contains(":"))
+    }
+
+    private func telegramLineLooksMarkdownTable(line: String): Bool {
+        let t = line.trimAscii()
+        t.startsWith("|") && t.endsWith("|") && t.contains("|")
+    }
+
+    private func telegramLineLooksMarkdownTableSeparator(line: String): Bool {
+        let t = line.trimAscii()
+        if (!t.startsWith("|") || !t.endsWith("|")) {
+            return false
+        }
+        var hasDash = false
+        for (b in t.toArray()) {
+            if (b == UInt8(45)) {
+                hasDash = true
+            } else if (b == UInt8(124) || b == UInt8(58) || b == UInt8(32)) {
+                ()
+            } else {
+                return false
+            }
+        }
+        hasDash
+    }
+
     private func telegramRenderHtml(text: String): String {
         try {
             this.telegramRenderHtmlUnsafe(text)
@@ -6499,6 +6582,45 @@ public class TelegramAdapter <: ChannelAdapter {
         let sb = StringBuilder()
         var cursor: Int64 = 0
         while (cursor < raw.size) {
+            if (cursor == 0 || raw[cursor - 1] == UInt8(10)) {
+                let lineEnd = match (raw.indexOf("\n", cursor)) {
+                    case Some(idx) => idx
+                    case None => raw.size
+                }
+                let nextStart = if (lineEnd < raw.size) { lineEnd + 1 } else { raw.size }
+                if (nextStart < raw.size) {
+                    let nextEnd = match (raw.indexOf("\n", nextStart)) {
+                        case Some(idx) => idx
+                        case None => raw.size
+                    }
+                    if (this.telegramLineLooksMarkdownTable(raw[cursor..lineEnd]) &&
+                        this.telegramLineLooksMarkdownTableSeparator(raw[nextStart..nextEnd])) {
+                        var tableEnd = nextEnd
+                        var scan = if (nextEnd < raw.size) { nextEnd + 1 } else { raw.size }
+                        while (scan < raw.size) {
+                            let rowEnd = match (raw.indexOf("\n", scan)) {
+                                case Some(idx) => idx
+                                case None => raw.size
+                            }
+                            if (!this.telegramLineLooksMarkdownTable(raw[scan..rowEnd])) {
+                                break
+                            }
+                            tableEnd = rowEnd
+                            scan = if (rowEnd < raw.size) { rowEnd + 1 } else { raw.size }
+                        }
+                        sb.append("<pre>")
+                        this.appendEscapedHtmlSegment(sb, raw[cursor..tableEnd])
+                        sb.append("</pre>")
+                        if (tableEnd < raw.size) {
+                            sb.append("\n")
+                            cursor = tableEnd + 1
+                        } else {
+                            cursor = tableEnd
+                        }
+                        continue
+                    }
+                }
+            }
             if (raw[cursor] == UInt8(10) && cursor + 1 < raw.size && this.startsWithAt(raw, cursor + 1, "> ")) {
                 sb.append("\n")
                 cursor += 1
@@ -6617,7 +6739,7 @@ public class TelegramAdapter <: ChannelAdapter {
                 }
             }
             let next = this.nextTelegramMarkdownMarker(raw, this.nextTelegramMarkdownSearchStart(raw, cursor))
-            this.appendEscapedHtmlSegment(sb, raw[cursor..next])
+            this.appendEscapedHtmlPlainSegment(sb, raw[cursor..next])
             cursor = next
         }
         sb.toString()
@@ -6658,7 +6780,14 @@ public class TelegramAdapter <: ChannelAdapter {
     }
 
     private func primaryUpdateKind(root: JsonObject): String {
-        for (key in ["message", "edited_message", "channel_post", "edited_channel_post", "message_reaction", "callback_query"]) {
+        for (key in [
+            "message", "edited_message", "channel_post", "edited_channel_post", "message_reaction",
+            "callback_query", "business_connection", "business_message", "edited_business_message",
+            "deleted_business_messages", "message_reaction_count", "inline_query", "chosen_inline_result",
+            "shipping_query", "pre_checkout_query", "purchased_paid_media", "poll", "poll_answer",
+            "my_chat_member", "chat_member", "managed_bot", "chat_join_request", "chat_boost",
+            "removed_chat_boost"
+        ]) {
             if (root.get(key).isSome()) {
                 return key
             }

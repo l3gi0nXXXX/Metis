@@ -91,6 +91,7 @@ public class OutboundMessage {
     public let accountId: String
     public let peerId: String
     public let replyToMessageId: Option<String>
+    public let quoteText: String
     public let replyInThread: Bool
     public let text: String
 
@@ -99,6 +100,7 @@ public class OutboundMessage {
         peerId: String,
         text: String,
         replyToMessageId!: Option<String> = None,
+        quoteText!: String = "",
         replyInThread!: Bool = false,
         accountId!: String = ""
     ) {
@@ -106,6 +108,7 @@ public class OutboundMessage {
         this.accountId = accountId.trimAscii()
         this.peerId = peerId
         this.replyToMessageId = replyToMessageId
+        this.quoteText = quoteText.trimAscii()
         this.replyInThread = replyInThread
         this.text = text
     }
