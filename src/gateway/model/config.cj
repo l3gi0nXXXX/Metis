@@ -666,6 +666,9 @@ public class TelegramMediaConfig {
     public let mediaMaxBytes: Int64
     public let allowedMimes: Array<String>
     public let outboundAllowUrl: Bool
+    public let outboundFetchUrl: Bool
+    public let outboundAllowedUrlDomains: Array<String>
+    public let outboundAllowedUrlSchemes: Array<String>
     public let outboundAllowLocalPath: Bool
     public let outboundLocalRoots: Array<String>
     public let trustedLocalFileRoots: Array<String>
@@ -677,6 +680,9 @@ public class TelegramMediaConfig {
         mediaMaxBytes!: Int64 = 20 * 1024 * 1024,
         allowedMimes!: Array<String> = [],
         outboundAllowUrl!: Bool = false,
+        outboundFetchUrl!: Bool = false,
+        outboundAllowedUrlDomains!: Array<String> = [],
+        outboundAllowedUrlSchemes!: Array<String> = ["https"],
         outboundAllowLocalPath!: Bool = false,
         outboundLocalRoots!: Array<String> = [],
         trustedLocalFileRoots!: Array<String> = [],
@@ -687,6 +693,9 @@ public class TelegramMediaConfig {
         this.mediaMaxBytes = mediaMaxBytes
         this.allowedMimes = allowedMimes
         this.outboundAllowUrl = outboundAllowUrl
+        this.outboundFetchUrl = outboundFetchUrl
+        this.outboundAllowedUrlDomains = outboundAllowedUrlDomains
+        this.outboundAllowedUrlSchemes = outboundAllowedUrlSchemes
         this.outboundAllowLocalPath = outboundAllowLocalPath
         this.outboundLocalRoots = outboundLocalRoots
         this.trustedLocalFileRoots = trustedLocalFileRoots

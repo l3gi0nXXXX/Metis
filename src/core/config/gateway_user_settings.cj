@@ -318,6 +318,9 @@ public struct TelegramMediaUserSettings {
     public var mediaMaxBytes: Int64 = 20 * 1024 * 1024
     public var allowedMimes: Array<String> = []
     public var outboundAllowUrl: Bool = false
+    public var outboundFetchUrl: Bool = false
+    public var outboundAllowedUrlDomains: Array<String> = []
+    public var outboundAllowedUrlSchemes: Array<String> = ["https"]
     public var outboundAllowLocalPath: Bool = false
     public var outboundLocalRoots: Array<String> = []
     public var trustedLocalFileRoots: Array<String> = []
