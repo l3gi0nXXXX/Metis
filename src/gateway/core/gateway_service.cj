@@ -30,6 +30,7 @@ public class GatewayService {
     private let telegramAutoTopicLabelAttempts = HashSet<String>()
     private let consumedTelegramPluginCallbackIds = HashSet<String>()
     private let telegramErrorPolicyState = GatewayTelegramErrorPolicyState()
+    private let telegramNativeCommandRuntime = GatewayTelegramNativeCommandRuntime()
 
     public init(
         router: GatewayRouter,
@@ -333,21 +334,15 @@ public class GatewayService {
 
     private func handleTelegramNativeCommand(message: InboundMessage, accountId: String, user: GatewayUserSettings, sessionKey: String): Bool {
         let text = message.text.trimAscii()
-        let catalogCommand = this.telegramCommandName(text)
-        if (!catalogCommand.isEmpty()) {
-            match (gatewayFindTelegramNativeCommandSpec(catalogCommand)) {
-                case Some(spec) =>
-                    this.sendTextToPeerDetailed(
-                        "telegram",
-                        message.peerId,
-                        this.renderTelegramCatalogCommand(spec, text, message, accountId, user, sessionKey),
-                        replyToMessageId: message.replyTargetMessageId,
-                        replyInThread: message.replyInThread,
-                        accountId: accountId
-                    )
-                    return true
-                case None => ()
-            }
+        let nativeDecision = this.telegramNativeCommandRuntime.resolveText(
+            text,
+            message.senderId,
+            accountId,
+            sessionKey,
+            this.telegramSenderCanOperate(message.senderId, user)
+        )
+        if (this.deliverTelegramNativeRuntimeDecision(nativeDecision, message, accountId, user, sessionKey)) {
+            return true
         }
         if (text == "/help" || text.startsWith("/help ") ||
             text == "/status" || text.startsWith("/status ") ||
@@ -532,15 +527,16 @@ public class GatewayService {
         if (text.startsWith("[telegram-callback]")) {
             let data = this.telegramNativeField(text, "data").trimAscii()
             if (data.startsWith("cmd:")) {
-                this.sendTextToPeerDetailed(
-                    "telegram",
-                    message.peerId,
-                    this.renderTelegramNativeCommandCallback(data, message, accountId, user, sessionKey),
-                    replyToMessageId: message.replyTargetMessageId,
-                    replyInThread: message.replyInThread,
-                    accountId: accountId
+                let decision = this.telegramNativeCommandRuntime.resolveCallbackData(
+                    data,
+                    message.senderId,
+                    accountId,
+                    sessionKey,
+                    this.telegramSenderCanOperate(message.senderId, user)
                 )
-                return true
+                if (this.deliverTelegramNativeRuntimeDecision(decision, message, accountId, user, sessionKey)) {
+                    return true
+                }
             }
             if (data.startsWith("models:set:") || data.startsWith("models:setidx:")) {
                 let reply = this.resolveTelegramModelCallback(data, message.senderId, user, sessionKey)
@@ -636,6 +632,33 @@ public class GatewayService {
         false
     }
 
+    private func deliverTelegramNativeRuntimeDecision(
+        decision: GatewayTelegramNativeCommandDecision,
+        message: InboundMessage,
+        accountId: String,
+        user: GatewayUserSettings,
+        sessionKey: String
+    ): Bool {
+        if (!decision.handled) {
+            return false
+        }
+        let reply = if (!decision.preflightReply.trimAscii().isEmpty()) {
+            decision.preflightReply
+        } else {
+            let context = decision.context.getOrThrow()
+            this.renderTelegramCatalogCommand(context.spec, context.commandText, message, accountId, user, sessionKey)
+        }
+        this.sendTextToPeerDetailed(
+            "telegram",
+            message.peerId,
+            reply,
+            replyToMessageId: message.replyTargetMessageId,
+            replyInThread: message.replyInThread,
+            accountId: accountId
+        )
+        true
+    }
+
     private func telegramCallbackJsonEscape(raw: String): String {
         raw.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "")
     }
@@ -675,8 +698,8 @@ public class GatewayService {
             out.put("category", JsonString(spec.category))
             return out.toJsonString()
         }
-        if (spec.status == "stub") {
-            let out = this.telegramCommandJson(spec.command, "stub", ok: false, message: spec.notApplicableReason)
+        if (spec.status == "approval_required") {
+            let out = this.telegramCommandJson(spec.command, "approval_required", ok: false, message: spec.notApplicableReason)
             out.put("category", JsonString(spec.category))
             return out.toJsonString()
         }
@@ -1208,16 +1231,7 @@ public class GatewayService {
     }
 
     private func telegramCommandName(text: String): String {
-        let normalized = text.trimAscii()
-        if (!normalized.startsWith("/")) {
-            return ""
-        }
-        let token = normalized.split(" ", 2)[0].trimAscii()
-        let withoutSlash = token[1..]
-        match (withoutSlash.indexOf("@")) {
-            case Some(idx) => withoutSlash[..idx].trimAscii().toAsciiLower()
-            case None => withoutSlash.trimAscii().toAsciiLower()
-        }
+        gatewayTelegramNativeCommandNameFromText(text)
     }
 
     private func handleTelegramPluginCommand(

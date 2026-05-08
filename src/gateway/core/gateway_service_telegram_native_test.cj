@@ -948,9 +948,39 @@ public class GatewayServiceTelegramNativeTest {
             let root = JsonValue.fromStr(adapter.sentText(0)).asObject()
             let native = root.get("native").getOrThrow().asArray()
             @Expect(adapter.sentText(0).contains("\"/bash\""), true)
-            @Expect(adapter.sentText(0).contains("\"status\": \"stub\""), true)
+            @Expect(adapter.sentText(0).contains("\"status\": \"stub\""), false)
+            @Expect(adapter.sentText(0).contains("\"status\": \"approval_required\""), true)
             @Expect(adapter.sentText(0).contains("\"status\": \"not_applicable\""), true)
             @Expect(native.size() >= 43, true)
+        }
+    }
+
+    @TestCase
+    public func t53MockAcceptanceUsesTempConfigAndNativeRuntimeBypassesModelPath(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["tg:8734062810"]
+            user.telegram.actions.inlineKeyboard = true
+            user.telegram.actions.callbackQuery = true
+            CliSettingManager.writeGatewaySettings(user)
+
+            @Expect(MetisConfigManager.configPath().toString().contains("/tmp/metis-gateway-telegram-native-test-home"), true)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/status")
+            adapter.queue("/allowlist list")
+            adapter.queue("[telegram-callback]\nid=cb-think\nmessageId=9\ndata=cmd:think:high\nby=8734062810")
+            service.sendTextToPeerDetailed("telegram", "8734062810", "[subagent-notice]\nrunId=test-run\nstatus=done", accountId: "default")
+            service.processOnce()
+
+            @Expect(JsonValue.fromStr(adapter.sentText(1)).asObject().get("action").getOrThrow().asString().getValue(), "status")
+            @Expect(JsonValue.fromStr(adapter.sentText(2)).asObject().get("status").getOrThrow().asString().getValue(), "approval_required")
+            @Expect(JsonValue.fromStr(adapter.sentText(3)).asObject().get("action").getOrThrow().asString().getValue(), "think")
+            @Expect(adapter.sentText(0).contains("[subagent-notice]"), true)
+            @Expect(adapter.sentCount(), 4)
         }
     }
 
