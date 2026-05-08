@@ -1,0 +1,22 @@
+{
+  "matrix": [
+    {
+      "id": "chat.commands",
+      "pluginId": "chat",
+      "sourceRef": "OpenClaw/plugins/chat/src/index.ts:42",
+      "entry": "dist/index.mjs",
+      "registerApis": ["registerCommand"],
+      "sdkSubpaths": ["@openclaw/plugin-sdk"],
+      "status": "aligned"
+    },
+    {
+      "id": "theme.assets",
+      "pluginId": "theme",
+      "sourceRef": "OpenClaw/plugins/theme/src/index.ts:7",
+      "entry": "index.mjs",
+      "registerApis": ["registerTheme"],
+      "sdkSubpaths": ["@openclaw/plugin-sdk/theme"],
+      "status": "not-applicable"
+    }
+  ]
+}

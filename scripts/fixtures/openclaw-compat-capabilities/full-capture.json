@@ -1,0 +1,134 @@
+{
+  "source": "openclaw-host-capture",
+  "capturedAt": "2026-05-08T00:00:00.000Z",
+  "authToken": "ocp_live_super_secret",
+  "registry": {
+    "channels": [
+      {
+        "id": "telegram",
+        "name": "Telegram",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["telegram inbound/outbound contract fixture passes"],
+        "botToken": "123456:telegram-secret"
+      }
+    ],
+    "httpRoutes": [
+      {
+        "id": "telegram-webhook",
+        "method": "POST",
+        "path": "/telegram/webhook",
+        "handler": "telegramWebhookHandler",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["POST /telegram/webhook accepts captured update fixture"]
+      }
+    ],
+    "httpHandlers": [
+      {
+        "id": "telegramWebhookHandler",
+        "route": "telegram-webhook",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["telegram webhook handler fixture maps to route dispatch"]
+      }
+    ],
+    "tools": [
+      {
+        "name": "web_fetch",
+        "description": "Fetch a URL through the host tool bridge",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["web_fetch fixture maps to Gateway tool record"]
+      }
+    ],
+    "providers": [
+      {
+        "id": "openai",
+        "models": ["gpt-4.1"],
+        "apiKey": "sk-proj-secret",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["provider config maps without leaking apiKey"]
+      }
+    ],
+    "hooks": [
+      {
+        "id": "message_sending",
+        "stage": "message_sending",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["message_sending hook fixture can mutate outbound text"]
+      }
+    ],
+    "commands": [
+      {
+        "name": "doctor",
+        "summary": "Inspect runtime health",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["doctor command appears in Metis command registry"]
+      }
+    ],
+    "cli": [
+      {
+        "name": "metis approvals status",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["CLI approvals status contract remains registered"]
+      }
+    ],
+    "approvals": [
+      {
+        "id": "tool-execution",
+        "policy": "ask",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["approval request/decision fixture round-trips"]
+      }
+    ],
+    "interactive": [
+      {
+        "id": "telegram-buttons",
+        "channel": "telegram",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["telegram callback query fixture dispatches to handler"]
+      }
+    ],
+    "memory": [
+      {
+        "id": "conversation-summary",
+        "scope": "session",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["memory summary fixture is retained by session id"]
+      }
+    ],
+    "media": [
+      {
+        "id": "image-upload",
+        "mimeTypes": ["image/png"],
+        "metisStatus": "aligned",
+        "acceptanceTests": ["image upload fixture maps to media attachment record"]
+      }
+    ],
+    "processes": [
+      {
+        "id": "shell-process",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["process launch fixture maps to sandboxed process capability"]
+      }
+    ],
+    "browser": [
+      {
+        "id": "browser-session",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["browser session fixture maps to browser capability"]
+      }
+    ],
+    "realtime": [
+      {
+        "id": "streaming-events",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["realtime event fixture maps to stream subscription capability"]
+      }
+    ],
+    "acp": [
+      {
+        "id": "agent-client-protocol",
+        "metisStatus": "aligned",
+        "acceptanceTests": ["ACP mode/runtime CLI contract remains available"]
+      }
+    ]
+  }
+}

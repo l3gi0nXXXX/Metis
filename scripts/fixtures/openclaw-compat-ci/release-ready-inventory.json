@@ -1,0 +1,20 @@
+{
+  "plugins": [
+    {
+      "id": "chat",
+      "sourceRef": "OpenClaw/plugins/chat/package.json:1",
+      "entry": "dist/index.mjs",
+      "registerApis": ["registerCommand"],
+      "sdkSubpaths": ["@openclaw/plugin-sdk"],
+      "status": "aligned"
+    },
+    {
+      "id": "theme",
+      "sourceRef": "OpenClaw/plugins/theme/package.json:1",
+      "entry": "index.mjs",
+      "registerApis": ["registerTheme"],
+      "sdkSubpaths": ["@openclaw/plugin-sdk/theme"],
+      "status": "not-applicable"
+    }
+  ]
+}

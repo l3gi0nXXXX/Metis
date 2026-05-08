@@ -1,0 +1,34 @@
+{
+  "matrix": [
+    {
+      "id": "chat.commands",
+      "pluginId": "chat",
+      "sourceRef": "OpenClaw/plugins/chat/src/index.ts:42",
+      "entry": "dist/index.mjs",
+      "registerApis": ["registerCommand"],
+      "sdkSubpaths": ["@openclaw/plugin-sdk"],
+      "status": "partial"
+    },
+    {
+      "id": "wrapper-only",
+      "pluginId": "wrapper",
+      "sourceRef": "OpenClaw/plugins/wrapper/src/index.ts:3",
+      "entry": "index.mjs",
+      "registerApis": ["registerCommand"],
+      "sdkSubpaths": ["@openclaw/plugin-sdk"],
+      "status": "aligned",
+      "requiresMetisManifest": true,
+      "requiresWrapper": true,
+      "sourcePatched": true
+    },
+    {
+      "id": "missing-fields",
+      "pluginId": "broken",
+      "sourceRef": "",
+      "entry": "",
+      "registerApis": [],
+      "sdkSubpaths": [],
+      "status": "aligned"
+    }
+  ]
+}
