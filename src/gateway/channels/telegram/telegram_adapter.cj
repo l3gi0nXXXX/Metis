@@ -2850,8 +2850,12 @@ public class TelegramAdapter <: ChannelAdapter {
             return messageId
         }
         if (this.telegramPayloadShouldRetryAfterFailure(kind)) {
-            let retryResponseOpt = match (this.localMediaUploadForPayload(kind, payload)) {
-                case Some(upload) => this.telegramMultipartPost(url, payload, upload[0], upload[1], context: "send:${kind}:retry:multipart")
+            let retryUploadOpt = this.mediaUploadForPayload(kind, payload)
+            if (retryUploadOpt.isNone() && this.payloadHasRemoteUrlFetchMedia(kind, payload) && !this.lastSendError.trimAscii().isEmpty()) {
+                return ""
+            }
+            let retryResponseOpt = match (retryUploadOpt) {
+                case Some(upload) => this.telegramMultipartPost(url, payload, upload, context: "send:${kind}:retry:multipart")
                 case None => this.telegramJsonPost(url, this.telegramApiBodyForPayload(payload, plainFallback: false), context: "send:${kind}:retry")
             }
             match (retryResponseOpt) {
