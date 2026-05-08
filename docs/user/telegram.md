@@ -777,6 +777,24 @@ Telegram 入站先经过 `dmPolicy`、`groupPolicy`、`allowFrom`、`groupAllowF
 
 TTS 生成文件只能写入临时目录、测试 fixture 目录或用户显式配置的安全目录；不得默认写入真实用户媒体归档。无 provider 时应返回可操作诊断，而不是静默失败。
 
+命令型 provider 使用 `gateway.channelsExtra.telegramTts` 配置，不改变 Telegram adapter 的发送链路。`command` 必须是数组，避免 shell 拼接；可使用 `{text}` 和 `{output}` 占位符。provider 命令应将音频写入 `{output}`，Gateway 再按 `audioAsVoice` 选择 `[voice]` 或 `[audio]` payload。
+
+```json
+{
+  "gateway": {
+    "channelsExtra": {
+      "telegramTts": {
+        "provider": "command",
+        "command": ["edge-tts", "--text", "{text}", "--write-media", "{output}"],
+        "outputExtension": "mp3",
+        "audioAsVoice": true,
+        "timeoutMs": 10000
+      }
+    }
+  }
+}
+```
+
 ## OpenClaw Plugin Compatibility
 
 OpenClaw 插件兼容使用 Gateway 管理的 Node sidecar，不替换 Telegram transport，不绕过 Gateway/channel/session/ReAct/toolset 架构。未启用 sidecar 时，`plugin:` / `plugin-approval:` callback 会返回明确的 `not_applicable`，不会落入大模型路径。

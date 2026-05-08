@@ -1522,4 +1522,40 @@ public class GatewayServiceTelegramNativeTest {
             @Expect(JsonValue.fromStr(adapter.sentText(4)).asObject().get("status").getOrThrow().asString().getValue(), "not_found")
         }
     }
+
+    @TestCase
+    public func t53TtsCommandProviderEmitsConfiguredAudioPayloadWithoutRealConfig(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            user.telegram.actions.audio = true
+            let extra = JsonObject()
+            let tts = JsonObject()
+            tts.put("provider", JsonString("command"))
+            tts.put("command", JsonArray([JsonString("sh"), JsonString("-c"), JsonString("printf '%s' \"$1\" > \"$2\""), JsonString("metis-tts"), JsonString("{text}"), JsonString("{output}")]))
+            tts.put("outputExtension", JsonString("ogg"))
+            tts.put("audioAsVoice", false.toJsonValue())
+            tts.put("timeoutMs", 3000.toJsonValue())
+            extra.put("telegramTts", tts)
+            user.channelsExtra = Some(extra)
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/tts status")
+            adapter.queue("/tts audio hello-command-provider")
+            service.processOnce()
+
+            let status = JsonValue.fromStr(adapter.sentText(0)).asObject()
+            @Expect(status.get("status").getOrThrow().asString().getValue(), "ok")
+            @Expect(status.get("provider").getOrThrow().asString().getValue(), "command")
+            @Expect(status.get("providerKind").getOrThrow().asString().getValue(), "command")
+            @Expect(status.get("audioAsVoice").getOrThrow().asBool().getValue(), false)
+            @Expect(adapter.sentText(1).startsWith("[audio]"), true)
+            @Expect(adapter.sentText(1).contains("/tmp/metis-gateway-telegram-native-test-home"), true)
+            @Expect(adapter.sentText(1).contains("caption=TTS (command)"), true)
+        }
+    }
 }

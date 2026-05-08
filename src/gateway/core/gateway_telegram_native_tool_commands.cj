@@ -3,12 +3,14 @@ package metis.gateway.core
 import metis.core.{gatewaySubagentFindRunBySessionKey, gatewaySubagentMarkRunCancelled, gatewaySubagentRunRecordString}
 import metis.core.config.{CliConfig, GatewayUserSettings}
 import metis.core.skills.SkillsPrompt
+import metis.utils.{ShellTimeoutException, ShellUtils}
 
 import magic.jsonable.*
 
+import std.collection.ArrayList
 import std.convert.Parsable
 import std.fs.{Directory, File, Path, exists}
-import std.time.DateTime
+import std.time.*
 import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
 
 private func tgToolNowMs(): Int64 {
@@ -45,6 +47,42 @@ private func tgToolJsonInt(obj: JsonObject, key: String, fallback: Int64): Int64
                 try { Int64.parse(v.asString().getValue().trimAscii()) } catch (_inner: Exception) { fallback }
             }
         case None => fallback
+    }
+}
+
+private func tgToolJsonBool(obj: JsonObject, key: String, fallback: Bool): Bool {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asBool().getValue() } catch (_: Exception) {
+            try {
+                let low = v.asString().getValue().trimAscii().toAsciiLower()
+                low == "true" || low == "1" || low == "yes" || low == "on"
+            } catch (_inner: Exception) { fallback }
+        }
+        case None => fallback
+    }
+}
+
+private func tgToolJsonStringArray(obj: JsonObject, key: String): Array<String> {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try {
+                let arr = v.asArray()
+                let out = ArrayList<String>()
+                for (item in arr.getItems()) {
+                    try {
+                        let text = item.asString().getValue().trimAscii()
+                        if (!text.isEmpty()) {
+                            out.add(text)
+                        }
+                    } catch (_: Exception) {
+                        ()
+                    }
+                }
+                out.toArray()
+            } catch (_: Exception) {
+                []
+            }
+        case None => []
     }
 }
 
@@ -168,7 +206,6 @@ private func tgToolReadTtsState(): JsonObject {
         out.put("enabled", true.toJsonValue())
         out.put("provider", JsonString(""))
         out.put("limit", 4000.toJsonValue())
-        out.put("audioAsVoice", true.toJsonValue())
         return out
     }
     try {
@@ -183,39 +220,65 @@ private func tgToolWriteTtsState(state: JsonObject): Unit {
 }
 
 private func tgToolTtsProviderFromExtra(user: GatewayUserSettings): String {
+    let cfg = tgToolTtsConfigFromExtra(user)
+    tgToolJsonString(cfg, "provider")
+}
+
+private func tgToolTtsConfigFromExtra(user: GatewayUserSettings): JsonObject {
     match (user.channelsExtra) {
         case Some(extra) =>
             match (extra.get("telegramTts")) {
                 case Some(v) =>
                     try {
-                        return tgToolJsonString(v.asObject(), "provider")
+                        return v.asObject()
                     } catch (_: Exception) {
-                        return ""
+                        return JsonObject()
                     }
-                case None => ""
+                case None => JsonObject()
             }
-        case None => ""
+        case None => JsonObject()
+    }
+}
+
+private func tgToolTtsCommandArgs(config: JsonObject, text: String, outputPath: Path): Array<String> {
+    let raw = tgToolJsonStringArray(config, "command")
+    let out = ArrayList<String>()
+    for (part in raw) {
+        out.add(part.replace("{text}", text).replace("{output}", outputPath.toString()))
+    }
+    out.toArray()
+}
+
+private func tgToolTtsOutputExtension(config: JsonObject): String {
+    match (tgToolJsonString(config, "outputExtension").toAsciiLower()) {
+        case "mp3" => "mp3"
+        case "wav" => "wav"
+        case "m4a" => "m4a"
+        case "opus" => "opus"
+        case "oga" => "oga"
+        case "ogg" => "ogg"
+        case _ => "ogg"
     }
 }
 
 private func tgToolTtsStatus(user: GatewayUserSettings, state: JsonObject): JsonObject {
+    let config = tgToolTtsConfigFromExtra(user)
     let configuredProvider = tgToolTtsProviderFromExtra(user)
     let stateProvider = tgToolJsonString(state, "provider")
     let provider = if (!stateProvider.isEmpty()) { stateProvider } else { configuredProvider }
-    let enabled = match (state.get("enabled")) {
-        case Some(v) => try { v.asBool().getValue() } catch (_: Exception) { true }
-        case None => true
-    }
-    let status = if (provider.isEmpty()) { "not_configured" } else if (provider == "fake") { "ok" } else { "not_found" }
+    let enabled = tgToolJsonBool(state, "enabled", true)
+    let hasCommandProvider = tgToolTtsCommandArgs(config, "probe", Path("probe")).size > 0
+    let status = if (provider.isEmpty()) { "not_configured" } else if (provider == "fake" || hasCommandProvider) { "ok" } else { "not_found" }
     let out = tgToolCommandJson("tts", status, ok: status == "ok")
     out.put("enabled", enabled.toJsonValue())
     out.put("provider", JsonString(provider))
+    out.put("providerKind", JsonString(if (provider == "fake") { "fake" } else if (hasCommandProvider) { "command" } else { "missing" }))
     out.put("limit", tgToolJsonInt(state, "limit", 4000).toJsonValue())
-    out.put("audioAsVoice", true.toJsonValue())
+    out.put("audioAsVoice", tgToolJsonBool(state, "audioAsVoice", tgToolJsonBool(config, "audioAsVoice", true)).toJsonValue())
     if (provider.isEmpty()) {
         out.put("message", JsonString("No Metis TTS provider is configured for Telegram native voice output."))
     } else if (status == "not_found") {
-        out.put("message", JsonString("Configured TTS provider '${provider}' is not available in this Gateway build."))
+        out.put("message", JsonString("Configured TTS provider '${provider}' is not available. Configure gateway.channelsExtra.telegramTts.command or use provider fake."))
     }
     out
 }
@@ -224,6 +287,55 @@ private func tgToolWriteFakeAudio(text: String): Path {
     let path = tgToolTtsDir().join("tts-${tgToolNowMs()}.ogg")
     File.writeTo(path, ("FAKE-OGG\n${text}").toArray())
     path
+}
+
+private func tgToolTtsPayload(path: Path, provider: String, audioAsVoice: Bool): String {
+    if (audioAsVoice) {
+        "[voice]\nfileId=${path.toString()}\ncaption=TTS (${provider})"
+    } else {
+        "[audio]\nfileId=${path.toString()}\ncaption=TTS (${provider})"
+    }
+}
+
+private func tgToolRunCommandTtsProvider(provider: String, text: String, user: GatewayUserSettings, audioAsVoice: Bool): String {
+    let config = tgToolTtsConfigFromExtra(user)
+    let outputPath = tgToolTtsDir().join("tts-${tgToolNowMs()}.${tgToolTtsOutputExtension(config)}")
+    let command = tgToolTtsCommandArgs(config, text, outputPath)
+    if (command.size == 0) {
+        let out = tgToolCommandJson("tts", "not_found", ok: false, message: "Configured TTS provider '${provider}' has no command in gateway.channelsExtra.telegramTts.command.")
+        out.put("provider", JsonString(provider))
+        return out.toJsonString()
+    }
+    let timeoutMs = max(1000, tgToolJsonInt(config, "timeoutMs", 10000))
+    try {
+        let (exitCode, stdout, stderr) = ShellUtils.execute(command, timeout: Some(Duration.millisecond * timeoutMs), withWrap: false)
+        if (exitCode != 0) {
+            let out = tgToolCommandJson("tts", "provider_error", ok: false, message: "Configured TTS provider command failed.")
+            out.put("provider", JsonString(provider))
+            out.put("exitCode", exitCode.toJsonValue())
+            out.put("stderr", JsonString(stderr.trimAscii()))
+            return out.toJsonString()
+        }
+        if (!exists(outputPath) && !stdout.isEmpty()) {
+            File.writeTo(outputPath, stdout.toArray())
+        }
+        if (!exists(outputPath)) {
+            let out = tgToolCommandJson("tts", "provider_error", ok: false, message: "Configured TTS provider command did not create an audio file.")
+            out.put("provider", JsonString(provider))
+            out.put("outputPath", JsonString(outputPath.toString()))
+            return out.toJsonString()
+        }
+        tgToolTtsPayload(outputPath, provider, audioAsVoice)
+    } catch (_: ShellTimeoutException) {
+        let out = tgToolCommandJson("tts", "timeout", ok: false, message: "Configured TTS provider command timed out.")
+        out.put("provider", JsonString(provider))
+        out.put("timeoutMs", timeoutMs.toJsonValue())
+        out.toJsonString()
+    } catch (e: Exception) {
+        let out = tgToolCommandJson("tts", "provider_error", ok: false, message: e.message)
+        out.put("provider", JsonString(provider))
+        out.toJsonString()
+    }
 }
 
 public func gatewayTelegramRenderTtsCommand(text: String, user: GatewayUserSettings): String {
@@ -288,11 +400,13 @@ public func gatewayTelegramRenderTtsCommand(text: String, user: GatewayUserSetti
         out.put("limit", limit.toJsonValue())
         return out.toJsonString()
     }
-    if (provider != "fake") {
-        let out = tgToolCommandJson("tts", "not_found", ok: false, message: "Configured TTS provider '${provider}' is not available in this Gateway build.")
-        out.put("provider", JsonString(provider))
-        return out.toJsonString()
+    let audioAsVoice = match (status.get("audioAsVoice")) {
+        case Some(v) => try { v.asBool().getValue() } catch (_: Exception) { true }
+        case None => true
     }
-    let audioPath = tgToolWriteFakeAudio(value)
-    "[voice]\nfileId=${audioPath.toString()}\ncaption=TTS (${provider})"
+    if (provider == "fake") {
+        let audioPath = tgToolWriteFakeAudio(value)
+        return tgToolTtsPayload(audioPath, provider, audioAsVoice)
+    }
+    tgToolRunCommandTtsProvider(provider, value, user, audioAsVoice)
 }
