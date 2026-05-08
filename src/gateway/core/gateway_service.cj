@@ -688,7 +688,13 @@ public class GatewayService {
             case "commands" => this.renderTelegramCommandsCommand(user)
             case "tools" => this.renderTelegramToolsCommand(user)
             case "whoami" => this.renderTelegramWhoamiCommand(message, accountId, sessionKey)
-            case "model" => this.renderTelegramModelsEntry(user, sessionKey, commandText: text.replace("/model", "/models"))
+            case "model" =>
+                let modelArg = this.telegramCommandArgText(text)
+                if (modelArg.isEmpty()) {
+                    this.renderTelegramModelsEntry(user, sessionKey, commandText: "/models")
+                } else {
+                    this.applyTelegramModelSelection(modelArg, message.senderId, user, sessionKey)
+                }
             case "models" => this.renderTelegramModelsEntry(user, sessionKey, commandText: text)
             case "session" => this.renderTelegramCurrentSessionCommand(sessionKey)
             case "sessions" => this.renderTelegramSessionsCommand(text)
