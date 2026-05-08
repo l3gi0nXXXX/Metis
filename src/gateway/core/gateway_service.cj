@@ -2,6 +2,7 @@ package metis.gateway.core
 
 import metis.core.renderGatewayTopicEditText
 import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager, cliFindModelAuthChoicesForProvider, cliSetupVisibleModelProviders}
+import metis.core.skills.SkillsPrompt
 import metis.gateway.model.*
 import metis.gateway.session.{GatewaySessionContext, gatewayResolveSessionContext, gatewaySessionRequestFromInbound}
 import metis.gateway.tools.{gatewayHandleNativeCommandLine, gatewayHandleSubagentsCommandLine}
@@ -365,7 +366,7 @@ public class GatewayService {
             message.senderId,
             accountId,
             sessionKey,
-            this.telegramSenderCanOperate(message.senderId, user)
+            this.telegramMessageCanOperate(message, user, accountId)
         )
         if (this.deliverTelegramNativeRuntimeDecision(nativeDecision, message, accountId, user, sessionKey)) {
             return true
@@ -558,7 +559,7 @@ public class GatewayService {
                     message.senderId,
                     accountId,
                     sessionKey,
-                    this.telegramSenderCanOperate(message.senderId, user)
+                    this.telegramMessageCanOperate(message, user, accountId)
                 )
                 if (this.deliverTelegramNativeRuntimeDecision(decision, message, accountId, user, sessionKey)) {
                     return true
@@ -655,6 +656,10 @@ public class GatewayService {
             )
             return true
         }
+        match (this.handleTelegramCustomCommand(message, accountId, user, sessionKey)) {
+            case Some(handled) => if (handled) { return true }
+            case None => ()
+        }
         false
     }
 
@@ -713,7 +718,7 @@ public class GatewayService {
         user: GatewayUserSettings,
         sessionKey: String
     ): String {
-        if ((spec.auth == "operator" || spec.auth == "approval") && !this.telegramSenderCanOperate(message.senderId, user)) {
+        if ((spec.auth == "operator" || spec.auth == "approval") && !this.telegramMessageCanOperate(message, user, accountId)) {
             let denied = this.telegramCommandJson(spec.command, "rejected", ok: false, message: "sender is not authorized for /${spec.command}")
             denied.put("auth", JsonString(spec.auth))
             denied.put("senderId", JsonString(message.senderId))
@@ -767,11 +772,121 @@ public class GatewayService {
             case "approve" => this.renderTelegramApproveCommand(text, user, message.senderId)
             case "restart" => gatewayTelegramRenderRestartCommand(text, message.senderId)
             case "bash" => gatewayTelegramRenderBashCommand(text, message.senderId)
-            case "skill" => gatewayTelegramRenderSkillCommand(text)
+            case "skill" => this.renderTelegramSkillCommand(text, message, accountId, user, sessionKey)
             case "btw" => gatewayTelegramRenderBtwCommand(text, sessionKey)
             case "tts" => gatewayTelegramRenderTtsCommand(text, user)
             case _ => this.telegramCommandJson(spec.command, "not_supported", ok: false, message: "No Metis Telegram native handler is registered for this catalog entry.").toJsonString()
         }
+    }
+
+    private func renderTelegramSkillCommand(
+        text: String,
+        message: InboundMessage,
+        accountId: String,
+        user: GatewayUserSettings,
+        sessionKey: String
+    ): String {
+        let argText = this.telegramCommandArgText(text)
+        let parts = argText.split(" ", 2)
+        let name = if (parts.size > 0) { parts[0].trimAscii() } else { "" }
+        if (name.isEmpty() || name == "list" || name == "status") {
+            return gatewayTelegramRenderSkillCommand(text)
+        }
+        if (!SkillsPrompt.hasSkillName(name)) {
+            let out = this.telegramCommandJson("skill", "not_found", ok: false, message: "No skill named '${name}' is available to this Gateway session.")
+            out.put("skill", JsonString(name))
+            return out.toJsonString()
+        }
+        if (!SkillsPrompt.isSkillEnabledByName(name)) {
+            let out = this.telegramCommandJson("skill", "disabled", ok: false, message: "Skill '${name}' is disabled for this Gateway session.")
+            out.put("skill", JsonString(name))
+            return out.toJsonString()
+        }
+        let input = if (parts.size > 1) { parts[1].trimAscii() } else { "" }
+        let prompt = if (input.isEmpty()) { "/${name}" } else { "/${name} ${input}" }
+        let request = gatewaySessionRequestFromInbound(message, sessionHint: sessionKey, accountId: accountId)
+        let turn = gatewayExecuteSessionRequestTurnForUser(user, request, prompt)
+        turn.execution.answer
+    }
+
+    private func handleTelegramCustomCommand(
+        message: InboundMessage,
+        accountId: String,
+        user: GatewayUserSettings,
+        sessionKey: String
+    ): Option<Bool> {
+        let text = message.text.trimAscii()
+        let command = gatewayTelegramNativeCommandNameFromText(text)
+        if (command.isEmpty()) {
+            return None<Bool>
+        }
+        for (custom in user.telegram.customCommands) {
+            let normalized = this.normalizeTelegramCommandName(custom.command)
+            if (normalized.isEmpty() || normalized != command) {
+                continue
+            }
+            if (!this.telegramMessageCanOperate(message, user, accountId)) {
+                let denied = this.telegramCommandJson(normalized, "rejected", ok: false, message: "sender is not authorized for /${normalized}")
+                denied.put("auth", JsonString("operator"))
+                denied.put("senderId", JsonString(message.senderId))
+                this.sendTelegramNativeCommandReply(message, accountId, denied.toJsonString())
+                return Some(true)
+            }
+            let args = gatewayTelegramNativeCommandArgsFromText(text)
+            if (!custom.reply.trimAscii().isEmpty()) {
+                this.sendTelegramNativeCommandReply(message, accountId, custom.reply.trimAscii().replace("{args}", args))
+                return Some(true)
+            }
+            if (!custom.prompt.trimAscii().isEmpty()) {
+                let configuredPrompt = custom.prompt.trimAscii()
+                let prompt = if (configuredPrompt.contains("{args}")) {
+                    configuredPrompt.replace("{args}", args)
+                } else if (args.isEmpty()) {
+                    configuredPrompt
+                } else {
+                    "${configuredPrompt}\n\n${args}"
+                }
+                let request = gatewaySessionRequestFromInbound(message, sessionHint: sessionKey, accountId: accountId)
+                let turn = gatewayExecuteSessionRequestTurnForUser(user, request, prompt)
+                this.sendTelegramNativeCommandReply(message, accountId, turn.execution.answer)
+                return Some(true)
+            }
+            let out = this.telegramCommandJson(normalized, "handler_missing", ok: false, message: "Telegram custom command '/${normalized}' has no execution definition.")
+            out.put("command", JsonString(normalized))
+            this.sendTelegramNativeCommandReply(message, accountId, out.toJsonString())
+            return Some(true)
+        }
+        None<Bool>
+    }
+
+    private func sendTelegramNativeCommandReply(message: InboundMessage, accountId: String, reply: String): Unit {
+        this.sendTextToPeerDetailed(
+            "telegram",
+            message.peerId,
+            reply,
+            replyToMessageId: message.replyTargetMessageId,
+            replyInThread: message.replyInThread,
+            accountId: accountId
+        )
+    }
+
+    private func normalizeTelegramCommandName(raw: String): String {
+        var normalized = raw.trimAscii().toAsciiLower()
+        while (normalized.startsWith("/")) {
+            normalized = normalized[1..]
+        }
+        if (normalized.isEmpty() || normalized.size > 32) {
+            return ""
+        }
+        for (r in normalized.toRuneArray()) {
+            let ok = (r >= r'a' && r <= r'z') ||
+                (r >= r'0' && r <= r'9') ||
+                r == r'_'
+            if (!ok) {
+                return ""
+            }
+        }
+        normalized
     }
 
     private func shouldRenderTelegramArgsMenu(spec: GatewayTelegramNativeCommandSpec, text: String, user: GatewayUserSettings): Bool {
@@ -1997,24 +2112,57 @@ public class GatewayService {
         "Telegram session model switched to ${modelRef}."
     }
 
+    private func telegramMessageCanOperate(message: InboundMessage, user: GatewayUserSettings, accountId: String): Bool {
+        if (!user.telegram.commands.useAccessGroups) {
+            return this.telegramSenderCanOperate(message.senderId, user) ||
+                this.telegramPairingSenderAllowed(accountId, message.senderId)
+        }
+        var anyConfigured = false
+        if (!user.telegram.commands.allowFrom.isEmpty()) {
+            anyConfigured = true
+            if (this.telegramAllowListMatches(user.telegram.commands.allowFrom, message.senderId)) {
+                return true
+            }
+        }
+        if (!user.telegram.allowFrom.isEmpty()) {
+            anyConfigured = true
+            if (this.telegramAllowListMatches(user.telegram.allowFrom, message.senderId)) {
+                return true
+            }
+        }
+        if (this.telegramPairingStoreConfigured(accountId)) {
+            anyConfigured = true
+            if (this.telegramPairingSenderAllowed(accountId, message.senderId)) {
+                return true
+            }
+        }
+        if (chatTypeToString(message.chatType) == "group") {
+            let groupAllow = this.telegramEffectiveGroupAllowFrom(user, message)
+            if (!groupAllow.isEmpty()) {
+                anyConfigured = true
+                if (this.telegramAllowListMatches(groupAllow, message.senderId)) {
+                    return true
+                }
+            }
+        }
+        if (!anyConfigured) {
+            return false
+        }
+        false
+    }
+
     private func telegramSenderCanOperate(senderId: String, user: GatewayUserSettings): Bool {
+        this.telegramAllowListMatches(user.telegram.allowFrom, senderId) ||
+            this.telegramAllowListMatches(user.telegram.groupAllowFrom, senderId)
+    }
+
+    private func telegramAllowListMatches(allowFrom: Array<String>, senderId: String): Bool {
         let normalized = senderId.trimAscii()
         if (normalized.isEmpty()) {
             return false
         }
         let accepted = ["${normalized}", "tg:${normalized}", "telegram:${normalized}", "user:${normalized}"]
-        for (candidate in user.telegram.allowFrom) {
-            let c = candidate.trimAscii()
-            if (c == "*") {
-                return true
-            }
-            for (id in accepted) {
-                if (c == id) {
-                    return true
-                }
-            }
-        }
-        for (candidate in user.telegram.groupAllowFrom) {
+        for (candidate in allowFrom) {
             let c = candidate.trimAscii()
             if (c == "*") {
                 return true
@@ -2026,6 +2174,168 @@ public class GatewayService {
             }
         }
         false
+    }
+
+    private func telegramPairingCredentialsDir(accountId: String): Path {
+        CliConfig.dotDir.join("gateway-telegram").join("accounts").join(this.telegramSafeStoreSegment(accountId)).join("credentials")
+    }
+
+    private func telegramSafeStoreSegment(raw: String): String {
+        let trimmed = raw.trimAscii()
+        let value = if (trimmed.isEmpty() || trimmed == "telegram:default") {
+            "default"
+        } else if (trimmed.startsWith("telegram:")) {
+            trimmed["telegram:".size..].trimAscii().toAsciiLower()
+        } else {
+            trimmed.toAsciiLower()
+        }
+        let out = StringBuilder()
+        for (r in value.runes()) {
+            if ((r >= r'a' && r <= r'z') || (r >= r'A' && r <= r'Z') || (r >= r'0' && r <= r'9') || r == r'.' || r == r'_' || r == r'-') {
+                out.append(r)
+            } else {
+                out.append(r'_')
+            }
+        }
+        let normalized = out.toString().trimAscii()
+        if (normalized.isEmpty()) { "default" } else { normalized }
+    }
+
+    private func telegramPairingApprovedSenders(accountId: String): Array<String> {
+        let out = ArrayList<String>()
+        let path = this.telegramPairingCredentialsDir(accountId).join("telegram-allowFrom.json")
+        if (!exists(path)) {
+            return out.toArray()
+        }
+        try {
+            let arr = JsonValue.fromStr(String.fromUtf8(File.readFrom(path))).asArray()
+            for (item in arr.getItems()) {
+                try {
+                    let value = item.asString().getValue().trimAscii()
+                    if (!value.isEmpty()) {
+                        out.add(value)
+                    }
+                } catch (_: Exception) {
+                    ()
+                }
+            }
+        } catch (_: Exception) {
+            ()
+        }
+        out.toArray()
+    }
+
+    private func telegramPairingStoreConfigured(accountId: String): Bool {
+        !this.telegramPairingApprovedSenders(accountId).isEmpty()
+    }
+
+    private func telegramPairingSenderAllowed(accountId: String, senderId: String): Bool {
+        this.telegramAllowListMatches(this.telegramPairingApprovedSenders(accountId), senderId)
+    }
+
+    private func telegramNormalizeGroupId(peerId: String): String {
+        if (peerId.startsWith("group:")) {
+            let pure = peerId["group:".size..]
+            match (pure.indexOf(":topic:")) {
+                case Some(topicIdx) => return pure[..topicIdx]
+                case None => return pure
+            }
+        }
+        peerId.trimAscii()
+    }
+
+    private func telegramExtractThreadId(peerId: String): String {
+        match (peerId.indexOf(":topic:")) {
+            case Some(idx) => peerId[(idx + ":topic:".size)..].trimAscii()
+            case None => ""
+        }
+    }
+
+    private func telegramObjectFieldOpt(obj: JsonObject, key: String): Option<JsonObject> {
+        match (obj.get(key)) {
+            case Some(v) => try { Some(v.asObject()) } catch (_: Exception) { None<JsonObject> }
+            case None => None<JsonObject>
+        }
+    }
+
+    private func telegramStringArrayField(obj: JsonObject, key: String): Array<String> {
+        let out = ArrayList<String>()
+        match (obj.get(key)) {
+            case Some(v) =>
+                try {
+                    let arr = v.asArray()
+                    for (item in arr.getItems()) {
+                        try {
+                            let value = item.asString().getValue().trimAscii()
+                            if (!value.isEmpty()) {
+                                out.add(value)
+                            }
+                        } catch (_: Exception) {
+                            ()
+                        }
+                    }
+                } catch (_: Exception) {
+                    ()
+                }
+            case None => ()
+        }
+        out.toArray()
+    }
+
+    private func telegramGroupEntry(user: GatewayUserSettings, peerId: String): Option<JsonObject> {
+        let normalizedGroupId = this.telegramNormalizeGroupId(peerId)
+        match (user.telegram.groups) {
+            case Some(groups) =>
+                match (this.telegramObjectFieldOpt(groups, normalizedGroupId)) {
+                    case Some(v) => Some(v)
+                    case None => this.telegramObjectFieldOpt(groups, "*")
+                }
+            case None => None<JsonObject>
+        }
+    }
+
+    private func telegramTopicEntry(peerId: String, groupEntry: Option<JsonObject>): Option<JsonObject> {
+        let threadId = this.telegramExtractThreadId(peerId)
+        if (threadId.isEmpty()) {
+            return None<JsonObject>
+        }
+        match (groupEntry) {
+            case Some(groupCfg) =>
+                match (this.telegramObjectFieldOpt(groupCfg, "topics")) {
+                    case Some(topics) =>
+                        match (this.telegramObjectFieldOpt(topics, threadId)) {
+                            case Some(v) => Some(v)
+                            case None => this.telegramObjectFieldOpt(topics, "*")
+                        }
+                    case None => None<JsonObject>
+                }
+            case None => None<JsonObject>
+        }
+    }
+
+    private func telegramEffectiveGroupAllowFrom(user: GatewayUserSettings, message: InboundMessage): Array<String> {
+        let groupEntry = this.telegramGroupEntry(user, message.peerId)
+        let topicEntry = this.telegramTopicEntry(message.peerId, groupEntry)
+        match (topicEntry) {
+            case Some(topicCfg) =>
+                let topicAllow = this.telegramStringArrayField(topicCfg, "allowFrom")
+                if (!topicAllow.isEmpty()) {
+                    return topicAllow
+                }
+            case None => ()
+        }
+        match (groupEntry) {
+            case Some(groupCfg) =>
+                let groupAllow = this.telegramStringArrayField(groupCfg, "allowFrom")
+                if (!groupAllow.isEmpty()) {
+                    return groupAllow
+                }
+            case None => ()
+        }
+        if (!user.telegram.groupAllowFrom.isEmpty()) {
+            return user.telegram.groupAllowFrom
+        }
+        user.telegram.allowFrom
     }
 
     private func telegramNativeField(text: String, key: String): String {

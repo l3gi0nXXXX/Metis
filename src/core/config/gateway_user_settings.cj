@@ -340,6 +340,14 @@ public struct TelegramNetworkUserSettings {
 public struct TelegramCustomCommandUserSettings {
     public var command: String = ""
     public var description: String = ""
+    public var prompt: String = ""
+    public var reply: String = ""
+}
+
+@jsonable
+public struct TelegramCommandsUserSettings {
+    public var useAccessGroups: Bool = false
+    public var allowFrom: Array<String> = []
 }
 
 @jsonable
@@ -358,6 +366,7 @@ public struct TelegramUserSettings {
     public var dms: Option<JsonObject> = None
     public var accounts: Option<JsonObject> = None
     public var commandsNative: String = "auto"
+    public var commands: TelegramCommandsUserSettings = TelegramCommandsUserSettings()
     public var customCommands: Array<TelegramCustomCommandUserSettings> = []
     public var replyToMode: String = "off"
     public var groupHistoryEnabled: Bool = true

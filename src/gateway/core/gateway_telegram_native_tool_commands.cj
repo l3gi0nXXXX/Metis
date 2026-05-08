@@ -206,13 +206,16 @@ private func tgToolTtsStatus(user: GatewayUserSettings, state: JsonObject): Json
         case Some(v) => try { v.asBool().getValue() } catch (_: Exception) { true }
         case None => true
     }
-    let out = tgToolCommandJson("tts", if (provider.isEmpty()) { "not_configured" } else { "ok" }, ok: !provider.isEmpty())
+    let status = if (provider.isEmpty()) { "not_configured" } else if (provider == "fake") { "ok" } else { "not_found" }
+    let out = tgToolCommandJson("tts", status, ok: status == "ok")
     out.put("enabled", enabled.toJsonValue())
     out.put("provider", JsonString(provider))
     out.put("limit", tgToolJsonInt(state, "limit", 4000).toJsonValue())
     out.put("audioAsVoice", true.toJsonValue())
     if (provider.isEmpty()) {
         out.put("message", JsonString("No Metis TTS provider is configured for Telegram native voice output."))
+    } else if (status == "not_found") {
+        out.put("message", JsonString("Configured TTS provider '${provider}' is not available in this Gateway build."))
     }
     out
 }
@@ -286,7 +289,7 @@ public func gatewayTelegramRenderTtsCommand(text: String, user: GatewayUserSetti
         return out.toJsonString()
     }
     if (provider != "fake") {
-        let out = tgToolCommandJson("tts", "not_supported", ok: false, message: "Configured TTS provider '${provider}' is not implemented in this Gateway build.")
+        let out = tgToolCommandJson("tts", "not_found", ok: false, message: "Configured TTS provider '${provider}' is not available in this Gateway build.")
         out.put("provider", JsonString(provider))
         return out.toJsonString()
     }

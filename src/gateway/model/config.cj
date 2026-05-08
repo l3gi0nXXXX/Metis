@@ -726,10 +726,14 @@ public class TelegramNetworkConfig {
 public class TelegramCustomCommandConfig {
     public let command: String
     public let description: String
+    public let prompt: String
+    public let reply: String
 
-    public init(command!: String = "", description!: String = "") {
+    public init(command!: String = "", description!: String = "", prompt!: String = "", reply!: String = "") {
         this.command = command
         this.description = description
+        this.prompt = prompt
+        this.reply = reply
     }
 }
 

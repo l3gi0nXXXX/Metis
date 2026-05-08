@@ -1,10 +1,13 @@
 package metis.gateway.core
 
-import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager}
+import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager, TelegramCustomCommandUserSettings}
 import metis.core.gatewaySubagentCreateRunRecord
 import metis.gateway.model.{ChannelPolicyConfig, ChannelType, ChatType, InboundMessage, OutboundMessage, SendResult}
 
+import magic.core.message.Message
+import magic.core.model.{AsyncChatResponse, ChatModel, ChatRequest, ChatResponse}
 import magic.jsonable.*
+import magic.model.ModelManager
 
 import std.collection.{ArrayList, HashMap}
 import std.env.{getVariable, setVariable}
@@ -35,6 +38,19 @@ private class GatewayTelegramNativeTestAdapter <: ChannelAdapter {
             ChatType.Direct,
             text,
             false,
+            DateTime.now()
+        ))
+    }
+
+    public func queueGroup(text: String, sender!: String = "8734062810", peer!: String = "group:-100"): Unit {
+        this.inbound.add(InboundMessage(
+            ChannelType.Telegram,
+            "group-msg-${this.inbound.size}",
+            peer,
+            sender,
+            ChatType.Group,
+            text,
+            true,
             DateTime.now()
         ))
     }
@@ -104,6 +120,35 @@ private class GatewayTelegramSidecarMethodRecorder {
             }
         }
         out
+    }
+}
+
+private class GatewayTelegramNativeFakeModel <: ChatModel {
+    private var _maxTokens: Option<Int64> = None
+
+    public prop provider: String {
+        get() { "fake" }
+    }
+
+    public prop name: String {
+        get() { "telegram-native" }
+    }
+
+    public prop contextLength: Int64 {
+        get() { 8192 }
+    }
+
+    public mut prop maxTokens: Option<Int64> {
+        get() { this._maxTokens }
+        set(v) { this._maxTokens = v }
+    }
+
+    public func create(_request: ChatRequest): ChatResponse {
+        ChatResponse(this.fullName, Message.assistant("fake telegram native session answer"))
+    }
+
+    public func asyncCreate(_request: ChatRequest): AsyncChatResponse {
+        throw Exception("async not used in telegram native tests")
     }
 }
 
@@ -1280,6 +1325,99 @@ public class GatewayServiceTelegramNativeTest {
     }
 
     @TestCase
+    public func tgFreeze01AccessGroupsAuthorizeGroupCommandsOnlyWhenEnabled(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["111"]
+            let groups = JsonObject()
+            let group = JsonObject()
+            group.put("allowFrom", JsonArray([JsonString("222")]))
+            groups.put("-100", group)
+            user.telegram.groups = Some(groups)
+            user.telegram.commands.useAccessGroups = true
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queueGroup("/bash echo allowed", sender: "222")
+            adapter.queueGroup("/bash echo denied", sender: "333")
+            service.processOnce()
+
+            let allowed = JsonValue.fromStr(adapter.sentText(0)).asObject()
+            @Expect(allowed.get("status").getOrThrow().asString().getValue(), "approval_required")
+            @Expect(allowed.get("pendingAction").getOrThrow().asString().getValue(), "telegram.bash.exec")
+            let denied = JsonValue.fromStr(adapter.sentText(1)).asObject()
+            @Expect(denied.get("status").getOrThrow().asString().getValue(), "rejected")
+
+            var disabled = CliSettingManager.readGatewaySettings()
+            disabled.telegram.commands.useAccessGroups = false
+            CliSettingManager.writeGatewaySettings(disabled)
+            adapter.queueGroup("/bash echo old-auth", sender: "222")
+            service.processOnce()
+            let oldAuth = JsonValue.fromStr(adapter.sentText(2)).asObject()
+            @Expect(oldAuth.get("status").getOrThrow().asString().getValue(), "rejected")
+        }
+    }
+
+    @TestCase
+    public func tgFreeze02CustomCommandsDispatchOrReturnStructuredMissingHandler(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            user.telegram.customCommands = [
+                TelegramCustomCommandUserSettings(command: "deploy", description: "Deploy", reply: "deploying {args}"),
+                TelegramCustomCommandUserSettings(command: "noop", description: "No handler")
+            ]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/deploy prod")
+            adapter.queue("/noop prod")
+            service.processOnce()
+
+            @Expect(adapter.sentText(0), "deploying prod")
+            let missing = JsonValue.fromStr(adapter.sentText(1)).asObject()
+            @Expect(missing.get("action").getOrThrow().asString().getValue(), "noop")
+            @Expect(missing.get("status").getOrThrow().asString().getValue(), "handler_missing")
+            @Expect(missing.get("ok").getOrThrow().asBool().getValue(), false)
+        }
+    }
+
+    @TestCase
+    public func tgFreeze03SkillCommandExecutesGatewaySessionTurn(): Unit {
+        withGatewayTelegramNativeTestHome {
+            let modelName = "metis-test-telegram-native-${DateTime.now().toUnixTimeStamp().toMilliseconds()}"
+            ModelManager.registerChatModel(modelName, { => GatewayTelegramNativeFakeModel() })
+            let oldModel = CliConfig.model
+            CliConfig.model = modelName
+            try {
+                var user = GatewayUserSettings()
+                user.telegram.enabled = true
+                user.telegram.allowFrom = ["*"]
+                CliSettingManager.writeGatewaySettings(user)
+
+                let adapter = GatewayTelegramNativeTestAdapter()
+                let service = gatewayTelegramNativeService(adapter)
+                service.start()
+                adapter.queue("/skill weather Shanghai")
+                service.processOnce()
+
+                @Expect(adapter.sentText(0), "fake telegram native session answer")
+                let store = gatewaySessionStoreForUser(CliSettingManager.readGatewaySettings())
+                let raw = store.readTranscriptRaw("telegram:direct:8734062810").getOrThrow()
+                @Expect(raw.contains("/weather Shanghai"), true)
+            } finally {
+                CliConfig.model = oldModel
+            }
+        }
+    }
+
+    @TestCase
     public func t53SkillAndBtwAreNativeAndBtwDoesNotAppendConversationTurns(): Unit {
         withGatewayTelegramNativeTestHome {
             var user = GatewayUserSettings()
@@ -1319,12 +1457,16 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queue("/tts status")
             adapter.queue("/tts provider fake")
             adapter.queue("/tts audio hello")
+            adapter.queue("/tts provider missing-provider")
+            adapter.queue("/tts audio hello")
             service.processOnce()
 
             @Expect(JsonValue.fromStr(adapter.sentText(0)).asObject().get("status").getOrThrow().asString().getValue(), "not_configured")
             @Expect(JsonValue.fromStr(adapter.sentText(1)).asObject().get("provider").getOrThrow().asString().getValue(), "fake")
             @Expect(adapter.sentText(2).startsWith("[voice]"), true)
             @Expect(adapter.sentText(2).contains("/tmp/metis-gateway-telegram-native-test-home"), true)
+            @Expect(JsonValue.fromStr(adapter.sentText(3)).asObject().get("status").getOrThrow().asString().getValue(), "not_found")
+            @Expect(JsonValue.fromStr(adapter.sentText(4)).asObject().get("status").getOrThrow().asString().getValue(), "not_found")
         }
     }
 }

@@ -350,7 +350,9 @@ private func mergeTelegram(user: GatewayUserSettings): TelegramConfig {
         customCommands.add(
             TelegramCustomCommandConfig(
                 command: one.command.trimAscii(),
-                description: one.description.trimAscii()
+                description: one.description.trimAscii(),
+                prompt: one.prompt.trimAscii(),
+                reply: one.reply.trimAscii()
             )
         )
     }
