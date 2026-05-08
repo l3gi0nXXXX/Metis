@@ -20,6 +20,7 @@ import std.time.DateTime
 import stdx.encoding.base64.toBase64String
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString, JsonValue}
 
+private var telegramMediaToolGatewayCallRunnerOverride: Option<(String, JsonObject) -> JsonObject> = None<(String, JsonObject) -> JsonObject>
 private func telegramMediaToolString(obj: JsonObject, key: String): String {
     match (obj.get(key)) {
         case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
@@ -633,6 +634,14 @@ private func telegramMediaToolGatewayBinaryCommand(): (String, Option<Path>) {
 }
 
 private func telegramMediaToolInvokeGatewayCall(method: String, params!: Option<JsonObject> = None<JsonObject>): JsonObject {
+    let overrideParams = match (params) {
+        case Some(obj) => obj
+        case None => JsonObject()
+    }
+    match (telegramMediaToolGatewayCallRunnerOverride) {
+        case Some(runner) => return runner(method, overrideParams)
+        case None => ()
+    }
     let (command, workDir) = telegramMediaToolGatewayBinaryCommand()
     let args = match (params) {
         case Some(obj) => ["gateway", "call", method, obj.toJsonString()]
@@ -702,6 +711,10 @@ private func telegramMediaToolBuildMediaText(kind: String, media: String, captio
 
 @toolset
 public class GatewayTelegramMediaToolset {
+    public func debugSetGatewayCallRunnerForTest(runner: Option<(String, JsonObject) -> JsonObject>): Unit {
+        telegramMediaToolGatewayCallRunnerOverride = runner
+    }
+
     public func debugTelegramMediaListForTest(): String {
         this.renderTelegramMediaList()
     }
@@ -1423,6 +1436,75 @@ public class GatewayTelegramMediaToolset {
         (false, "", "target cannot be normalized without resolvedChatId")
     }
 
+    private func telegramTargetLookupFromRaw(raw: String): String {
+        var value = raw.trimAscii()
+        var linkLike = false
+        if (value.startsWith("https://t.me/")) {
+            value = value["https://t.me/".size..]
+            linkLike = true
+        } else if (value.startsWith("http://t.me/")) {
+            value = value["http://t.me/".size..]
+            linkLike = true
+        } else if (value.startsWith("t.me/")) {
+            value = value["t.me/".size..]
+            linkLike = true
+        } else if (value.startsWith("https://telegram.me/")) {
+            value = value["https://telegram.me/".size..]
+            linkLike = true
+        } else if (value.startsWith("http://telegram.me/")) {
+            value = value["http://telegram.me/".size..]
+            linkLike = true
+        } else if (value.startsWith("telegram.me/")) {
+            value = value["telegram.me/".size..]
+            linkLike = true
+        }
+        match (value.indexOf("?")) {
+            case Some(idx) => value = value[..idx]
+            case None => ()
+        }
+        match (value.indexOf("/")) {
+            case Some(idx) => value = value[..idx]
+            case None => ()
+        }
+        let candidate = value.trimAscii()
+        if (candidate.startsWith("@")) {
+            return candidate
+        }
+        if (!linkLike || candidate.isEmpty() || candidate == "c" || candidate.startsWith("+")) {
+            return ""
+        }
+        "@" + candidate
+    }
+
+    private func telegramTargetResolveViaGetChat(target: String): (Bool, String, String, JsonObject) {
+        let lookup = this.telegramTargetLookupFromRaw(target)
+        let detail = JsonObject()
+        detail.put("lookupTarget", JsonString(lookup))
+        if (lookup.isEmpty()) {
+            return (false, "", "target cannot be resolved with Telegram getChat", detail)
+        }
+        let params = JsonObject()
+        params.put("channelId", JsonString("telegram"))
+        params.put("chatId", JsonString(lookup))
+        match (gatewayCurrentToolRuntimeContext()) {
+            case Some(ctx) =>
+                let accountId = telegramMediaToolString(ctx.mediaContext, "accountId")
+                if (!accountId.trimAscii().isEmpty()) {
+                    params.put("accountId", JsonString(accountId.trimAscii()))
+                }
+            case None => ()
+        }
+        let resolved = telegramMediaToolInvokeGatewayCall("channels.telegram.getChat", params: Some(params))
+        detail.put("gateway", resolved)
+        let ok = telegramMediaToolBool(resolved, "ok")
+        let chatId = telegramMediaToolString(resolved, "chatId")
+        if (ok && !chatId.isEmpty()) {
+            return (true, chatId, "", detail)
+        }
+        let reason = telegramMediaToolString(resolved, "reason")
+        return (false, "", if (reason.isEmpty()) { "Telegram getChat failed" } else { reason }, detail)
+    }
+
     private func telegramTargetWritebackHasAdminScope(): Bool {
         match (gatewayCurrentToolRuntimeContext()) {
             case Some(ctx) =>
@@ -1439,15 +1521,34 @@ public class GatewayTelegramMediaToolset {
 
     private func telegramTargetWritebackEnvelope(action: String, target: String, resolvedChatId: Option<String>, apply!: Bool): JsonObject {
         let out = JsonObject()
-        let (ok, normalized, error) = this.telegramTargetWritebackNormalize(target, resolvedChatId)
+        var effectiveResolvedChatId = resolvedChatId
+        let rawTarget = target.trimAscii()
+        let lookup = this.telegramTargetLookupFromRaw(rawTarget)
+        if (effectiveResolvedChatId.isNone() && !lookup.isEmpty()) {
+            let (resolvedOk, chatId, resolvedError, detail) = this.telegramTargetResolveViaGetChat(rawTarget)
+            out.put("resolve", detail)
+            if (resolvedOk) {
+                effectiveResolvedChatId = Some(chatId)
+            } else {
+                out.put("ok", false.toJsonValue())
+                out.put("status", JsonString("error"))
+                out.put("action", JsonString(action))
+                out.put("target", JsonString(rawTarget))
+                out.put("error", JsonString(resolvedError))
+                out.put("cronTarget", JsonString("not_applicable"))
+                return out
+            }
+        }
+        let (ok, normalized, error) = this.telegramTargetWritebackNormalize(target, effectiveResolvedChatId)
         out.put("ok", ok.toJsonValue())
         out.put("status", JsonString(if (ok) { if (apply) { "applied" } else { "dry_run" } } else { "error" }))
         out.put("action", JsonString(action))
         out.put("target", JsonString(target.trimAscii()))
-        match (resolvedChatId) {
+        match (effectiveResolvedChatId) {
             case Some(v) => out.put("resolvedChatId", JsonString(v.trimAscii()))
             case None => ()
         }
+        out.put("cronTarget", JsonString("not_applicable"))
         if (!ok) {
             out.put("error", JsonString(error))
             return out
@@ -1467,9 +1568,12 @@ public class GatewayTelegramMediaToolset {
 
     private func telegramTargetWritebackApply(target: String, resolvedChatId: Option<String>): String {
         if (!this.telegramTargetWritebackHasAdminScope()) {
-            let denied = this.telegramTargetWritebackEnvelope("telegram_target_writeback_apply", target, resolvedChatId, apply: true)
+            let denied = JsonObject()
             denied.put("ok", JsonBool(false))
             denied.put("status", JsonString("denied"))
+            denied.put("action", JsonString("telegram_target_writeback_apply"))
+            denied.put("target", JsonString(target.trimAscii()))
+            denied.put("cronTarget", JsonString("not_applicable"))
             denied.put("error", JsonString("telegram target writeback requires operator.admin scope"))
             return denied.toJsonString()
         }
@@ -1479,6 +1583,19 @@ public class GatewayTelegramMediaToolset {
         }
         var settings = CliSettingManager.readGatewaySettings()
         settings.telegram.defaultTo = telegramMediaToolString(envelope, "defaultTo")
+        match (settings.telegram.accounts) {
+            case Some(accounts) =>
+                for (key in accounts.getFields().keys()) {
+                    let account = try { accounts.get(key).getOrThrow().asObject() } catch (_e: Exception) { JsonObject() }
+                    let accountDefault = telegramMediaToolString(account, "defaultTo")
+                    if (accountDefault == target.trimAscii() || accountDefault == telegramMediaToolString(envelope, "target")) {
+                        account.put("defaultTo", envelope.get("defaultTo").getOrThrow())
+                        accounts.put(key, account)
+                    }
+                }
+                settings.telegram.accounts = Some(accounts)
+            case None => ()
+        }
         MetisConfigManager.setGatewaySettings(settings)
         envelope.put("configPath", JsonString(MetisConfigManager.configPath().toString()))
         envelope.toJsonString()
