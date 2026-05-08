@@ -1,6 +1,7 @@
 package metis.gateway.core
 
 import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager}
+import metis.core.gatewaySubagentCreateRunRecord
 import metis.gateway.model.{ChannelPolicyConfig, ChannelType, ChatType, InboundMessage, OutboundMessage, SendResult}
 
 import magic.jsonable.*
@@ -950,6 +951,7 @@ public class GatewayServiceTelegramNativeTest {
             @Expect(adapter.sentText(0).contains("\"/bash\""), true)
             @Expect(adapter.sentText(0).contains("\"status\": \"stub\""), false)
             @Expect(adapter.sentText(0).contains("\"status\": \"approval_required\""), true)
+            @Expect(adapter.sentText(0).contains("\"/allowlist\""), true)
             @Expect(adapter.sentText(0).contains("\"status\": \"not_applicable\""), true)
             @Expect(native.size() >= 43, true)
         }
@@ -1085,6 +1087,178 @@ public class GatewayServiceTelegramNativeTest {
             @Expect(adapter.sentText(0).contains("callback:cmd:think:high"), true)
             @Expect(adapter.sentText(1).contains("\"action\": \"think\""), true)
             @Expect(adapter.sentText(1).contains("\"mode\": \"high\""), true)
+        }
+    }
+
+    @TestCase
+    public func t53AllowlistListsConfigAndPairingAndMutationsCreateApprovalOnly(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["tg:8734062810"]
+            user.telegram.groupAllowFrom = ["group:-100"]
+            CliSettingManager.writeGatewaySettings(user)
+            let pairingDir = CliConfig.dotDir.join("gateway-telegram").join("accounts").join("default").join("credentials")
+            Directory.create(pairingDir, recursive: true)
+            File.writeTo(pairingDir.join("telegram-allowFrom.json"), "[\"555\"]".toArray())
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/allowlist list all")
+            adapter.queue("/allowlist add dm 12345")
+            service.processOnce()
+
+            let listed = JsonValue.fromStr(adapter.sentText(0)).asObject()
+            @Expect(listed.get("allowFrom").getOrThrow().asArray()[0].asString().getValue(), "tg:8734062810")
+            @Expect(adapter.sentText(0).contains("555"), true)
+            let add = JsonValue.fromStr(adapter.sentText(1)).asObject()
+            @Expect(add.get("status").getOrThrow().asString().getValue(), "approval_required")
+            @Expect(add.get("pendingAction").getOrThrow().asString().getValue(), "telegram.allowlist.add")
+            let updated = CliSettingManager.readGatewaySettings()
+            @Expect(updated.telegram.allowFrom.contains("12345"), false)
+        }
+    }
+
+    @TestCase
+    public func t53SessionsAndApprovalsExposeTelegramReadonlyViews(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+            let store = gatewaySessionStoreForUser(user)
+            store.appendUser("telegram:direct:8734062810", "hello")
+            store.appendAssistant("telegram:direct:8734062810", "world")
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/sessions list")
+            adapter.queue("/sessions preview telegram:direct:8734062810")
+            adapter.queue("/bash echo pending")
+            adapter.queue("/approvals")
+            service.processOnce()
+
+            let sessions = JsonValue.fromStr(adapter.sentText(0)).asObject()
+            @Expect(sessions.get("count").getOrThrow().asInt().getValue() >= 1, true)
+            @Expect(adapter.sentText(0).contains("telegram:direct:8734062810"), true)
+            let preview = JsonValue.fromStr(adapter.sentText(1)).asObject()
+            @Expect(preview.get("preview").getOrThrow().asString().getValue().contains("[user] hello"), true)
+            let approvals = JsonValue.fromStr(adapter.sentText(3)).asObject()
+            @Expect(approvals.get("pendingCount").getOrThrow().asInt().getValue(), 1)
+            @Expect(adapter.sentText(3).contains("telegram.bash.exec"), true)
+        }
+    }
+
+    @TestCase
+    public func t53ConfigMcpPluginsDebugWritesCreateApprovalsWithoutMutatingConfig(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let before = MetisConfigManager.configPath().toString()
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            for (command in [
+                "/config set gateway.telegram.defaultTo user:1",
+                "/mcp set demo {}",
+                "/plugins enable demo",
+                "/debug set trace on"
+            ]) {
+                adapter.queue(command)
+            }
+            service.processOnce()
+
+            for (i in 0..4) {
+                let out = JsonValue.fromStr(adapter.sentText(i)).asObject()
+                @Expect(out.get("status").getOrThrow().asString().getValue(), "approval_required")
+                @Expect(out.get("approvalId").isSome(), true)
+            }
+            @Expect(MetisConfigManager.configPath().toString(), before)
+            @Expect(adapter.sentText(0).contains("telegram.config.mutation"), true)
+            @Expect(adapter.sentText(1).contains("telegram.mcp.mutation"), true)
+            @Expect(adapter.sentText(2).contains("telegram.plugins.mutation"), true)
+            @Expect(adapter.sentText(3).contains("telegram.debug.mutation"), true)
+        }
+    }
+
+    @TestCase
+    public func t53BashRestartOnlyCreateApprovalsAndStopCancelsCurrentSubagent(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+            let store = gatewaySessionStoreForUser(user)
+            let run = gatewaySubagentCreateRunRecord(store.sessionsRoot(), "telegram:direct:8734062810", status: "running")
+            let runId = run.get("runId").getOrThrow().asString().getValue()
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/bash echo should-not-run")
+            adapter.queue("/restart")
+            adapter.queue("/stop")
+            service.processOnce()
+
+            @Expect(adapter.sentText(0).contains("telegram.bash.exec"), true)
+            @Expect(adapter.sentText(1).contains("telegram.gateway.restart"), true)
+            let stopped = JsonValue.fromStr(adapter.sentText(2)).asObject()
+            @Expect(stopped.get("status").getOrThrow().asString().getValue(), "cancelled")
+            @Expect(stopped.get("runId").getOrThrow().asString().getValue(), runId)
+        }
+    }
+
+    @TestCase
+    public func t53SkillAndBtwAreNativeAndBtwDoesNotAppendConversationTurns(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+            let store = gatewaySessionStoreForUser(user)
+            store.appendUser("telegram:direct:8734062810", "before")
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/skill list")
+            adapter.queue("/btw what is the side answer?")
+            service.processOnce()
+
+            @Expect(JsonValue.fromStr(adapter.sentText(0)).asObject().get("skills").isSome(), true)
+            let btw = JsonValue.fromStr(adapter.sentText(1)).asObject()
+            @Expect(btw.get("persistent").getOrThrow().asBool().getValue(), false)
+            let raw = store.readTranscriptRaw("telegram:direct:8734062810").getOrThrow()
+            @Expect(raw.contains("what is the side answer"), false)
+        }
+    }
+
+    @TestCase
+    public func t53TtsReportsMissingProviderAndFakeProviderEmitsVoicePayload(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            user.telegram.actions.voice = true
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/tts status")
+            adapter.queue("/tts provider fake")
+            adapter.queue("/tts audio hello")
+            service.processOnce()
+
+            @Expect(JsonValue.fromStr(adapter.sentText(0)).asObject().get("status").getOrThrow().asString().getValue(), "not_configured")
+            @Expect(JsonValue.fromStr(adapter.sentText(1)).asObject().get("provider").getOrThrow().asString().getValue(), "fake")
+            @Expect(adapter.sentText(2).startsWith("[voice]"), true)
+            @Expect(adapter.sentText(2).contains("/tmp/metis-gateway-telegram-native-test-home"), true)
         }
     }
 }
