@@ -1,0 +1,11 @@
+{
+  "name": "exports-dot-default-fixture",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "default": "./default-entry.mjs",
+      "import": "./import-entry.mjs"
+    }
+  }
+}

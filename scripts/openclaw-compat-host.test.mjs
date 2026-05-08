@@ -9,6 +9,11 @@ const hostScript = path.join(__dirname, "openclaw-compat-host.mjs");
 const fixtureRoot = path.join(__dirname, "fixtures", "openclaw-compat-host");
 const rawRegisterRoot = path.join(fixtureRoot, "raw-register");
 const missingEntryRoot = path.join(fixtureRoot, "missing-entry");
+const extensionsArrayRoot = path.join(fixtureRoot, "openclaw-extensions-array");
+const exportsDefaultRoot = path.join(fixtureRoot, "exports-dot-default");
+const exportsImportRoot = path.join(fixtureRoot, "exports-dot-import");
+const tsDistPriorityRoot = path.join(fixtureRoot, "ts-dist-priority");
+const tsEntryOnlyRoot = path.join(fixtureRoot, "ts-entry-only");
 
 function once(request) {
   const child = spawnSync(process.execPath, [hostScript, "--once"], {
@@ -128,9 +133,7 @@ test("persistent host loads raw register(api) plugin and captures OpenClaw capab
   assert.ok(
     registered.result.diagnostics.some((diagnostic) => diagnostic.code === "unknown_capability" && diagnostic.capability === "registerWidget"),
   );
-  assert.ok(
-    registered.result.diagnostics.some((diagnostic) => diagnostic.code === "runtime_placeholder" && diagnostic.facade === "media.upload"),
-  );
+  assert.equal(registered.result.diagnostics.some((diagnostic) => diagnostic.code === "runtime_placeholder"), false);
 
   const health = await host.request("runtime.health");
   assert.equal(health.result.status, "ok");
@@ -138,6 +141,90 @@ test("persistent host loads raw register(api) plugin and captures OpenClaw capab
 
   const stop = await host.request("runtime.stop");
   assert.equal(stop.result.ok, true);
+});
+
+test("discovers OpenClaw package entries from extensions, exports, dist, and TS source fallbacks", () => {
+  const response = once({
+    jsonrpc: "2.0",
+    id: 10,
+    method: "plugin.discover",
+    params: { roots: [extensionsArrayRoot, exportsDefaultRoot, exportsImportRoot, tsDistPriorityRoot, tsEntryOnlyRoot] },
+  });
+
+  assert.equal(response.result.ok, true);
+  const byRoot = new Map(response.result.plugins.map((plugin) => [plugin.root, plugin]));
+  assert.equal(byRoot.get(extensionsArrayRoot).entry.endsWith("extension.mjs"), true);
+  assert.equal(byRoot.get(exportsDefaultRoot).entry.endsWith("default-entry.mjs"), true);
+  assert.equal(byRoot.get(exportsImportRoot).entry.endsWith("import-entry.mjs"), true);
+  assert.equal(byRoot.get(tsDistPriorityRoot).entry.endsWith(path.join("dist", "index.js")), true);
+  assert.equal(byRoot.get(tsEntryOnlyRoot).entry.endsWith(path.join("src", "index.ts")), true);
+});
+
+test("TS-only entries fail with deterministic loader diagnostic when no controlled loader is available", () => {
+  const response = once({
+    jsonrpc: "2.0",
+    id: 11,
+    method: "plugin.load",
+    params: { roots: [tsEntryOnlyRoot], runtime: { version: "test-runtime" } },
+  });
+
+  assert.equal(response.result.ok, true);
+  assert.equal(response.result.loadedPluginCount, 0);
+  assert.ok(
+    response.result.diagnostics.some(
+      (diagnostic) => diagnostic.code === "ts_entry_loader_unavailable" && diagnostic.entry.endsWith(path.join("src", "index.ts")),
+    ),
+  );
+  assert.equal(response.result.diagnostics.some((diagnostic) => diagnostic.code === "plugin_load_error"), false);
+});
+
+test("persistent host dispatches registered channel, HTTP, tool, provider, and hook handlers", async (t) => {
+  const host = startHost(t);
+  const load = await host.request("plugin.load", {
+    roots: [rawRegisterRoot],
+    runtime: { version: "test-runtime" },
+    secrets: { OPENCLAW_TOKEN: "super-secret-token" },
+    permissions: {
+      media: true,
+      reply: true,
+      conversation: true,
+      thread: true,
+      process: false,
+    },
+  });
+
+  assert.equal(load.result.ok, true);
+  assert.equal(load.result.loadedPluginCount, 1);
+
+  const start = await host.request("channel.start", { id: "fixture-channel", context: { accountId: "acct-1" } });
+  assert.deepEqual(start.result, { ok: true, status: "started", channelId: "fixture-channel", accountId: "acct-1" });
+
+  const health = await host.request("channel.health", { id: "fixture-channel" });
+  assert.deepEqual(health.result, { ok: true, status: "healthy", channelId: "fixture-channel" });
+
+  const inbound = await host.request("channel.pullInbound", { id: "fixture-channel", limit: 1 });
+  assert.deepEqual(inbound.result, {
+    ok: true,
+    messages: [{ id: "inbound-1", text: "fixture inbound", channelId: "fixture-channel" }],
+  });
+
+  const sent = await host.request("channel.send", { id: "fixture-channel", message: { text: "hello dispatch" } });
+  assert.deepEqual(sent.result, { ok: true, sent: true, text: "hello dispatch" });
+
+  const http = await host.request("http.dispatch", { method: "GET", path: "/fixture", body: "ping" });
+  assert.deepEqual(http.result, { status: 200, body: "GET /fixture ping" });
+
+  const tool = await host.request("tool.execute", { name: "fixture.tool", input: { value: 7 } });
+  assert.deepEqual(tool.result, { ok: true, tool: "fixture.tool", input: { value: 7 } });
+
+  const provider = await host.request("provider.invoke", { id: "fixture-provider", request: { prompt: "hi" } });
+  assert.deepEqual(provider.result, { ok: true, provider: "fixture-provider", prompt: "hi" });
+
+  const hook = await host.request("hook.dispatch", { name: "message.received", payload: { text: "hook me" } });
+  assert.deepEqual(hook.result, { ok: true, hook: "message.received", text: "hook me" });
+
+  const stopChannel = await host.request("channel.stop", { id: "fixture-channel" });
+  assert.deepEqual(stopChannel.result, { ok: true, status: "stopped", channelId: "fixture-channel" });
 });
 
 test("--once plugin.discover reports missing entry diagnostics without executing plugins", () => {

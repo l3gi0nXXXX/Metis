@@ -1,0 +1,11 @@
+{
+  "name": "exports-dot-import-fixture",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./import-entry.mjs"
+    }
+  }
+}

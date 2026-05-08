@@ -1,13 +1,19 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 
+import { createRuntimeFacets, createRuntimeState } from "./openclaw-compat-runtime-facets.mjs";
+
 const HOST_VERSION = "0.1.0";
-const ENTRY_FALLBACKS = ["index.js", "index.mjs", "dist/index.js"];
+const ENTRY_FALLBACKS = ["dist/index.js", "dist/index.mjs", "index.js", "index.mjs", "src/index.ts", "index.ts"];
 const SENSITIVE_KEY = /(?:secret|token|password|passwd|authorization|api[_-]?key|credential)/i;
+const requireFromHost = createRequire(import.meta.url);
 
 function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -115,10 +121,28 @@ function createState() {
     plugins: [],
     diagnostics: [],
     capabilities: emptyCapabilities(),
+    handlers: emptyHandlers(),
     configSnapshot: {},
     secrets: {},
     redactor: createRedactor(),
+    runtimeState: createRuntimeState(),
     runtimeVersion: HOST_VERSION,
+  };
+}
+
+function emptyHandlers() {
+  return {
+    tools: [],
+    providers: [],
+    channels: [],
+    hooks: [],
+    commands: [],
+    clis: [],
+    httpRoutes: [],
+    httpHandlers: [],
+    interactiveHandlers: [],
+    approvalHandlers: [],
+    gatewayMethods: [],
   };
 }
 
@@ -144,10 +168,21 @@ function resetStateForLoad(state, params) {
   state.plugins = [];
   state.diagnostics = [];
   state.capabilities = emptyCapabilities();
+  state.handlers = emptyHandlers();
   state.configSnapshot = isObject(params.config) ? params.config : {};
   state.secrets = isObject(params.secrets) ? params.secrets : {};
   state.redactor = createRedactor(state.configSnapshot, state.secrets);
   state.runtimeVersion = String(params.runtime?.version ?? params.version ?? HOST_VERSION);
+  state.runtimeState = createRuntimeState({
+    ...params.runtime,
+    version: state.runtimeVersion,
+    config: state.configSnapshot,
+    secrets: state.secrets,
+    permissions: params.permissions,
+    fetchPolicy: params.fetchPolicy,
+    diagnostics: state.diagnostics,
+    redactor: state.redactor,
+  });
 }
 
 function rootsFromParams(params = {}) {
@@ -190,6 +225,48 @@ function pluginIdFor(root, openclawManifest, packageJson) {
   );
 }
 
+function addEntryCandidate(out, candidate) {
+  if (Array.isArray(candidate)) {
+    for (const item of candidate) {
+      addEntryCandidate(out, item);
+    }
+    return;
+  }
+  if (isObject(candidate)) {
+    addEntryCandidate(out, candidate.default);
+    addEntryCandidate(out, candidate.import);
+    addEntryCandidate(out, candidate.entry);
+    return;
+  }
+  if (typeof candidate !== "string" || !candidate.trim()) {
+    return;
+  }
+  const value = candidate.trim();
+  if (value.endsWith("/src/index.ts") || value === "src/index.ts" || value === "./src/index.ts") {
+    out.push(value.replace(/(?:^\.\/)?src\/index\.ts$/, "dist/index.js"));
+  } else if (value.endsWith("/index.ts") || value === "index.ts" || value === "./index.ts") {
+    out.push(value.replace(/(?:^\.\/)?index\.ts$/, "dist/index.js"));
+  }
+  out.push(value);
+}
+
+function packageExportCandidates(exportsField) {
+  if (typeof exportsField === "string") {
+    return [exportsField];
+  }
+  if (!isObject(exportsField)) {
+    return [];
+  }
+  const dot = exportsField["."];
+  if (typeof dot === "string") {
+    return [dot];
+  }
+  if (isObject(dot)) {
+    return [dot.default, dot.import].filter((value) => typeof value === "string" && value.trim());
+  }
+  return [];
+}
+
 function entryCandidates(openclawManifest, packageJson) {
   const runtime = isObject(openclawManifest.runtime) ? openclawManifest.runtime : {};
   const gatewayRuntime = isObject(openclawManifest.gatewayRuntime) ? openclawManifest.gatewayRuntime : {};
@@ -198,7 +275,8 @@ function entryCandidates(openclawManifest, packageJson) {
   const pkgPlugin = isObject(pkgOpenClaw.plugin) ? pkgOpenClaw.plugin : {};
   const pkgMetis = isObject(packageJson.metis) ? packageJson.metis : {};
 
-  return [
+  const out = [];
+  for (const candidate of [
     openclawManifest.entry,
     openclawManifest.main,
     openclawManifest.module,
@@ -209,15 +287,19 @@ function entryCandidates(openclawManifest, packageJson) {
     gatewayRuntime.entry,
     gatewayRuntime.pluginEntry,
     gatewayRuntime.openclawEntry,
+    pkgOpenClaw.extensions,
     pkgOpenClaw.entry,
     pkgOpenClaw.pluginEntry,
     pkgPlugin.entry,
     pkgMetis.pluginEntry,
-    typeof packageJson.exports === "string" ? packageJson.exports : "",
+    packageExportCandidates(packageJson.exports),
     packageJson.module,
     packageJson.main,
     ...ENTRY_FALLBACKS,
-  ];
+  ]) {
+    addEntryCandidate(out, candidate);
+  }
+  return [...new Set(out)];
 }
 
 function discoverPlugin(root) {
@@ -275,71 +357,37 @@ function capabilityName(spec, fallback = "") {
   if (!isObject(spec)) {
     return fallback;
   }
-  return firstString(spec.name, spec.id, spec.command, spec.path, spec.method, fallback);
+  const plugin = isObject(spec.plugin) ? spec.plugin : {};
+  return firstString(spec.name, spec.id, spec.command, spec.path, spec.method, plugin.id, plugin.name, fallback);
 }
 
 function addCapability(state, collection, pluginId, spec, extra = {}) {
   const sanitizedSpec = state.redactor.sanitize(spec);
-  state.capabilities[collection].push({
+  const plugin = isObject(spec) && isObject(spec.plugin) ? spec.plugin : {};
+  const record = {
     pluginId,
     name: capabilityName(spec, extra.name),
-    id: isObject(spec) ? firstString(spec.id, spec.name) : "",
+    id: isObject(spec) ? firstString(spec.id, spec.name, plugin.id, plugin.name) : "",
     path: isObject(spec) ? firstString(spec.path) : "",
     command: isObject(spec) ? firstString(spec.command, spec.name) : "",
     method: isObject(spec) ? firstString(spec.method) : "",
     kind: isObject(spec) ? firstString(spec.kind, spec.type) : "",
     spec: sanitizedSpec,
     ...extra,
-  });
+  };
+  state.capabilities[collection].push(record);
+  return record;
 }
 
 function addDiagnostic(state, diagnostic) {
   state.diagnostics.push(state.redactor.sanitize(diagnostic));
 }
 
-function placeholder(state, pluginId, facade) {
-  return async (...args) => {
-    addDiagnostic(state, {
-      code: "runtime_placeholder",
-      pluginId,
-      facade,
-      args,
-      message: `${facade} is not implemented in compatibility host`,
-    });
-    return { ok: false, status: "not_implemented", facade };
-  };
-}
-
 function buildRuntimeFacade(state, pluginId) {
+  const runtime = createRuntimeFacets(state.runtimeState, pluginId);
   return {
-    version: state.runtimeVersion,
-    config: state.redactor.sanitize(state.configSnapshot),
-    secrets: {
-      get: async (name) => resolveSecret(state, pluginId, name),
-      resolve: async (name) => resolveSecret(state, pluginId, name),
-    },
+    ...runtime,
     logger: buildLogger(state, pluginId),
-    media: {
-      upload: placeholder(state, pluginId, "media.upload"),
-      download: placeholder(state, pluginId, "media.download"),
-      resolve: placeholder(state, pluginId, "media.resolve"),
-    },
-    fetch: placeholder(state, pluginId, "fetch"),
-    reply: {
-      send: placeholder(state, pluginId, "reply.send"),
-    },
-    conversation: {
-      get: placeholder(state, pluginId, "conversation.get"),
-      list: placeholder(state, pluginId, "conversation.list"),
-    },
-    thread: {
-      get: placeholder(state, pluginId, "thread.get"),
-      list: placeholder(state, pluginId, "thread.list"),
-    },
-    process: {
-      spawn: placeholder(state, pluginId, "process.spawn"),
-      env: placeholder(state, pluginId, "process.env"),
-    },
   };
 }
 
@@ -359,17 +407,32 @@ function buildLogger(state, pluginId) {
   return logger;
 }
 
-async function resolveSecret(state, pluginId, name) {
-  const key = String(name ?? "");
-  const value = state.secrets[key] ?? "";
-  addDiagnostic(state, {
-    code: "secret_resolved",
-    pluginId,
-    name: key,
-    value: value ? "[REDACTED]" : "",
-    found: Boolean(value),
+function storeHandler(state, collection, record, handler) {
+  if (typeof handler === "function" || isObject(handler)) {
+    state.handlers[collection].push({ record, handler });
+  }
+}
+
+function handlerFromSpec(spec, handler) {
+  if (typeof handler === "function" || isObject(handler)) {
+    return handler;
+  }
+  if (isObject(spec) && (typeof spec.handler === "function" || isObject(spec.handler))) {
+    return spec.handler;
+  }
+  if (isObject(spec) && isObject(spec.plugin)) {
+    return spec.plugin;
+  }
+  return null;
+}
+
+function registerCapabilityWithHandler(state, collection, pluginId, spec, handler, extra = {}) {
+  const resolvedHandler = handlerFromSpec(spec, handler);
+  const record = addCapability(state, collection, pluginId, spec, {
+    handlerRegistered: Boolean(resolvedHandler),
+    ...extra,
   });
-  return value;
+  storeHandler(state, collection, record, resolvedHandler);
 }
 
 function buildApi(state, plugin) {
@@ -383,23 +446,23 @@ function buildApi(state, plugin) {
     config: runtime.config,
     secrets: runtime.secrets,
     logger: runtime.logger,
-    registerTool: (spec, handler) => addCapability(state, "tools", pluginId, spec, { handlerRegistered: typeof handler === "function" }),
-    registerProvider: (spec) => addCapability(state, "providers", pluginId, spec),
-    registerChannel: (spec) => addCapability(state, "channels", pluginId, spec),
+    registerTool: (spec, handler) => registerCapabilityWithHandler(state, "tools", pluginId, spec, handler),
+    registerProvider: (spec, handler) => registerCapabilityWithHandler(state, "providers", pluginId, spec, handler),
+    registerChannel: (spec, handler) => registerCapabilityWithHandler(state, "channels", pluginId, spec, handler),
     registerHook: (kindOrSpec, handler) => {
       const spec = typeof kindOrSpec === "string" ? { name: kindOrSpec } : kindOrSpec;
-      addCapability(state, "hooks", pluginId, spec, { handlerRegistered: typeof handler === "function" });
+      registerCapabilityWithHandler(state, "hooks", pluginId, spec, handler);
     },
-    registerCommand: (spec, handler) => addCapability(state, "commands", pluginId, spec, { handlerRegistered: typeof handler === "function" }),
-    registerCli: (spec, handler) => addCapability(state, "clis", pluginId, spec, { handlerRegistered: typeof handler === "function" }),
-    registerHttpRoute: (spec, handler) => addCapability(state, "httpRoutes", pluginId, spec, { handlerRegistered: typeof handler === "function" }),
-    registerHttpHandler: (spec, handler) => addCapability(state, "httpHandlers", pluginId, spec, { handlerRegistered: typeof handler === "function" }),
+    registerCommand: (spec, handler) => registerCapabilityWithHandler(state, "commands", pluginId, spec, handler),
+    registerCli: (spec, handler) => registerCapabilityWithHandler(state, "clis", pluginId, spec, handler),
+    registerHttpRoute: (spec, handler) => registerCapabilityWithHandler(state, "httpRoutes", pluginId, spec, handler),
+    registerHttpHandler: (spec, handler) => registerCapabilityWithHandler(state, "httpHandlers", pluginId, spec, handler),
     registerInteractiveHandler: (spec, handler) =>
-      addCapability(state, "interactiveHandlers", pluginId, spec, { handlerRegistered: typeof handler === "function" }),
+      registerCapabilityWithHandler(state, "interactiveHandlers", pluginId, spec, handler),
     registerApprovalHandler: (spec, handler) =>
-      addCapability(state, "approvalHandlers", pluginId, spec, { handlerRegistered: typeof handler === "function" }),
+      registerCapabilityWithHandler(state, "approvalHandlers", pluginId, spec, handler),
     registerMemoryEmbeddingProvider: (spec) => addCapability(state, "memoryEmbeddingProviders", pluginId, spec),
-    registerGatewayMethod: (spec, handler) => addCapability(state, "gatewayMethods", pluginId, spec, { handlerRegistered: typeof handler === "function" }),
+    registerGatewayMethod: (spec, handler) => registerCapabilityWithHandler(state, "gatewayMethods", pluginId, spec, handler),
     registerService: (spec) => addCapability(state, "services", pluginId, spec),
   };
 
@@ -430,7 +493,10 @@ async function loadPlugin(state, plugin) {
   }
 
   try {
-    const module = await import(pathToFileURL(plugin.entry).href);
+    const module = await importPluginModule(state, plugin);
+    if (!module) {
+      return;
+    }
     const exported = module.default ?? module.plugin ?? module.openclawPlugin ?? module;
     const api = buildApi(state, plugin);
     if (typeof exported === "function") {
@@ -453,6 +519,59 @@ async function loadPlugin(state, plugin) {
       stack: error?.stack ?? "",
     });
   }
+}
+
+function isTsEntry(file) {
+  return file.endsWith(".ts") || file.endsWith(".tsx");
+}
+
+function resolvePackageFrom(root, packageName) {
+  try {
+    return createRequire(path.join(root, "package.json")).resolve(packageName);
+  } catch {
+    try {
+      return requireFromHost.resolve(packageName);
+    } catch {
+      return "";
+    }
+  }
+}
+
+async function loadTsEntry(state, plugin) {
+  const esbuildPath = resolvePackageFrom(plugin.root, "esbuild");
+  if (!esbuildPath) {
+    addDiagnostic(state, {
+      code: "ts_entry_loader_unavailable",
+      pluginId: plugin.id,
+      entry: plugin.entry,
+      message: "TypeScript entry requires a built dist entry or an available esbuild/tsx-compatible loader.",
+      loaders: { esbuild: false, tsx: Boolean(resolvePackageFrom(plugin.root, "tsx")) },
+    });
+    return null;
+  }
+
+  const esbuild = await import(pathToFileURL(esbuildPath).href);
+  const source = fs.readFileSync(plugin.entry, "utf8");
+  const result = await esbuild.transform(source, {
+    loader: plugin.entry.endsWith(".tsx") ? "tsx" : "ts",
+    format: "esm",
+    target: "node22",
+    sourcemap: "inline",
+  });
+  const hash = createHash("sha256").update(plugin.entry).update(source).digest("hex").slice(0, 16);
+  const cacheDir = path.join(os.tmpdir(), "metis-openclaw-ts-cache");
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const cacheFile = path.join(cacheDir, `${hash}.mjs`);
+  fs.writeFileSync(cacheFile, result.code, "utf8");
+  addDiagnostic(state, { code: "ts_entry_transpiled", pluginId: plugin.id, entry: plugin.entry, cacheFile });
+  return import(pathToFileURL(cacheFile).href);
+}
+
+async function importPluginModule(state, plugin) {
+  if (isTsEntry(plugin.entry)) {
+    return loadTsEntry(state, plugin);
+  }
+  return import(pathToFileURL(plugin.entry).href);
 }
 
 async function loadPlugins(state, params) {
@@ -492,6 +611,105 @@ function healthResult(state) {
   };
 }
 
+function matchesCapability(record, params, keys) {
+  for (const key of keys) {
+    const expected = params[key];
+    if (typeof expected !== "string" || !expected.trim()) {
+      continue;
+    }
+    const value = expected.trim();
+    if (record.name === value || record.id === value || record.path === value || record.command === value || record.method === value) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function findHandlerEntry(state, collection, params, keys) {
+  const entries = state.handlers[collection] ?? [];
+  return entries.find((entry) => matchesCapability(entry.record, params, keys));
+}
+
+async function callHandler(target, args, methodNames = []) {
+  if (typeof target === "function") {
+    return target(...args);
+  }
+  if (isObject(target)) {
+    for (const method of methodNames) {
+      if (typeof target[method] === "function") {
+        return target[method](...args);
+      }
+    }
+  }
+  return { ok: false, status: "handler_not_found" };
+}
+
+function handlerNotFound(collection, params) {
+  return { ok: false, status: "handler_not_found", collection, params };
+}
+
+async function dispatchChannel(state, action, params) {
+  const entry = findHandlerEntry(state, "channels", params, ["id", "name", "channelId"]);
+  if (!entry) {
+    return handlerNotFound("channels", params);
+  }
+  if (action === "start") {
+    return callHandler(entry.handler, [params.context ?? params], ["start"]);
+  }
+  if (action === "stop") {
+    return callHandler(entry.handler, [params.context ?? params], ["stop"]);
+  }
+  if (action === "health") {
+    return callHandler(entry.handler, [params.context ?? params], ["health"]);
+  }
+  if (action === "pullInbound") {
+    return callHandler(entry.handler, [params], ["pullInbound", "pull", "poll"]);
+  }
+  if (action === "send") {
+    return callHandler(entry.handler, [params.message ?? params, params.context ?? {}], ["send", "sendMessage"]);
+  }
+  return { ok: false, status: "unknown_channel_action", action };
+}
+
+async function dispatchHttp(state, params) {
+  const method = String(params.method ?? "GET").toUpperCase();
+  const pathValue = String(params.path ?? "");
+  const route = state.handlers.httpRoutes.find(
+    (entry) =>
+      entry.record.path === pathValue &&
+      (!entry.record.method || entry.record.method.toUpperCase() === method || entry.record.method === "*"),
+  );
+  const entry = route ?? findHandlerEntry(state, "httpHandlers", params, ["name", "id", "path"]);
+  if (!entry) {
+    return handlerNotFound("http", params);
+  }
+  return callHandler(entry.handler, [{ ...params, method, path: pathValue }], ["dispatch", "handle", "request"]);
+}
+
+async function dispatchTool(state, params) {
+  const entry = findHandlerEntry(state, "tools", params, ["name", "id", "tool"]);
+  if (!entry) {
+    return handlerNotFound("tools", params);
+  }
+  return callHandler(entry.handler, [params.input ?? {}, params.context ?? {}], ["execute", "run"]);
+}
+
+async function dispatchProvider(state, params) {
+  const entry = findHandlerEntry(state, "providers", params, ["id", "name", "provider"]);
+  if (!entry) {
+    return handlerNotFound("providers", params);
+  }
+  return callHandler(entry.handler, [params.request ?? {}, params.context ?? {}], ["invoke", "generate", "complete"]);
+}
+
+async function dispatchHook(state, params) {
+  const entry = findHandlerEntry(state, "hooks", params, ["name", "id", "hook", "kind"]);
+  if (!entry) {
+    return handlerNotFound("hooks", params);
+  }
+  return callHandler(entry.handler, [params.payload ?? {}, params.context ?? {}], ["dispatch", "handle"]);
+}
+
 async function handleRequest(state, request) {
   const id = request?.id ?? null;
   try {
@@ -519,6 +737,33 @@ async function handleRequest(state, request) {
     }
     if (method === "runtime.stop") {
       return response(id, { ok: true, status: "stopping" });
+    }
+    if (method === "channel.start") {
+      return response(id, await dispatchChannel(state, "start", params));
+    }
+    if (method === "channel.stop") {
+      return response(id, await dispatchChannel(state, "stop", params));
+    }
+    if (method === "channel.health") {
+      return response(id, await dispatchChannel(state, "health", params));
+    }
+    if (method === "channel.pullInbound") {
+      return response(id, await dispatchChannel(state, "pullInbound", params));
+    }
+    if (method === "channel.send") {
+      return response(id, await dispatchChannel(state, "send", params));
+    }
+    if (method === "http.dispatch") {
+      return response(id, await dispatchHttp(state, params));
+    }
+    if (method === "tool.execute") {
+      return response(id, await dispatchTool(state, params));
+    }
+    if (method === "provider.invoke") {
+      return response(id, await dispatchProvider(state, params));
+    }
+    if (method === "hook.dispatch") {
+      return response(id, await dispatchHook(state, params));
     }
     return response(id, null, { code: -32601, message: `unknown method: ${method}` });
   } catch (error) {

@@ -1,0 +1,16 @@
+{
+  "name": "@fixture/workspace-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@fixture/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  }
+}
