@@ -5,13 +5,17 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  OpenClawSecurityEnforcer,
   derivePermissionRequirements,
+  enforceOpenClawInstallSource,
   evaluateSecurityPolicy,
+  normalizeSecurityDecisionSnapshot,
   redactDiagnostics,
 } from "./openclaw-compat-security-policy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixtureRoot = path.join(__dirname, "fixtures", "openclaw-compat-security", "risky-plugin");
+const maliciousFixtureRoot = path.join(__dirname, "fixtures", "openclaw-compat-security", "malicious-plugin");
 
 function readFixture(name) {
   return JSON.parse(fs.readFileSync(path.join(fixtureRoot, name), "utf8"));
@@ -92,4 +96,142 @@ test("redacts secrets from diagnostics recursively", () => {
   assert.equal(diagnostics.nested.url, "https://[REDACTED]@example.com/hook?token=[REDACTED]");
   assert.equal(diagnostics.nested.env, "OPENAI_API_KEY=[REDACTED]");
   assert.equal(diagnostics.plain, "network access denied");
+});
+
+test("install source enforcement requires allowlisted source ref and hash", () => {
+  const denied = enforceOpenClawInstallSource({
+    pluginId: "risky-plugin",
+    source: {
+      url: "https://github.com/openclaw/risky-plugin.git",
+      ref: "refs/heads/main",
+      hash: "sha256:bad",
+      authorization: "Bearer install-secret-token",
+    },
+    sourceAllowlist: [
+      {
+        url: "https://github.com/openclaw/risky-plugin.git",
+        ref: "refs/tags/v1.0.0",
+        hash: "sha256:good",
+      },
+    ],
+  });
+
+  assert.equal(denied.allowed, false);
+  assert.equal(denied.stage, "install");
+  assert.equal(denied.code, "source_ref_mismatch");
+  assert.doesNotMatch(JSON.stringify(denied), /install-secret-token|Bearer install-secret-token/);
+
+  const allowed = enforceOpenClawInstallSource({
+    pluginId: "risky-plugin",
+    source: {
+      url: "https://github.com/openclaw/risky-plugin.git",
+      ref: "refs/tags/v1.0.0",
+      hash: "sha256:good",
+    },
+    sourceAllowlist: [
+      {
+        url: "https://github.com/openclaw/risky-plugin.git",
+        ref: "refs/tags/v1.0.0",
+        hash: "sha256:good",
+      },
+    ],
+  });
+
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.code, "allowed");
+});
+
+test("security enforcer gates install start and runtime permission checks", () => {
+  const enforcer = new OpenClawSecurityEnforcer({
+    pluginId: "risky-plugin",
+    manifest: readFixture("openclaw.plugin.json"),
+    packageJson: readFixture("package.json"),
+    capabilityRecords: readFixture("capabilities.json"),
+    source: {
+      url: "https://github.com/openclaw/risky-plugin.git",
+      ref: "refs/tags/v1.0.0",
+      hash: "sha256:good",
+    },
+    sourceAllowlist: [
+      {
+        url: "https://github.com/openclaw/risky-plugin.git",
+        ref: "refs/tags/v1.0.0",
+        hash: "sha256:good",
+      },
+    ],
+    grants: {
+      network: [{ resource: "api.example.com", needsApproval: false }],
+      model: [{ resource: "openai:gpt-5", needsApproval: false }],
+      filesystem: [{ action: "read", resource: "${HOME}/.metis/config.json", needsApproval: false }],
+    },
+  });
+
+  assert.equal(enforcer.enforceInstall().allowed, true);
+
+  const startDecision = enforcer.enforceStart();
+  assert.equal(startDecision.allowed, false);
+  assert.equal(startDecision.stage, "start");
+  assert.ok(startDecision.denied.some((requirement) => requirement.category === "secret"));
+  assert.ok(startDecision.denied.some((requirement) => requirement.category === "process"));
+  assert.doesNotMatch(JSON.stringify(normalizeSecurityDecisionSnapshot(startDecision)), /AAExampleSecretValue|TELEGRAM_BOT_TOKEN/);
+
+  const runtimeDenied = enforcer.enforceRuntimePermission({
+    category: "network",
+    action: "connect",
+    resource: "https://evil.example.net/steal",
+    reason: "handler attempted exfiltration with Authorization: Bearer runtime-secret",
+  });
+  assert.equal(runtimeDenied.allowed, false);
+  assert.equal(runtimeDenied.stage, "handler");
+  assert.equal(runtimeDenied.code, "permission_denied");
+  assert.doesNotMatch(JSON.stringify(runtimeDenied), /runtime-secret|Bearer runtime-secret/);
+
+  const runtimeAllowed = enforcer.enforceRuntimePermission({
+    category: "network",
+    action: "use",
+    resource: "https://api.example.com/v1/messages",
+  });
+  assert.equal(runtimeAllowed.allowed, true);
+});
+
+test("malicious fixture cannot read unauthorized files or access unauthorized network", () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(maliciousFixtureRoot, "openclaw.plugin.json"), "utf8"));
+  const attacks = JSON.parse(fs.readFileSync(path.join(maliciousFixtureRoot, "attacks.json"), "utf8"));
+  const enforcer = new OpenClawSecurityEnforcer({
+    pluginId: "malicious-plugin",
+    manifest,
+    grants: {
+      filesystem: [{ action: "read", resource: "/tmp/metis-plugin-cache", needsApproval: false }],
+      network: [{ resource: "api.example.com", needsApproval: false }],
+    },
+  });
+
+  const fileDecision = enforcer.enforceRuntimePermission(attacks.unauthorizedFileRead);
+  const networkDecision = enforcer.enforceRuntimePermission(attacks.unauthorizedNetwork);
+
+  assert.equal(fileDecision.allowed, false);
+  assert.equal(networkDecision.allowed, false);
+  assert.equal(fileDecision.code, "permission_denied");
+  assert.equal(networkDecision.code, "permission_denied");
+  assert.doesNotMatch(JSON.stringify([fileDecision, networkDecision]), /top-secret-password|Bearer stolen-token/);
+});
+
+test("guarded handler failures and timeouts return redacted denial decisions", async () => {
+  const enforcer = new OpenClawSecurityEnforcer({ pluginId: "crashy-plugin" });
+
+  const crashed = await enforcer.runGuardedHandler("handler", async () => {
+    throw new Error("boom password=hunter2 Authorization: Bearer crash-secret");
+  });
+  assert.equal(crashed.allowed, false);
+  assert.equal(crashed.code, "handler_crash");
+  assert.doesNotMatch(JSON.stringify(crashed), /hunter2|crash-secret/);
+
+  const timedOut = await enforcer.runGuardedHandler(
+    "handler",
+    () => new Promise((resolve) => setTimeout(() => resolve({ ok: true }), 50)),
+    { timeoutMs: 5 },
+  );
+  assert.equal(timedOut.allowed, false);
+  assert.equal(timedOut.code, "handler_timeout");
+  assert.equal(timedOut.diagnostics.timeoutMs, 5);
 });

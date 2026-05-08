@@ -19,6 +19,170 @@ const CATEGORY_SET = new Set(PERMISSION_CATEGORIES);
 const DEFAULT_APPROVAL_CATEGORIES = new Set(["filesystem", "env", "process", "webhook", "secret", "media"]);
 const SCRIPT_PERMISSION_NAMES = new Set(["preinstall", "install", "postinstall", "prepare"]);
 
+export class OpenClawSecurityEnforcer {
+  constructor({
+    pluginId = "unknown-plugin",
+    manifest = {},
+    packageJson = {},
+    capabilityRecords = [],
+    source = {},
+    sourceAllowlist = [],
+    grants = {},
+    approvalCategories = DEFAULT_APPROVAL_CATEGORIES,
+  } = {}) {
+    this.pluginId = pluginId;
+    this.manifest = manifest;
+    this.packageJson = packageJson;
+    this.capabilityRecords = capabilityRecords;
+    this.source = source;
+    this.sourceAllowlist = sourceAllowlist;
+    this.grants = grants;
+    this.approvalCategories = approvalCategories;
+  }
+
+  enforceInstall() {
+    return enforceOpenClawInstallSource({
+      pluginId: this.pluginId,
+      source: this.source,
+      sourceAllowlist: this.sourceAllowlist,
+    });
+  }
+
+  enforceStart() {
+    const result = evaluateSecurityPolicy({
+      pluginId: this.pluginId,
+      manifest: this.manifest,
+      packageJson: this.packageJson,
+      capabilityRecords: this.capabilityRecords,
+      allowlist: this.grants,
+      approvalCategories: this.approvalCategories,
+    });
+    const denied = result.denied.map(sanitizeRequirement);
+    const needsApproval = result.needsApproval.map(sanitizeRequirement);
+    return securityDecision({
+      pluginId: this.pluginId,
+      stage: "start",
+      allowed: denied.length === 0 && needsApproval.length === 0,
+      code: denied.length > 0 ? "permission_denied" : needsApproval.length > 0 ? "approval_required" : "allowed",
+      diagnostics: {
+        manifest: result.diagnostics.manifest,
+        package: result.diagnostics.package,
+        denied,
+        needsApproval,
+      },
+      denied,
+      needsApproval,
+    });
+  }
+
+  enforceRuntimePermission(requirement) {
+    const normalized = normalizeRequirement({ ...requirement, source: requirement?.source ?? "runtime" });
+    if (!normalized) {
+      return securityDecision({
+        pluginId: this.pluginId,
+        stage: "handler",
+        allowed: false,
+        code: "invalid_permission_request",
+        diagnostics: { request: redactDiagnostics(requirement) },
+      });
+    }
+    const grant = findGrant(normalized, normalizeAllowlist(this.grants));
+    return securityDecision({
+      pluginId: this.pluginId,
+      stage: "handler",
+      allowed: Boolean(grant),
+      code: grant ? "allowed" : "permission_denied",
+      diagnostics: grant ? {} : { denied: sanitizeRequirement(normalized) },
+      denied: grant ? [] : [sanitizeRequirement(normalized)],
+    });
+  }
+
+  async runGuardedHandler(stage, handler, { timeoutMs = 30000 } = {}) {
+    let timeoutId;
+    try {
+      const timeout = new Promise((resolve) => {
+        timeoutId = setTimeout(() => {
+          resolve(securityDecision({
+            pluginId: this.pluginId,
+            stage,
+            allowed: false,
+            code: "handler_timeout",
+            diagnostics: { timeoutMs },
+          }));
+        }, timeoutMs);
+      });
+      const result = await Promise.race([
+        Promise.resolve().then(handler),
+        timeout,
+      ]);
+      if (result && result.code === "handler_timeout") {
+        return result;
+      }
+      return securityDecision({
+        pluginId: this.pluginId,
+        stage,
+        allowed: true,
+        code: "allowed",
+        diagnostics: { result: redactDiagnostics(result) },
+      });
+    } catch (error) {
+      return securityDecision({
+        pluginId: this.pluginId,
+        stage,
+        allowed: false,
+        code: "handler_crash",
+        diagnostics: { message: redactDiagnostics(String(error?.message ?? error)) },
+      });
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
+  }
+}
+
+export function enforceOpenClawInstallSource({
+  pluginId = "unknown-plugin",
+  source = {},
+  sourceAllowlist = [],
+} = {}) {
+  const normalizedSource = normalizeSource(source);
+  const rules = normalizeSourceAllowlist(sourceAllowlist);
+  const urlMatch = rules.find((rule) => rule.url === normalizedSource.url);
+  if (!urlMatch) {
+    return securityDecision({
+      pluginId,
+      stage: "install",
+      allowed: false,
+      code: "source_not_allowed",
+      diagnostics: { source: normalizedSource },
+    });
+  }
+  if (urlMatch.ref && urlMatch.ref !== normalizedSource.ref) {
+    return securityDecision({
+      pluginId,
+      stage: "install",
+      allowed: false,
+      code: "source_ref_mismatch",
+      diagnostics: { source: normalizedSource, expectedRef: urlMatch.ref },
+    });
+  }
+  if (urlMatch.hash && urlMatch.hash !== normalizedSource.hash) {
+    return securityDecision({
+      pluginId,
+      stage: "install",
+      allowed: false,
+      code: "source_hash_mismatch",
+      diagnostics: { source: normalizedSource, expectedHash: urlMatch.hash },
+    });
+  }
+  return securityDecision({
+    pluginId,
+    stage: "install",
+    allowed: true,
+    code: "allowed",
+    diagnostics: { source: normalizedSource },
+  });
+}
+
 export function derivePermissionRequirements({ manifest = {}, packageJson = {}, capabilityRecords = [] } = {}) {
   const requirements = [];
   const seen = new Set();
@@ -135,6 +299,10 @@ export function redactDiagnostics(value, key = "") {
   return redactString(value);
 }
 
+export function normalizeSecurityDecisionSnapshot(decision) {
+  return securityDecision({ ...decision });
+}
+
 function collectPermissionBlock(block, source, add) {
   if (block == null || block === false) return;
   if (Array.isArray(block)) {
@@ -226,6 +394,54 @@ function normalizeRequirement(raw) {
     source: String(raw.source ?? "unknown").trim() || "unknown",
     reason: String(raw.reason ?? defaultReasonForCategory(category)).trim() || defaultReasonForCategory(category),
   };
+}
+
+function securityDecision({ pluginId, stage, allowed, code, diagnostics = {}, denied = [], needsApproval = [] }) {
+  const out = {
+    pluginId,
+    stage,
+    allowed,
+    code,
+    diagnostics: redactDiagnostics(diagnostics),
+  };
+  if (denied.length > 0) out.denied = denied.map(sanitizeRequirement);
+  if (needsApproval.length > 0) out.needsApproval = needsApproval.map(sanitizeRequirement);
+  return redactDiagnostics(out);
+}
+
+function normalizeSource(source) {
+  return {
+    url: String(source?.url ?? source?.repository ?? source?.repo ?? "").trim(),
+    ref: String(source?.ref ?? source?.tag ?? source?.commit ?? "").trim(),
+    hash: String(source?.hash ?? source?.sha256 ?? source?.integrity ?? "").trim(),
+    diagnostics: redactDiagnostics(source?.diagnostics ?? {}),
+  };
+}
+
+function normalizeSourceAllowlist(sourceAllowlist) {
+  const rawRules = Array.isArray(sourceAllowlist)
+    ? sourceAllowlist
+    : Array.isArray(sourceAllowlist.sources)
+      ? sourceAllowlist.sources
+      : Object.values(sourceAllowlist ?? {});
+  return rawRules.filter(isObject).map(normalizeSource).filter((rule) => rule.url);
+}
+
+function sanitizeRequirement(requirement) {
+  const category = String(requirement?.category ?? "");
+  const resource = String(requirement?.resource ?? "");
+  return {
+    category,
+    action: String(requirement?.action ?? ""),
+    resource: shouldRedactRequirementResource(category, resource) ? "[REDACTED]" : resource,
+    source: redactDiagnostics(String(requirement?.source ?? "")),
+    reason: redactDiagnostics(String(requirement?.reason ?? "")),
+    grantSource: requirement?.grantSource == null ? undefined : redactDiagnostics(String(requirement.grantSource)),
+  };
+}
+
+function shouldRedactRequirementResource(category, resource) {
+  return category === "secret" || isSensitiveKey(resource);
 }
 
 function normalizeResource(category, raw) {
@@ -365,7 +581,8 @@ function redactString(value) {
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
     .replace(/(https?:\/\/)([^/\s:@]+):([^@\s/]+)@/gi, "$1[REDACTED]@")
     .replace(/([?&](?:token|secret|password|key|authorization)=)[^&#\s]+/gi, "$1[REDACTED]")
-    .replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD|AUTH)[A-Z0-9_]*)=([^\s&]+)/g, "$1=[REDACTED]");
+    .replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD|AUTH)[A-Z0-9_]*)=([^\s&]+)/g, "$1=[REDACTED]")
+    .replace(/\b(password|token|secret|authorization)=([^\s&]+)/gi, "$1=[REDACTED]");
 }
 
 function parseArgs(argv) {
