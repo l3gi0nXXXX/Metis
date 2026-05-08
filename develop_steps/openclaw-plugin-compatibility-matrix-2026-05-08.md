@@ -1,6 +1,6 @@
 # OpenClaw Plugin Compatibility Matrix
 
-Generated: 2026-05-08T08:01:17.925Z
+Generated: 2026-05-08T08:23:58.309Z
 
 ## Summary
 
