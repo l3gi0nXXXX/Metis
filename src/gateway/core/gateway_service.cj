@@ -28,6 +28,7 @@ public class GatewayService {
     private let transcriptPublisher: Option<(GatewaySessionContext, Int64, String, String) -> Unit>
     private let telegramAutoTopicLabelAttempts = HashSet<String>()
     private let consumedTelegramPluginCallbackIds = HashSet<String>()
+    private let telegramErrorPolicyState = GatewayTelegramErrorPolicyState()
 
     public init(
         router: GatewayRouter,
@@ -129,8 +130,15 @@ public class GatewayService {
             return
         }
 
-        let conversationKey = decision.conversationKey.getOrThrow()
         let user = CliSettingManager.readGatewaySettings()
+        var conversationKey = decision.conversationKey.getOrThrow()
+        if (channelToString(message.channel) == "telegram") {
+            let bindingSession = gatewayTelegramThreadBindingSessionHintForMessage(user, message, effectiveAccountId)
+            if (!bindingSession.trimAscii().isEmpty()) {
+                conversationKey = bindingSession.trimAscii()
+                LogUtils.info("Gateway.telegram.threadBinding: peer=${message.peerId} session=${conversationKey}")
+            }
+        }
         if (channelToString(message.channel) == "telegram" && message.text.trimAscii().startsWith("[telegram-approval]")) {
             let result = gatewayResolveTelegramApprovalCallback(message.text, user)
             let reply = gatewayTelegramApprovalResolverReply(result)
@@ -148,30 +156,43 @@ public class GatewayService {
             return
         }
         let request = gatewaySessionRequestFromInbound(message, sessionHint: conversationKey, accountId: effectiveAccountId)
-        let turn = gatewayExecuteSessionRequestTurnForUser(
-            user,
-            request,
-            message.text,
-            deliver: true,
-            replyToMessageId: message.replyTargetMessageId ?? Some(message.messageId),
-            replyInThread: message.replyInThread,
-            deliverHook: Some({ channelName, deliveryAccountId, peerId, text, replyToMessageId, replyInThread =>
-                let (effectiveReplyToMessageId, effectiveReplyInThread, degraded, policyReason) =
-                    gatewayApplyOutboundChannelPolicy(user, channelName, replyToMessageId, replyInThread)
-                if (degraded) {
-                    LogUtils.info("Gateway.send policy: channel=${channelName} peer=${peerId} degraded=true reason=${policyReason}")
-                }
-                this.sendTextToPeerDetailed(
-                    channelName,
-                    peerId,
-                    text,
-                    replyToMessageId: effectiveReplyToMessageId,
-                    replyInThread: effectiveReplyInThread,
-                    accountId: if (!deliveryAccountId.trimAscii().isEmpty()) { deliveryAccountId } else { effectiveAccountId }
-                )
-            }),
-            transcriptHook: this.transcriptPublisher
-        )
+        if (channelToString(message.channel) == "telegram") {
+            this.maybeSendTelegramLifecycleSignal(user, message, effectiveAccountId, "typing")
+            this.maybeSendTelegramLifecycleSignal(user, message, effectiveAccountId, "thinking")
+        }
+        let turn = try {
+            gatewayExecuteSessionRequestTurnForUser(
+                user,
+                request,
+                message.text,
+                deliver: true,
+                replyToMessageId: this.telegramReplyTargetOrMessageId(message),
+                replyInThread: message.replyInThread,
+                deliverHook: Some({ channelName, deliveryAccountId, peerId, text, replyToMessageId, replyInThread =>
+                    let (effectiveReplyToMessageId, effectiveReplyInThread, degraded, policyReason) =
+                        gatewayApplyOutboundChannelPolicy(user, channelName, replyToMessageId, replyInThread)
+                    if (degraded) {
+                        LogUtils.info("Gateway.send policy: channel=${channelName} peer=${peerId} degraded=true reason=${policyReason}")
+                    }
+                    this.sendTextToPeerDetailed(
+                        channelName,
+                        peerId,
+                        text,
+                        replyToMessageId: effectiveReplyToMessageId,
+                        replyInThread: effectiveReplyInThread,
+                        accountId: if (!deliveryAccountId.trimAscii().isEmpty()) { deliveryAccountId } else { effectiveAccountId }
+                    )
+                }),
+                transcriptHook: this.transcriptPublisher
+            )
+        } catch (e: Exception) {
+            if (channelToString(message.channel) == "telegram") {
+                this.maybeSendTelegramLifecycleSignal(user, message, effectiveAccountId, "error")
+                this.handleTelegramInboundExecutionError(user, message, effectiveAccountId, e)
+                return
+            }
+            throw e
+        }
         let context = turn.context
         let execution = turn.execution
         LogUtils.info("Gateway.route: conversationKey=${conversationKey}, resolvedSession=${context.sessionKey}")
@@ -184,6 +205,7 @@ public class GatewayService {
         }
         if (execution.delivered) {
             if (channelToString(message.channel) == "telegram") {
+                this.maybeSendTelegramLifecycleSignal(user, message, effectiveAccountId, "done")
                 this.maybeAutoLabelTelegramTopic(user, message, effectiveAccountId)
             }
             return
@@ -191,36 +213,11 @@ public class GatewayService {
         LogUtils.error("Gateway.send: deliveryStatus=${execution.deliveryStatus} err=${execution.deliveryError}")
     }
 
-    private func telegramAutoTopicLabelFromText(text: String): String {
-        let cleaned = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")[0]
-            .replace("[media-context]", "")
-            .replace("[photo]", "")
-            .replace("[document]", "")
-            .replace("[voice]", "")
-            .replace("[audio]", "")
-            .trimAscii()
-        if (cleaned.isEmpty()) {
-            return "Metis topic"
-        }
-        let words = ArrayList<String>()
-        for (part in cleaned.split(" ")) {
-            let one = part.trimAscii()
-            if (!one.isEmpty()) {
-                words.add(one)
-            }
-            if (words.size >= 4) {
-                break
-            }
-        }
-        var title = if (words.isEmpty()) { cleaned } else { String.join(words.toArray(), delimiter: " ") }
-        if (title.size > 32) {
-            title = title[..32].trimAscii()
-        }
-        if (title.isEmpty()) { "Metis topic" } else { title }
-    }
-
     private func maybeAutoLabelTelegramTopic(user: GatewayUserSettings, message: InboundMessage, accountId: String): Unit {
         if (!user.telegram.actions.editForumTopic) {
+            return
+        }
+        if (!gatewayTelegramAutoTopicLabelEnabled(user)) {
             return
         }
         let threadId = match (message.threadId) {
@@ -235,7 +232,7 @@ public class GatewayService {
             return
         }
         this.telegramAutoTopicLabelAttempts.add(key)
-        let title = this.telegramAutoTopicLabelFromText(message.text)
+        let title = gatewayTelegramDeterministicAutoTopicLabel(message.text)
         try {
             let _ = this.sendTextToPeerDetailed(
                 "telegram",
@@ -247,6 +244,89 @@ public class GatewayService {
             )
         } catch (e: Exception) {
             LogUtils.info("Telegram auto topic label skipped: ${e.message}")
+        }
+    }
+
+    private func maybeSendTelegramLifecycleSignal(
+        user: GatewayUserSettings,
+        message: InboundMessage,
+        accountId: String,
+        status: String
+    ): Unit {
+        let target = this.telegramReplyTargetOrMessageId(message)
+        if (status == "typing") {
+            try {
+                let _ = this.sendTextToPeerDetailed(
+                    "telegram",
+                    message.peerId,
+                    "[chat-action]\naction=typing",
+                    replyToMessageId: target,
+                    replyInThread: message.replyInThread,
+                    accountId: accountId
+                )
+            } catch (e: Exception) {
+                LogUtils.info("Telegram lifecycle chat-action skipped: ${e.message}")
+            }
+            return
+        }
+        let level = user.telegram.reactionLevel.trimAscii().toAsciiLower()
+        if (!user.telegram.actions.reactions || level == "off" || level == "false" || level == "disabled") {
+            return
+        }
+        try {
+            let _ = this.sendTextToPeerDetailed(
+                "telegram",
+                message.peerId,
+                "[reaction]\nstatus=${status.trimAscii()}",
+                replyToMessageId: target,
+                replyInThread: message.replyInThread,
+                accountId: accountId
+            )
+        } catch (e: Exception) {
+            LogUtils.info("Telegram lifecycle reaction skipped: ${e.message}")
+        }
+    }
+
+    private func telegramReplyTargetOrMessageId(message: InboundMessage): Option<String> {
+        match (message.replyTargetMessageId) {
+            case Some(v) => Some(v)
+            case None => Some(message.messageId)
+        }
+    }
+
+    private func handleTelegramInboundExecutionError(
+        user: GatewayUserSettings,
+        message: InboundMessage,
+        accountId: String,
+        error: Exception
+    ): Unit {
+        let threadId = match (message.threadId) {
+            case Some(v) => v
+            case None => ""
+        }
+        let nowMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
+        if (!this.telegramErrorPolicyState.shouldReply(
+            user,
+            message.peerId,
+            threadId,
+            "gateway-execution",
+            nowMs
+        )) {
+            LogUtils.info("Telegram error reply suppressed by errorPolicy for peer=${message.peerId}")
+            return
+        }
+        let reply = "Gateway agent failed: ${error.message}"
+        try {
+            let _ = this.sendTextToPeerDetailed(
+                "telegram",
+                message.peerId,
+                reply,
+                replyToMessageId: this.telegramReplyTargetOrMessageId(message),
+                replyInThread: message.replyInThread,
+                accountId: accountId
+            )
+        } catch (sendError: Exception) {
+            LogUtils.error("Telegram error reply delivery failed: ${sendError.message}")
         }
     }
 
@@ -319,6 +399,19 @@ public class GatewayService {
                 "telegram",
                 message.peerId,
                 this.renderTelegramCurrentSessionCommand(sessionKey),
+                replyToMessageId: message.replyTargetMessageId,
+                replyInThread: message.replyInThread,
+                accountId: accountId
+            )
+            return true
+        }
+        if (text == "/focus" || text.startsWith("/focus ") ||
+            text == "/unfocus" || text.startsWith("/unfocus ") ||
+            text == "/agents" || text.startsWith("/agents ")) {
+            this.sendTextToPeerDetailed(
+                "telegram",
+                message.peerId,
+                this.renderTelegramThreadBindingCommand(text, message, accountId, user, sessionKey),
                 replyToMessageId: message.replyTargetMessageId,
                 replyInThread: message.replyInThread,
                 accountId: accountId
@@ -501,7 +594,7 @@ public class GatewayService {
     private func renderTelegramCommandsCommand(user: GatewayUserSettings): String {
         let native = [
             "help", "status", "commands", "tools", "whoami", "models", "model", "subagents", "sessions",
-            "session", "new", "reset", "compact", "think", "reasoning", "fast", "verbose", "approvals",
+            "session", "focus", "unfocus", "agents", "new", "reset", "compact", "think", "reasoning", "fast", "verbose", "approvals",
             "activation", "pair"
         ]
         let plugins = gatewayOpenClawPluginSidecarCommandCatalog(user)
@@ -533,6 +626,50 @@ public class GatewayService {
 
     private func renderTelegramCurrentSessionCommand(sessionKey: String): String {
         "{\"ok\":true,\"status\":\"ok\",\"action\":\"session\",\"sessionKey\":\"${this.telegramCallbackJsonEscape(sessionKey)}\",\"message\":\"Current Telegram conversation is bound to this Gateway session key.\"}"
+    }
+
+    private func renderTelegramThreadBindingCommand(
+        text: String,
+        message: InboundMessage,
+        accountId: String,
+        user: GatewayUserSettings,
+        sessionKey: String
+    ): String {
+        if (!user.telegram.threadBindings.enabled) {
+            return "{\"ok\":false,\"status\":\"disabled\",\"action\":\"thread_binding\",\"error\":\"gateway.telegram.threadBindings.enabled is false\"}"
+        }
+        let command = this.telegramCommandName(text)
+        let conversationId = gatewayTelegramConversationIdForMessage(message)
+        let parentConversationId = this.telegramParentConversationId(message.peerId, conversationId)
+        let threadId = message.threadId ?? ""
+        if (command == "focus") {
+            let parts = text.split(" ", 2)
+            let targetSession = if (parts.size > 1 && !parts[1].trimAscii().isEmpty()) {
+                parts[1].trimAscii()
+            } else {
+                sessionKey.trimAscii()
+            }
+            let result = gatewayTelegramThreadBindingBind(
+                "telegram",
+                accountId,
+                conversationId,
+                targetSession,
+                parentConversationId: parentConversationId,
+                threadId: threadId,
+                ownerId: message.senderId
+            )
+            let binding = match (result.get("binding")) {
+                case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+                case None => JsonObject()
+            }
+            return "{\"ok\":${this.telegramJsonBool(result, "ok", false)},\"status\":\"${this.telegramCallbackJsonEscape(this.telegramJsonString(result, "status", "error"))}\",\"action\":\"focus\",\"conversationId\":\"${this.telegramCallbackJsonEscape(conversationId)}\",\"sessionKey\":\"${this.telegramCallbackJsonEscape(this.telegramJsonString(binding, "sessionKey", targetSession))}\"}"
+        }
+        if (command == "unfocus") {
+            let result = gatewayTelegramThreadBindingUnbind("telegram", accountId, conversationId)
+            return "{\"ok\":${this.telegramJsonBool(result, "ok", false)},\"status\":\"${this.telegramCallbackJsonEscape(this.telegramJsonString(result, "status", "not_found"))}\",\"action\":\"unfocus\",\"conversationId\":\"${this.telegramCallbackJsonEscape(conversationId)}\"}"
+        }
+        let rows = gatewayTelegramThreadBindingList()
+        return "{\"ok\":true,\"status\":\"ok\",\"action\":\"agents\",\"conversationId\":\"${this.telegramCallbackJsonEscape(conversationId)}\",\"bindings\":${rows.toJsonString()}}"
     }
 
     private func renderTelegramSessionLifecycleCommand(text: String, sessionKey: String): String {

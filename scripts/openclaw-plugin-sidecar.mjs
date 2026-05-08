@@ -168,6 +168,11 @@ function buildApi(pluginId, pluginRoot, registry) {
           registry.hooks.push({ pluginId, kind: "message_sent", handler });
         }
       },
+      message_received(handler) {
+        if (typeof handler === "function") {
+          registry.hooks.push({ pluginId, kind: "message_received", handler });
+        }
+      },
     },
   };
   api.interactive = { register: api.registerInteractiveHandler };
@@ -328,9 +333,19 @@ async function main() {
 
   if (method === "interactive.dispatch") {
     const namespace = callbackNamespace(payload.data);
-    const handler = registry.interactive.find((h) => h.channel === "telegram" && h.namespace === namespace);
+    const telegramHandlers = registry.interactive.filter((h) => h.channel === "telegram");
+    const handler = telegramHandlers.find((h) => h.namespace === namespace) ?? (telegramHandlers.length === 1 ? telegramHandlers[0] : null);
     if (!handler) {
-      process.stdout.write(JSON.stringify({ ok: true, matched: false, reason: "handler_not_found", diagnostics: registry.diagnostics }));
+      process.stdout.write(
+        JSON.stringify({
+          ok: true,
+          matched: false,
+          reason: "handler_not_found",
+          namespace,
+          handlers: telegramHandlers.map((h) => ({ pluginId: h.pluginId, namespace: h.namespace })),
+          diagnostics: registry.diagnostics,
+        }),
+      );
       return;
     }
     const result = normalizeHandlerResult(await handler.handler(payload));
@@ -352,9 +367,19 @@ async function main() {
 
   if (method === "approval.dispatch") {
     const namespace = approvalNamespace(payload.data);
-    const handler = registry.approvals.find((h) => h.channel === "telegram" && h.namespace === namespace);
+    const telegramHandlers = registry.approvals.filter((h) => h.channel === "telegram");
+    const handler = telegramHandlers.find((h) => h.namespace === namespace) ?? (telegramHandlers.length === 1 ? telegramHandlers[0] : null);
     if (!handler) {
-      process.stdout.write(JSON.stringify({ ok: true, matched: false, reason: "approval_handler_not_found", diagnostics: registry.diagnostics }));
+      process.stdout.write(
+        JSON.stringify({
+          ok: true,
+          matched: false,
+          reason: "approval_handler_not_found",
+          namespace,
+          handlers: telegramHandlers.map((h) => ({ pluginId: h.pluginId, namespace: h.namespace })),
+          diagnostics: registry.diagnostics,
+        }),
+      );
       return;
     }
     const result = normalizeHandlerResult(
@@ -396,6 +421,14 @@ async function main() {
 
   if (method === "hook.message_sent") {
     for (const hook of registry.hooks.filter((h) => h.kind === "message_sent")) {
+      await hook.handler(payload);
+    }
+    process.stdout.write(JSON.stringify({ ok: true, status: "ok", diagnostics: registry.diagnostics }));
+    return;
+  }
+
+  if (method === "hook.message_received") {
+    for (const hook of registry.hooks.filter((h) => h.kind === "message_received" || h.kind === "message:received")) {
       await hook.handler(payload);
     }
     process.stdout.write(JSON.stringify({ ok: true, status: "ok", diagnostics: registry.diagnostics }));

@@ -395,6 +395,25 @@ public class GatewaySessionTurnRunnerTest {
     }
 
     @TestCase
+    public func mediaContextPromptIncludesTelegramRouteContextWithoutMediaRecords(): Unit {
+        let media = JsonObject()
+        let context = JsonObject()
+        let route = JsonObject()
+        route.put("agentId", JsonString("topic-agent"))
+        route.put("systemPrompt", JsonString("topic prompt"))
+        route.put("skills", JsonArray([JsonString("review")]))
+        route.put("disableAudioPreflight", JsonBool(true))
+        context.put("telegramRoute", route)
+        media.put("context", context)
+
+        let prompt = gatewayBuildMediaContextPrompt(media)
+        @Expect(prompt.contains("StructuredTelegramContext:"), true)
+        @Expect(prompt.contains("TelegramRoute="), true)
+        @Expect(prompt.contains("topic-agent"), true)
+        @Expect(prompt.contains("topic prompt"), true)
+    }
+
+    @TestCase
     public func streamingDefaultsToOnButCanBeDisabledPerImChannel(): Unit {
         var defaults = GatewayUserSettings()
         defaults.telegram.enabled = true

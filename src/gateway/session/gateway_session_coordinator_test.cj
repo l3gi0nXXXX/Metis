@@ -396,4 +396,32 @@ public class GatewaySessionCoordinatorTest {
                 @Expect("missing", "delivery-target")
         }
     }
+
+    @TestCase
+    public func inboundRequestUsesTelegramRouteAgentFromMediaContext(): Unit {
+        let media = JsonObject()
+        let context = JsonObject()
+        let route = JsonObject()
+        route.put("agentId", JsonString("topic-agent"))
+        context.put("telegramRoute", route)
+        media.put("context", context)
+        let request = gatewaySessionRequestFromInbound(
+            InboundMessage(
+                ChannelType.Telegram,
+                "msg-current",
+                "group:-1001234567890:topic:42",
+                "8734062810",
+                ChatType.Group,
+                "hello",
+                true,
+                DateTime.now(),
+                conversationId: Some("group:-1001234567890:topic:42"),
+                threadId: Some("42"),
+                mediaContext: media
+            )
+        )
+        let resolved = gatewayResolveSessionContext(request)
+        @Expect(request.agentId, "topic-agent")
+        @Expect(resolved.agentId, "topic-agent")
+    }
 }

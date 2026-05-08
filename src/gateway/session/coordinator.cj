@@ -23,6 +23,21 @@ private func gatewayNormalizeDmScope(raw: String): String {
     "per-chat"
 }
 
+private func gatewayRouteAgentIdFromMediaContext(mediaContext: JsonObject): String {
+    let context = match (mediaContext.get("context")) {
+        case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    let route = match (context.get("telegramRoute")) {
+        case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    match (route.get("agentId")) {
+        case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+}
+
 private func gatewayNormalizeChannelName(raw: String, source: GatewayIngressSource): String {
     let channel = raw.trimAscii().toAsciiLower()
     if (!channel.isEmpty()) {
@@ -281,6 +296,7 @@ public func gatewaySessionRequestFromInbound(message: InboundMessage, dmScope!: 
         GatewayIngressSource.Channel(channelToString(message.channel)),
         channelName: channelToString(message.channel),
         sessionHint: "",
+        agentId: gatewayRouteAgentIdFromMediaContext(message.mediaContext),
         text: message.text,
         accountId: if (!accountId.trimAscii().isEmpty()) { accountId } else { message.accountId },
         peerId: message.peerId,
@@ -311,6 +327,7 @@ public func gatewaySessionRequestFromInbound(
         GatewayIngressSource.Channel(channelToString(message.channel)),
         channelName: channelToString(message.channel),
         sessionHint: sessionHint,
+        agentId: gatewayRouteAgentIdFromMediaContext(message.mediaContext),
         text: message.text,
         accountId: if (!accountId.trimAscii().isEmpty()) { accountId } else { message.accountId },
         peerId: message.peerId,

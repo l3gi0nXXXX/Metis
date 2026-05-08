@@ -45,6 +45,43 @@ public class GatewayConfigBuilderTest {
     }
 
     @TestCase
+    public func telegramTypedOpenClawParityConfigMapsIntoRuntimeConfig(): Unit {
+        var user = GatewayUserSettings()
+        user.telegram.enabled = true
+        user.telegram.defaultAccount = "work"
+        user.telegram.inlineButtons.scope = "group"
+        user.telegram.inlineButtons.allowlist = ["tg:group:-1001"]
+        user.telegram.execApprovals.enabled = "true"
+        user.telegram.execApprovals.approvers = ["8734062810"]
+        user.telegram.execApprovals.agentFilter = ["reviewer"]
+        user.telegram.execApprovals.sessionFilter = ["telegram:group"]
+        user.telegram.execApprovals.target = "both"
+        user.telegram.errorPolicy.policy = "once"
+        user.telegram.errorPolicy.cooldownMs = 12345
+        user.telegram.errorPolicy.silentErrorReplies = true
+        user.telegram.autoTopicLabel.enabled = true
+        user.telegram.autoTopicLabel.strategy = "model"
+        user.telegram.autoTopicLabel.prompt = "short label"
+
+        let (_, _, telegram) = mergeGatewayUserSettings(user)
+        @Expect(telegram.accountId, "work")
+        @Expect(telegram.defaultAccount, "work")
+        @Expect(telegram.inlineButtons.scope, "group")
+        @Expect(telegram.inlineButtons.allowlist[0], "tg:group:-1001")
+        @Expect(telegram.execApprovals.enabled, "true")
+        @Expect(telegram.execApprovals.approvers[0], "8734062810")
+        @Expect(telegram.execApprovals.agentFilter[0], "reviewer")
+        @Expect(telegram.execApprovals.sessionFilter[0], "telegram:group")
+        @Expect(telegram.execApprovals.target, "both")
+        @Expect(telegram.errorPolicy.policy, "once")
+        @Expect(telegram.errorPolicy.cooldownMs, 12345)
+        @Expect(telegram.errorPolicy.silentErrorReplies, true)
+        @Expect(telegram.autoTopicLabel.enabled, true)
+        @Expect(telegram.autoTopicLabel.strategy, "model")
+        @Expect(telegram.autoTopicLabel.prompt, "short label")
+    }
+
+    @TestCase
     public func pluginConfigPresenceUsesSharedGatewayConfigHelper(): Unit {
         var user = GatewayUserSettings()
         let root = JsonObject(HashMap<String, JsonValue>())

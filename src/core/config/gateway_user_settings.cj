@@ -284,6 +284,35 @@ public struct TelegramThreadBindingsUserSettings {
 }
 
 @jsonable
+public struct TelegramInlineButtonsUserSettings {
+    public var scope: String = "allowlist"
+    public var allowlist: Array<String> = []
+}
+
+@jsonable
+public struct TelegramExecApprovalsUserSettings {
+    public var enabled: String = "auto"
+    public var approvers: Array<String> = []
+    public var agentFilter: Array<String> = []
+    public var sessionFilter: Array<String> = []
+    public var target: String = "dm"
+}
+
+@jsonable
+public struct TelegramErrorPolicyUserSettings {
+    public var policy: String = "always"
+    public var cooldownMs: Int64 = 60000
+    public var silentErrorReplies: Bool = false
+}
+
+@jsonable
+public struct TelegramAutoTopicLabelUserSettings {
+    public var enabled: Bool = true
+    public var strategy: String = "deterministic"
+    public var prompt: String = ""
+}
+
+@jsonable
 public struct TelegramMediaUserSettings {
     public var downloadEnabled: Bool = true
     public var mediaMaxBytes: Int64 = 20 * 1024 * 1024
@@ -316,6 +345,7 @@ public struct TelegramCustomCommandUserSettings {
 @jsonable
 public struct TelegramUserSettings {
     public var enabled: Bool = false
+    public var defaultAccount: String = "default"
     public var botToken: String = ""
     public var tokenFile: String = ""
     public var dmPolicy: String = "pairing"
@@ -357,6 +387,10 @@ public struct TelegramUserSettings {
     public var removeAckAfterReply: Bool = false
     public var configWrites: Bool = true
     public var actions: TelegramActionUserSettings = TelegramActionUserSettings()
+    public var inlineButtons: TelegramInlineButtonsUserSettings = TelegramInlineButtonsUserSettings()
+    public var execApprovals: TelegramExecApprovalsUserSettings = TelegramExecApprovalsUserSettings()
+    public var errorPolicy: TelegramErrorPolicyUserSettings = TelegramErrorPolicyUserSettings()
+    public var autoTopicLabel: TelegramAutoTopicLabelUserSettings = TelegramAutoTopicLabelUserSettings()
     public var threadBindings: TelegramThreadBindingsUserSettings = TelegramThreadBindingsUserSettings()
     public var media: TelegramMediaUserSettings = TelegramMediaUserSettings()
     public var network: TelegramNetworkUserSettings = TelegramNetworkUserSettings()

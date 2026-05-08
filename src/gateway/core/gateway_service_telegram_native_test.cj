@@ -1,6 +1,6 @@
 package metis.gateway.core
 
-import metis.core.config.{CliSettingManager, GatewayUserSettings, MetisConfigManager}
+import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager}
 import metis.gateway.model.{ChannelPolicyConfig, ChannelType, ChatType, InboundMessage, OutboundMessage, SendResult}
 
 import magic.jsonable.*
@@ -567,6 +567,7 @@ public class GatewayServiceTelegramNativeTest {
                     "  api.interactive.register({ namespace: 'demo', channel: 'telegram' }, async () => ({ intents: [{ type: 'reply', text: 'interactive ok', buttons: [[{ text: 'OK', callback_data: 'plugin:demo:ok' }]] }] }));\n" +
                     "  api.approvals.register({ namespace: 'demo', channel: 'telegram' }, async (ctx) => ({ type: 'reply', text: 'approval ' + ctx.decision }));\n" +
                     "  api.hooks.message_sending(async (ctx) => ({ text: '[hooked] ' + ctx.text }));\n" +
+                    "  api.hooks.message_received(async (ctx) => { globalThis.__metis_received = ctx.messageId; });\n" +
                     "}\n"
                 ).toArray()
             )
@@ -577,7 +578,7 @@ public class GatewayServiceTelegramNativeTest {
                 plugins.add(JsonString(pluginRoot.toString()))
                 let compat = JsonObject()
                 compat.put("enabled", true.toJsonValue())
-                compat.put("scriptPath", JsonString("scripts/openclaw-plugin-sidecar.mjs"))
+                compat.put("scriptPath", JsonString(CliConfig.cwd.join("scripts").join("openclaw-plugin-sidecar.mjs").toString()))
                 compat.put("plugins", plugins)
                 let extra = JsonObject()
                 extra.put("openclawPluginCompatibility", compat)
@@ -611,6 +612,12 @@ public class GatewayServiceTelegramNativeTest {
                 hookPayload.put("text", JsonString("hello"))
                 let hook = gatewayOpenClawPluginSidecarInvoke(user, "hook.message_sending", hookPayload)
                 @Expect(hook.get("text").getOrThrow().asString().getValue(), "[hooked] hello")
+
+                let receivedPayload = JsonObject()
+                receivedPayload.put("channel", JsonString("telegram"))
+                receivedPayload.put("messageId", JsonString("msg-1"))
+                let received = gatewayOpenClawPluginSidecarInvoke(user, "hook.message_received", receivedPayload)
+                @Expect(received.get("status").getOrThrow().asString().getValue(), "ok")
             } finally {
                 try { remove(root, recursive: true) } catch (_e: Exception) { () }
             }
@@ -639,6 +646,38 @@ public class GatewayServiceTelegramNativeTest {
             @Expect(adapter.sentText(1).contains("/subagents spawn"), true)
             @Expect(JsonValue.fromStr(adapter.sentText(2)).asObject().get("action").getOrThrow().asString().getValue(), "sessions")
             @Expect(JsonValue.fromStr(adapter.sentText(3)).asObject().get("action").getOrThrow().asString().getValue(), "approvals")
+        }
+    }
+
+    @TestCase
+    public func telegramFocusUnfocusCommandsUseThreadBindingManager(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            user.telegram.threadBindings.enabled = true
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/focus agent:main:explicit:review")
+            service.processOnce()
+            @Expect(adapter.sentText(0).contains("\"action\":\"focus\""), true)
+            @Expect(adapter.sentText(0).contains("agent:main:explicit:review"), true)
+
+            let resolved = gatewayTelegramThreadBindingResolve("telegram", "default", "8734062810")
+            @Expect(resolved.get("sessionKey").getOrThrow().asString().getValue(), "agent:main:explicit:review")
+
+            adapter.queue("/agents")
+            service.processOnce()
+            @Expect(adapter.sentText(1).contains("\"action\":\"agents\""), true)
+            @Expect(adapter.sentText(1).contains("agent:main:explicit:review"), true)
+
+            adapter.queue("/unfocus")
+            service.processOnce()
+            @Expect(adapter.sentText(2).contains("\"action\":\"unfocus\""), true)
+            @Expect(gatewayTelegramThreadBindingResolve("telegram", "default", "8734062810").size(), 0)
         }
     }
 }

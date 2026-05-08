@@ -328,18 +328,24 @@ public class TelegramAdapterTest {
         let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
         let payload = adapter.debugBuildNativeCommandsPayload()
         let commands = payload.get("commands").getOrThrow().asArray()
-        @Expect(commands.size(), 20)
+        @Expect(commands.size(), 23)
         let first = commands[0].asObject()
         let second = commands[1].asObject()
         let commandsEntry = commands[2].asObject()
         let models = commands[5].asObject()
         let subagents = commands[7].asObject()
+        let focus = commands[10].asObject()
+        let unfocus = commands[11].asObject()
+        let agents = commands[12].asObject()
         @Expect(first.get("command").getOrThrow().asString().getValue(), "help")
         @Expect(first.get("description").getOrThrow().asString().getValue(), "Show help")
         @Expect(second.get("command").getOrThrow().asString().getValue(), "status")
         @Expect(commandsEntry.get("command").getOrThrow().asString().getValue(), "commands")
         @Expect(models.get("command").getOrThrow().asString().getValue(), "models")
         @Expect(subagents.get("command").getOrThrow().asString().getValue(), "subagents")
+        @Expect(focus.get("command").getOrThrow().asString().getValue(), "focus")
+        @Expect(unfocus.get("command").getOrThrow().asString().getValue(), "unfocus")
+        @Expect(agents.get("command").getOrThrow().asString().getValue(), "agents")
     }
 
     @TestCase
@@ -377,8 +383,8 @@ public class TelegramAdapterTest {
         )
         let payload = adapter.debugBuildNativeCommandsPayload()
         let commands = payload.get("commands").getOrThrow().asArray()
-        @Expect(commands.size(), 21)
-        let last = commands[20].asObject()
+        @Expect(commands.size(), 24)
+        let last = commands[commands.size() - 1].asObject()
         @Expect(last.get("command").getOrThrow().asString().getValue(), "generate")
         @Expect(last.get("description").getOrThrow().asString().getValue(), "Create image")
     }
@@ -402,8 +408,8 @@ public class TelegramAdapterTest {
             let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
             let payload = adapter.debugBuildNativeCommandsPayload()
             let commands = payload.get("commands").getOrThrow().asArray()
-            @Expect(commands.size(), 21)
-            let pluginCommand = commands[20].asObject()
+            @Expect(commands.size(), 24)
+            let pluginCommand = commands[commands.size() - 1].asObject()
             @Expect(pluginCommand.get("command").getOrThrow().asString().getValue(), "plugin_demo")
             @Expect(pluginCommand.get("description").getOrThrow().asString().getValue(), "Plugin demo command")
         } finally {
@@ -512,7 +518,7 @@ public class TelegramAdapterTest {
             let commands = snapshot.get("nativeCommands").getOrThrow().asObject()
             @Expect(commands.get("lastSyncStatus").getOrThrow().asString().getValue(), "error")
             @Expect(commands.get("lastSyncError").getOrThrow().asString().getValue().contains("Bad Request"), true)
-            @Expect(commands.get("lastSyncCommandCount").getOrThrow().asInt().getValue(), 20)
+            @Expect(commands.get("lastSyncCommandCount").getOrThrow().asInt().getValue(), 23)
         } finally {
             setTelegramTransportRunnerForTest(None)
         }
@@ -1773,6 +1779,41 @@ public class TelegramAdapterTest {
     }
 
     @TestCase
+    public func t49SilentIngestTriggersMessageReceivedHookWithoutQueueingAgentTurn(): Unit {
+        let received = ArrayList<JsonObject>()
+        setGatewayOpenClawPluginSidecarRunnerForTest(Some({ method: String, payload: JsonObject =>
+            if (method == "hook.message_received") {
+                received.add(payload)
+            }
+            let out = JsonObject()
+            out.put("ok", true.toJsonValue())
+            out.put("status", JsonString("ok"))
+            out
+        }))
+        try {
+            let cfg = TelegramConfig(
+                enabled: true,
+                botToken: "telegram-token",
+                groupPolicy: "open",
+                groupHistoryEnabled: true
+            )
+            let adapter = TelegramAdapter(config: cfg)
+            adapter.start()
+            let silent = "{\"update_id\":49,\"message\":{\"message_id\":201,\"text\":\"background context\",\"chat\":{\"id\":-1001234567890,\"type\":\"supergroup\"},\"from\":{\"id\":8734062810}}}"
+            @Expect(adapter.ingestWebhookPayload(silent).contains("\"ignored\":true"), true)
+            @Expect(adapter.pullInbound().isEmpty(), true)
+            @Expect(received.size, 1)
+            @Expect(received[0].get("accepted").getOrThrow().asBool().getValue(), false)
+            @Expect(received[0].get("reason").getOrThrow().asString().getValue(), "group_mention_required")
+            @Expect(received[0].get("peerId").getOrThrow().asString().getValue(), "group:-1001234567890")
+            @Expect(received[0].get("messageId").getOrThrow().asString().getValue(), "201")
+            @Expect(received[0].get("text").getOrThrow().asString().getValue(), "background context")
+        } finally {
+            setGatewayOpenClawPluginSidecarRunnerForTest(None)
+        }
+    }
+
+    @TestCase
     public func editedAndChannelPostPolicyDiagnosticsPreserveTelegramUpdateKind(): Unit {
         let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token", groupPolicy: "disabled"))
         adapter.start()
@@ -1892,6 +1933,45 @@ public class TelegramAdapterTest {
         @Expect(adapter.pullInbound().isEmpty(), true)
         let policy = adapter.debugBuildInboundPolicyDiagnostics()
         @Expect(policy.get("lastReason").getOrThrow().asString().getValue(), "group_sender_not_allowed")
+    }
+
+    @TestCase
+    public func topicRouteConfigIsProjectedIntoInboundMediaContext(): Unit {
+        let groups = JsonObject()
+        let groupRule = JsonObject()
+        let groupAllow = JsonArray([])
+        groupAllow.add("222".toJsonValue())
+        groupRule.put("requireMention", false.toJsonValue())
+        groupRule.put("allowFrom", groupAllow)
+        groupRule.put("agentId", JsonString("group-agent"))
+        let topics = JsonObject()
+        let topicRule = JsonObject()
+        topicRule.put("agentId", JsonString("topic-agent"))
+        topicRule.put("systemPrompt", JsonString("topic prompt"))
+        topicRule.put("skills", JsonArray([JsonString("review")]))
+        topicRule.put("disableAudioPreflight", true.toJsonValue())
+        topics.put("42", topicRule)
+        groupRule.put("topics", topics)
+        groups.put("-1001234567890", groupRule)
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(
+                enabled: true,
+                botToken: "telegram-token",
+                groupPolicy: "allowlist",
+                groups: Some(groups)
+            )
+        )
+        adapter.start()
+        let payload = "{\"update_id\":51,\"message\":{\"message_id\":301,\"message_thread_id\":42,\"text\":\"status\",\"chat\":{\"id\":-1001234567890,\"type\":\"supergroup\"},\"from\":{\"id\":222}}}"
+        @Expect(adapter.ingestWebhookPayload(payload).contains("\"ok\":true"), true)
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 1)
+        let route = inbound[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("telegramRoute").getOrThrow().asObject()
+        @Expect(route.get("agentId").getOrThrow().asString().getValue(), "topic-agent")
+        @Expect(route.get("systemPrompt").getOrThrow().asString().getValue(), "topic prompt")
+        @Expect(route.get("skills").getOrThrow().asArray()[0].asString().getValue(), "review")
+        @Expect(route.get("disableAudioPreflight").getOrThrow().asBool().getValue(), true)
     }
 
     @TestCase
@@ -4291,6 +4371,29 @@ public class TelegramAdapterTest {
         match (result) {
             case SendResult.Success => @Expect(false, true)
             case SendResult.Failed(reason) => @Expect(reason.contains("inlineKeyboard action is disabled"), true)
+        }
+    }
+
+    @TestCase
+    public func inlineKeyboardScopeRejectsDisallowedPeerBeforeNetwork(): Unit {
+        let cfg = TelegramConfig(
+            enabled: true,
+            botToken: "telegram-token",
+            actions: TelegramActionConfig(sendMessage: true, inlineKeyboard: true),
+            inlineButtons: TelegramInlineButtonsConfig(scope: "group")
+        )
+        let adapter = TelegramAdapter(config: cfg)
+        adapter.start()
+        let result = adapter.send(
+            OutboundMessage(
+                ChannelType.Telegram,
+                "user:8734062810",
+                "[inline-keyboard]\ntext=Choose\nbutton=Approve|callback:approve-1"
+            )
+        )
+        match (result) {
+            case SendResult.Success => @Expect(false, true)
+            case SendResult.Failed(reason) => @Expect(reason.contains("inline button scope blocks peer"), true)
         }
     }
 

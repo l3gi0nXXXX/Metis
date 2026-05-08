@@ -84,6 +84,12 @@ private func gatewayMediaContextStructuredSummary(mediaContext: JsonObject): Str
             lines.add("Contact=${obj.toJsonString()}")
         case None => ()
     }
+    match (ctx.get("telegramRoute")) {
+        case Some(v) =>
+            let obj = try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            lines.add("TelegramRoute=${obj.toJsonString()}")
+        case None => ()
+    }
     String.join(lines.toArray(), delimiter: "\n")
 }
 

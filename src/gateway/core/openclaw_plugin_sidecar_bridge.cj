@@ -270,3 +270,59 @@ public func gatewayOpenClawPluginSidecarApplyMessageSentHook(
     payload.put("reason", JsonString(reason.trimAscii()))
     gatewayOpenClawPluginSidecarInvoke(user, "hook.message_sent", payload)
 }
+
+public func gatewayOpenClawPluginSidecarApplyMessageReceivedHook(
+    user: GatewayUserSettings,
+    channelName: String,
+    accountId: String,
+    peerId: String,
+    senderId: String,
+    messageId: String,
+    text: String,
+    accepted: Bool,
+    reason: String,
+    raw: String
+): JsonObject {
+    if (!gatewayOpenClawPluginSidecarEnabled(user) || channelName.trimAscii().toAsciiLower() != "telegram") {
+        let out = JsonObject()
+        out.put("ok", true.toJsonValue())
+        out.put("status", JsonString("skipped"))
+        return out
+    }
+    let payload = JsonObject()
+    payload.put("channel", JsonString(channelName.trimAscii().toAsciiLower()))
+    payload.put("accountId", JsonString(accountId.trimAscii()))
+    payload.put("peerId", JsonString(peerId.trimAscii()))
+    payload.put("senderId", JsonString(senderId.trimAscii()))
+    payload.put("messageId", JsonString(messageId.trimAscii()))
+    payload.put("text", JsonString(text))
+    payload.put("accepted", accepted.toJsonValue())
+    payload.put("reason", JsonString(reason.trimAscii()))
+    payload.put("raw", JsonString(raw))
+    gatewayOpenClawPluginSidecarInvoke(user, "hook.message_received", payload)
+}
+
+public func gatewayOpenClawPluginSidecarApplyCurrentMessageReceivedHook(
+    channelName: String,
+    accountId: String,
+    peerId: String,
+    senderId: String,
+    messageId: String,
+    text: String,
+    accepted: Bool,
+    reason: String,
+    raw: String
+): JsonObject {
+    gatewayOpenClawPluginSidecarApplyMessageReceivedHook(
+        CliSettingManager.readGatewaySettings(),
+        channelName,
+        accountId,
+        peerId,
+        senderId,
+        messageId,
+        text,
+        accepted,
+        reason,
+        raw
+    )
+}

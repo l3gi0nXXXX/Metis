@@ -70,4 +70,57 @@ public class TelegramApprovalResolverTest {
             try { remove(path) } catch (_: Exception) { () }
         }
     }
+
+    @TestCase
+    public func execApprovalApproversOverrideGeneralTelegramAllowlist(): Unit {
+        let path = this.tempPath("approvers")
+        try {
+            let row = JsonObject()
+            row.put("id", JsonString("appr-3"))
+            row.put("status", JsonString("pending"))
+            let arr = JsonArray([])
+            arr.add(row)
+            let root = JsonObject()
+            root.put("approvals", arr)
+            File.writeTo(path, root.toJsonString().toArray())
+
+            var user = GatewayUserSettings()
+            user.telegram.allowFrom = ["111"]
+            user.telegram.execApprovals.approvers = ["tg:8734062810"]
+            let resolved = gatewayResolveTelegramApprovalCallback(
+                this.approvalText("appr-3", "allow-once", "8734062810"),
+                user,
+                approvalsPath: path
+            )
+            @Expect(resolved.get("ok").getOrThrow().asBool().getValue(), true)
+        } finally {
+            try { remove(path) } catch (_: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func disabledExecApprovalConfigRejectsBeforeStoreMutation(): Unit {
+        let path = this.tempPath("disabled")
+        try {
+            let row = JsonObject()
+            row.put("id", JsonString("appr-4"))
+            row.put("status", JsonString("pending"))
+            File.writeTo(path, row.toJsonString().toArray())
+
+            var user = GatewayUserSettings()
+            user.telegram.allowFrom = ["*"]
+            user.telegram.execApprovals.enabled = "off"
+            let rejected = gatewayResolveTelegramApprovalCallback(
+                this.approvalText("appr-4", "deny", "8734062810"),
+                user,
+                approvalsPath: path
+            )
+            @Expect(rejected.get("ok").getOrThrow().asBool().getValue(), false)
+            @Expect(rejected.get("error").getOrThrow().asString().getValue(), "sender_not_authorized")
+            let saved = String.fromUtf8(File.readFrom(path))
+            @Expect(saved.contains("pending"), true)
+        } finally {
+            try { remove(path) } catch (_: Exception) { () }
+        }
+    }
 }

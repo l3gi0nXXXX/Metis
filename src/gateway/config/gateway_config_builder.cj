@@ -354,8 +354,14 @@ private func mergeTelegram(user: GatewayUserSettings): TelegramConfig {
             )
         )
     }
+    let telegramDefaultAccount = if (user.telegram.defaultAccount.trimAscii().isEmpty()) {
+        "default"
+    } else {
+        user.telegram.defaultAccount.trimAscii()
+    }
     TelegramConfig(
-        accountId: "default",
+        accountId: telegramDefaultAccount,
+        defaultAccount: telegramDefaultAccount,
         enabled: user.telegram.enabled || gatewayBuilderBuiltinExtraBool(extra, "enabled", false),
         botToken: botToken,
         tokenFile: user.telegram.tokenFile.trimAscii(),
@@ -418,6 +424,27 @@ private func mergeTelegram(user: GatewayUserSettings): TelegramConfig {
             editForumTopic: user.telegram.actions.editForumTopic,
             inlineKeyboard: user.telegram.actions.inlineKeyboard,
             callbackQuery: user.telegram.actions.callbackQuery
+        ),
+        inlineButtons: TelegramInlineButtonsConfig(
+            scope: user.telegram.inlineButtons.scope,
+            allowlist: user.telegram.inlineButtons.allowlist
+        ),
+        execApprovals: TelegramExecApprovalsConfig(
+            enabled: user.telegram.execApprovals.enabled,
+            approvers: user.telegram.execApprovals.approvers,
+            agentFilter: user.telegram.execApprovals.agentFilter,
+            sessionFilter: user.telegram.execApprovals.sessionFilter,
+            target: user.telegram.execApprovals.target
+        ),
+        errorPolicy: TelegramErrorPolicyConfig(
+            policy: user.telegram.errorPolicy.policy,
+            cooldownMs: user.telegram.errorPolicy.cooldownMs,
+            silentErrorReplies: user.telegram.errorPolicy.silentErrorReplies
+        ),
+        autoTopicLabel: TelegramAutoTopicLabelConfig(
+            enabled: user.telegram.autoTopicLabel.enabled,
+            strategy: user.telegram.autoTopicLabel.strategy,
+            prompt: user.telegram.autoTopicLabel.prompt
         ),
         threadBindings: TelegramThreadBindingsConfig(
             enabled: user.telegram.threadBindings.enabled,

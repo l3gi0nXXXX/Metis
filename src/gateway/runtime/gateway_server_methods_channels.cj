@@ -20,7 +20,9 @@ import metis.gateway.core.{
     gatewayPluginManagerSummary,
     gatewayPluginRuntimeAccountsJson,
     gatewayPluginRuntimeSummary,
-    gatewayListSessionCatalogViewsForUser
+    gatewayListSessionCatalogViewsForUser,
+    gatewayOpenClawPluginSidecarApplyMessageSendingHook,
+    gatewayOpenClawPluginSidecarApplyMessageSentHook
 }
 import metis.gateway.config.{
     GatewayChannelPluginRegistry,
@@ -593,6 +595,7 @@ private func gatewayTelegramChannelJson(user: GatewayUserSettings): JsonObject {
     result.put("media", media)
     result.put("setup", gatewayTelegramSetupJson(user))
     result.put("directory", gatewayTelegramDirectoryJson(user))
+    result.put("accountInspect", gatewayTelegramAccountInspectJson(user))
     result.put("accountOps", gatewayTelegramAccountOpsJson())
     result.put("actionSchemas", gatewayTelegramActionSchemasJson())
     result.put("supports", gatewayChannelSupportsJson(user, "telegram"))
@@ -671,7 +674,11 @@ private func gatewayTelegramDirectoryAddRow(rows: JsonArray, seen: HashMap<Strin
 private func gatewayTelegramDirectoryRowsJson(user: GatewayUserSettings): JsonArray {
     let rows = JsonArray([])
     let seen = HashMap<String, Bool>()
-    let defaultAccountId = "default"
+    let defaultAccountId = if (user.telegram.defaultAccount.trimAscii().isEmpty()) {
+        "default"
+    } else {
+        user.telegram.defaultAccount.trimAscii()
+    }
     if (!user.telegram.defaultTo.trimAscii().isEmpty()) {
         gatewayTelegramDirectoryAddRow(
             rows,
@@ -736,6 +743,83 @@ private func gatewayTelegramObjectKeysJson(objOpt: Option<JsonObject>): JsonArra
             }
         case None => ()
     }
+    return out
+}
+
+private func gatewayTelegramConfigHasObject(obj: JsonObject, key: String): Bool {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asObject().size() > 0 } catch (_e: Exception) { false }
+        case None => false
+    }
+}
+
+private func gatewayTelegramConfigArraySize(obj: JsonObject, key: String): Int64 {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asArray().size() } catch (_e: Exception) { 0 }
+        case None => 0
+    }
+}
+
+private func gatewayTelegramAccountInspectRow(user: GatewayUserSettings, accountId: String, accountConfig: JsonObject, defaultAccountId: String): JsonObject {
+    let row = JsonObject()
+    let accountToken = gatewayBindingStringParam(accountConfig, ["botToken"], "")
+    let accountTokenFile = gatewayBindingStringParam(accountConfig, ["tokenFile"], "")
+    let globalTokenConfigured = !user.telegram.botToken.trimAscii().isEmpty() || !user.telegram.tokenFile.trimAscii().isEmpty()
+    let tokenSource = if (!accountTokenFile.isEmpty()) {
+        "account-tokenFile"
+    } else if (!accountToken.isEmpty()) {
+        "account-botToken"
+    } else if (globalTokenConfigured) {
+        "global-inherited"
+    } else {
+        "missing"
+    }
+    row.put("accountId", JsonString(accountId))
+    row.put("defaultAccount", (accountId == defaultAccountId).toJsonValue())
+    row.put("configured", (tokenSource != "missing").toJsonValue())
+    row.put("tokenSource", JsonString(tokenSource))
+    row.put("hasBotToken", (!accountToken.isEmpty()).toJsonValue())
+    row.put("hasTokenFile", (!accountTokenFile.isEmpty()).toJsonValue())
+    row.put("allowFromCount", gatewayTelegramConfigArraySize(accountConfig, "allowFrom").toJsonValue())
+    row.put("groupAllowFromCount", gatewayTelegramConfigArraySize(accountConfig, "groupAllowFrom").toJsonValue())
+    row.put("hasGroupsOverride", gatewayTelegramConfigHasObject(accountConfig, "groups").toJsonValue())
+    row.put("hasDirectOverride", gatewayTelegramConfigHasObject(accountConfig, "direct").toJsonValue())
+    row.put("hasDmsOverride", gatewayTelegramConfigHasObject(accountConfig, "dms").toJsonValue())
+    row.put("hasMediaOverride", gatewayTelegramConfigHasObject(accountConfig, "media").toJsonValue())
+    row.put("hasNetworkOverride", gatewayTelegramConfigHasObject(accountConfig, "network").toJsonValue())
+    row.put("approvedSenderCount", telegramPairingAccountStore(rootDir: CliConfig.dotDir, accountId: accountId).approvedSenders().size.toJsonValue())
+    return row
+}
+
+private func gatewayTelegramAccountInspectJson(user: GatewayUserSettings): JsonObject {
+    let out = JsonObject()
+    let defaultAccountId = if (user.telegram.defaultAccount.trimAscii().isEmpty()) {
+        "default"
+    } else {
+        user.telegram.defaultAccount.trimAscii()
+    }
+    out.put("defaultAccountId", JsonString(defaultAccountId))
+    out.put("tokenRedacted", true.toJsonValue())
+    let rows = JsonArray([])
+    let seen = HashMap<String, Bool>()
+    match (user.telegram.accounts) {
+        case Some(accounts) =>
+            for (accountId in accounts.getFields().keys()) {
+                let trimmed = accountId.trimAscii()
+                if (trimmed.isEmpty()) {
+                    continue
+                }
+                let accountConfig = try { accounts.getFields()[accountId].asObject() } catch (_e: Exception) { JsonObject() }
+                rows.add(gatewayTelegramAccountInspectRow(user, trimmed, accountConfig, defaultAccountId))
+                seen[trimmed] = true
+            }
+        case None => ()
+    }
+    if (!seen.contains(defaultAccountId)) {
+        rows.add(gatewayTelegramAccountInspectRow(user, defaultAccountId, JsonObject(), defaultAccountId))
+    }
+    out.put("accounts", rows)
+    out.put("count", rows.size().toJsonValue())
     return out
 }
 
@@ -852,6 +936,7 @@ private func gatewayTelegramRuntimeJson(user: GatewayUserSettings, liveProbe!: B
     out.put("healthSnapshot", healthSnapshot)
     out.put("media", healthSnapshot.get("media") ?? JsonObject())
     out.put("actions", gatewayTelegramChannelJson(user).get("actions") ?? JsonObject())
+    out.put("accountInspect", gatewayTelegramAccountInspectJson(user))
     let capabilityState = JsonObject()
     capabilityState.put("mediaUnderstandingState", JsonString(if (user.telegram.media.downloadEnabled) { "context-ready" } else { "metadata-only" }))
     capabilityState.put("approvalResolverState", JsonString(if (user.telegram.actions.callbackQuery && user.telegram.actions.inlineKeyboard) { "button-resolver-ready" } else { "callback-or-button-disabled" }))
@@ -1116,12 +1201,30 @@ private func gatewayChannelActionByNativeAdapter(
         result.put("reason", JsonString("missing-peer-or-message"))
         return Some(result)
     }
+    var effectiveText = text
+    let sendingHook = gatewayOpenClawPluginSidecarApplyMessageSendingHook(
+        user,
+        "telegram",
+        accountId,
+        peerId,
+        text,
+        replyTo,
+        replyInThread
+    )
+    if (try { sendingHook.get("cancelled").getOrThrow().asBool().getValue() } catch (_: Exception) { false }) {
+        effectiveText = "[plugin-hook-cancelled] " + gatewayBindingStringParam(sendingHook, ["reason"], "cancelled by plugin hook")
+    } else {
+        let hookText = gatewayBindingStringParam(sendingHook, ["text"], "")
+        if (!hookText.trimAscii().isEmpty()) {
+            effectiveText = hookText
+        }
+    }
     let adapter = TelegramAdapter(config: cfg.telegram)
     let messageId = adapter.sendDirectWithMessageIdForGatewayRpc(
         OutboundMessage(
             ChannelType.Telegram,
             peerId,
-            text,
+            effectiveText,
             replyToMessageId: if (replyTo.isEmpty()) { None<String> } else { Some(replyTo) },
             replyInThread: replyInThread,
             accountId: accountId
@@ -1129,6 +1232,16 @@ private func gatewayChannelActionByNativeAdapter(
     )
     let lastError = adapter.debugLastSendErrorForTest()
     let ok = !messageId.isEmpty()
+    let _ = gatewayOpenClawPluginSidecarApplyMessageSentHook(
+        user,
+        "telegram",
+        accountId,
+        peerId,
+        effectiveText,
+        messageId,
+        ok,
+        if (ok) { "" } else { lastError }
+    )
     let delivery = JsonObject()
     delivery.put("deliverable", ok.toJsonValue())
     delivery.put("channel", JsonString(normalized))

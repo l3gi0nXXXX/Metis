@@ -576,6 +576,91 @@ public class TelegramThreadBindingsConfig {
     }
 }
 
+public class TelegramInlineButtonsConfig {
+    public let scope: String
+    public let allowlist: Array<String>
+
+    public init(scope!: String = "allowlist", allowlist!: Array<String> = []) {
+        let normalized = scope.trimAscii().toAsciiLower()
+        this.scope = if (normalized == "off" || normalized == "dm" || normalized == "group" || normalized == "all" || normalized == "allowlist") {
+            normalized
+        } else {
+            "allowlist"
+        }
+        this.allowlist = allowlist
+    }
+}
+
+public class TelegramExecApprovalsConfig {
+    public let enabled: String
+    public let approvers: Array<String>
+    public let agentFilter: Array<String>
+    public let sessionFilter: Array<String>
+    public let target: String
+
+    public init(
+        enabled!: String = "auto",
+        approvers!: Array<String> = [],
+        agentFilter!: Array<String> = [],
+        sessionFilter!: Array<String> = [],
+        target!: String = "dm"
+    ) {
+        let normalizedEnabled = enabled.trimAscii().toAsciiLower()
+        this.enabled = if (normalizedEnabled == "true" || normalizedEnabled == "false" || normalizedEnabled == "auto" || normalizedEnabled == "on" || normalizedEnabled == "off") {
+            normalizedEnabled
+        } else {
+            "auto"
+        }
+        this.approvers = approvers
+        this.agentFilter = agentFilter
+        this.sessionFilter = sessionFilter
+        let normalizedTarget = target.trimAscii().toAsciiLower()
+        this.target = if (normalizedTarget == "dm" || normalizedTarget == "channel" || normalizedTarget == "both") {
+            normalizedTarget
+        } else {
+            "dm"
+        }
+    }
+}
+
+public class TelegramErrorPolicyConfig {
+    public let policy: String
+    public let cooldownMs: Int64
+    public let silentErrorReplies: Bool
+
+    public init(
+        policy!: String = "always",
+        cooldownMs!: Int64 = 60000,
+        silentErrorReplies!: Bool = false
+    ) {
+        let normalized = policy.trimAscii().toAsciiLower()
+        this.policy = if (normalized == "always" || normalized == "once" || normalized == "silent") {
+            normalized
+        } else {
+            "always"
+        }
+        this.cooldownMs = if (cooldownMs <= 0) { 60000 } else { cooldownMs }
+        this.silentErrorReplies = silentErrorReplies
+    }
+}
+
+public class TelegramAutoTopicLabelConfig {
+    public let enabled: Bool
+    public let strategy: String
+    public let prompt: String
+
+    public init(enabled!: Bool = true, strategy!: String = "deterministic", prompt!: String = "") {
+        this.enabled = enabled
+        let normalized = strategy.trimAscii().toAsciiLower()
+        this.strategy = if (normalized == "off" || normalized == "deterministic" || normalized == "model") {
+            normalized
+        } else {
+            "deterministic"
+        }
+        this.prompt = prompt.trimAscii()
+    }
+}
+
 public class TelegramMediaConfig {
     public let downloadEnabled: Bool
     public let mediaMaxBytes: Int64
@@ -650,6 +735,7 @@ public class TelegramCustomCommandConfig {
 
 public class TelegramConfig {
     public let accountId: String
+    public let defaultAccount: String
     public let enabled: Bool
     public let botToken: String
     public let tokenFile: String
@@ -694,6 +780,10 @@ public class TelegramConfig {
     public let removeAckAfterReply: Bool
     public let configWrites: Bool
     public let actions: TelegramActionConfig
+    public let inlineButtons: TelegramInlineButtonsConfig
+    public let execApprovals: TelegramExecApprovalsConfig
+    public let errorPolicy: TelegramErrorPolicyConfig
+    public let autoTopicLabel: TelegramAutoTopicLabelConfig
     public let threadBindings: TelegramThreadBindingsConfig
     public let media: TelegramMediaConfig
     public let network: TelegramNetworkConfig
@@ -701,6 +791,7 @@ public class TelegramConfig {
 
     public init(
         accountId!: String = "default",
+        defaultAccount!: String = "default",
         enabled!: Bool = false,
         botToken!: String = "",
         tokenFile!: String = "",
@@ -745,12 +836,17 @@ public class TelegramConfig {
         removeAckAfterReply!: Bool = false,
         configWrites!: Bool = true,
         actions!: TelegramActionConfig = TelegramActionConfig(),
+        inlineButtons!: TelegramInlineButtonsConfig = TelegramInlineButtonsConfig(),
+        execApprovals!: TelegramExecApprovalsConfig = TelegramExecApprovalsConfig(),
+        errorPolicy!: TelegramErrorPolicyConfig = TelegramErrorPolicyConfig(),
+        autoTopicLabel!: TelegramAutoTopicLabelConfig = TelegramAutoTopicLabelConfig(),
         threadBindings!: TelegramThreadBindingsConfig = TelegramThreadBindingsConfig(),
         media!: TelegramMediaConfig = TelegramMediaConfig(),
         network!: TelegramNetworkConfig = TelegramNetworkConfig(),
         policy!: ChannelPolicyConfig = ChannelPolicyConfig()
     ) {
         this.accountId = accountId
+        this.defaultAccount = if (defaultAccount.trimAscii().isEmpty()) { "default" } else { defaultAccount.trimAscii() }
         this.enabled = enabled
         this.botToken = botToken
         this.tokenFile = tokenFile
@@ -795,6 +891,10 @@ public class TelegramConfig {
         this.removeAckAfterReply = removeAckAfterReply
         this.configWrites = configWrites
         this.actions = actions
+        this.inlineButtons = inlineButtons
+        this.execApprovals = execApprovals
+        this.errorPolicy = errorPolicy
+        this.autoTopicLabel = autoTopicLabel
         this.threadBindings = threadBindings
         this.media = media
         this.network = network

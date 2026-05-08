@@ -32,6 +32,19 @@ private func telegramApprovalSenderAllowed(user: GatewayUserSettings, senderId: 
     if (normalized.isEmpty()) {
         return false
     }
+    let approvalMode = user.telegram.execApprovals.enabled.trimAscii().toAsciiLower()
+    if (approvalMode == "false" || approvalMode == "off" || approvalMode == "disabled") {
+        return false
+    }
+    if (!user.telegram.execApprovals.approvers.isEmpty()) {
+        for (value in user.telegram.execApprovals.approvers) {
+            let v = value.trimAscii()
+            if (v == "*" || v == normalized || v == "telegram:${normalized}" || v == "tg:${normalized}" || v == "user:${normalized}") {
+                return true
+            }
+        }
+        return false
+    }
     for (value in user.telegram.allowFrom) {
         let v = value.trimAscii()
         if (v == "*" || v == normalized || v == "telegram:${normalized}" || v == "tg:${normalized}" || v == "user:${normalized}") {

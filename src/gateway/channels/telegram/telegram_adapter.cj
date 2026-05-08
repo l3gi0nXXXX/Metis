@@ -1,7 +1,7 @@
 package metis.gateway.channels.telegram
 
 import metis.core.{GatewayMediaGroupItem, gatewayMediaTranscribeAudioPathForRuntime, parseGatewayAudioParts, parseGatewayChatAction, parseGatewayDocumentParts, parseGatewayEditButtonsParts, parseGatewayEditMediaParts, parseGatewayEditText, parseGatewayInlineKeyboardParts, parseGatewayMediaGroupItems, parseGatewayPhotoParts, parseGatewayPinAction, parseGatewayReactionRemove, parseGatewayReactionStatus, parseGatewayReactionToken, parseGatewayStickerFileId, parseGatewayTopicCreateText, parseGatewayTopicEditText, parseGatewayVideoNoteFileId, parseGatewayVideoParts, parseGatewayVoiceParts}
-import metis.gateway.core.{ChannelAdapter, gatewayOpenClawPluginSidecarCommandCatalogForMenu}
+import metis.gateway.core.{ChannelAdapter, gatewayOpenClawPluginSidecarApplyCurrentMessageReceivedHook, gatewayOpenClawPluginSidecarCommandCatalogForMenu}
 import metis.gateway.model.*
 import metis.io.PrintUtils
 import metis.core.config.CliConfig
@@ -622,18 +622,23 @@ public class TelegramAdapter <: ChannelAdapter {
                 this.lastSendError = this.payloadValidationError(payload)
                 return ""
             }
-        if (this.payloadIsInlineKeyboard(payload) && !this.config.actions.inlineKeyboard) {
-            this.lastSendError = "telegram inlineKeyboard action is disabled"
-            return ""
-        }
-        if (this.payloadIsDraft(payload) && !this.config.actions.editMessage) {
-            this.lastSendError = "telegram draft preview requires editMessage action"
-            return ""
-        }
-        if (this.payloadIsApproval(payload) && !this.config.actions.inlineKeyboard) {
-            this.lastSendError = "telegram approval buttons require inlineKeyboard action"
-            return ""
-        }
+            if (this.payloadIsInlineKeyboard(payload) && !this.config.actions.inlineKeyboard) {
+                this.lastSendError = "telegram inlineKeyboard action is disabled"
+                return ""
+            }
+            if ((this.payloadIsInlineKeyboard(payload) || this.payloadIsApproval(payload) || this.payloadIsEditButtons(payload)) &&
+                !this.inlineButtonsAllowedForPeer(message.peerId)) {
+                this.lastSendError = "telegram inline button scope blocks peer"
+                return ""
+            }
+            if (this.payloadIsDraft(payload) && !this.config.actions.editMessage) {
+                this.lastSendError = "telegram draft preview requires editMessage action"
+                return ""
+            }
+            if (this.payloadIsApproval(payload) && !this.config.actions.inlineKeyboard) {
+                this.lastSendError = "telegram approval buttons require inlineKeyboard action"
+                return ""
+            }
             if (this.payloadIsSticker(payload) && !this.config.actions.sticker) {
                 this.lastSendError = "telegram sticker action is disabled"
                 return ""
@@ -1005,6 +1010,7 @@ public class TelegramAdapter <: ChannelAdapter {
         }
         try {
             if (let Some(inbound) <- this.mapWebhookToInbound(root, payload)) {
+                this.applyTelegramMessageReceivedHook(inbound, accepted: true, reason: "", raw: payload)
                 synchronized(this.queueMutex) {
                     this.inboundQueue.add(inbound)
                 }
@@ -1021,6 +1027,7 @@ public class TelegramAdapter <: ChannelAdapter {
                 this.completeUpdateProcessing(updateId)
                 return "{\"ok\":true}"
             }
+            this.applyIgnoredTelegramMessageReceivedHook(root, payload)
             this.completeUpdateProcessing(updateId)
             "{\"ok\":true,\"ignored\":true}"
         } catch (e: Exception) {
@@ -1705,6 +1712,7 @@ public class TelegramAdapter <: ChannelAdapter {
                 mediaContext.put("context", context)
             }
         }
+        this.attachTelegramRouteConfigContext(mediaContext, peerId, senderId, chatType)
         let mentioned = this.detectMentionInMessage(msg, text)
         match (chatType) {
             case ChatType.Group =>
@@ -4489,6 +4497,9 @@ public class TelegramAdapter <: ChannelAdapter {
                 ("subagents", "Manage subagents"),
                 ("sessions", "Manage sessions"),
                 ("session", "Show current session"),
+                ("focus", "Bind this conversation to a session"),
+                ("unfocus", "Remove this conversation binding"),
+                ("agents", "Show bound sessions"),
                 ("new", "Start new session"),
                 ("reset", "Reset session"),
                 ("compact", "Compact session"),
@@ -6316,6 +6327,42 @@ public class TelegramAdapter <: ChannelAdapter {
         false
     }
 
+    private func inlineButtonsAllowedForPeer(peerId: String): Bool {
+        let scope = this.config.inlineButtons.scope.trimAscii().toAsciiLower()
+        let peer = peerId.trimAscii()
+        if (scope == "off" || scope == "disabled" || scope == "false") {
+            return false
+        }
+        if (scope == "all" || scope.isEmpty()) {
+            return true
+        }
+        if (scope == "dm" || scope == "direct") {
+            return peer.startsWith("user:")
+        }
+        if (scope == "group" || scope == "groups") {
+            return peer.startsWith("group:")
+        }
+        if (scope == "allowlist") {
+            if (this.config.inlineButtons.allowlist.isEmpty()) {
+                return true
+            }
+            for (raw in this.config.inlineButtons.allowlist) {
+                let item = raw.trimAscii()
+                if (item == "*" || item == peer) {
+                    return true
+                }
+                if (item.startsWith("tg:") && item["tg:".size..].trimAscii() == peer) {
+                    return true
+                }
+                if (item.startsWith("telegram:") && item["telegram:".size..].trimAscii() == peer) {
+                    return true
+                }
+            }
+            return false
+        }
+        true
+    }
+
     private func reactionInboundThreadId(peerId: String): Option<String> {
         match (peerId.indexOf(":topic:")) {
             case Some(idx) => Some(peerId[idx + ":topic:".size..].trimAscii())
@@ -6635,6 +6682,55 @@ public class TelegramAdapter <: ChannelAdapter {
         this.lastInboundPeerId = peerId.trimAscii()
         this.lastInboundSenderId = senderId.trimAscii()
         this.lastInboundMessageIdForPolicy = messageId.trimAscii()
+    }
+
+    private func applyTelegramMessageReceivedHook(
+        inbound: InboundMessage,
+        accepted!: Bool,
+        reason!: String,
+        raw!: String
+    ): Unit {
+        let _ = gatewayOpenClawPluginSidecarApplyCurrentMessageReceivedHook(
+            "telegram",
+            this.effectiveAccountId(),
+            inbound.peerId,
+            inbound.senderId,
+            inbound.messageId,
+            inbound.text,
+            accepted,
+            reason,
+            raw
+        )
+    }
+
+    private func applyIgnoredTelegramMessageReceivedHook(root: JsonObject, raw: String): Unit {
+        let msg = match (this.pickPrimaryUpdateObject(root)) {
+            case Some(v) => v
+            case None => return
+        }
+        let messageId = this.readIntStringField(msg, "message_id")
+        if (messageId.trimAscii().isEmpty()) {
+            return
+        }
+        let mediaInfo = this.readTelegramMediaInfo(msg)
+        let text = this.normalizeInboundTelegramCommandText(this.readInboundTelegramText(msg, mediaInfo: mediaInfo))
+        let chat = this.readObjectField(msg, "chat")
+        let from = this.readObjectField(msg, "from")
+        let threadIdRaw = this.readIntStringField(msg, "message_thread_id")
+        let peerId = this.telegramPeerId(chat, threadId: threadIdRaw)
+        let senderId = this.readIntStringField(from, "id")
+        let reason = if (this.lastInboundReason.trimAscii().isEmpty()) { "ignored" } else { this.lastInboundReason.trimAscii() }
+        let _ = gatewayOpenClawPluginSidecarApplyCurrentMessageReceivedHook(
+            "telegram",
+            this.effectiveAccountId(),
+            peerId,
+            senderId,
+            messageId,
+            text,
+            false,
+            reason,
+            raw
+        )
     }
 
     private func detectMentionInMessage(msg: JsonObject, text: String): Bool {
@@ -7040,6 +7136,80 @@ public class TelegramAdapter <: ChannelAdapter {
                 }
             case None => return None
         }
+    }
+
+    private func resolveDirectRouteEntry(peerId: String, senderId: String): Option<JsonObject> {
+        match (this.config.dms) {
+            case Some(dms) =>
+                for (key in [senderId.trimAscii(), peerId.trimAscii(), "*"]) {
+                    if (key.isEmpty()) {
+                        continue
+                    }
+                    match (this.readObjectFieldOpt(dms, key)) {
+                        case Some(v) => return Some(v)
+                        case None => ()
+                    }
+                }
+            case None => ()
+        }
+        this.config.direct
+    }
+
+    private func copyTelegramRouteConfigFields(target: JsonObject, entry: JsonObject): Unit {
+        let agentId = this.readStringField(entry, "agentId").trimAscii()
+        if (!agentId.isEmpty()) {
+            target.put("agentId", JsonString(agentId))
+        }
+        let systemPrompt = this.readStringField(entry, "systemPrompt").trimAscii()
+        if (!systemPrompt.isEmpty()) {
+            target.put("systemPrompt", JsonString(systemPrompt))
+        }
+        let skills = this.readStringArrayField(entry, "skills")
+        if (!skills.isEmpty()) {
+            target.put("skills", skills.toJsonValue())
+        }
+        match (this.readBoolFieldOpt(entry, "disableAudioPreflight")) {
+            case Some(v) => target.put("disableAudioPreflight", v.toJsonValue())
+            case None => ()
+        }
+    }
+
+    private func telegramRouteConfigFor(peerId: String, senderId: String, chatType: ChatType): JsonObject {
+        let out = JsonObject()
+        match (chatType) {
+            case ChatType.Direct =>
+                match (this.resolveDirectRouteEntry(peerId, senderId)) {
+                    case Some(entry) => this.copyTelegramRouteConfigFields(out, entry)
+                    case None => ()
+                }
+            case ChatType.Group =>
+                let groupEntry = this.resolveGroupEntry(peerId)
+                match (groupEntry) {
+                    case Some(entry) => this.copyTelegramRouteConfigFields(out, entry)
+                    case None => ()
+                }
+                match (this.resolveTopicEntry(peerId, groupEntry)) {
+                    case Some(entry) => this.copyTelegramRouteConfigFields(out, entry)
+                    case None => ()
+                }
+        }
+        out
+    }
+
+    private func attachTelegramRouteConfigContext(mediaContext: JsonObject, peerId: String, senderId: String, chatType: ChatType): Unit {
+        let route = this.telegramRouteConfigFor(peerId, senderId, chatType)
+        if (route.size() == 0) {
+            return
+        }
+        let context = match (mediaContext.get("context")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        context.put("telegramRoute", route)
+        mediaContext.put("channel", JsonString("telegram"))
+        mediaContext.put("accountId", JsonString(this.effectiveAccountId()))
+        mediaContext.put("peerId", JsonString(peerId.trimAscii()))
+        mediaContext.put("context", context)
     }
 
     private func telegramPeerId(chat: JsonObject, threadId!: String = ""): String {

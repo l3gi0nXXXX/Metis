@@ -14,10 +14,12 @@ import metis.gateway.core.{
     gatewayChannelRuntimeMarkStarting,
     gatewayChannelRuntimePrimeAccount,
     gatewayChannelRuntimeRegisterAccount,
-    gatewayPluginManagerSummary
+    gatewayPluginManagerSummary,
+    setGatewayOpenClawPluginSidecarRunnerForTest
 }
 
 import std.convert.Parsable
+import std.collection.ArrayList
 import std.env.{getVariable, setVariable}
 import std.fs.{Directory, Path, remove}
 import std.unittest.testmacro.*
@@ -45,6 +47,20 @@ private func channelsTestInt(obj: JsonObject, key: String): Int64 {
             try { Int64.parse(v.toJsonString()) } catch (_: Exception) { 0 }
         case None => 0
     }
+}
+
+private func channelsRowsContainStringField(rows: JsonArray, key: String, value: String): Bool {
+    for (i in 0..rows.size()) {
+        try {
+            let row = rows[i].asObject()
+            if (channelsTestString(row, key) == value) {
+                return true
+            }
+        } catch (_: Exception) {
+            ()
+        }
+    }
+    false
 }
 
 private func withGatewayChannelsTestHome<T>(block: () -> T): T {
@@ -230,6 +246,8 @@ public class GatewayServerMethodsChannelsTest {
         @Expect(directory.get("targets").isSome(), true)
         @Expect(directory.get("rows").isSome(), true)
         @Expect(directory.get("aggregationSources").isSome(), true)
+        let accountInspect = channel.get("accountInspect").getOrThrow().asObject()
+        @Expect(accountInspect.get("tokenRedacted").getOrThrow().asBool().getValue(), true)
         let accountOps = channel.get("accountOps").getOrThrow().asObject()
         @Expect(channelsTestBool(accountOps, "setup"), true)
         @Expect(channelsTestBool(accountOps, "probe"), true)
@@ -244,6 +262,7 @@ public class GatewayServerMethodsChannelsTest {
         var user = GatewayUserSettings()
         user.telegram.enabled = true
         user.telegram.botToken = "telegram-token"
+        user.telegram.defaultAccount = "main"
         user.telegram.defaultTo = "user:8734062810"
         let groups = JsonObject()
         let groupRule = JsonObject()
@@ -253,7 +272,13 @@ public class GatewayServerMethodsChannelsTest {
         groups.put("-1001234567890", groupRule)
         user.telegram.groups = Some(groups)
         let accounts = JsonObject()
-        accounts.put("main", JsonObject())
+        let mainAccount = JsonObject()
+        mainAccount.put("botToken", JsonString("secret-main-token"))
+        mainAccount.put("allowFrom", JsonArray([JsonString("8734062810")]))
+        mainAccount.put("media", JsonObject())
+        mainAccount.put("network", JsonObject())
+        accounts.put("main", mainAccount)
+        accounts.put("work", JsonObject())
         user.telegram.accounts = Some(accounts)
 
         let channel = gatewayChannelGetJson(user, "telegram")
@@ -264,10 +289,20 @@ public class GatewayServerMethodsChannelsTest {
         @Expect(targets.contains("user:8734062810"), true)
         @Expect(targets.contains("group:-1001234567890"), true)
         @Expect(targets.contains("group:-1001234567890:topic:42"), true)
-        let rows = directory.get("rows").getOrThrow().asArray().toJsonString()
+        let rowsValue = directory.get("rows").getOrThrow().asArray()
+        @Expect(channelsRowsContainStringField(rowsValue, "accountId", "main"), true)
+        let rows = rowsValue.toJsonString()
         @Expect(rows.contains("8734062810"), true)
         @Expect(rows.contains("-1001234567890"), true)
         @Expect(rows.contains("topic:42"), true)
+        let inspect = channel.get("accountInspect").getOrThrow().asObject()
+        @Expect(channelsTestString(inspect, "defaultAccountId"), "main")
+        let inspectRows = inspect.get("accounts").getOrThrow().asArray()
+        @Expect(channelsRowsContainStringField(inspectRows, "accountId", "main"), true)
+        @Expect(channelsRowsContainStringField(inspectRows, "accountId", "work"), true)
+        @Expect(inspect.toJsonString().contains("secret-main-token"), false)
+        @Expect(inspect.toJsonString().contains("account-botToken"), true)
+        @Expect(inspect.toJsonString().contains("hasMediaOverride"), true)
     }
 
     @TestCase
@@ -739,11 +774,23 @@ public class GatewayServerMethodsChannelsTest {
 
     @TestCase
     public func channelsSendUsesNativeTelegramAdapterForPhotoPayload(): Unit {
+        let hookMethods = ArrayList<String>()
         setTelegramTransportRunnerForTest(Some({ request: TelegramTransportRequest =>
             if (request.context.startsWith("send:photo") && request.url.contains("/sendPhoto")) {
                 return TelegramTransportResponse(true, body: "{\"ok\":true,\"result\":{\"message_id\":8801}}", outcome: "ok")
             }
             TelegramTransportResponse(true, body: "{\"ok\":true,\"result\":true}", outcome: "ok")
+        }))
+        setGatewayOpenClawPluginSidecarRunnerForTest(Some({ method: String, payload: JsonObject =>
+            hookMethods.add(method)
+            let out = JsonObject()
+            out.put("ok", true.toJsonValue())
+            out.put("status", JsonString("ok"))
+            if (method == "hook.message_sending") {
+                out.put("cancelled", false.toJsonValue())
+                out.put("text", payload.get("text").getOrThrow())
+            }
+            out
         }))
         try {
             var user = GatewayUserSettings()
@@ -764,8 +811,11 @@ public class GatewayServerMethodsChannelsTest {
             @Expect(channelsTestString(response, "channelId"), "telegram")
             @Expect(channelsTestString(response, "compatibilityMode"), "native-cangjie")
             @Expect(channelsTestString(response, "messageId"), "8801")
+            @Expect(hookMethods.contains("hook.message_sending"), true)
+            @Expect(hookMethods.contains("hook.message_sent"), true)
         } finally {
             setTelegramTransportRunnerForTest(None)
+            setGatewayOpenClawPluginSidecarRunnerForTest(None)
         }
     }
 
