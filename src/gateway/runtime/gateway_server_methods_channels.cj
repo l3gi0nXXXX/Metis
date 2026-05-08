@@ -1262,6 +1262,40 @@ private func gatewayChannelActionByNativeAdapter(
     Some(result)
 }
 
+private func gatewayTelegramGetChatByNativeAdapter(user: GatewayUserSettings, request: GatewayRpcRequest): JsonObject {
+    let cfg = buildGatewayConfigFromUserSettings(user)
+    let accountId = gatewayRpcStringParam(request, ["accountId"], cfg.telegram.accountId)
+    let chatId = gatewayRpcStringParam(request, ["chatId", "chat_id", "target", "to"], "")
+    let result = JsonObject()
+    result.put("channelId", JsonString("telegram"))
+    result.put("channel", JsonString("telegram"))
+    result.put("accountId", JsonString(accountId))
+    result.put("runtimeKind", JsonString("native-cangjie"))
+    result.put("compatibilityMode", JsonString("native-cangjie"))
+    result.put("botApiMethod", JsonString("getChat"))
+    result.put("target", JsonString(chatId))
+    if (chatId.trimAscii().isEmpty()) {
+        result.put("ok", false.toJsonValue())
+        result.put("status", JsonString("error"))
+        result.put("reason", JsonString("missing-chat-id"))
+        return result
+    }
+    let adapter = TelegramAdapter(config: cfg.telegram)
+    let chat = adapter.resolveTelegramChatForGatewayRpc(chatId)
+    let ok = gatewayBindingBool(chat, "ok")
+    result.put("ok", ok.toJsonValue())
+    result.put("status", JsonString(if (ok) { "ok" } else { "error" }))
+    result.put("chat", chat)
+    match (chat.get("chatId")) {
+        case Some(v) => result.put("chatId", v)
+        case None => ()
+    }
+    if (!ok) {
+        result.put("reason", chat.get("error") ?? JsonString("getChat failed"))
+    }
+    return result
+}
+
 private func gatewayBindingBool(obj: JsonObject, key: String): Bool {
     match (obj.get(key)) {
         case Some(v) =>
@@ -2097,6 +2131,14 @@ public func handleGatewayChannelsFamily(method: String, user: GatewayUserSetting
             case None => GatewayRpcRequest(method)
         }
         return Some(GatewayRpcResponse(true, method, result: gatewayChannelActionByPlugin(user, requestValue, "send")))
+    }
+    if (method == "channels.telegram.getChat") {
+        gatewayEnsureChannelBootstrap(user)
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        return Some(GatewayRpcResponse(true, method, result: gatewayTelegramGetChatByNativeAdapter(user, requestValue)))
     }
     if (method == "channels.runtime") {
         gatewayEnsureChannelBootstrap(user)

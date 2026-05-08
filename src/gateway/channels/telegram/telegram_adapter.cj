@@ -836,6 +836,10 @@ public class TelegramAdapter <: ChannelAdapter {
         this.tryTelegramGetChat(chatId)
     }
 
+    public func resolveTelegramChatForGatewayRpc(chatId: String): JsonObject {
+        this.tryTelegramGetChat(chatId)
+    }
+
     public func debugTrustedLocalTelegramFilePathForTest(filePath: String): String {
         this.trustedLocalTelegramFilePath(filePath)
     }

@@ -1,7 +1,7 @@
 package metis.gateway.core
 
 import metis.core.renderGatewayTopicEditText
-import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager, cliSetupVisibleModelProviders}
+import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager, cliFindModelAuthChoicesForProvider, cliSetupVisibleModelProviders}
 import metis.gateway.model.*
 import metis.gateway.session.{GatewaySessionContext, gatewaySessionRequestFromInbound}
 import metis.gateway.tools.{gatewayHandleNativeCommandLine, gatewayHandleSubagentsCommandLine}
@@ -401,10 +401,16 @@ public class GatewayService {
             return true
         }
         if (text == "/model" || text.startsWith("/model ")) {
+            let modelArg = if (text.startsWith("/model ")) { text["/model ".size..].trimAscii() } else { "" }
+            let reply = if (modelArg.isEmpty()) {
+                this.renderTelegramModelsEntry(user, sessionKey, commandText: "/models")
+            } else {
+                this.applyTelegramModelSelection(modelArg, message.senderId, user, sessionKey)
+            }
             this.sendTextToPeerDetailed(
                 "telegram",
                 message.peerId,
-                this.renderTelegramModelsEntry(user, sessionKey, page: this.telegramModelsPageFromCommand(text.replace("/model", "/models"))),
+                reply,
                 replyToMessageId: message.replyTargetMessageId,
                 replyInThread: message.replyInThread,
                 accountId: accountId
@@ -512,7 +518,7 @@ public class GatewayService {
             this.sendTextToPeerDetailed(
                 "telegram",
                 message.peerId,
-                this.renderTelegramModelsEntry(user, sessionKey, page: this.telegramModelsPageFromCommand(text)),
+                this.renderTelegramModelsEntry(user, sessionKey, commandText: text),
                 replyToMessageId: message.replyTargetMessageId,
                 replyInThread: message.replyInThread,
                 accountId: accountId
@@ -536,7 +542,7 @@ public class GatewayService {
                 )
                 return true
             }
-            if (data.startsWith("models:set:")) {
+            if (data.startsWith("models:set:") || data.startsWith("models:setidx:")) {
                 let reply = this.resolveTelegramModelCallback(data, message.senderId, user, sessionKey)
                 this.sendTextToPeerDetailed(
                     "telegram",
@@ -548,8 +554,23 @@ public class GatewayService {
                 )
                 return true
             }
-            if (data.startsWith("models:page:")) {
-                let reply = this.renderTelegramModelsEntry(user, sessionKey, page: this.telegramModelsPageFromCallback(data))
+            if (data == "models:providers" || data.startsWith("models:page:")) {
+                let reply = this.renderTelegramModelsEntry(user, sessionKey, commandText: "/models")
+                this.sendTextToPeerDetailed(
+                    "telegram",
+                    message.peerId,
+                    reply,
+                    replyToMessageId: message.replyTargetMessageId,
+                    replyInThread: message.replyInThread,
+                    accountId: accountId
+                )
+                return true
+            }
+            if (data.startsWith("models:list:")) {
+                let parts = data.split(":")
+                let provider = if (parts.size >= 3) { parts[2] } else { "" }
+                let page = if (parts.size >= 4) { try { Int64.parse(parts[3].trimAscii()) } catch (_e: Exception) { 1 } } else { 1 }
+                let reply = this.renderTelegramModelsEntry(user, sessionKey, callbackProvider: provider, callbackPage: page)
                 this.sendTextToPeerDetailed(
                     "telegram",
                     message.peerId,
@@ -1674,18 +1695,6 @@ public class GatewayService {
         "{\"ok\":true,\"status\":\"ok\",\"action\":\"approvals\",\"message\":\"Telegram approvals are handled by native callback resolver. Use control-ui or Gateway approvals surface for the full pending approval list.\"}"
     }
 
-    private func telegramModelsPageFromCommand(text: String): Int64 {
-        let parts = text.trimAscii().split(" ")
-        if (parts.size >= 2) {
-            try { return Int64.parse(parts[1].trimAscii()) } catch (_e: Exception) { return 0 }
-        }
-        0
-    }
-
-    private func telegramModelsPageFromCallback(data: String): Int64 {
-        try { Int64.parse(data["models:page:".size..].trimAscii()) } catch (_e: Exception) { 0 }
-    }
-
     private func telegramSessionModelKey(sessionKey: String): String {
         "telegram:${sessionKey.trimAscii()}"
     }
@@ -1699,58 +1708,236 @@ public class GatewayService {
         user.channelModels.get("telegram") ?? ""
     }
 
-    private func renderTelegramModelsEntry(user: GatewayUserSettings, sessionKey: String, page!: Int64 = 0): String {
+    private func telegramModelProviderFromRef(modelRef: String): String {
+        let value = modelRef.trimAscii()
+        match (value.indexOf(":")) {
+            case Some(idx) => if (idx > 0) { return value[..idx].trimAscii().toAsciiLower() }
+            case None => ()
+        }
+        match (value.indexOf("/")) {
+            case Some(idx) => if (idx > 0) { return value[..idx].trimAscii().toAsciiLower() }
+            case None => ()
+        }
+        ""
+    }
+
+    private func telegramModelIdFromRef(modelRef: String): String {
+        let value = modelRef.trimAscii()
+        match (value.indexOf(":")) {
+            case Some(idx) => if (idx + 1 < value.size) { return value[idx + 1..].trimAscii() }
+            case None => ()
+        }
+        match (value.indexOf("/")) {
+            case Some(idx) => if (idx + 1 < value.size) { return value[idx + 1..].trimAscii() }
+            case None => ()
+        }
+        value
+    }
+
+    private func telegramNormalizeModelRef(raw: String): String {
+        let value = raw.trimAscii()
+        if (value.contains(":")) {
+            return value
+        }
+        match (value.indexOf("/")) {
+            case Some(idx) =>
+                if (idx > 0 && idx + 1 < value.size) {
+                    return "${value[..idx].trimAscii()}:${value[idx + 1..].trimAscii()}"
+                }
+            case None => ()
+        }
+        value
+    }
+
+    private func telegramAddModelCandidate(out: ArrayList<String>, provider: String, modelRef: String): Unit {
+        let modelProvider = this.telegramModelProviderFromRef(modelRef)
+        if (modelProvider != provider.trimAscii().toAsciiLower()) {
+            return
+        }
+        let modelId = this.telegramModelIdFromRef(modelRef)
+        if (!modelId.isEmpty() && !out.contains(modelId)) {
+            out.add(modelId)
+        }
+    }
+
+    private func telegramModelCandidatesForProvider(provider: String, current: String): Array<String> {
+        let normalizedProvider = provider.trimAscii().toAsciiLower()
+        let out = ArrayList<String>()
+        for (descriptor in cliSetupVisibleModelProviders()) {
+            if (descriptor.providerId == normalizedProvider) {
+                this.telegramAddModelCandidate(out, normalizedProvider, descriptor.defaultModelRef)
+            }
+        }
+        for (choice in cliFindModelAuthChoicesForProvider(normalizedProvider)) {
+            this.telegramAddModelCandidate(out, normalizedProvider, choice.defaultModelRef)
+        }
+        this.telegramAddModelCandidate(out, normalizedProvider, current)
+        out.toArray()
+    }
+
+    private func telegramModelCallbackFits(data: String): Bool {
+        data.trimAscii().size <= 64
+    }
+
+    private func telegramModelsProviderFromCommand(text: String): String {
+        let parts = text.trimAscii().split(" ")
+        if (parts.size >= 2) {
+            let candidate = parts[1].trimAscii()
+            try {
+                let _ = Int64.parse(candidate)
+                return ""
+            } catch (_e: Exception) {
+                return candidate.toAsciiLower()
+            }
+        }
+        ""
+    }
+
+    private func telegramModelsPageFromCommand(text: String): Int64 {
+        let parts = text.trimAscii().split(" ")
+        if (parts.size >= 3) {
+            try { return Int64.parse(parts[2].trimAscii()) } catch (_e: Exception) { return 1 }
+        }
+        if (parts.size >= 2) {
+            try { return Int64.parse(parts[1].trimAscii()) } catch (_e: Exception) { return 1 }
+        }
+        1
+    }
+
+    private func renderTelegramModelsEntry(
+        user: GatewayUserSettings,
+        sessionKey: String,
+        commandText!: String = "/models",
+        callbackProvider!: String = "",
+        callbackPage!: Int64 = 1
+    ): String {
         let current = this.telegramCurrentModelRef(user, sessionKey)
         let currentText = if (current.trimAscii().isEmpty()) { "global default" } else { current.trimAscii() }
         let providers = cliSetupVisibleModelProviders()
-        let pageSize: Int64 = 8
-        let total = Int64(providers.size)
-        let totalPages = if (total <= 0) { 1 } else { (total + pageSize - 1) / pageSize }
-        var effectivePage = page
-        if (effectivePage < 0) { effectivePage = 0 }
-        if (effectivePage >= totalPages) { effectivePage = totalPages - 1 }
+        let provider = if (!callbackProvider.trimAscii().isEmpty()) {
+            callbackProvider.trimAscii().toAsciiLower()
+        } else {
+            this.telegramModelsProviderFromCommand(commandText)
+        }
+        if (!provider.isEmpty()) {
+            return this.renderTelegramProviderModels(user, sessionKey, provider, if (callbackProvider.trimAscii().isEmpty()) { this.telegramModelsPageFromCommand(commandText) } else { callbackPage })
+        }
         if (!user.telegram.actions.inlineKeyboard || !user.telegram.actions.callbackQuery) {
             let lines = ArrayList<String>()
-            lines.add("Telegram model")
+            lines.add("Telegram models")
             lines.add("Current: ${currentText}")
-            lines.add("Page: ${effectivePage + 1}/${totalPages}")
-            let start = effectivePage * pageSize
-            let end = if (start + pageSize > total) { total } else { start + pageSize }
-            for (idx in start..end) {
-                let descriptor = providers[idx]
-                let mark = if (descriptor.defaultModelRef == current.trimAscii()) { " *current*" } else { "" }
-                lines.add("- ${descriptor.displayName}: ${descriptor.defaultModelRef}${mark}")
+            for (descriptor in providers) {
+                let models = this.telegramModelCandidatesForProvider(descriptor.providerId, current)
+                let currentMark = if (this.telegramModelProviderFromRef(current) == descriptor.providerId) { " current" } else { "" }
+                lines.add("- ${descriptor.providerId} (${models.size}) default=${descriptor.defaultModelRef}${currentMark}")
             }
+            lines.add("Use: /models <provider>")
+            lines.add("Switch: /model <provider/model>")
             return String.join(lines.toArray(), delimiter: "\n")
         }
         let lines = ArrayList<String>()
         lines.add("[inline-keyboard]")
-            lines.add("text=Telegram model\nCurrent: ${currentText}\nPage: ${effectivePage + 1}/${totalPages}\nSelect a model for this Telegram session.")
-        let start = effectivePage * pageSize
-        let end = if (start + pageSize > total) { total } else { start + pageSize }
-        for (idx in start..end) {
+        lines.add("text=Telegram models\nCurrent: ${currentText}\nSelect a provider.")
+        for (idx in 0..providers.size) {
             let descriptor = providers[idx]
-            let mark = if (descriptor.defaultModelRef == current.trimAscii()) { " ✓" } else { "" }
-            lines.add("button=${descriptor.displayName}${mark}|callback:models:set:${descriptor.defaultModelRef}")
-        }
-        if (totalPages > 1) {
-            let prev = if (effectivePage <= 0) { totalPages - 1 } else { effectivePage - 1 }
-            let next = if (effectivePage + 1 >= totalPages) { 0 } else { effectivePage + 1 }
-            lines.add("button=Prev|callback:models:page:${prev}")
-            lines.add("button=Next|callback:models:page:${next}")
+            let models = this.telegramModelCandidatesForProvider(descriptor.providerId, current)
+            let currentMark = if (this.telegramModelProviderFromRef(current) == descriptor.providerId) { " · current" } else { "" }
+            let data = "models:list:${descriptor.providerId}:1"
+            if (this.telegramModelCallbackFits(data)) {
+                lines.add("button=${descriptor.providerId} (${models.size})${currentMark}|callback:${data}")
+            }
         }
         String.join(lines.toArray(), delimiter: "\n")
     }
 
+    private func renderTelegramProviderModels(user: GatewayUserSettings, sessionKey: String, provider: String, page: Int64): String {
+        let normalizedProvider = provider.trimAscii().toAsciiLower()
+        let current = this.telegramCurrentModelRef(user, sessionKey)
+        let currentText = if (current.trimAscii().isEmpty()) { "global default" } else { current.trimAscii() }
+        let models = this.telegramModelCandidatesForProvider(normalizedProvider, current)
+        if (models.isEmpty()) {
+            return "Unknown provider or no models: ${normalizedProvider}\nUse: /models"
+        }
+        let pageSize: Int64 = 8
+        let total = Int64(models.size)
+        let totalPages = if (total <= 0) { 1 } else { (total + pageSize - 1) / pageSize }
+        var effectivePage = page
+        if (effectivePage < 1) { effectivePage = 1 }
+        if (effectivePage > totalPages) { effectivePage = totalPages }
+        if (!user.telegram.actions.inlineKeyboard || !user.telegram.actions.callbackQuery) {
+            let lines = ArrayList<String>()
+            lines.add("Models (${normalizedProvider}) - ${total} available")
+            lines.add("Current: ${currentText}")
+            lines.add("Page: ${effectivePage}/${totalPages}")
+            let start = (effectivePage - 1) * pageSize
+            let end = if (start + pageSize > total) { total } else { start + pageSize }
+            for (idx in start..end) {
+                let model = models[idx]
+                let ref = "${normalizedProvider}:${model}"
+                let mark = if (ref == current.trimAscii()) { " *current*" } else { "" }
+                lines.add("- ${normalizedProvider}/${model}${mark}")
+            }
+            lines.add("Back: /models")
+            lines.add("Switch: /model <provider/model>")
+            return String.join(lines.toArray(), delimiter: "\n")
+        }
+        let lines = ArrayList<String>()
+        lines.add("[inline-keyboard]")
+        lines.add("text=Models (${normalizedProvider}) - ${total} available\nCurrent: ${currentText}\nPage: ${effectivePage}/${totalPages}")
+        let start = (effectivePage - 1) * pageSize
+        let end = if (start + pageSize > total) { total } else { start + pageSize }
+        for (idx in start..end) {
+            let model = models[idx]
+            let ref = "${normalizedProvider}:${model}"
+            let mark = if (ref == current.trimAscii()) { " ✓" } else { "" }
+            let data = "models:setidx:${normalizedProvider}:${effectivePage}:${idx - start}"
+            if (this.telegramModelCallbackFits(data)) {
+                lines.add("button=${model}${mark}|callback:${data}")
+            }
+        }
+        if (totalPages > 1) {
+            if (effectivePage > 1) {
+                let prevData = "models:list:${normalizedProvider}:${effectivePage - 1}"
+                if (this.telegramModelCallbackFits(prevData)) { lines.add("button=Prev|callback:${prevData}") }
+            }
+            if (effectivePage < totalPages) {
+                let nextData = "models:list:${normalizedProvider}:${effectivePage + 1}"
+                if (this.telegramModelCallbackFits(nextData)) { lines.add("button=Next|callback:${nextData}") }
+            }
+        }
+        lines.add("button=Back|callback:models:providers")
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
     private func resolveTelegramModelCallback(data: String, senderId: String, user: GatewayUserSettings, sessionKey: String): String {
+        var modelRef = ""
+        if (data.startsWith("models:setidx:")) {
+            let parts = data.split(":")
+            if (parts.size >= 5) {
+                let provider = parts[2].trimAscii().toAsciiLower()
+                let page = try { Int64.parse(parts[3].trimAscii()) } catch (_e: Exception) { 1 }
+                let offset = try { Int64.parse(parts[4].trimAscii()) } catch (_e: Exception) { -1 }
+                let models = this.telegramModelCandidatesForProvider(provider, this.telegramCurrentModelRef(user, sessionKey))
+                let idx = (if (page < 1) { 1 } else { page } - 1) * 8 + offset
+                if (idx >= 0 && idx < Int64(models.size)) {
+                    modelRef = "${provider}:${models[idx]}"
+                }
+            }
+        } else if (data.startsWith("models:set:")) {
+            modelRef = data["models:set:".size..].trimAscii()
+        }
+        return this.applyTelegramModelSelection(modelRef, senderId, user, sessionKey)
+    }
+
+    private func applyTelegramModelSelection(rawModelRef: String, senderId: String, user: GatewayUserSettings, sessionKey: String): String {
         if (!this.telegramSenderCanOperate(senderId, user)) {
             return "Model switch denied: sender ${senderId} is not authorized."
         }
         if (!user.telegram.configWrites) {
             return "Model switch denied: gateway.telegram.configWrites is disabled."
         }
-        let modelRef = data["models:set:".size..].trimAscii()
-        if (modelRef.isEmpty() || modelRef.size > 48 || !modelRef.contains(":")) {
+        let modelRef = this.telegramNormalizeModelRef(rawModelRef)
+        if (modelRef.isEmpty() || modelRef.size > 128 || !modelRef.contains(":")) {
             return "Model switch failed: invalid model reference."
         }
         var next = user

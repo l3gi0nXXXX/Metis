@@ -169,9 +169,9 @@ public class GatewayServiceTelegramNativeTest {
 
             let text = adapter.sentText(0)
             @Expect(text.contains("[inline-keyboard]"), true)
-            @Expect(text.contains("callback:models:set:"), true)
-            @Expect(text.contains("Telegram model"), true)
-            @Expect(text.contains("Page:"), true)
+            @Expect(text.contains("callback:models:list:"), true)
+            @Expect(text.contains("Telegram models"), true)
+            @Expect(text.contains("Current:"), true)
         }
     }
 
@@ -193,10 +193,35 @@ public class GatewayServiceTelegramNativeTest {
 
             let text = adapter.sentText(0)
             @Expect(text.contains("[inline-keyboard]"), true)
-            @Expect(text.contains("callback:models:set:"), true)
-            @Expect(text.contains("Telegram model"), true)
+            @Expect(text.contains("callback:models:list:"), true)
+            @Expect(text.contains("Telegram models"), true)
             let updated = CliSettingManager.readGatewaySettings()
             @Expect(updated.channelModels.get("telegram") ?? "", "")
+        }
+    }
+
+    @TestCase
+    public func modelsProviderCommandShowsEightPerPageWithBackAndSetidxCallbacks(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["8734062810"]
+            user.telegram.actions.inlineKeyboard = true
+            user.telegram.actions.callbackQuery = true
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/models qwen")
+            service.processOnce()
+
+            let text = adapter.sentText(0)
+            @Expect(text.contains("Models (qwen)"), true)
+            @Expect(text.contains("available"), true)
+            @Expect(text.contains("callback:models:setidx:qwen:1:"), true)
+            @Expect(text.contains("callback:models:providers"), true)
+            @Expect(text.contains("button=Back"), true)
         }
     }
 
@@ -218,6 +243,46 @@ public class GatewayServiceTelegramNativeTest {
             let updated = CliSettingManager.readGatewaySettings()
             @Expect(updated.channelModels.get("telegram") ?? "", "")
             @Expect(updated.channelModels.get("telegram:telegram:direct:8734062810") ?? "", "qwen:qwen3.5-plus")
+        }
+    }
+
+    @TestCase
+    public func modelSetidxCallbackPersistsTelegramSessionModelForAuthorizedSender(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["tg:8734062810"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("[telegram-callback]\nid=cb-setidx\nmessageId=1\ndata=models:setidx:qwen:1:0\nby=8734062810")
+            service.processOnce()
+
+            @Expect(adapter.sentText(0).contains("Telegram session model switched to qwen:qwen3.5-plus"), true)
+            let updated = CliSettingManager.readGatewaySettings()
+            @Expect(updated.channelModels.get("telegram:telegram:direct:8734062810") ?? "", "qwen:qwen3.5-plus")
+        }
+    }
+
+    @TestCase
+    public func modelSlashCommandUsesSameSessionOverrideWritePath(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["tg:8734062810"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/model qwen/qwen3.6-plus")
+            service.processOnce()
+
+            @Expect(adapter.sentText(0).contains("Telegram session model switched to qwen:qwen3.6-plus"), true)
+            let updated = CliSettingManager.readGatewaySettings()
+            @Expect(updated.channelModels.get("telegram:telegram:direct:8734062810") ?? "", "qwen:qwen3.6-plus")
         }
     }
 
