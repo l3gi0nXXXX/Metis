@@ -6,7 +6,7 @@ import metis.gateway.model.{ChannelPolicyConfig, ChannelType, ChatType, InboundM
 import magic.jsonable.*
 
 import std.collection.{ArrayList, HashMap}
-import std.env.setVariable
+import std.env.{getVariable, setVariable}
 import std.fs.{Directory, File, Path, remove}
 import std.sync.Mutex
 import std.time.DateTime
@@ -107,7 +107,9 @@ private func withGatewayTelegramNativeTestHome<T>(block: () -> T): T {
         let testHome = "/tmp/metis-gateway-telegram-native-test-home"
         try { remove(Path(testHome), recursive: true) } catch (_: Exception) { () }
         Directory.create(testHome, recursive: true)
+        let oldHome = getVariable("METIS_HOME")
         setVariable("METIS_HOME", testHome)
+        CliConfig.invalidatePathCache()
         MetisConfigManager.invalidate()
         CliSettingManager.invalidate()
         MetisConfigManager.writeRoot(gatewayTelegramNativeTestConfigRoot())
@@ -116,6 +118,11 @@ private func withGatewayTelegramNativeTestHome<T>(block: () -> T): T {
             return block()
         } finally {
             setGatewayOpenClawPluginSidecarRunnerForTest(None)
+            match (oldHome) {
+                case Some(value) => setVariable("METIS_HOME", value)
+                case None => setVariable("METIS_HOME", "")
+            }
+            CliConfig.invalidatePathCache()
             try { remove(Path(testHome), recursive: true) } catch (_: Exception) { () }
             MetisConfigManager.invalidate()
             CliSettingManager.invalidate()
@@ -678,6 +685,150 @@ public class GatewayServiceTelegramNativeTest {
             service.processOnce()
             @Expect(adapter.sentText(2).contains("\"action\":\"unfocus\""), true)
             @Expect(gatewayTelegramThreadBindingResolve("telegram", "default", "8734062810").size(), 0)
+        }
+    }
+
+    @TestCase
+    public func t51CatalogCoversOpenClawNativeCommandNames(): Unit {
+        let expected = [
+            "help", "commands", "tools", "skill", "status", "tasks", "allowlist", "approve",
+            "context", "btw", "export-session", "tts", "whoami", "session", "subagents",
+            "acp", "focus", "unfocus", "agents", "kill", "steer", "config", "mcp",
+            "plugins", "debug", "usage", "stop", "restart", "activation", "send", "reset",
+            "new", "compact", "think", "verbose", "fast", "reasoning", "elevated", "exec",
+            "model", "models", "queue", "bash"
+        ]
+        for (command in expected) {
+            @Expect(gatewayFindTelegramNativeCommandSpec(command).isSome(), true)
+        }
+        @Expect(gatewayFindTelegramNativeCommandSpec("tell").getOrThrow().command, "steer")
+        @Expect(gatewayFindTelegramNativeCommandSpec("elev").getOrThrow().command, "elevated")
+    }
+
+    @TestCase
+    public func t51CommandsOutputShowsImplementedStubAndNotApplicable(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/commands")
+            service.processOnce()
+
+            let root = JsonValue.fromStr(adapter.sentText(0)).asObject()
+            let native = root.get("native").getOrThrow().asArray()
+            @Expect(adapter.sentText(0).contains("\"/bash\""), true)
+            @Expect(adapter.sentText(0).contains("\"status\": \"stub\""), true)
+            @Expect(adapter.sentText(0).contains("\"status\": \"not_applicable\""), true)
+            @Expect(native.size() >= 43, true)
+        }
+    }
+
+    @TestCase
+    public func t51ReadOnlyNativeCommandsReturnRealStateWithoutModelPath(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            for (command in ["/tasks", "/context", "/usage status", "/plugins list", "/mcp show", "/config show", "/debug show", "/export-session"]) {
+                adapter.queue(command)
+            }
+            service.processOnce()
+
+            @Expect(JsonValue.fromStr(adapter.sentText(0)).asObject().get("action").getOrThrow().asString().getValue(), "tasks")
+            @Expect(JsonValue.fromStr(adapter.sentText(1)).asObject().get("sessionKey").isSome(), true)
+            @Expect(JsonValue.fromStr(adapter.sentText(2)).asObject().get("field").getOrThrow().asString().getValue(), "responseUsage")
+            @Expect(JsonValue.fromStr(adapter.sentText(3)).asObject().get("commands").isSome(), true)
+            @Expect(JsonValue.fromStr(adapter.sentText(4)).asObject().get("mcpServers").isSome(), true)
+            @Expect(JsonValue.fromStr(adapter.sentText(5)).asObject().get("keys").isSome(), true)
+            @Expect(JsonValue.fromStr(adapter.sentText(6)).asObject().get("status").getOrThrow().asString().getValue(), "ok")
+            let exported = JsonValue.fromStr(adapter.sentText(7)).asObject()
+            @Expect(exported.get("path").getOrThrow().asString().getValue().contains("/tmp/metis-gateway-telegram-native-test-home"), true)
+        }
+    }
+
+    @TestCase
+    public func t51SessionRuntimeCommandsMutateSessionIndexOrTranscript(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/think high")
+            adapter.queue("/verbose on")
+            adapter.queue("/fast on")
+            adapter.queue("/send off")
+            adapter.queue("/new")
+            adapter.queue("/compact")
+            service.processOnce()
+
+            @Expect(adapter.sentText(0).contains("\"status\": \"ok\""), true)
+            @Expect(adapter.sentText(4).contains("\"status\": \"ok\""), true)
+            @Expect(adapter.sentText(4).contains("accepted"), false)
+            let store = gatewaySessionStoreForUser(CliSettingManager.readGatewaySettings())
+            let indexRoot = store.readSessionsIndexRoot()
+            let entry = indexRoot.get("telegram:direct:8734062810").getOrThrow().asObject()
+            @Expect(entry.get("thinkingLevel").getOrThrow().asString().getValue(), "high")
+            @Expect(entry.get("verboseLevel").getOrThrow().asString().getValue(), "on")
+            @Expect(entry.get("fastMode").getOrThrow().asBool().getValue(), true)
+            @Expect(entry.get("sendPolicy").getOrThrow().asString().getValue(), "off")
+        }
+    }
+
+    @TestCase
+    public func t51DangerousCommandsRejectUnauthorizedAndDoNotExecute(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["tg:8734062810"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/bash echo should-not-run", sender: "123")
+            adapter.queue("/config set gateway.telegram.defaultTo user:1", sender: "123")
+            service.processOnce()
+
+            @Expect(adapter.sentText(0).contains("\"status\": \"rejected\""), true)
+            @Expect(adapter.sentText(1).contains("\"status\": \"rejected\""), true)
+        }
+    }
+
+    @TestCase
+    public func t51NativeArgMenuCallbacksDispatchThroughSameCommandPath(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            user.telegram.actions.inlineKeyboard = true
+            user.telegram.actions.callbackQuery = true
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/think")
+            adapter.queue("[telegram-callback]\nid=cb-think\nmessageId=9\ndata=cmd:think:high\nby=8734062810")
+            service.processOnce()
+
+            @Expect(adapter.sentText(0).contains("[inline-keyboard]"), true)
+            @Expect(adapter.sentText(0).contains("callback:cmd:think:high"), true)
+            @Expect(adapter.sentText(1).contains("\"action\": \"think\""), true)
+            @Expect(adapter.sentText(1).contains("\"mode\": \"high\""), true)
         }
     }
 }

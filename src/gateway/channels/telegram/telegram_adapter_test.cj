@@ -328,24 +328,28 @@ public class TelegramAdapterTest {
         let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
         let payload = adapter.debugBuildNativeCommandsPayload()
         let commands = payload.get("commands").getOrThrow().asArray()
-        @Expect(commands.size(), 23)
+        @Expect(commands.size(), 45)
         let first = commands[0].asObject()
-        let second = commands[1].asObject()
-        let commandsEntry = commands[2].asObject()
-        let models = commands[5].asObject()
-        let subagents = commands[7].asObject()
-        let focus = commands[10].asObject()
-        let unfocus = commands[11].asObject()
-        let agents = commands[12].asObject()
         @Expect(first.get("command").getOrThrow().asString().getValue(), "help")
-        @Expect(first.get("description").getOrThrow().asString().getValue(), "Show help")
-        @Expect(second.get("command").getOrThrow().asString().getValue(), "status")
-        @Expect(commandsEntry.get("command").getOrThrow().asString().getValue(), "commands")
-        @Expect(models.get("command").getOrThrow().asString().getValue(), "models")
-        @Expect(subagents.get("command").getOrThrow().asString().getValue(), "subagents")
-        @Expect(focus.get("command").getOrThrow().asString().getValue(), "focus")
-        @Expect(unfocus.get("command").getOrThrow().asString().getValue(), "unfocus")
-        @Expect(agents.get("command").getOrThrow().asString().getValue(), "agents")
+        @Expect(first.get("description").getOrThrow().asString().getValue(), "Show available commands.")
+        @Expect(this.telegramPayloadHasCommand(commands, "commands"), true)
+        @Expect(this.telegramPayloadHasCommand(commands, "models"), true)
+        @Expect(this.telegramPayloadHasCommand(commands, "subagents"), true)
+        @Expect(this.telegramPayloadHasCommand(commands, "focus"), true)
+        @Expect(this.telegramPayloadHasCommand(commands, "unfocus"), true)
+        @Expect(this.telegramPayloadHasCommand(commands, "agents"), true)
+        @Expect(this.telegramPayloadHasCommand(commands, "bash"), true)
+        @Expect(this.telegramPayloadHasCommand(commands, "acp"), false)
+    }
+
+    private func telegramPayloadHasCommand(commands: JsonArray, command: String): Bool {
+        for (i in 0..commands.size()) {
+            let row = commands[i].asObject()
+            if (row.get("command").getOrThrow().asString().getValue() == command) {
+                return true
+            }
+        }
+        false
     }
 
     @TestCase
@@ -383,7 +387,7 @@ public class TelegramAdapterTest {
         )
         let payload = adapter.debugBuildNativeCommandsPayload()
         let commands = payload.get("commands").getOrThrow().asArray()
-        @Expect(commands.size(), 24)
+        @Expect(commands.size(), 46)
         let last = commands[commands.size() - 1].asObject()
         @Expect(last.get("command").getOrThrow().asString().getValue(), "generate")
         @Expect(last.get("description").getOrThrow().asString().getValue(), "Create image")
@@ -408,7 +412,7 @@ public class TelegramAdapterTest {
             let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
             let payload = adapter.debugBuildNativeCommandsPayload()
             let commands = payload.get("commands").getOrThrow().asArray()
-            @Expect(commands.size(), 24)
+            @Expect(commands.size(), 46)
             let pluginCommand = commands[commands.size() - 1].asObject()
             @Expect(pluginCommand.get("command").getOrThrow().asString().getValue(), "plugin_demo")
             @Expect(pluginCommand.get("description").getOrThrow().asString().getValue(), "Plugin demo command")
@@ -518,7 +522,7 @@ public class TelegramAdapterTest {
             let commands = snapshot.get("nativeCommands").getOrThrow().asObject()
             @Expect(commands.get("lastSyncStatus").getOrThrow().asString().getValue(), "error")
             @Expect(commands.get("lastSyncError").getOrThrow().asString().getValue().contains("Bad Request"), true)
-            @Expect(commands.get("lastSyncCommandCount").getOrThrow().asInt().getValue(), 23)
+            @Expect(commands.get("lastSyncCommandCount").getOrThrow().asInt().getValue(), 45)
         } finally {
             setTelegramTransportRunnerForTest(None)
         }

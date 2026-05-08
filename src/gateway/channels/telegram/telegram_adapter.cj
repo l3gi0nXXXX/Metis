@@ -1,7 +1,7 @@
 package metis.gateway.channels.telegram
 
 import metis.core.{GatewayMediaGroupItem, gatewayMediaTranscribeAudioPathForRuntime, parseGatewayAudioParts, parseGatewayChatAction, parseGatewayDocumentParts, parseGatewayEditButtonsParts, parseGatewayEditMediaParts, parseGatewayEditText, parseGatewayInlineKeyboardParts, parseGatewayMediaGroupItems, parseGatewayPhotoParts, parseGatewayPinAction, parseGatewayReactionRemove, parseGatewayReactionStatus, parseGatewayReactionToken, parseGatewayStickerFileId, parseGatewayTopicCreateText, parseGatewayTopicEditText, parseGatewayVideoNoteFileId, parseGatewayVideoParts, parseGatewayVoiceParts}
-import metis.gateway.core.{ChannelAdapter, gatewayOpenClawPluginSidecarApplyCurrentMessageReceivedHook, gatewayOpenClawPluginSidecarCommandCatalogForMenu}
+import metis.gateway.core.{ChannelAdapter, gatewayOpenClawPluginSidecarApplyCurrentMessageReceivedHook, gatewayOpenClawPluginSidecarCommandCatalogForMenu, gatewayTelegramNativeCommandMenuRows}
 import metis.gateway.model.*
 import metis.io.PrintUtils
 import metis.core.config.CliConfig
@@ -4512,31 +4512,7 @@ public class TelegramAdapter <: ChannelAdapter {
         let seen = HashMap<String, Bool>()
         let nativeMode = this.config.commandsNative.trimAscii().toAsciiLower()
         if (nativeMode != "off" && nativeMode != "false" && nativeMode != "disabled") {
-            for ((command, description) in [
-                ("help", "Show help"),
-                ("status", "Show status"),
-                ("commands", "Show commands"),
-                ("tools", "Show tools"),
-                ("whoami", "Show Telegram identity"),
-                ("models", "Switch model"),
-                ("model", "Show current model"),
-                ("subagents", "Manage subagents"),
-                ("sessions", "Manage sessions"),
-                ("session", "Show current session"),
-                ("focus", "Bind this conversation to a session"),
-                ("unfocus", "Remove this conversation binding"),
-                ("agents", "Show bound sessions"),
-                ("new", "Start new session"),
-                ("reset", "Reset session"),
-                ("compact", "Compact session"),
-                ("think", "Set reasoning"),
-                ("reasoning", "Set reasoning"),
-                ("fast", "Fast mode"),
-                ("verbose", "Verbose mode"),
-                ("approvals", "Review approvals"),
-                ("activation", "Set activation mode"),
-                ("pair", "Manage pairing")
-            ]) {
+            for ((command, description) in gatewayTelegramNativeCommandMenuRows()) {
                 rows.add((command, description))
                 seen[command] = true
             }

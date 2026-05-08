@@ -1,7 +1,7 @@
 package metis.gateway.core
 
 import metis.core.renderGatewayTopicEditText
-import metis.core.config.{CliSettingManager, GatewayUserSettings, cliSetupVisibleModelProviders}
+import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager, cliSetupVisibleModelProviders}
 import metis.gateway.model.*
 import metis.gateway.session.{GatewaySessionContext, gatewaySessionRequestFromInbound}
 import metis.gateway.tools.{gatewayHandleNativeCommandLine, gatewayHandleSubagentsCommandLine}
@@ -9,6 +9,7 @@ import magic.jsonable.*
 import magic.log.LogUtils
 import std.collection.{ArrayList, HashSet}
 import std.convert.Parsable
+import std.fs.{Directory, File, Path, copy, exists, remove}
 import std.time.DateTime
 import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
 
@@ -332,6 +333,22 @@ public class GatewayService {
 
     private func handleTelegramNativeCommand(message: InboundMessage, accountId: String, user: GatewayUserSettings, sessionKey: String): Bool {
         let text = message.text.trimAscii()
+        let catalogCommand = this.telegramCommandName(text)
+        if (!catalogCommand.isEmpty()) {
+            match (gatewayFindTelegramNativeCommandSpec(catalogCommand)) {
+                case Some(spec) =>
+                    this.sendTextToPeerDetailed(
+                        "telegram",
+                        message.peerId,
+                        this.renderTelegramCatalogCommand(spec, text, message, accountId, user, sessionKey),
+                        replyToMessageId: message.replyTargetMessageId,
+                        replyInThread: message.replyInThread,
+                        accountId: accountId
+                    )
+                    return true
+                case None => ()
+            }
+        }
         if (text == "/help" || text.startsWith("/help ") ||
             text == "/status" || text.startsWith("/status ") ||
             text == "/activation" || text.startsWith("/activation ") ||
@@ -422,7 +439,7 @@ public class GatewayService {
             this.sendTextToPeerDetailed(
                 "telegram",
                 message.peerId,
-                this.renderTelegramSessionLifecycleCommand(text, sessionKey),
+                this.renderTelegramSessionLifecycleCommand(text, user, sessionKey),
                 replyToMessageId: message.replyTargetMessageId,
                 replyInThread: message.replyInThread,
                 accountId: accountId
@@ -433,7 +450,7 @@ public class GatewayService {
             this.sendTextToPeerDetailed(
                 "telegram",
                 message.peerId,
-                this.renderTelegramCompactCommand(sessionKey),
+                this.renderTelegramCompactCommand(user, sessionKey),
                 replyToMessageId: message.replyTargetMessageId,
                 replyInThread: message.replyInThread,
                 accountId: accountId
@@ -508,6 +525,17 @@ public class GatewayService {
         }
         if (text.startsWith("[telegram-callback]")) {
             let data = this.telegramNativeField(text, "data").trimAscii()
+            if (data.startsWith("cmd:")) {
+                this.sendTextToPeerDetailed(
+                    "telegram",
+                    message.peerId,
+                    this.renderTelegramNativeCommandCallback(data, message, accountId, user, sessionKey),
+                    replyToMessageId: message.replyTargetMessageId,
+                    replyInThread: message.replyInThread,
+                    accountId: accountId
+                )
+                return true
+            }
             if (data.startsWith("models:set:")) {
                 let reply = this.resolveTelegramModelCallback(data, message.senderId, user, sessionKey)
                 this.sendTextToPeerDetailed(
@@ -591,27 +619,151 @@ public class GatewayService {
         raw.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "")
     }
 
-    private func renderTelegramCommandsCommand(user: GatewayUserSettings): String {
-        let native = [
-            "help", "status", "commands", "tools", "whoami", "models", "model", "subagents", "sessions",
-            "session", "focus", "unfocus", "agents", "new", "reset", "compact", "think", "reasoning", "fast", "verbose", "approvals",
-            "activation", "pair"
-        ]
-        let plugins = gatewayOpenClawPluginSidecarCommandCatalog(user)
-        let lines = ArrayList<String>()
-        lines.add("{\"ok\":true,\"status\":\"ok\",\"action\":\"commands\",\"native\":[")
-        for (i in 0..native.size) {
-            let suffix = if (i + 1 < native.size) { "," } else { "" }
-            lines.add("\"/${native[i]}\"${suffix}")
+    private func telegramCommandArgText(text: String): String {
+        let parts = text.trimAscii().split(" ", 2)
+        if (parts.size > 1) { parts[1].trimAscii() } else { "" }
+    }
+
+    private func telegramCommandJson(action: String, status: String, ok!: Bool = true, message!: String = ""): JsonObject {
+        let out = JsonObject()
+        out.put("ok", ok.toJsonValue())
+        out.put("status", JsonString(status))
+        out.put("action", JsonString(action))
+        if (!message.trimAscii().isEmpty()) {
+            out.put("message", JsonString(message.trimAscii()))
         }
-        lines.add("],\"plugin\":[")
+        out
+    }
+
+    private func renderTelegramCatalogCommand(
+        spec: GatewayTelegramNativeCommandSpec,
+        text: String,
+        message: InboundMessage,
+        accountId: String,
+        user: GatewayUserSettings,
+        sessionKey: String
+    ): String {
+        if ((spec.auth == "operator" || spec.auth == "approval") && !this.telegramSenderCanOperate(message.senderId, user)) {
+            let denied = this.telegramCommandJson(spec.command, "rejected", ok: false, message: "sender is not authorized for /${spec.command}")
+            denied.put("auth", JsonString(spec.auth))
+            denied.put("senderId", JsonString(message.senderId))
+            return denied.toJsonString()
+        }
+        if (spec.status == "not_applicable") {
+            let out = this.telegramCommandJson(spec.command, "not_applicable", ok: false, message: spec.notApplicableReason)
+            out.put("category", JsonString(spec.category))
+            return out.toJsonString()
+        }
+        if (spec.status == "stub") {
+            let out = this.telegramCommandJson(spec.command, "stub", ok: false, message: spec.notApplicableReason)
+            out.put("category", JsonString(spec.category))
+            return out.toJsonString()
+        }
+        if (this.shouldRenderTelegramArgsMenu(spec, text, user)) {
+            return this.renderTelegramArgsMenu(spec)
+        }
+        match (spec.command) {
+            case "help" | "status" | "activation" | "pair" => gatewayHandleNativeCommandLine("/${spec.command} ${this.telegramCommandArgText(text)}").getOrThrow()
+            case "commands" => this.renderTelegramCommandsCommand(user)
+            case "tools" => this.renderTelegramToolsCommand(user)
+            case "whoami" => this.renderTelegramWhoamiCommand(message, accountId, sessionKey)
+            case "model" => this.renderTelegramModelsEntry(user, sessionKey, page: this.telegramModelsPageFromCommand(text.replace("/model", "/models")))
+            case "models" => this.renderTelegramModelsEntry(user, sessionKey, page: this.telegramModelsPageFromCommand(text))
+            case "session" => this.renderTelegramCurrentSessionCommand(sessionKey)
+            case "sessions" => this.renderTelegramSessionsCommand(text)
+            case "approvals" => this.renderTelegramApprovalsCommand()
+            case "focus" | "unfocus" | "agents" => this.renderTelegramThreadBindingCommand(text, message, accountId, user, sessionKey)
+            case "subagents" => gatewayHandleSubagentsCommandLine(text) ?? this.renderTelegramSubagentsFallback(text)
+            case "new" | "reset" => this.renderTelegramSessionLifecycleCommand(text, user, sessionKey)
+            case "compact" => this.renderTelegramCompactCommand(user, sessionKey)
+            case "think" | "reasoning" | "fast" | "verbose" | "send" | "usage" | "queue" | "elevated" | "exec" => this.renderTelegramSessionOptionCommand(spec.command, text, user, sessionKey)
+            case "tasks" => this.renderTelegramTasksCommand(user, sessionKey)
+            case "context" => this.renderTelegramContextCommand(message, accountId, sessionKey)
+            case "plugins" => this.renderTelegramPluginsCommand(text, user)
+            case "mcp" => this.renderTelegramMcpCommand(text, user)
+            case "config" => this.renderTelegramConfigCommand(text, user)
+            case "debug" => this.renderTelegramDebugCommand(text, user)
+            case "export-session" => this.renderTelegramExportSessionCommand(text, user, sessionKey)
+            case "stop" => this.renderTelegramStopCommand(sessionKey)
+            case "kill" => gatewayHandleSubagentsCommandLine("/subagents kill ${this.telegramCommandArgText(text)}") ?? this.renderTelegramSubagentsFallback(text)
+            case "steer" => gatewayHandleSubagentsCommandLine("/subagents steer ${this.telegramCommandArgText(text)}") ?? this.renderTelegramSubagentsFallback(text)
+            case "approve" => this.renderTelegramApproveCommand(text, user, message.senderId)
+            case "restart" => this.renderTelegramRestartCommand()
+            case "bash" => this.renderTelegramBashCommand(text)
+            case "skill" => this.renderTelegramSkillCommand(text)
+            case "btw" => this.renderTelegramBtwCommand(text)
+            case "tts" => this.renderTelegramTtsCommand(text)
+            case _ => this.telegramCommandJson(spec.command, "not_supported", ok: false, message: "No Metis Telegram native handler is registered for this catalog entry.").toJsonString()
+        }
+    }
+
+    private func shouldRenderTelegramArgsMenu(spec: GatewayTelegramNativeCommandSpec, text: String, user: GatewayUserSettings): Bool {
+        !spec.argsMenuChoices.isEmpty() &&
+            user.telegram.actions.inlineKeyboard &&
+            user.telegram.actions.callbackQuery &&
+            this.telegramCommandArgText(text).isEmpty()
+    }
+
+    private func renderTelegramArgsMenu(spec: GatewayTelegramNativeCommandSpec): String {
+        let lines = ArrayList<String>()
+        let argName = if (spec.args.isEmpty()) { "option" } else { spec.args[0] }
+        lines.add("[inline-keyboard]")
+        lines.add("text=Choose ${argName} for /${spec.command}.")
+        for (choice in spec.argsMenuChoices) {
+            let data = this.telegramCommandCallbackData(spec.command, choice)
+            if (!data.isEmpty()) {
+                lines.add("button=${choice}|callback:${data}")
+            }
+        }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func telegramCommandCallbackData(command: String, value: String): String {
+        let data = "cmd:${command.trimAscii()}:${value.trimAscii()}"
+        if (data.size > 64) { "" } else { data }
+    }
+
+    private func renderTelegramNativeCommandCallback(data: String, message: InboundMessage, accountId: String, user: GatewayUserSettings, sessionKey: String): String {
+        let parts = data.split(":")
+        if (parts.size < 3) {
+            return this.telegramCommandJson("telegram_callback", "error", ok: false, message: "invalid native command callback").toJsonString()
+        }
+        let command = parts[1].trimAscii()
+        let value = parts[2].trimAscii()
+        match (gatewayFindTelegramNativeCommandSpec(command)) {
+            case Some(spec) => this.renderTelegramCatalogCommand(spec, "/${command} ${value}", message, accountId, user, sessionKey)
+            case None => this.telegramCommandJson("telegram_callback", "not_found", ok: false, message: "native command callback target not found").toJsonString()
+        }
+    }
+
+    private func renderTelegramCommandsCommand(user: GatewayUserSettings): String {
+        let plugins = gatewayOpenClawPluginSidecarCommandCatalog(user)
+        let native = JsonArray([])
+        for (entry in gatewayTelegramNativeCommandCatalog()) {
+            let row = JsonObject()
+            row.put("command", JsonString("/${entry.command}"))
+            row.put("status", JsonString(entry.status))
+            row.put("category", JsonString(entry.category))
+            row.put("auth", JsonString(entry.auth))
+            row.put("description", JsonString(entry.description))
+            if (!entry.notApplicableReason.trimAscii().isEmpty()) {
+                row.put("reason", JsonString(entry.notApplicableReason))
+            }
+            native.add(row)
+        }
+        let pluginRows = JsonArray([])
         for (i in 0..plugins.size) {
             let row = plugins[i]
-            let suffix = if (i + 1 < plugins.size) { "," } else { "" }
-            lines.add("{\"command\":\"/${this.telegramCallbackJsonEscape(row[0])}\",\"description\":\"${this.telegramCallbackJsonEscape(row[1])}\"}${suffix}")
+            let item = JsonObject()
+            item.put("command", JsonString("/${row[0]}"))
+            item.put("description", JsonString(row[1]))
+            item.put("status", JsonString("implemented"))
+            pluginRows.add(item)
         }
-        lines.add("]}")
-        String.join(lines.toArray(), delimiter: "")
+        let out = this.telegramCommandJson("commands", "ok")
+        out.put("native", native)
+        out.put("plugin", pluginRows)
+        out.toJsonString()
     }
 
     private func renderTelegramToolsCommand(user: GatewayUserSettings): String {
@@ -672,26 +824,360 @@ public class GatewayService {
         return "{\"ok\":true,\"status\":\"ok\",\"action\":\"agents\",\"conversationId\":\"${this.telegramCallbackJsonEscape(conversationId)}\",\"bindings\":${rows.toJsonString()}}"
     }
 
-    private func renderTelegramSessionLifecycleCommand(text: String, sessionKey: String): String {
+    private func renderTelegramSessionLifecycleCommand(text: String, user: GatewayUserSettings, sessionKey: String): String {
         let action = if (text.startsWith("/new")) { "new" } else { "reset" }
-        "{\"ok\":true,\"status\":\"accepted\",\"action\":\"${action}\",\"sessionKey\":\"${this.telegramCallbackJsonEscape(sessionKey)}\",\"message\":\"Session lifecycle command was accepted by Telegram native command routing. Use /sessions for transcript inspection.\"}"
+        let store = gatewaySessionStoreForUser(user)
+        let transcript = store.transcriptPath(sessionKey)
+        var archived = ""
+        if (exists(transcript)) {
+            archived = transcript.parent.join("${transcript.fileName}.${action}.${DateTime.now().toUnixTimeStamp().toMilliseconds()}.bak").toString()
+            try {
+                copy(transcript, to: Path(archived), overwrite: false)
+                remove(transcript)
+            } catch (_e: Exception) {
+                return this.telegramCommandJson(action, "error", ok: false, message: "failed to archive current session transcript").toJsonString()
+            }
+        }
+        try {
+            File.writeTo(transcript, "{\"kind\":\"meta\",\"sessionKey\":\"${this.telegramCallbackJsonEscape(sessionKey)}\",\"resetReason\":\"${action}\"}\n".toArray())
+            let _ = store.listSessionKeys()
+        } catch (_e: Exception) {
+            return this.telegramCommandJson(action, "error", ok: false, message: "failed to create session boundary").toJsonString()
+        }
+        let out = this.telegramCommandJson(action, "ok", message: "session transcript boundary created")
+        out.put("sessionKey", JsonString(sessionKey))
+        if (!archived.isEmpty()) {
+            out.put("archived", JsonString(archived))
+        }
+        out.toJsonString()
     }
 
-    private func renderTelegramCompactCommand(sessionKey: String): String {
-        "{\"ok\":true,\"status\":\"accepted\",\"action\":\"compact\",\"sessionKey\":\"${this.telegramCallbackJsonEscape(sessionKey)}\",\"message\":\"Session compact command was accepted by Telegram native command routing. Persistent compaction remains owned by the Gateway sessions runtime.\"}"
+    private func renderTelegramCompactCommand(user: GatewayUserSettings, sessionKey: String): String {
+        let store = gatewaySessionStoreForUser(user)
+        let transcript = store.transcriptPath(sessionKey)
+        let out = this.telegramCommandJson("compact", "ok")
+        out.put("sessionKey", JsonString(sessionKey))
+        if (!exists(transcript)) {
+            out.put("compacted", false.toJsonValue())
+            out.put("reason", JsonString("no transcript"))
+            return out.toJsonString()
+        }
+        let raw = try { String.fromUtf8(File.readFrom(transcript)) } catch (_e: Exception) { "" }
+        let linesRaw = raw.split("\n")
+        let lines = ArrayList<String>()
+        for (line in linesRaw) {
+            if (!line.trimAscii().isEmpty()) {
+                lines.add(line)
+            }
+        }
+        let maxLines: Int64 = 400
+        if (lines.size <= maxLines) {
+            out.put("compacted", false.toJsonValue())
+            out.put("kept", Int64(lines.size).toJsonValue())
+            return out.toJsonString()
+        }
+        let archived = transcript.parent.join("${transcript.fileName}.compact.${DateTime.now().toUnixTimeStamp().toMilliseconds()}.bak")
+        try {
+            copy(transcript, to: archived, overwrite: false)
+            let kept = lines.toArray()[lines.size - maxLines..lines.size]
+            File.writeTo(transcript, (String.join(kept, delimiter: "\n") + "\n").toArray())
+            out.put("compacted", true.toJsonValue())
+            out.put("kept", maxLines.toJsonValue())
+            out.put("archived", JsonString(archived.toString()))
+        } catch (_e: Exception) {
+            out.put("ok", false.toJsonValue())
+            out.put("status", JsonString("error"))
+            out.put("reason", JsonString("compact failed"))
+        }
+        out.toJsonString()
     }
 
     private func renderTelegramReasoningCommand(text: String, sessionKey: String): String {
-        let command = this.telegramCommandName(text)
-        let mode = if (command == "fast") {
-            "fast"
-        } else if (command == "verbose") {
-            "verbose"
-        } else {
-            let parts = text.split(" ", 2)
-            if (parts.size > 1 && !parts[1].trimAscii().isEmpty()) { parts[1].trimAscii() } else { "default" }
+        this.renderTelegramSessionOptionCommand(this.telegramCommandName(text), text, CliSettingManager.readGatewaySettings(), sessionKey)
+    }
+
+    private func renderTelegramSessionOptionCommand(command: String, text: String, user: GatewayUserSettings, sessionKey: String): String {
+        let modeRaw = this.telegramCommandArgText(text)
+        let mode = if (modeRaw.isEmpty()) { "status" } else { modeRaw }
+        let field = match (command) {
+            case "verbose" => "verboseLevel"
+            case "usage" => "responseUsage"
+            case "fast" => "fastMode"
+            case "send" => "sendPolicy"
+            case "think" => "thinkingLevel"
+            case "reasoning" => "reasoningVisibility"
+            case "queue" => "queueMode"
+            case "elevated" => "elevatedMode"
+            case "exec" => "execDefault"
+            case _ => "runtimeOption"
         }
-        "{\"ok\":true,\"status\":\"accepted\",\"action\":\"reasoning\",\"command\":\"/${this.telegramCallbackJsonEscape(command)}\",\"mode\":\"${this.telegramCallbackJsonEscape(mode)}\",\"sessionKey\":\"${this.telegramCallbackJsonEscape(sessionKey)}\",\"message\":\"Reasoning option command was handled natively for this Telegram session.\"}"
+        if (mode == "status") {
+            return this.renderTelegramSessionOptionStatus(command, field, user, sessionKey)
+        }
+        this.patchTelegramSessionIndex(user, sessionKey, field, mode)
+        let out = this.telegramCommandJson(command, "ok", message: "session runtime option updated")
+        out.put("field", JsonString(field))
+        out.put("mode", JsonString(mode))
+        out.put("sessionKey", JsonString(sessionKey))
+        out.toJsonString()
+    }
+
+    private func renderTelegramSessionOptionStatus(command: String, field: String, user: GatewayUserSettings, sessionKey: String): String {
+        let store = gatewaySessionStoreForUser(user)
+        let indexRoot = store.readSessionsIndexRoot()
+        let entry = match (indexRoot.get(sessionKey)) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let out = this.telegramCommandJson(command, "ok")
+        out.put("sessionKey", JsonString(sessionKey))
+        out.put("field", JsonString(field))
+        match (entry.get(field)) {
+            case Some(v) => out.put("value", v)
+            case None => out.put("value", JsonString(""))
+        }
+        out.toJsonString()
+    }
+
+    private func patchTelegramSessionIndex(user: GatewayUserSettings, sessionKey: String, field: String, value: String): Unit {
+        let store = gatewaySessionStoreForUser(user)
+        if (!exists(store.sessionsRoot())) {
+            Directory.create(store.sessionsRoot(), recursive: true)
+        }
+        let indexRoot = store.readSessionsIndexRoot()
+        let entry = match (indexRoot.get(sessionKey)) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        entry.put("sessionKey", JsonString(sessionKey))
+        entry.put("updatedAt", DateTime.now().toUnixTimeStamp().toMilliseconds().toJsonValue())
+        if (field == "fastMode") {
+            let normalized = value.trimAscii().toAsciiLower()
+            entry.put(field, (normalized == "on" || normalized == "true").toJsonValue())
+        } else {
+            entry.put(field, JsonString(value.trimAscii()))
+        }
+        indexRoot.put(sessionKey, entry)
+        try {
+            File.writeTo(store.sessionsRoot().join("sessions.json"), indexRoot.toJsonString().toArray())
+        } catch (e: Exception) {
+            LogUtils.error("Telegram native command failed to persist session option: ${e.message}")
+        }
+    }
+
+    private func renderTelegramTasksCommand(user: GatewayUserSettings, sessionKey: String): String {
+        let rows = gatewayListSessionCatalogRowsForUser(user)
+        let out = this.telegramCommandJson("tasks", "ok")
+        out.put("sessionKey", JsonString(sessionKey))
+        out.put("sessionCount", Int64(rows.size).toJsonValue())
+        out.put("message", JsonString("Metis native tasks are represented by persisted Gateway sessions and subagent runs."))
+        out.toJsonString()
+    }
+
+    private func renderTelegramContextCommand(message: InboundMessage, accountId: String, sessionKey: String): String {
+        let out = this.telegramCommandJson("context", "ok")
+        out.put("accountId", JsonString(accountId))
+        out.put("sessionKey", JsonString(sessionKey))
+        out.put("peerId", JsonString(message.peerId))
+        out.put("senderId", JsonString(message.senderId))
+        out.put("chatType", JsonString(chatTypeToString(message.chatType)))
+        out.put("message", JsonString("Telegram native commands bypass the model; normal messages use Gateway session context, media context, reply/thread metadata, and channel policy."))
+        out.toJsonString()
+    }
+
+    private func renderTelegramPluginsCommand(text: String, user: GatewayUserSettings): String {
+        let action = this.telegramCommandArgText(text).split(" ")[0].trimAscii().toAsciiLower()
+        let out = this.telegramCommandJson("plugins", "ok")
+        out.put("requested", JsonString(if (action.isEmpty()) { "list" } else { action }))
+        if (action == "enable" || action == "disable") {
+            out.put("status", JsonString("not_supported"))
+            out.put("ok", false.toJsonValue())
+            out.put("message", JsonString("Plugin enable/disable is not mutated from Telegram; use the Gateway control surface with approval."))
+            return out.toJsonString()
+        }
+        out.put("health", gatewayOpenClawPluginSidecarHealth(user))
+        let rows = JsonArray([])
+        for ((command, description) in gatewayOpenClawPluginSidecarCommandCatalog(user)) {
+            let row = JsonObject()
+            row.put("command", JsonString(command))
+            row.put("description", JsonString(description))
+            rows.add(row)
+        }
+        out.put("commands", rows)
+        out.toJsonString()
+    }
+
+    private func currentMetisRoot(): JsonObject {
+        MetisConfigManager.initializeIfMissing()
+        match (MetisConfigManager.rawConfig()) {
+            case Some(root) => root
+            case None => JsonObject()
+        }
+    }
+
+    private func renderTelegramMcpCommand(text: String, _user: GatewayUserSettings): String {
+        let args = this.telegramCommandArgText(text).split(" ", 3)
+        let action = if (args.size > 0 && !args[0].trimAscii().isEmpty()) { args[0].trimAscii().toAsciiLower() } else { "show" }
+        let out = this.telegramCommandJson("mcp", "ok")
+        out.put("requested", JsonString(action))
+        let root = this.currentMetisRoot()
+        if (action == "show" || action == "get") {
+            match (root.get("mcpServers")) {
+                case Some(v) => out.put("mcpServers", v)
+                case None => out.put("mcpServers", JsonObject())
+            }
+            return out.toJsonString()
+        }
+        out.put("ok", false.toJsonValue())
+        out.put("status", JsonString("approval_required"))
+        out.put("message", JsonString("/mcp set/unset is a config mutation and must use the Gateway control approval surface."))
+        out.toJsonString()
+    }
+
+    private func renderTelegramConfigCommand(text: String, user: GatewayUserSettings): String {
+        let args = this.telegramCommandArgText(text).split(" ", 3)
+        let action = if (args.size > 0 && !args[0].trimAscii().isEmpty()) { args[0].trimAscii().toAsciiLower() } else { "show" }
+        let out = this.telegramCommandJson("config", "ok")
+        out.put("requested", JsonString(action))
+        out.put("path", JsonString(MetisConfigManager.configPath().toString()))
+        if (action == "show") {
+            out.put("keys", JsonString("agents,gateway,session,skills,tools,models,auth,channels,plugins,wizard,meta"))
+            return out.toJsonString()
+        }
+        if (action == "get") {
+            let path = if (args.size > 1) { args[1].trimAscii() } else { "" }
+            out.put("configPath", JsonString(path))
+            out.put("value", JsonString(this.telegramConfigPathValue(path)))
+            return out.toJsonString()
+        }
+        if (!user.telegram.configWrites) {
+            out.put("ok", false.toJsonValue())
+            out.put("status", JsonString("rejected"))
+            out.put("message", JsonString("gateway.telegram.configWrites is disabled."))
+            return out.toJsonString()
+        }
+        out.put("ok", false.toJsonValue())
+        out.put("status", JsonString("approval_required"))
+        out.put("message", JsonString("/config set/unset is intentionally not applied from Telegram without the Gateway control approval path."))
+        out.toJsonString()
+    }
+
+    private func telegramConfigPathValue(path: String): String {
+        let normalized = path.trimAscii()
+        if (normalized.isEmpty()) {
+            return ""
+        }
+        let lower = normalized.toAsciiLower()
+        if (lower.contains("token") || lower.contains("secret") || lower.contains("password") || lower.contains("apikey") || lower.contains("api_key")) {
+            return "<redacted>"
+        }
+        var current = this.currentMetisRoot()
+        let parts = normalized.split(".")
+        var idx: Int64 = 0
+        while (idx < parts.size) {
+            let key = parts[idx].trimAscii()
+            match (current.get(key)) {
+                case Some(v) =>
+                    if (idx + 1 == parts.size) {
+                        return v.toJsonString()
+                    }
+                    try {
+                        current = v.asObject()
+                    } catch (_e: Exception) {
+                        return ""
+                    }
+                case None => return ""
+            }
+            idx += 1
+        }
+        ""
+    }
+
+    private func renderTelegramDebugCommand(text: String, _user: GatewayUserSettings): String {
+        let action = this.telegramCommandArgText(text).split(" ")[0].trimAscii().toAsciiLower()
+        let out = this.telegramCommandJson("debug", if (action == "set" || action == "unset" || action == "reset") { "approval_required" } else { "ok" }, ok: !(action == "set" || action == "unset" || action == "reset"))
+        out.put("configPath", JsonString(MetisConfigManager.configPath().toString()))
+        out.put("message", JsonString(if (out.get("ok").getOrThrow().asBool().getValue()) { "Debug overrides are read-only from Telegram." } else { "Debug mutations require the Gateway control approval surface." }))
+        out.toJsonString()
+    }
+
+    private func renderTelegramExportSessionCommand(text: String, user: GatewayUserSettings, sessionKey: String): String {
+        let requested = this.telegramCommandArgText(text)
+        let exportDir = CliConfig.dotDir.join("exports")
+        if (!exists(exportDir)) {
+            Directory.create(exportDir, recursive: true)
+        }
+        let target = if (requested.isEmpty()) {
+            exportDir.join("${sessionKey.replace(":", "_")}.html")
+        } else {
+            let p = Path(requested)
+            if (p.toString().startsWith(exportDir.toString())) { p } else { exportDir.join(p.fileName) }
+        }
+        let store = gatewaySessionStoreForUser(user)
+        let raw = match (store.readTranscriptRaw(sessionKey)) {
+            case Some(v) => v
+            case None => ""
+        }
+        File.writeTo(target, ("<html><body><pre>" + this.telegramCallbackJsonEscape(raw) + "</pre></body></html>").toArray())
+        let out = this.telegramCommandJson("export-session", "ok", message: "session exported")
+        out.put("path", JsonString(target.toString()))
+        out.put("sessionKey", JsonString(sessionKey))
+        out.toJsonString()
+    }
+
+    private func renderTelegramStopCommand(sessionKey: String): String {
+        let out = this.telegramCommandJson("stop", "no_active_run", message: "No active Gateway run is tracked for this Telegram session.")
+        out.put("sessionKey", JsonString(sessionKey))
+        out.toJsonString()
+    }
+
+    private func renderTelegramApproveCommand(text: String, user: GatewayUserSettings, senderId: String): String {
+        let args = this.telegramCommandArgText(text).split(" ")
+        if (args.size < 2) {
+            return this.telegramCommandJson("approve", "usage", ok: false, message: "usage: /approve <approvalId> <allow-once|deny>").toJsonString()
+        }
+        let result = gatewayResolveTelegramApprovalCallback("[telegram-approval]\napprovalId=${args[0]}\ndecision=${args[1]}\nby=${senderId}", user)
+        gatewayTelegramApprovalResolverReply(result)
+    }
+
+    private func renderTelegramRestartCommand(): String {
+        this.telegramCommandJson("restart", "approval_required", ok: false, message: "Gateway restart is visible but requires the Gateway control approval surface; it is not executed directly from Telegram.").toJsonString()
+    }
+
+    private func renderTelegramBashCommand(text: String): String {
+        let command = this.telegramCommandArgText(text)
+        let out = this.telegramCommandJson("bash", "approval_required", ok: false, message: "Host shell execution requires Metis exec approval and was not executed.")
+        out.put("command", JsonString(command))
+        out.toJsonString()
+    }
+
+    private func renderTelegramSkillCommand(text: String): String {
+        let name = this.telegramCommandArgText(text).split(" ")[0].trimAscii()
+        let out = this.telegramCommandJson("skill", if (name.isEmpty()) { "usage" } else { "not_found" }, ok: false)
+        out.put("skill", JsonString(name))
+        out.put("message", JsonString(if (name.isEmpty()) { "usage: /skill <name> <input>" } else { "No Telegram-native skill runner is bound for '${name}'. Use normal chat or the skills control surface." }))
+        out.toJsonString()
+    }
+
+    private func renderTelegramBtwCommand(text: String): String {
+        let question = this.telegramCommandArgText(text)
+        let out = this.telegramCommandJson("btw", if (question.isEmpty()) { "usage" } else { "not_supported" }, ok: false)
+        out.put("message", JsonString(if (question.isEmpty()) { "usage: /btw <question>" } else { "One-shot non-persistent turns are not supported by the current Gateway Telegram native runtime." }))
+        out.toJsonString()
+    }
+
+    private func renderTelegramTtsCommand(text: String): String {
+        let action = this.telegramCommandArgText(text).split(" ")[0].trimAscii().toAsciiLower()
+        let out = this.telegramCommandJson("tts", "not_configured", ok: false)
+        out.put("requested", JsonString(if (action.isEmpty()) { "status" } else { action }))
+        out.put("message", JsonString("No Metis TTS provider is configured for Telegram native voice output."))
+        out.toJsonString()
+    }
+
+    private func renderTelegramSubagentsFallback(text: String): String {
+        let out = this.telegramCommandJson("subagents", "usage", ok: false, message: "Invalid subagent command.")
+        out.put("input", JsonString(text))
+        out.toJsonString()
     }
 
     private func telegramCommandName(text: String): String {
