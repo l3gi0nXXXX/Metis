@@ -238,9 +238,18 @@ public func gatewayOpenClawPluginSidecarApplyMessageSendingHook(
     payload.put("channel", JsonString(channelName.trimAscii().toAsciiLower()))
     payload.put("accountId", JsonString(accountId.trimAscii()))
     payload.put("peerId", JsonString(peerId.trimAscii()))
+    payload.put("conversationId", JsonString(peerId.trimAscii()))
+    payload.put("threadId", JsonString(gatewayOpenClawTelegramThreadIdFromPeer(peerId)))
     payload.put("text", JsonString(text))
+    payload.put("caption", JsonString(""))
+    payload.put("mediaKinds", JsonArray([]))
     payload.put("replyToMessageId", JsonString(replyToMessageId.trimAscii()))
     payload.put("replyInThread", replyInThread.toJsonValue())
+    let reply = JsonObject()
+    reply.put("messageId", JsonString(replyToMessageId.trimAscii()))
+    reply.put("inThread", replyInThread.toJsonValue())
+    payload.put("reply", reply)
+    payload.put("quote", JsonObject())
     gatewayOpenClawPluginSidecarInvoke(user, "hook.message_sending", payload)
 }
 
@@ -252,7 +261,8 @@ public func gatewayOpenClawPluginSidecarApplyMessageSentHook(
     text: String,
     sentMessageId: String,
     delivered: Bool,
-    reason: String
+    reason: String,
+    durationMs!: Int64 = 0
 ): JsonObject {
     if (!gatewayOpenClawPluginSidecarEnabled(user) || channelName.trimAscii().toAsciiLower() != "telegram") {
         let out = JsonObject()
@@ -264,10 +274,19 @@ public func gatewayOpenClawPluginSidecarApplyMessageSentHook(
     payload.put("channel", JsonString(channelName.trimAscii().toAsciiLower()))
     payload.put("accountId", JsonString(accountId.trimAscii()))
     payload.put("peerId", JsonString(peerId.trimAscii()))
+    payload.put("conversationId", JsonString(peerId.trimAscii()))
+    payload.put("threadId", JsonString(gatewayOpenClawTelegramThreadIdFromPeer(peerId)))
     payload.put("text", JsonString(text))
     payload.put("sentMessageId", JsonString(sentMessageId.trimAscii()))
+    let ids = JsonArray([])
+    if (!sentMessageId.trimAscii().isEmpty()) {
+        ids.add(JsonString(sentMessageId.trimAscii()))
+    }
+    payload.put("messageIds", ids)
+    payload.put("mediaKinds", JsonArray([]))
     payload.put("delivered", delivered.toJsonValue())
     payload.put("reason", JsonString(reason.trimAscii()))
+    payload.put("durationMs", durationMs.toJsonValue())
     gatewayOpenClawPluginSidecarInvoke(user, "hook.message_sent", payload)
 }
 
@@ -281,7 +300,12 @@ public func gatewayOpenClawPluginSidecarApplyMessageReceivedHook(
     text: String,
     accepted: Bool,
     reason: String,
-    raw: String
+    raw: String,
+    conversationId!: String = "",
+    threadId!: String = "",
+    replyToMessageId!: String = "",
+    replyInThread!: Bool = false,
+    mediaContext!: JsonObject = JsonObject()
 ): JsonObject {
     if (!gatewayOpenClawPluginSidecarEnabled(user) || channelName.trimAscii().toAsciiLower() != "telegram") {
         let out = JsonObject()
@@ -293,9 +317,19 @@ public func gatewayOpenClawPluginSidecarApplyMessageReceivedHook(
     payload.put("channel", JsonString(channelName.trimAscii().toAsciiLower()))
     payload.put("accountId", JsonString(accountId.trimAscii()))
     payload.put("peerId", JsonString(peerId.trimAscii()))
+    payload.put("conversationId", JsonString(if (conversationId.trimAscii().isEmpty()) { peerId.trimAscii() } else { conversationId.trimAscii() }))
+    payload.put("threadId", JsonString(if (threadId.trimAscii().isEmpty()) { gatewayOpenClawTelegramThreadIdFromPeer(peerId) } else { threadId.trimAscii() }))
     payload.put("senderId", JsonString(senderId.trimAscii()))
     payload.put("messageId", JsonString(messageId.trimAscii()))
     payload.put("text", JsonString(text))
+    payload.put("mediaContext", mediaContext)
+    payload.put("mediaSummary", gatewayOpenClawPluginSidecarMediaSummary(mediaContext))
+    let reply = JsonObject()
+    reply.put("messageId", JsonString(replyToMessageId.trimAscii()))
+    reply.put("inThread", replyInThread.toJsonValue())
+    payload.put("reply", reply)
+    payload.put("quote", JsonObject())
+    payload.put("forward", JsonObject())
     payload.put("accepted", accepted.toJsonValue())
     payload.put("reason", JsonString(reason.trimAscii()))
     payload.put("raw", JsonString(raw))
@@ -311,7 +345,12 @@ public func gatewayOpenClawPluginSidecarApplyCurrentMessageReceivedHook(
     text: String,
     accepted: Bool,
     reason: String,
-    raw: String
+    raw: String,
+    conversationId!: String = "",
+    threadId!: String = "",
+    replyToMessageId!: String = "",
+    replyInThread!: Bool = false,
+    mediaContext!: JsonObject = JsonObject()
 ): JsonObject {
     gatewayOpenClawPluginSidecarApplyMessageReceivedHook(
         CliSettingManager.readGatewaySettings(),
@@ -323,6 +362,54 @@ public func gatewayOpenClawPluginSidecarApplyCurrentMessageReceivedHook(
         text,
         accepted,
         reason,
-        raw
+        raw,
+        conversationId: conversationId,
+        threadId: threadId,
+        replyToMessageId: replyToMessageId,
+        replyInThread: replyInThread,
+        mediaContext: mediaContext
     )
+}
+
+private func gatewayOpenClawTelegramThreadIdFromPeer(peerId: String): String {
+    let peer = peerId.trimAscii()
+    match (peer.indexOf(":topic:")) {
+        case Some(idx) => peer[(idx + ":topic:".size)..].trimAscii()
+        case None => ""
+    }
+}
+
+private func gatewayOpenClawPluginSidecarMediaSummary(mediaContext: JsonObject): JsonObject {
+    let out = JsonObject()
+    let kinds = JsonArray([])
+    let records = match (mediaContext.get("records")) {
+        case Some(v) => try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
+        case None => JsonArray([])
+    }
+    for (i in 0..records.size()) {
+        let row = try { records[i].asObject() } catch (_e: Exception) { JsonObject() }
+        let kind = gatewayOpenClawPluginSidecarString(row, "mediaKind", gatewayOpenClawPluginSidecarString(row, "kind", "")).trimAscii()
+        if (!kind.isEmpty()) {
+            kinds.add(JsonString(kind))
+        }
+    }
+    let context = match (mediaContext.get("context")) {
+        case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    match (context.get("mediaKind")) {
+        case Some(v) =>
+            try {
+                let kind = v.asString().getValue().trimAscii()
+                if (!kind.isEmpty()) {
+                    kinds.add(JsonString(kind))
+                }
+            } catch (_e: Exception) {
+                ()
+            }
+        case None => ()
+    }
+    out.put("count", kinds.size().toJsonValue())
+    out.put("kinds", kinds)
+    return out
 }

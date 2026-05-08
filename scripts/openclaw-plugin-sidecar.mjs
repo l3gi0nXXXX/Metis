@@ -250,28 +250,172 @@ function normalizeIntent(value) {
   if (!isObject(value)) return null;
   const type = String(value.type ?? value.kind ?? "").trim();
   if (!type) return null;
-  return {
+  const out = {
     type,
     text: String(value.text ?? value.message ?? ""),
     targetMessageId: String(value.targetMessageId ?? value.messageId ?? ""),
     reason: String(value.reason ?? ""),
-    ...(Array.isArray(value.buttons) ? { buttons: value.buttons } : {}),
   };
+  if (Array.isArray(value.buttons)) out.buttons = value.buttons;
+  if (value.op != null) out.op = String(value.op);
+  if (value.channel != null) out.channel = String(value.channel);
+  if (value.sessionKey != null) out.sessionKey = String(value.sessionKey);
+  if (value.conversationId != null) out.conversationId = String(value.conversationId);
+  if (value.parentConversationId != null) out.parentConversationId = String(value.parentConversationId);
+  if (value.threadId != null) out.threadId = String(value.threadId);
+  if (value.ownerId != null) out.ownerId = String(value.ownerId);
+  if (value.ttlMs != null) out.ttlMs = Number(value.ttlMs) || 0;
+  if (isObject(value.binding)) out.binding = value.binding;
+  return out;
 }
 
-function normalizeHandlerResult(value) {
+function normalizeHandlerResult(value, collectedIntents = [], collectedBindingIntents = []) {
   if (typeof value === "string") {
-    return { ok: true, matched: true, intents: [{ type: "reply", text: value }] };
+    return {
+      ok: true,
+      matched: true,
+      intents: [...collectedIntents, { type: "reply", text: value }],
+      bindingIntents: collectedBindingIntents,
+    };
   }
   if (!isObject(value)) {
-    return { ok: true, matched: true, intents: [] };
+    return { ok: true, matched: true, intents: collectedIntents, bindingIntents: collectedBindingIntents };
   }
   const intents = Array.isArray(value.intents)
     ? value.intents.map(normalizeIntent).filter(Boolean)
     : normalizeIntent(value)
       ? [normalizeIntent(value)]
       : [];
-  return { ok: value.ok !== false, matched: value.matched !== false, intents, message: value.message ?? "" };
+  const bindingIntents = Array.isArray(value.bindingIntents)
+    ? value.bindingIntents.map(normalizeIntent).filter(Boolean)
+    : [];
+  return {
+    ok: value.ok !== false,
+    matched: value.matched !== false,
+    intents: [...collectedIntents, ...intents],
+    bindingIntents: [...collectedBindingIntents, ...bindingIntents],
+    message: value.message ?? "",
+  };
+}
+
+function callbackPayload(data, namespace) {
+  const value = String(data ?? "").trim();
+  const prefix = value.startsWith("plugin:") ? `plugin:${namespace}:` : `${namespace}:`;
+  return value.startsWith(prefix) ? value.slice(prefix.length) : "";
+}
+
+function callbackMessageId(payload) {
+  return String(payload.callbackMessage?.messageId ?? payload.messageId ?? "").trim();
+}
+
+function conversationSnapshot(payload, overrides = {}) {
+  return {
+    channel: "telegram",
+    accountId: String(overrides.accountId ?? payload.accountId ?? "").trim(),
+    conversationId: String(overrides.conversationId ?? payload.conversationId ?? payload.peerId ?? "").trim(),
+    parentConversationId: String(overrides.parentConversationId ?? payload.parentConversationId ?? "").trim(),
+    threadId: String(overrides.threadId ?? payload.threadId ?? "").trim(),
+    sessionKey: String(overrides.sessionKey ?? payload.sessionKey ?? "").trim(),
+    ownerId: String(overrides.ownerId ?? payload.senderId ?? "").trim(),
+  };
+}
+
+function buildInteractiveContext(payload, namespace, intents, bindingIntents) {
+  const targetMessageId = callbackMessageId(payload);
+  const pushIntent = (intent) => {
+    const normalized = normalizeIntent({ targetMessageId, ...intent });
+    if (normalized) intents.push(normalized);
+  };
+  const currentBinding = conversationSnapshot(payload, isObject(payload.currentConversationBinding) ? payload.currentConversationBinding : {});
+  return {
+    ...payload,
+    channel: "telegram",
+    accountId: String(payload.accountId ?? "").trim(),
+    callbackId: String(payload.callbackId ?? "").trim(),
+    conversationId: currentBinding.conversationId,
+    parentConversationId: currentBinding.parentConversationId,
+    senderId: String(payload.senderId ?? payload.callbackSenderId ?? "").trim(),
+    senderUsername: String(payload.senderUsername ?? "").trim(),
+    threadId: currentBinding.threadId,
+    isGroup: payload.isGroup === true,
+    isForum: payload.isForum === true,
+    auth: isObject(payload.auth) ? payload.auth : { isAuthorizedSender: false },
+    callback: {
+      data: String(payload.data ?? "").trim(),
+      namespace,
+      payload: callbackPayload(payload.data, namespace),
+      messageId: targetMessageId,
+      chatId: String(payload.callbackMessage?.chatId ?? "").trim(),
+      messageText: String(payload.callbackMessage?.messageText ?? "").trim(),
+    },
+    respond: {
+      async reply(params = {}) {
+        pushIntent({ type: "reply", text: String(params.text ?? ""), buttons: params.buttons });
+      },
+      async editMessage(params = {}) {
+        pushIntent({ type: "edit", text: String(params.text ?? ""), buttons: undefined });
+        if (Array.isArray(params.buttons)) {
+          pushIntent({ type: "edit-buttons", buttons: params.buttons });
+        }
+      },
+      async editButtons(params = {}) {
+        pushIntent({ type: "edit-buttons", buttons: params.buttons });
+      },
+      async clearButtons() {
+        pushIntent({ type: "clear-buttons" });
+      },
+      async deleteMessage() {
+        pushIntent({ type: "delete" });
+      },
+    },
+    async requestConversationBinding(params = {}) {
+      const binding = conversationSnapshot(payload, {
+        ...params,
+        sessionKey: params.sessionKey ?? payload.sessionKey,
+        ownerId: params.ownerId ?? payload.senderId,
+      });
+      const intent = normalizeIntent({ type: "binding", op: "bind", ...binding, ttlMs: params.ttlMs ?? 0 });
+      if (intent) bindingIntents.push(intent);
+      return { ok: true, status: "queued", binding };
+    },
+    async detachConversationBinding() {
+      const binding = conversationSnapshot(payload);
+      const intent = normalizeIntent({ type: "binding", op: "detach", ...binding });
+      if (intent) bindingIntents.push(intent);
+      return { removed: true };
+    },
+    async getCurrentConversationBinding() {
+      if (!currentBinding.conversationId || !currentBinding.sessionKey) return null;
+      return currentBinding;
+    },
+    async touchConversationBinding() {
+      const binding = conversationSnapshot(payload);
+      const intent = normalizeIntent({ type: "binding", op: "touch", ...binding });
+      if (intent) bindingIntents.push(intent);
+      return { ok: true, status: "queued", binding };
+    },
+  };
+}
+
+function buildCommandContext(payload, intents) {
+  return {
+    ...payload,
+    channel: String(payload.channel ?? "telegram").trim() || "telegram",
+    accountId: String(payload.accountId ?? "").trim(),
+    command: String(payload.command ?? "").trim(),
+    args: Array.isArray(payload.args) ? payload.args : String(payload.text ?? "").trim().split(/\s+/).slice(1),
+    text: String(payload.text ?? payload.commandBody ?? "").trim(),
+    respond: {
+      async reply(params = {}) {
+        const normalized = normalizeIntent({ type: "reply", text: String(params.text ?? ""), buttons: params.buttons });
+        if (normalized) intents.push(normalized);
+      },
+      async editMessage(params = {}) {
+        const normalized = normalizeIntent({ type: "edit", text: String(params.text ?? ""), targetMessageId: params.targetMessageId });
+        if (normalized) intents.push(normalized);
+      },
+    },
+  };
 }
 
 async function main() {
@@ -348,7 +492,10 @@ async function main() {
       );
       return;
     }
-    const result = normalizeHandlerResult(await handler.handler(payload));
+    const intents = [];
+    const bindingIntents = [];
+    const ctx = buildInteractiveContext(payload, namespace, intents, bindingIntents);
+    const result = normalizeHandlerResult(await handler.handler(ctx), intents, bindingIntents);
     process.stdout.write(JSON.stringify({ ...result, pluginId: handler.pluginId, namespace, diagnostics: registry.diagnostics }));
     return;
   }
@@ -360,7 +507,8 @@ async function main() {
       process.stdout.write(JSON.stringify({ ok: true, matched: false, reason: "command_not_found", diagnostics: registry.diagnostics }));
       return;
     }
-    const result = normalizeHandlerResult(await handler.handler(payload));
+    const intents = [];
+    const result = normalizeHandlerResult(await handler.handler(buildCommandContext(payload, intents)), intents);
     process.stdout.write(JSON.stringify({ ...result, pluginId: handler.pluginId, command, diagnostics: registry.diagnostics }));
     return;
   }
@@ -395,8 +543,12 @@ async function main() {
 
   if (method === "hook.message_sending") {
     let current = { ...payload };
+    const hookErrors = [];
     for (const hook of registry.hooks.filter((h) => h.kind === "message_sending")) {
-      const result = await hook.handler(current);
+      const result = await hook.handler(current).catch((error) => {
+        hookErrors.push({ pluginId: hook.pluginId, kind: hook.kind, reason: String(error) });
+        return null;
+      });
       if (isObject(result)) {
         if (result.cancelled === true || result.cancel === true) {
           process.stdout.write(
@@ -415,23 +567,33 @@ async function main() {
         }
       }
     }
-    process.stdout.write(JSON.stringify({ ok: true, status: "ok", cancelled: false, text: current.text, diagnostics: registry.diagnostics }));
+    process.stdout.write(JSON.stringify({ ok: true, status: "ok", cancelled: false, text: current.text, diagnostics: [...registry.diagnostics, ...hookErrors] }));
     return;
   }
 
   if (method === "hook.message_sent") {
+    const hookErrors = [];
     for (const hook of registry.hooks.filter((h) => h.kind === "message_sent")) {
-      await hook.handler(payload);
+      try {
+        await hook.handler(payload);
+      } catch (error) {
+        hookErrors.push({ pluginId: hook.pluginId, kind: hook.kind, reason: String(error) });
+      }
     }
-    process.stdout.write(JSON.stringify({ ok: true, status: "ok", diagnostics: registry.diagnostics }));
+    process.stdout.write(JSON.stringify({ ok: true, status: "ok", diagnostics: [...registry.diagnostics, ...hookErrors] }));
     return;
   }
 
   if (method === "hook.message_received") {
+    const hookErrors = [];
     for (const hook of registry.hooks.filter((h) => h.kind === "message_received" || h.kind === "message:received")) {
-      await hook.handler(payload);
+      try {
+        await hook.handler(payload);
+      } catch (error) {
+        hookErrors.push({ pluginId: hook.pluginId, kind: hook.kind, reason: String(error) });
+      }
     }
-    process.stdout.write(JSON.stringify({ ok: true, status: "ok", diagnostics: registry.diagnostics }));
+    process.stdout.write(JSON.stringify({ ok: true, status: "ok", diagnostics: [...registry.diagnostics, ...hookErrors] }));
     return;
   }
 

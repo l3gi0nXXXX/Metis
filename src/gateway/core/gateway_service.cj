@@ -1216,8 +1216,32 @@ public class GatewayService {
         let payload = this.telegramPluginBasePayload(message, accountId, sessionKey)
         payload.put("command", JsonString(command))
         payload.put("text", JsonString(message.text))
+        payload.put("commandBody", JsonString(message.text))
+        var progressMessageId = ""
+        try {
+            progressMessageId = this.sendTextToPeerDetailed(
+                "telegram",
+                message.peerId,
+                "Running /${command}...",
+                replyToMessageId: this.telegramReplyTargetOrMessageId(message),
+                replyInThread: message.replyInThread,
+                accountId: accountId
+            )
+        } catch (e: Exception) {
+            LogUtils.info("Telegram plugin command progress placeholder skipped: ${e.message}")
+        }
+        if (!progressMessageId.trimAscii().isEmpty()) {
+            payload.put("progressMessageId", JsonString(progressMessageId.trimAscii()))
+        }
         let result = gatewayOpenClawPluginSidecarInvoke(user, "command.dispatch", payload)
-        let handled = this.deliverTelegramPluginSidecarResult(message, accountId, user, result, fallbackAction: "plugin_command")
+        let handled = this.deliverTelegramPluginSidecarResult(
+            message,
+            accountId,
+            user,
+            result,
+            fallbackAction: "plugin_command",
+            preferEditTargetMessageId: progressMessageId
+        )
         Some(handled)
     }
 
@@ -1349,9 +1373,10 @@ public class GatewayService {
     private func deliverTelegramPluginSidecarResult(
         message: InboundMessage,
         accountId: String,
-        _user: GatewayUserSettings,
+        user: GatewayUserSettings,
         result: JsonObject,
-        fallbackAction!: String
+        fallbackAction!: String,
+        preferEditTargetMessageId!: String = ""
     ): Bool {
         if (!this.telegramJsonBool(result, "ok", false)) {
             let reason = this.telegramJsonString(result, "reason", "OpenClaw plugin sidecar error")
@@ -1365,10 +1390,15 @@ public class GatewayService {
             )
             return true
         }
+        this.applyTelegramPluginBindingIntents(message, accountId, user, result)
         var delivered = false
         let intents = this.telegramJsonArray(result, "intents")
         for (i in 0..intents.size()) {
             let intent = try { intents[i].asObject() } catch (_e: Exception) { JsonObject() }
+            if (!preferEditTargetMessageId.trimAscii().isEmpty() && this.telegramPluginIntentShouldEditProgress(intent)) {
+                intent.put("type", JsonString("edit"))
+                intent.put("targetMessageId", JsonString(preferEditTargetMessageId.trimAscii()))
+            }
             if (this.deliverTelegramPluginIntent(message, accountId, intent)) {
                 delivered = true
             }
@@ -1461,6 +1491,60 @@ public class GatewayService {
             return true
         }
         false
+    }
+
+    private func telegramPluginIntentShouldEditProgress(intent: JsonObject): Bool {
+        let kind = this.telegramJsonString(intent, "type", this.telegramJsonString(intent, "kind", "")).trimAscii().toAsciiLower()
+        if (!(kind == "reply" || kind == "send" || kind == "message")) {
+            return false
+        }
+        !this.telegramJsonString(intent, "text", "").trimAscii().isEmpty()
+    }
+
+    private func applyTelegramPluginBindingIntents(
+        message: InboundMessage,
+        accountId: String,
+        user: GatewayUserSettings,
+        result: JsonObject
+    ): Unit {
+        if (!user.telegram.threadBindings.enabled) {
+            return
+        }
+        let intents = this.telegramJsonArray(result, "bindingIntents")
+        for (i in 0..intents.size()) {
+            let intent = try { intents[i].asObject() } catch (_e: Exception) { JsonObject() }
+            let kind = this.telegramJsonString(intent, "type", this.telegramJsonString(intent, "kind", "")).trimAscii().toAsciiLower()
+            if (kind != "binding") {
+                continue
+            }
+            let op = this.telegramJsonString(intent, "op", "").trimAscii().toAsciiLower()
+            let channel = this.telegramJsonString(intent, "channel", "telegram").trimAscii()
+            let bindingAccount = this.telegramJsonString(intent, "accountId", accountId).trimAscii()
+            let conversationId = this.telegramJsonString(intent, "conversationId", gatewayTelegramConversationIdForMessage(message)).trimAscii()
+            if (conversationId.isEmpty()) {
+                continue
+            }
+            if (op == "bind") {
+                let sessionKey = this.telegramJsonString(intent, "sessionKey", "").trimAscii()
+                if (sessionKey.isEmpty()) {
+                    continue
+                }
+                let _ = gatewayTelegramThreadBindingBind(
+                    channel,
+                    bindingAccount,
+                    conversationId,
+                    sessionKey,
+                    parentConversationId: this.telegramJsonString(intent, "parentConversationId", this.telegramParentConversationId(message.peerId, conversationId)),
+                    threadId: this.telegramJsonString(intent, "threadId", message.threadId ?? ""),
+                    ownerId: this.telegramJsonString(intent, "ownerId", message.senderId),
+                    ttlMs: this.telegramJsonInt(intent, "ttlMs", 0)
+                )
+            } else if (op == "detach" || op == "unbind") {
+                let _ = gatewayTelegramThreadBindingUnbind(channel, bindingAccount, conversationId)
+            } else if (op == "touch") {
+                let _ = gatewayTelegramThreadBindingTouch(channel, bindingAccount, conversationId)
+            }
+        }
     }
 
     private func renderTelegramPluginInlineKeyboardText(text: String, buttonSpecs: Array<String>): String {
@@ -1556,6 +1640,18 @@ public class GatewayService {
             case Some(v) =>
                 try {
                     v.asString().getValue()
+                } catch (_e: Exception) {
+                    fallback
+                }
+            case None => fallback
+        }
+    }
+
+    private func telegramJsonInt(obj: JsonObject, key: String, fallback: Int64): Int64 {
+        match (obj.get(key)) {
+            case Some(v) =>
+                try {
+                    Int64.parse(v.toJsonString())
                 } catch (_e: Exception) {
                     fallback
                 }
@@ -1734,6 +1830,7 @@ public class GatewayService {
         replyInThread!: Bool = false,
         accountId!: String = ""
     ): String {
+        let sendStartedAtMs = this.startNowMs()
         let nm = adapterName.trimAscii()
         let user = CliSettingManager.readGatewaySettings()
         var effectiveText = text
@@ -1749,7 +1846,19 @@ public class GatewayService {
             )
             if (this.telegramJsonBool(hook, "cancelled", false)) {
                 let reason = this.telegramJsonString(hook, "reason", "cancelled by OpenClaw plugin hook")
-                effectiveText = "[plugin-hook-cancelled] ${reason}"
+                let _ = gatewayOpenClawPluginSidecarApplyMessageSentHook(
+                    user,
+                    nm,
+                    accountId,
+                    peerId,
+                    text,
+                    "",
+                    false,
+                    reason,
+                    durationMs: this.startNowMs() - sendStartedAtMs
+                )
+                LogUtils.info("Gateway.sendTextToPeer: channel=${nm} peer=${peerId} cancelled by OpenClaw plugin hook")
+                return ""
             } else {
                 let modified = this.telegramJsonString(hook, "text", text)
                 if (!modified.trimAscii().isEmpty()) {
@@ -1782,7 +1891,8 @@ public class GatewayService {
                         effectiveText,
                         sentMessageId,
                         true,
-                        ""
+                        "",
+                        durationMs: this.startNowMs() - sendStartedAtMs
                     )
                     LogUtils.info("Gateway.sendTextToPeer: channel=${nm} peer=${peerId} ok")
                     return sentMessageId
@@ -1799,7 +1909,8 @@ public class GatewayService {
                 effectiveText,
                 send.messageId,
                 true,
-                ""
+                "",
+                durationMs: this.startNowMs() - sendStartedAtMs
             )
             LogUtils.info("Gateway.sendTextToPeer: channel=${nm} peer=${peerId} ok")
             return send.messageId
@@ -1812,7 +1923,8 @@ public class GatewayService {
             effectiveText,
             "",
             false,
-            send.lastReason
+            send.lastReason,
+            durationMs: this.startNowMs() - sendStartedAtMs
         )
         LogUtils.error("Gateway.sendTextToPeer: no adapter for channel='${nm}' peer=${peerId} lastReason=${send.lastReason}")
         throw Exception("no adapter for channel='${nm}' peer=${peerId} lastReason=${send.lastReason}")

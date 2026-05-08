@@ -60,6 +60,17 @@ private class GatewayTelegramNativeTestAdapter <: ChannelAdapter {
             case None => ""
         }
     }
+
+    public func sentReplyTo(index: Int64): String {
+        match (this.sent.get(index)) {
+            case Some(v) => v.replyToMessageId ?? ""
+            case None => ""
+        }
+    }
+
+    public func sentCount(): Int64 {
+        this.sent.size
+    }
 }
 
 private class GatewayTelegramSidecarMethodRecorder {
@@ -479,7 +490,7 @@ public class GatewayServiceTelegramNativeTest {
                 } else if (method == "hook.message_sending") {
                     out.put("cancelled", false.toJsonValue())
                     let text = payload.get("text").getOrThrow().asString().getValue()
-                    out.put("text", JsonString("hooked:${text}"))
+                    out.put("text", JsonString(if (text.startsWith("[")) { text } else { "hooked:${text}" }))
                 } else if (method == "hook.message_sent") {
                     @Expect(payload.get("sentMessageId").getOrThrow().asString().getValue().startsWith("test-message-"), true)
                     out.put("status", JsonString("ok"))
@@ -495,9 +506,11 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queue("/plugin_demo now")
             service.processOnce()
 
-            @Expect(adapter.sentText(0), "hooked:command handled")
-            @Expect(recorder.count("hook.message_sending"), 1)
-            @Expect(recorder.count("hook.message_sent"), 1)
+            @Expect(adapter.sentText(0), "hooked:Running /plugin_demo...")
+            @Expect(adapter.sentText(1), "[edit]\ncommand handled")
+            @Expect(adapter.sentReplyTo(1), "test-message-1")
+            @Expect(recorder.count("hook.message_sending"), 2)
+            @Expect(recorder.count("hook.message_sent"), 2)
         }
     }
 
@@ -553,6 +566,154 @@ public class GatewayServiceTelegramNativeTest {
             @Expect(adapter.sentText(1).contains("button=OK|callback:plugin:demo:ok"), true)
             @Expect(adapter.sentText(2), "[clear-buttons]")
             @Expect(adapter.sentText(3), "[delete]")
+        }
+    }
+
+    @TestCase
+    public func t51InteractiveCallbackImperativeCtxRespondAndBindingHelpersWorkThroughGateway(): Unit {
+        withGatewayTelegramNativeTestHome {
+            let root = Path("/tmp/metis-t51-openclaw-plugin-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+            let pluginRoot = root.join("demo-plugin")
+            Directory.create(pluginRoot, recursive: true)
+            setGatewayTelegramThreadBindingRootForTest(Some(root.join("bindings")))
+            File.writeTo(
+                pluginRoot.join("package.json"),
+                "{\"name\":\"demo-openclaw-plugin\",\"type\":\"module\",\"main\":\"index.mjs\"}".toArray()
+            )
+            File.writeTo(
+                pluginRoot.join("index.mjs"),
+                (
+                    "export default function(api) {\n" +
+                    "  api.interactive.register({ namespace: 'demo', channel: 'telegram' }, async (ctx) => {\n" +
+                    "    if (ctx.callback.payload === 'detach') {\n" +
+                    "      await ctx.detachConversationBinding();\n" +
+                    "      return;\n" +
+                    "    }\n" +
+                    "    const current = await ctx.getCurrentConversationBinding();\n" +
+                    "    await ctx.respond.reply({ text: 'reply:' + current.sessionKey, buttons: [[{ text: 'OK', callback_data: 'plugin:demo:ok' }]] });\n" +
+                    "    await ctx.respond.editMessage({ text: 'edited' });\n" +
+                    "    await ctx.respond.editButtons({ buttons: [[{ text: 'Next', callback_data: 'plugin:demo:next' }]] });\n" +
+                    "    await ctx.respond.clearButtons();\n" +
+                    "    await ctx.respond.deleteMessage();\n" +
+                    "    await ctx.requestConversationBinding({ sessionKey: 'agent:main:explicit:demo' });\n" +
+                    "  });\n" +
+                    "}\n"
+                ).toArray()
+            )
+
+            try {
+                var user = GatewayUserSettings()
+                user.telegram.enabled = true
+                user.telegram.allowFrom = ["*"]
+                user.telegram.actions.callbackQuery = true
+                user.telegram.threadBindings.enabled = true
+                let plugins = JsonArray([])
+                plugins.add(JsonString(pluginRoot.toString()))
+                let compat = JsonObject()
+                compat.put("enabled", true.toJsonValue())
+                compat.put("scriptPath", JsonString(CliConfig.cwd.join("scripts").join("openclaw-plugin-sidecar.mjs").toString()))
+                compat.put("plugins", plugins)
+                let extra = JsonObject()
+                extra.put("openclawPluginCompatibility", compat)
+                user.channelsExtra = Some(extra)
+                CliSettingManager.writeGatewaySettings(user)
+
+                let adapter = GatewayTelegramNativeTestAdapter()
+                let service = gatewayTelegramNativeService(adapter)
+                service.start()
+                adapter.queue("[telegram-callback]\nid=cb-imperative\nmessageId=77\nactionType=plugin-not-applicable\ndata=plugin:demo:run\nby=8734062810")
+                service.processOnce()
+
+                @Expect(adapter.sentText(0).contains("[inline-keyboard]"), true)
+                @Expect(adapter.sentText(0).contains("reply:telegram:direct:8734062810"), true)
+                @Expect(adapter.sentText(1), "[edit]\nedited")
+                @Expect(adapter.sentReplyTo(1), "77")
+                @Expect(adapter.sentText(2).contains("[edit-buttons]"), true)
+                @Expect(adapter.sentText(2).contains("button=Next|callback:plugin:demo:next"), true)
+                @Expect(adapter.sentText(3), "[clear-buttons]")
+                @Expect(adapter.sentText(4), "[delete]")
+                let binding = gatewayTelegramThreadBindingResolve("telegram", "default", "8734062810")
+                @Expect(binding.get("sessionKey").getOrThrow().asString().getValue(), "agent:main:explicit:demo")
+
+                adapter.queue("[telegram-callback]\nid=cb-detach\nmessageId=77\nactionType=plugin-not-applicable\ndata=plugin:demo:detach\nby=8734062810")
+                service.processOnce()
+                @Expect(gatewayTelegramThreadBindingResolve("telegram", "default", "8734062810").size(), 0)
+            } finally {
+                setGatewayTelegramThreadBindingRootForTest(None)
+                try { remove(root, recursive: true) } catch (_e: Exception) { () }
+            }
+        }
+    }
+
+    @TestCase
+    public func t51PluginHookPayloadsExposeReceivedMediaAndCanCancelSending(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+            let recorder = GatewayTelegramSidecarMethodRecorder()
+            setGatewayOpenClawPluginSidecarRunnerForTest(Some({ method: String, payload: JsonObject =>
+                recorder.add(method)
+                let out = JsonObject()
+                out.put("ok", true.toJsonValue())
+                if (method == "hook.message_received") {
+                    @Expect(payload.get("accountId").getOrThrow().asString().getValue(), "default")
+                    @Expect(payload.get("conversationId").getOrThrow().asString().getValue(), "group:-100:topic:42")
+                    @Expect(payload.get("threadId").getOrThrow().asString().getValue(), "42")
+                    @Expect(payload.get("mediaSummary").getOrThrow().asObject().get("count").getOrThrow().asInt().getValue(), 1)
+                    @Expect(payload.get("mediaSummary").getOrThrow().asObject().get("kinds").getOrThrow().asArray()[0].asString().getValue(), "photo")
+                } else if (method == "hook.message_sending") {
+                    @Expect(payload.get("conversationId").getOrThrow().asString().getValue(), "group:-100:topic:42")
+                    @Expect(payload.get("threadId").getOrThrow().asString().getValue(), "42")
+                    @Expect(payload.get("reply").getOrThrow().asObject().get("messageId").getOrThrow().asString().getValue(), "77")
+                    out.put("cancelled", true.toJsonValue())
+                    out.put("reason", JsonString("blocked by fixture"))
+                } else if (method == "hook.message_sent") {
+                    @Expect(payload.get("delivered").getOrThrow().asBool().getValue(), false)
+                    @Expect(payload.get("reason").getOrThrow().asString().getValue(), "blocked by fixture")
+                    @Expect(payload.get("messageIds").getOrThrow().asArray().size(), 0)
+                }
+                out
+            }))
+
+            let media = JsonObject()
+            let records = JsonArray([])
+            let record = JsonObject()
+            record.put("mediaKind", JsonString("photo"))
+            records.add(record)
+            media.put("records", records)
+            let _ = gatewayOpenClawPluginSidecarApplyMessageReceivedHook(
+                user,
+                "telegram",
+                "default",
+                "group:-100:topic:42",
+                "8734062810",
+                "msg-media",
+                "photo caption",
+                true,
+                "",
+                "{}",
+                conversationId: "group:-100:topic:42",
+                threadId: "42",
+                mediaContext: media
+            )
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            let sentId = service.sendTextToPeerDetailed(
+                "telegram",
+                "group:-100:topic:42",
+                "cancel me",
+                replyToMessageId: Some("77"),
+                replyInThread: true,
+                accountId: "default"
+            )
+            @Expect(sentId, "")
+            @Expect(adapter.sentCount(), 0)
+            @Expect(recorder.count("hook.message_received"), 1)
+            @Expect(recorder.count("hook.message_sending"), 1)
+            @Expect(recorder.count("hook.message_sent"), 1)
         }
     }
 
