@@ -164,6 +164,77 @@ export default async function register(api) {
   return root;
 }
 
+function makeConfigDoctorFixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "metis-openclaw-config-doctor-"));
+  fs.writeFileSync(
+    path.join(root, "package.json"),
+    JSON.stringify({ name: "gap08-config-doctor", type: "module", main: "index.mjs" }),
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(root, "openclaw.plugin.json"),
+    JSON.stringify({
+      id: "gap08-config-doctor",
+      configSchema: {
+        type: "object",
+        required: ["botToken", "endpoint"],
+        properties: {
+          botToken: { type: "string", title: "Bot token", format: "password", default: "manifest-secret-token" },
+          endpoint: { type: "string", title: "Endpoint", default: "https://api.example.invalid" },
+        },
+      },
+      setupHints: ["Create the upstream OpenClaw bot token."],
+      installHints: ["Restart the plugin after saving config."],
+    }),
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(root, "index.mjs"),
+    `
+export default async function register(api) {
+  api.registerConfigSchema({
+    name: "runtime-config",
+    schema: {
+      type: "object",
+      properties: {
+        runtimePassword: { type: "string", format: "password", default: "runtime-secret-password" }
+      }
+    }
+  });
+  api.registerSetup(
+    {
+      name: "primary-setup",
+      title: "Primary setup",
+      hints: ["Paste the token from OpenClaw setup."]
+    },
+    async ({ config }) => ({
+      ok: true,
+      configured: Boolean(config?.botToken),
+      hints: ["Paste the token from OpenClaw setup."]
+    })
+  );
+  api.registerDoctor(
+    {
+      name: "primary-doctor",
+      title: "Primary doctor"
+    },
+    async ({ config }) => ({
+      ok: false,
+      status: config?.botToken ? "ready" : "setup-required",
+      diagnostics: {
+        authorization: "Bearer doctor-secret-token",
+        message: "missing bot token"
+      }
+    })
+  );
+}
+`,
+    "utf8",
+  );
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
 test("persistent host loads raw register(api) plugin and captures OpenClaw capabilities", async (t) => {
   const host = startHost(t);
   const load = await host.request("plugin.load", {
@@ -248,6 +319,50 @@ test("persistent host captures OpenClaw SDK register aliases without converting 
 
   const serialized = JSON.stringify(registered);
   assert.equal(serialized.includes("GAP03_SECRET_TOKEN"), false);
+});
+
+test("persistent host exposes raw OpenClaw config schema, setup, and doctor surfaces without Metis manifest", async (t) => {
+  const host = startHost(t);
+  const root = makeConfigDoctorFixture(t);
+  assert.equal(fs.existsSync(path.join(root, "metis.plugin.json")), false);
+
+  const load = await host.request("plugin.load", {
+    roots: [root],
+    config: { botToken: "config-secret-token", endpoint: "https://api.example.invalid" },
+    secrets: { botToken: "store-secret-token" },
+  });
+
+  assert.equal(load.result.ok, true);
+  assert.equal(load.result.loadedPluginCount, 1);
+  assert.equal(JSON.stringify(load.result).includes("manifest-secret-token"), false);
+  assert.equal(JSON.stringify(load.result).includes("runtime-secret-password"), false);
+  assert.equal(JSON.stringify(load.result).includes("config-secret-token"), false);
+  assert.equal(JSON.stringify(load.result).includes("store-secret-token"), false);
+
+  const registered = await host.request("plugin.registeredCapabilities");
+  assert.ok(byName(registered.result.capabilities.configSchemas, "gap08-config-doctor"));
+  assert.ok(byName(registered.result.capabilities.configSchemas, "runtime-config"));
+  assert.ok(byName(registered.result.capabilities.setupSurfaces, "primary-setup"));
+  assert.ok(byName(registered.result.capabilities.doctorDiagnostics, "primary-doctor"));
+
+  const configSchemas = await host.request("config.schema", { pluginId: "gap08-config-doctor" });
+  assert.equal(configSchemas.result.ok, true);
+  assert.equal(configSchemas.result.schemas.length, 2);
+  assert.equal(JSON.stringify(configSchemas.result).includes("manifest-secret-token"), false);
+  assert.equal(JSON.stringify(configSchemas.result).includes("runtime-secret-password"), false);
+
+  const setup = await host.request("setup.status", { name: "primary-setup", config: { botToken: "configured-token" } });
+  assert.deepEqual(setup.result, {
+    ok: true,
+    configured: true,
+    hints: ["Paste the token from OpenClaw setup."],
+  });
+
+  const doctor = await host.request("doctor.run", { name: "primary-doctor", config: {} });
+  assert.equal(doctor.result.ok, false);
+  assert.equal(doctor.result.status, "setup-required");
+  assert.equal(JSON.stringify(doctor.result).includes("doctor-secret-token"), false);
+  assert.equal(doctor.result.diagnostics.authorization, "[REDACTED]");
 });
 
 test("discovers OpenClaw package entries from extensions, exports, dist, and TS source fallbacks", () => {

@@ -145,6 +145,8 @@ function emptyHandlers() {
     interactiveHandlers: [],
     approvalHandlers: [],
     gatewayMethods: [],
+    setupSurfaces: [],
+    doctorDiagnostics: [],
   };
 }
 
@@ -175,6 +177,9 @@ function emptyCapabilities() {
     memoryEmbeddingProviders: [],
     gatewayMethods: [],
     services: [],
+    configSchemas: [],
+    setupSurfaces: [],
+    doctorDiagnostics: [],
   };
 }
 
@@ -390,8 +395,42 @@ function capabilityName(spec, fallback = "") {
   return firstString(spec.name, spec.id, spec.command, spec.path, spec.method, plugin.id, plugin.name, fallback);
 }
 
+function isSensitiveSchemaField(name, field = {}) {
+  return (
+    SENSITIVE_KEY.test(String(name ?? "")) ||
+    String(field.format ?? "").toLowerCase() === "password" ||
+    field.secret === true ||
+    field["x-secret"] === true
+  );
+}
+
+function redactConfigSchemaDefaults(value, parentKey = "") {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactConfigSchemaDefaults(item, parentKey));
+  }
+  if (!isObject(value)) {
+    return value;
+  }
+
+  const sensitiveSelf = isSensitiveSchemaField(parentKey, value);
+  const out = {};
+  for (const [key, childValue] of Object.entries(value)) {
+    if (key === "default" && sensitiveSelf) {
+      continue;
+    }
+    if (key === "properties" && isObject(childValue)) {
+      out[key] = Object.fromEntries(
+        Object.entries(childValue).map(([fieldName, fieldValue]) => [fieldName, redactConfigSchemaDefaults(fieldValue, fieldName)]),
+      );
+      continue;
+    }
+    out[key] = redactConfigSchemaDefaults(childValue, key);
+  }
+  return out;
+}
+
 function addCapability(state, collection, pluginId, spec, extra = {}) {
-  const sanitizedSpec = state.redactor.sanitize(spec);
+  const sanitizedSpec = state.redactor.sanitize(redactConfigSchemaDefaults(spec));
   const plugin = isObject(spec) && isObject(spec.plugin) ? spec.plugin : {};
   const record = {
     pluginId,
@@ -409,7 +448,7 @@ function addCapability(state, collection, pluginId, spec, extra = {}) {
 }
 
 function addDiagnostic(state, diagnostic) {
-  state.diagnostics.push(state.redactor.sanitize(diagnostic));
+  state.diagnostics.push(state.redactor.sanitize(redactConfigSchemaDefaults(diagnostic)));
 }
 
 function buildRuntimeFacade(state, pluginId) {
@@ -462,6 +501,7 @@ function registerCapabilityWithHandler(state, collection, pluginId, spec, handle
     ...extra,
   });
   storeHandler(state, collection, record, resolvedHandler);
+  collectConfigurationFacets(state, pluginId, spec, "capability");
 }
 
 function pluginManifest(plugin) {
@@ -470,6 +510,75 @@ function pluginManifest(plugin) {
 
 function pluginPackageJson(plugin) {
   return plugin.packagePath ? readJsonFile(plugin.packagePath) : {};
+}
+
+function collectManifestConfigurationFacets(state, plugin, manifest) {
+  if (!isObject(manifest)) {
+    return;
+  }
+  if (isObject(manifest.configSchema)) {
+    addCapability(state, "configSchemas", plugin.id, {
+      name: plugin.id,
+      id: plugin.id,
+      source: "manifest.configSchema",
+      schema: manifest.configSchema,
+      setupHints: Array.isArray(manifest.setupHints) ? manifest.setupHints : [],
+      installHints: Array.isArray(manifest.installHints) ? manifest.installHints : [],
+    });
+  }
+  if (Array.isArray(manifest.setupHints) || Array.isArray(manifest.installHints) || isObject(manifest.setup)) {
+    addCapability(state, "setupSurfaces", plugin.id, {
+      name: plugin.id,
+      id: plugin.id,
+      source: "manifest.setup",
+      setup: isObject(manifest.setup) ? manifest.setup : {},
+      setupHints: Array.isArray(manifest.setupHints) ? manifest.setupHints : [],
+      installHints: Array.isArray(manifest.installHints) ? manifest.installHints : [],
+    });
+  }
+  if (isObject(manifest.doctor)) {
+    addCapability(state, "doctorDiagnostics", plugin.id, {
+      name: plugin.id,
+      id: plugin.id,
+      source: "manifest.doctor",
+      doctor: manifest.doctor,
+    });
+  }
+}
+
+function collectConfigurationFacets(state, pluginId, spec, source) {
+  if (!isObject(spec)) {
+    return;
+  }
+  const name = capabilityName(spec, pluginId);
+  if (isObject(spec.configSchema)) {
+    addCapability(state, "configSchemas", pluginId, {
+      name,
+      id: firstString(spec.id, spec.name, name),
+      source: `${source}.configSchema`,
+      schema: spec.configSchema,
+      ownerCapability: name,
+    });
+  }
+  if (isObject(spec.setup) || isObject(spec.setupWizard)) {
+    addCapability(state, "setupSurfaces", pluginId, {
+      name,
+      id: firstString(spec.id, spec.name, name),
+      source: `${source}.setup`,
+      setup: spec.setup ?? {},
+      setupWizard: spec.setupWizard ?? {},
+      ownerCapability: name,
+    });
+  }
+  if (isObject(spec.doctor)) {
+    addCapability(state, "doctorDiagnostics", pluginId, {
+      name,
+      id: firstString(spec.id, spec.name, name),
+      source: `${source}.doctor`,
+      doctor: spec.doctor,
+      ownerCapability: name,
+    });
+  }
 }
 
 function sourceForPlugin(state, plugin) {
@@ -604,6 +713,9 @@ function buildApi(state, plugin) {
     registerMemoryEmbeddingProvider: (spec) => addCapability(state, "memoryEmbeddingProviders", pluginId, spec),
     registerGatewayMethod: (spec, handler) => registerCapabilityWithHandler(state, "gatewayMethods", pluginId, spec, handler),
     registerService: (spec) => addCapability(state, "services", pluginId, spec),
+    registerConfigSchema: (spec) => addCapability(state, "configSchemas", pluginId, spec),
+    registerSetup: (spec, handler) => registerCapabilityWithHandler(state, "setupSurfaces", pluginId, spec, handler),
+    registerDoctor: (spec, handler) => registerCapabilityWithHandler(state, "doctorDiagnostics", pluginId, spec, handler),
   };
 
   return new Proxy(api, {
@@ -637,6 +749,7 @@ async function loadPlugin(state, plugin) {
   }
 
   try {
+    collectManifestConfigurationFacets(state, plugin, pluginManifest(plugin));
     const module = await importPluginModule(state, plugin);
     if (!module) {
       return;
@@ -779,6 +892,15 @@ function buildGatewayRegistries(state) {
       registryRecord(record, "provider.invoke", { id: record.id || record.name }),
     ),
     hooks: state.capabilities.hooks.map((record) => registryRecord(record, "hook.dispatch", { name: record.name || record.id })),
+    configSchemas: state.capabilities.configSchemas.map((record) =>
+      registryRecord(record, "config.schema", { pluginId: record.pluginId, name: record.name || record.id }),
+    ),
+    setupSurfaces: state.capabilities.setupSurfaces.map((record) =>
+      registryRecord(record, "setup.status", { pluginId: record.pluginId, name: record.name || record.id }),
+    ),
+    doctorDiagnostics: state.capabilities.doctorDiagnostics.map((record) =>
+      registryRecord(record, "doctor.run", { pluginId: record.pluginId, name: record.name || record.id }),
+    ),
   };
 }
 
@@ -958,6 +1080,52 @@ async function dispatchApproval(state, params) {
   );
 }
 
+function configSchemas(state, params) {
+  const pluginId = typeof params.pluginId === "string" ? params.pluginId.trim() : "";
+  const name = typeof params.name === "string" ? params.name.trim() : "";
+  const schemas = state.capabilities.configSchemas.filter((record) => {
+    if (pluginId && record.pluginId !== pluginId) {
+      return false;
+    }
+    if (name && record.name !== name && record.id !== name) {
+      return false;
+    }
+    return true;
+  });
+  return {
+    ok: true,
+    schemas: state.redactor.sanitize(schemas),
+  };
+}
+
+async function dispatchSetup(state, params) {
+  const entry = findHandlerEntry(state, "setupSurfaces", params, ["id", "name", "setup"]);
+  if (!entry) {
+    return handlerNotFound("setupSurfaces", params);
+  }
+  return dispatchThroughSecurity(state, entry, "setup.status", () =>
+    callHandler(
+      entry.handler,
+      [{ config: params.config ?? state.configSnapshot, secrets: params.secrets ?? state.secrets, context: params.context ?? {} }],
+      ["status", "getStatus", "handle", "run"],
+    ),
+  );
+}
+
+async function dispatchDoctor(state, params) {
+  const entry = findHandlerEntry(state, "doctorDiagnostics", params, ["id", "name", "doctor"]);
+  if (!entry) {
+    return handlerNotFound("doctorDiagnostics", params);
+  }
+  return dispatchThroughSecurity(state, entry, "doctor.run", () =>
+    callHandler(
+      entry.handler,
+      [{ config: params.config ?? state.configSnapshot, secrets: params.secrets ?? state.secrets, context: params.context ?? {} }],
+      ["run", "check", "diagnose", "handle"],
+    ),
+  );
+}
+
 async function handleRequest(state, request) {
   const id = request?.id ?? null;
   try {
@@ -1027,6 +1195,15 @@ async function handleRequest(state, request) {
     }
     if (method === "approval.dispatch") {
       return response(id, await dispatchApproval(state, params));
+    }
+    if (method === "config.schema") {
+      return response(id, configSchemas(state, params));
+    }
+    if (method === "setup.status") {
+      return response(id, await dispatchSetup(state, params));
+    }
+    if (method === "doctor.run") {
+      return response(id, await dispatchDoctor(state, params));
     }
     return response(id, null, { code: -32601, message: `unknown method: ${method}` });
   } catch (error) {
