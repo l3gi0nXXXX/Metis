@@ -6,6 +6,16 @@ import { fileURLToPath } from "node:url";
 const RELEASE_READY_STATUSES = new Set(["aligned", "not-applicable"]);
 const RELEASE_READY_EVIDENCE_STATUSES = new Set(["passed", "not-applicable"]);
 const VALID_STATUSES = new Set(["aligned", "not-applicable", "partial", "missing"]);
+const RECORD_COLLECTION_KEYS = new Set(["plugins", "matrix", "items", "records", "capabilities"]);
+const METADATA_KEYS = new Set([
+  "sources",
+  "diagnostics",
+  "summary",
+  "zero_cost_policy",
+  "zeroCostPolicy",
+  "release_blockers",
+  "releaseBlockers",
+]);
 
 export function validateOpenClawCompatGate({ inventory = {}, matrix = {} } = {}) {
   const errors = [];
@@ -178,13 +188,13 @@ function collectRecords(document, source, fallbackId, records) {
     records.push(toRecord(document, source, fallbackId));
     return;
   }
-  for (const key of ["plugins", "matrix", "items", "records", "capabilities"]) {
+  for (const key of RECORD_COLLECTION_KEYS) {
     if (Array.isArray(document[key])) {
       collectRecords(document[key], source, key, records);
     }
   }
   for (const [key, value] of Object.entries(document)) {
-    if (["plugins", "matrix", "items", "records", "capabilities"].includes(key)) continue;
+    if (RECORD_COLLECTION_KEYS.has(key) || METADATA_KEYS.has(key)) continue;
     if (isObject(value)) {
       collectRecords(value, source, key, records);
     }
@@ -220,8 +230,6 @@ function looksLikeRecord(value) {
     "behavior_test_status",
     "runtimeFacetsRequired",
     "runtime_facets_required",
-    "releaseBlockers",
-    "release_blockers",
     "pluginId",
     "plugin_id",
   ].some((field) =>

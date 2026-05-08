@@ -238,3 +238,37 @@ test("fails release gate when release blockers are present", () => {
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((error) => error.code === "release_blocker" && error.recordId === "blocked"));
 });
+
+test("does not treat metadata arrays as plugin records", () => {
+  const result = validateOpenClawCompatGate({
+    inventory: {
+      summary: { release_ready: false },
+      release_blockers: [
+        { plugin_id: "blocked", code: "release_status_not_ready" },
+      ],
+      diagnostics: [
+        { source: "qmd", code: "source_missing" },
+      ],
+      plugins: [
+        {
+          plugin_id: "blocked",
+          source_ref: "repo@abc123",
+          entry_path: "index.mjs",
+          register_apis: ["registerCommand"],
+          sdk_subpaths: ["@openclaw/plugin-sdk"],
+          metis_status: "missing",
+          real_plugin_smoke_status: "not-run",
+          behavior_test_status: "not-run",
+          runtime_facets_required: ["command"],
+          release_blockers: [],
+        },
+      ],
+    },
+    matrix: { plugins: [] },
+  });
+
+  assert.equal(result.records.length, 1);
+  assert.deepEqual(result.records.map((record) => record.recordId), ["blocked"]);
+  assert.ok(!result.errors.some((error) => error.code === "missing_entry"));
+  assert.ok(!result.errors.some((error) => error.code === "missing_source_ref"));
+});
