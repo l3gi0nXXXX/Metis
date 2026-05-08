@@ -11,6 +11,14 @@ import { validateOpenClawCompatGate } from "./openclaw-compat-ci-gate.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixtureRoot = path.join(__dirname, "fixtures", "openclaw-compat-ci");
 const artifactRoot = path.join("scripts", "fixtures", "openclaw-compat-ci", "artifacts");
+const passedSecurityEvidence = {
+  install_security_status: "passed",
+  install_security_artifact: path.join(artifactRoot, "chat-install-security.json"),
+  start_security_status: "passed",
+  start_security_artifact: path.join(artifactRoot, "chat-start-security.json"),
+  handler_security_status: "passed",
+  handler_security_artifact: path.join(artifactRoot, "chat-handler-security.json"),
+};
 
 function readFixture(name) {
   return JSON.parse(fs.readFileSync(path.join(fixtureRoot, name), "utf8"));
@@ -30,6 +38,7 @@ function alignedRecord(id, overrides = {}) {
     real_plugin_smoke_artifact: path.join(artifactRoot, "chat-smoke.json"),
     behavior_test_status: "passed",
     behavior_test_artifact: path.join(artifactRoot, "chat-behavior.json"),
+    ...passedSecurityEvidence,
     runtime_facets_required: ["command"],
     release_blockers: [],
     ...overrides,
@@ -62,6 +71,7 @@ test("accepts object-map matrix records from generated inventory artifacts", () 
         real_plugin_smoke_artifact: path.join(artifactRoot, "chat-smoke.json"),
         behavior_test_status: "passed",
         behavior_test_artifact: path.join(artifactRoot, "chat-behavior.json"),
+        ...passedSecurityEvidence,
         runtime_facets_required: ["command"],
         release_blockers: [],
       },
@@ -87,6 +97,7 @@ test("accepts generated Phase 0 snake_case inventory records", () => {
           real_plugin_smoke_artifact: path.join(artifactRoot, "chat-smoke.json"),
           behavior_test_status: "passed",
           behavior_test_artifact: path.join(artifactRoot, "chat-behavior.json"),
+          ...passedSecurityEvidence,
           runtime_facets_required: ["channel"],
           release_blockers: [],
           requires_metis_manifest: false,
@@ -120,6 +131,7 @@ test("fails generated inventory records that require source patching or wrappers
           real_plugin_smoke_artifact: path.join(artifactRoot, "chat-smoke.json"),
           behavior_test_status: "passed",
           behavior_test_artifact: path.join(artifactRoot, "chat-behavior.json"),
+          ...passedSecurityEvidence,
           runtime_facets_required: [],
           release_blockers: [],
           requires_metis_manifest: true,
@@ -180,6 +192,9 @@ test("reports missing sourceRef, entry, registerApis, sdkSubpaths, and status fi
       "missing_register_apis",
       "missing_behavior_test_status",
       "missing_real_plugin_smoke_status",
+      "missing_install_security_status",
+      "missing_start_security_status",
+      "missing_handler_security_status",
       "missing_release_blockers",
       "missing_sdk_subpaths",
       "missing_source_ref",
@@ -205,6 +220,7 @@ test("treats string compatibility escape-hatch markers as failing markers", () =
           real_plugin_smoke_artifact: path.join(artifactRoot, "chat-smoke.json"),
           behavior_test_status: "passed",
           behavior_test_artifact: path.join(artifactRoot, "chat-behavior.json"),
+          ...passedSecurityEvidence,
           runtime_facets_required: ["command"],
           release_blockers: [],
           requiresWrapper: "true",
@@ -232,6 +248,7 @@ test("fails release gate when smoke or behavior evidence is missing or not ready
           status: "aligned",
           real_plugin_smoke_status: "pending",
           behavior_test_status: "missing",
+          ...passedSecurityEvidence,
           runtime_facets_required: ["command"],
           release_blockers: [],
         },
@@ -260,6 +277,91 @@ test("fails release gate when passed smoke or behavior evidence lacks artifact p
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((error) => error.code === "missing_real_plugin_smoke_artifact" && error.recordId === "no-artifacts"));
   assert.ok(result.errors.some((error) => error.code === "missing_behavior_test_artifact" && error.recordId === "no-artifacts"));
+});
+
+test("fails aligned promotion when install, start, or handler security evidence is missing", () => {
+  const result = validateOpenClawCompatGate({
+    inventory: { plugins: [] },
+    matrix: {
+      matrix: [
+        alignedRecord("missing-security-evidence", {
+          install_security_status: undefined,
+          install_security_artifact: undefined,
+          start_security_status: undefined,
+          start_security_artifact: undefined,
+          handler_security_status: undefined,
+          handler_security_artifact: undefined,
+        }),
+      ],
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.code === "missing_install_security_status" && error.recordId === "missing-security-evidence"));
+  assert.ok(result.errors.some((error) => error.code === "missing_start_security_status" && error.recordId === "missing-security-evidence"));
+  assert.ok(result.errors.some((error) => error.code === "missing_handler_security_status" && error.recordId === "missing-security-evidence"));
+});
+
+test("fails aligned promotion unless every security gate status is passed", () => {
+  const result = validateOpenClawCompatGate({
+    inventory: { plugins: [] },
+    matrix: {
+      matrix: [
+        alignedRecord("not-run-security", {
+          install_security_status: "not-run",
+        }),
+        alignedRecord("not-applicable-security", {
+          start_security_status: "not-applicable",
+        }),
+      ],
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.code === "install_security_not_ready" && error.recordId === "not-run-security"));
+  assert.ok(result.errors.some((error) => error.code === "aligned_security_evidence_not_passed" && error.recordId === "not-applicable-security"));
+});
+
+test("fails aligned promotion unless smoke and behavior evidence are passed artifacts", () => {
+  const result = validateOpenClawCompatGate({
+    inventory: { plugins: [] },
+    matrix: {
+      matrix: [
+        alignedRecord("not-applicable-smoke", {
+          real_plugin_smoke_status: "not-applicable",
+          real_plugin_smoke_artifact: undefined,
+        }),
+        alignedRecord("not-applicable-behavior", {
+          behavior_test_status: "not-applicable",
+          behavior_test_artifact: undefined,
+        }),
+      ],
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.code === "aligned_evidence_not_passed" && error.recordId === "not-applicable-smoke"));
+  assert.ok(result.errors.some((error) => error.code === "aligned_evidence_not_passed" && error.recordId === "not-applicable-behavior"));
+});
+
+test("fails release gate when security artifacts are missing or do not match the schema", () => {
+  const result = validateOpenClawCompatGate({
+    inventory: { plugins: [] },
+    matrix: {
+      matrix: [
+        alignedRecord("missing-security-artifact", {
+          install_security_artifact: path.join(artifactRoot, "missing-install-security.json"),
+        }),
+        alignedRecord("wrong-security-artifact", {
+          handler_security_artifact: path.join(artifactRoot, "chat-behavior.json"),
+        }),
+      ],
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.code === "install_security_artifact_missing" && error.recordId === "missing-security-artifact"));
+  assert.ok(result.errors.some((error) => error.code === "invalid_handler_security_artifact" && error.recordId === "wrong-security-artifact"));
 });
 
 test("fails release gate when referenced smoke or behavior artifacts do not exist", () => {
@@ -395,7 +497,10 @@ test("fails release gate when release blockers are present", () => {
           sdkSubpaths: ["@openclaw/plugin-sdk"],
           status: "aligned",
           real_plugin_smoke_status: "passed",
+          real_plugin_smoke_artifact: path.join(artifactRoot, "chat-smoke.json"),
           behavior_test_status: "passed",
+          behavior_test_artifact: path.join(artifactRoot, "chat-behavior.json"),
+          ...passedSecurityEvidence,
           runtime_facets_required: ["command"],
           release_blockers: ["requires channel runtime"],
         },
@@ -427,6 +532,9 @@ test("does not treat metadata arrays as plugin records", () => {
           metis_status: "missing",
           real_plugin_smoke_status: "not-run",
           behavior_test_status: "not-run",
+          install_security_status: "not-run",
+          start_security_status: "not-run",
+          handler_security_status: "not-run",
           runtime_facets_required: ["command"],
           release_blockers: [],
         },

@@ -1,0 +1,12 @@
+{
+  "plugin_id": "chat",
+  "kind": "security_gate",
+  "stage": "start",
+  "status": "passed",
+  "allowed": true,
+  "decision": {
+    "stage": "start",
+    "allowed": true,
+    "code": "allowed"
+  }
+}

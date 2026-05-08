@@ -10,6 +10,32 @@ const RELEASE_READY_EVIDENCE_STATUSES = new Set(["passed", "not-applicable"]);
 const VALID_STATUSES = new Set(["aligned", "not-applicable", "partial", "missing"]);
 const REQUIRED_SOURCE_NAMES = ["openclaw", "openclaw-china", "openclaw-weixin", "clawmate", "qmd"];
 const REPRESENTATIVE_EVIDENCE_SOURCES = ["openclaw-china", "openclaw-weixin", "clawmate"];
+const SECURITY_EVIDENCE_FIELDS = Object.freeze([
+  {
+    stage: "install",
+    statusField: "installSecurityStatus",
+    artifactField: "installSecurityArtifact",
+    statusCode: "missing_install_security_status",
+    notReadyCode: "install_security_not_ready",
+    artifactPrefix: "install_security",
+  },
+  {
+    stage: "start",
+    statusField: "startSecurityStatus",
+    artifactField: "startSecurityArtifact",
+    statusCode: "missing_start_security_status",
+    notReadyCode: "start_security_not_ready",
+    artifactPrefix: "start_security",
+  },
+  {
+    stage: "handler",
+    statusField: "handlerSecurityStatus",
+    artifactField: "handlerSecurityArtifact",
+    statusCode: "missing_handler_security_status",
+    notReadyCode: "handler_security_not_ready",
+    artifactPrefix: "handler_security",
+  },
+]);
 const RECORD_COLLECTION_KEYS = new Set(["plugins", "matrix", "items", "records", "capabilities"]);
 const METADATA_KEYS = new Set([
   "sources",
@@ -63,6 +89,9 @@ function validateRecord(record, errors, context) {
   requireField(value, "status", "missing_status", record, errors, isPresent);
   requireField(value, "realPluginSmokeStatus", "missing_real_plugin_smoke_status", record, errors, isPresent);
   requireField(value, "behaviorTestStatus", "missing_behavior_test_status", record, errors, isPresent);
+  for (const field of SECURITY_EVIDENCE_FIELDS) {
+    requireField(value, field.statusField, field.statusCode, record, errors, isPresent);
+  }
   requireField(value, "runtimeFacetsRequired", "missing_runtime_facets_required", record, errors, Array.isArray);
   requireField(value, "releaseBlockers", "missing_release_blockers", record, errors, Array.isArray);
 
@@ -74,8 +103,26 @@ function validateRecord(record, errors, context) {
 
   validateEvidenceStatus(value.realPluginSmokeStatus, "real plugin smoke", "real_plugin_smoke_not_ready", record, errors);
   validateEvidenceStatus(value.behaviorTestStatus, "behavior test", "behavior_test_not_ready", record, errors);
-  validateEvidenceArtifact(value.realPluginSmokeStatus, value.realPluginSmokeArtifact, "real plugin smoke", "real_plugin_smoke", record, errors, context);
-  validateEvidenceArtifact(value.behaviorTestStatus, value.behaviorTestArtifact, "behavior test", "behavior_test", record, errors, context);
+  validateEvidenceArtifact(value.realPluginSmokeStatus, value.realPluginSmokeArtifact, {
+    label: "real plugin smoke",
+    codePrefix: "real_plugin_smoke",
+    expectedKind: "real_plugin_smoke",
+  }, record, errors, context);
+  validateEvidenceArtifact(value.behaviorTestStatus, value.behaviorTestArtifact, {
+    label: "behavior test",
+    codePrefix: "behavior_test",
+    expectedKind: "behavior_test",
+  }, record, errors, context);
+  for (const field of SECURITY_EVIDENCE_FIELDS) {
+    validateEvidenceStatus(value[field.statusField], `${field.stage} security`, field.notReadyCode, record, errors);
+    validateEvidenceArtifact(value[field.statusField], value[field.artifactField], {
+      label: `${field.stage} security`,
+      codePrefix: field.artifactPrefix,
+      expectedKind: "security_gate",
+      expectedStage: field.stage,
+    }, record, errors, context);
+  }
+  validateAlignedPromotionEvidence(value, record, errors);
   validateReleaseBlockers(value.releaseBlockers, record, errors);
 
   if (isMarked(value.requiresMetisManifest)) {
@@ -250,8 +297,9 @@ function validateEvidenceStatus(value, label, code, record, errors) {
   }
 }
 
-function validateEvidenceArtifact(status, artifactValue, label, codePrefix, record, errors, context) {
+function validateEvidenceArtifact(status, artifactValue, schema, record, errors, context) {
   if (!isPassedEvidence(status)) return;
+  const { label, codePrefix } = schema;
   const artifactPaths = artifactPathList(artifactValue);
   if (artifactPaths.length === 0) {
     errors.push(error(`missing_${codePrefix}_artifact`, `${record.source}:${record.recordId} ${label} evidence is missing an artifact path`, record));
@@ -261,6 +309,55 @@ function validateEvidenceArtifact(status, artifactValue, label, codePrefix, reco
     const resolved = path.isAbsolute(artifactPath) ? artifactPath : path.resolve(context.artifactRoot, artifactPath);
     if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
       errors.push(error(`${codePrefix}_artifact_missing`, `${record.source}:${record.recordId} ${label} artifact is missing: ${artifactPath}`, record));
+      continue;
+    }
+    validateArtifactSchema(resolved, schema, artifactPath, record, errors);
+  }
+}
+
+function validateArtifactSchema(resolved, schema, artifactPath, record, errors) {
+  let artifact;
+  try {
+    artifact = JSON.parse(fs.readFileSync(resolved, "utf8"));
+  } catch {
+    errors.push(error(`invalid_${schema.codePrefix}_artifact`, `${record.source}:${record.recordId} ${schema.label} artifact is not valid JSON: ${artifactPath}`, record));
+    return;
+  }
+  if (!isObject(artifact)) {
+    errors.push(error(`invalid_${schema.codePrefix}_artifact`, `${record.source}:${record.recordId} ${schema.label} artifact must be a JSON object: ${artifactPath}`, record));
+    return;
+  }
+  if (artifact.kind !== schema.expectedKind) {
+    errors.push(error(`invalid_${schema.codePrefix}_artifact`, `${record.source}:${record.recordId} ${schema.label} artifact kind must be ${schema.expectedKind}: ${artifactPath}`, record));
+  }
+  if (artifact.status !== "passed") {
+    errors.push(error(`invalid_${schema.codePrefix}_artifact`, `${record.source}:${record.recordId} ${schema.label} artifact status must be passed: ${artifactPath}`, record));
+  }
+  if (schema.expectedStage && artifact.stage !== schema.expectedStage) {
+    errors.push(error(`invalid_${schema.codePrefix}_artifact`, `${record.source}:${record.recordId} ${schema.label} artifact stage must be ${schema.expectedStage}: ${artifactPath}`, record));
+  }
+  if (schema.expectedKind === "security_gate") {
+    const allowed = artifact.allowed ?? artifact.decision?.allowed;
+    if (allowed !== true) {
+      errors.push(error(`invalid_${schema.codePrefix}_artifact`, `${record.source}:${record.recordId} ${schema.label} artifact must record an allowed security decision: ${artifactPath}`, record));
+    }
+  }
+}
+
+function validateAlignedPromotionEvidence(value, record, errors) {
+  if (value.status !== "aligned") return;
+  const requiredEvidence = [
+    ["realPluginSmokeStatus", "real plugin smoke"],
+    ["behaviorTestStatus", "behavior test"],
+  ];
+  for (const [statusField, label] of requiredEvidence) {
+    if (!isPassedEvidence(value[statusField])) {
+      errors.push(error("aligned_evidence_not_passed", `${record.source}:${record.recordId} aligned status requires passed ${label} evidence`, record));
+    }
+  }
+  for (const field of SECURITY_EVIDENCE_FIELDS) {
+    if (!isPassedEvidence(value[field.statusField])) {
+      errors.push(error("aligned_security_evidence_not_passed", `${record.source}:${record.recordId} aligned status requires passed ${field.stage} security evidence`, record));
     }
   }
 }
@@ -405,6 +502,27 @@ function normalizeRecordFields(value) {
       ?? value.behavior_test_artifact_path
       ?? value.behaviorTestArtifacts
       ?? value.behavior_test_artifacts,
+    installSecurityStatus: value.installSecurityStatus ?? value.install_security_status,
+    installSecurityArtifact: value.installSecurityArtifact
+      ?? value.installSecurityArtifactPath
+      ?? value.install_security_artifact
+      ?? value.install_security_artifact_path
+      ?? value.installSecurityArtifacts
+      ?? value.install_security_artifacts,
+    startSecurityStatus: value.startSecurityStatus ?? value.start_security_status,
+    startSecurityArtifact: value.startSecurityArtifact
+      ?? value.startSecurityArtifactPath
+      ?? value.start_security_artifact
+      ?? value.start_security_artifact_path
+      ?? value.startSecurityArtifacts
+      ?? value.start_security_artifacts,
+    handlerSecurityStatus: value.handlerSecurityStatus ?? value.handler_security_status,
+    handlerSecurityArtifact: value.handlerSecurityArtifact
+      ?? value.handlerSecurityArtifactPath
+      ?? value.handler_security_artifact
+      ?? value.handler_security_artifact_path
+      ?? value.handlerSecurityArtifacts
+      ?? value.handler_security_artifacts,
     runtimeFacetsRequired: value.runtimeFacetsRequired ?? value.runtime_facets_required,
     releaseBlockers: value.releaseBlockers ?? value.release_blockers,
     requiresMetisManifest: value.requiresMetisManifest ?? value.requires_metis_manifest,

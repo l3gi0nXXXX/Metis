@@ -9,6 +9,7 @@ import {
   derivePermissionRequirements,
   enforceOpenClawInstallSource,
   evaluateSecurityPolicy,
+  normalizeSecurityEvidenceArtifact,
   normalizeSecurityDecisionSnapshot,
   redactDiagnostics,
 } from "./openclaw-compat-security-policy.mjs";
@@ -254,6 +255,48 @@ test("security snapshots remove token password and authorization words", () => {
 
   const snapshot = JSON.stringify(normalizeSecurityDecisionSnapshot(denied));
   assert.doesNotMatch(snapshot, /stolen-token|top-secret-password|token|password|authorization/i);
+});
+
+test("normalizes install start and handler decisions into security evidence artifacts", () => {
+  const enforcer = new OpenClawSecurityEnforcer({
+    pluginId: "risky-plugin",
+    manifest: readFixture("openclaw.plugin.json"),
+    packageJson: readFixture("package.json"),
+    capabilityRecords: readFixture("capabilities.json"),
+    source: {
+      url: "https://github.com/openclaw/risky-plugin.git",
+      ref: "refs/tags/v1.0.0",
+      hash: "sha256:good",
+    },
+    sourceAllowlist: [
+      {
+        url: "https://github.com/openclaw/risky-plugin.git",
+        ref: "refs/tags/v1.0.0",
+        hash: "sha256:good",
+      },
+    ],
+    grants: {
+      network: [{ resource: "api.example.com", needsApproval: false }],
+    },
+  });
+
+  const install = normalizeSecurityEvidenceArtifact(enforcer.enforceInstall());
+  const start = normalizeSecurityEvidenceArtifact(enforcer.enforceStart(), { status: "failed" });
+  const handler = normalizeSecurityEvidenceArtifact(enforcer.enforceRuntimePermission({
+    category: "network",
+    resource: "https://api.example.com/messages",
+  }));
+
+  assert.equal(install.kind, "security_gate");
+  assert.equal(install.stage, "install");
+  assert.equal(install.status, "passed");
+  assert.equal(install.allowed, true);
+  assert.equal(start.stage, "start");
+  assert.equal(start.status, "failed");
+  assert.equal(start.allowed, false);
+  assert.equal(handler.stage, "handler");
+  assert.equal(handler.status, "passed");
+  assert.equal(handler.allowed, true);
 });
 
 test("guarded handler failures and timeouts return redacted denial decisions", async () => {

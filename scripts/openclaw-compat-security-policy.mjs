@@ -324,6 +324,19 @@ export function normalizeSecurityDecisionSnapshot(decision) {
   return securityDecision({ ...decision });
 }
 
+export function normalizeSecurityEvidenceArtifact(decision, { status } = {}) {
+  const snapshot = normalizeSecurityDecisionSnapshot(decision);
+  return redactDiagnostics({
+    plugin_id: snapshot.pluginId,
+    kind: "security_gate",
+    stage: snapshot.stage,
+    status: status ?? (snapshot.allowed ? "passed" : "failed"),
+    allowed: snapshot.allowed,
+    code: snapshot.code,
+    decision: snapshot,
+  });
+}
+
 function collectPermissionBlock(block, source, add) {
   if (block == null || block === false) return;
   if (Array.isArray(block)) {
