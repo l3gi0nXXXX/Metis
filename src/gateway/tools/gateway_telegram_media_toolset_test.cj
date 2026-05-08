@@ -7,6 +7,7 @@ import magic.core.model.{AsyncChatResponse, ChatModel, ChatRequest, ChatResponse
 import magic.jsonable.*
 import magic.model.ModelManager
 
+import std.collection.ArrayList
 import std.env.{getVariable, setVariable}
 import std.fs.{Directory, File, Path, exists, remove}
 import std.time.DateTime
@@ -871,6 +872,92 @@ public class GatewayTelegramMediaToolsetTest {
             } finally {
                 toolset.debugSetGatewayCallRunnerForTest(None<(String, JsonObject) -> JsonObject>)
             }
+        }
+    }
+
+    @TestCase
+    public func telegramActionBuildsUnifiedGatewaySendPayloads(): Unit {
+        let toolset = GatewayTelegramMediaToolset()
+        let sent = ArrayList<JsonObject>()
+        toolset.debugSetGatewayCallRunnerForTest(Some({ method: String, params: JsonObject =>
+            @Expect(method, "channels.send")
+            sent.add(params)
+            let out = JsonObject()
+            out.put("ok", JsonBool(true))
+            out.put("messageId", JsonString("900"))
+            out
+        }))
+        try {
+            let ctx = GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:direct:user:8734062810")
+            let sendOut = gatewayWithToolRuntimeContext(ctx, { =>
+                toolset.debugTelegramActionForTest("sendMessage", None<String>, Some("hello"), None<String>, None<String>, None<Array<String>>, None<String>, None<String>)
+            })
+            @Expect(JsonValue.fromStr(sendOut).asObject().get("status").getOrThrow().asString().getValue(), "accepted")
+            let reactOut = gatewayWithToolRuntimeContext(ctx, { =>
+                toolset.debugTelegramActionForTest("react", None<String>, None<String>, Some("101"), Some("👍"), None<Array<String>>, None<String>, None<String>)
+            })
+            @Expect(JsonValue.fromStr(reactOut).asObject().get("telegramAction").getOrThrow().asString().getValue(), "react")
+            let pollOut = gatewayWithToolRuntimeContext(ctx, { =>
+                toolset.debugTelegramActionForTest("poll", None<String>, Some("Pick one"), None<String>, None<String>, Some(["A", "B"]), None<String>, None<String>)
+            })
+            @Expect(JsonValue.fromStr(pollOut).asObject().get("status").getOrThrow().asString().getValue(), "accepted")
+            let deleteOut = gatewayWithToolRuntimeContext(ctx, { =>
+                toolset.debugTelegramActionForTest("delete", None<String>, None<String>, Some("102"), None<String>, None<Array<String>>, None<String>, None<String>)
+            })
+            @Expect(JsonValue.fromStr(deleteOut).asObject().get("status").getOrThrow().asString().getValue(), "accepted")
+            let editOut = gatewayWithToolRuntimeContext(ctx, { =>
+                toolset.debugTelegramActionForTest("edit", None<String>, Some("updated"), Some("103"), None<String>, None<Array<String>>, None<String>, None<String>)
+            })
+            @Expect(JsonValue.fromStr(editOut).asObject().get("status").getOrThrow().asString().getValue(), "accepted")
+            let stickerOut = gatewayWithToolRuntimeContext(ctx, { =>
+                toolset.debugTelegramActionForTest("sendSticker", None<String>, None<String>, None<String>, None<String>, None<Array<String>>, Some("sticker-file-id"), None<String>)
+            })
+            @Expect(JsonValue.fromStr(stickerOut).asObject().get("status").getOrThrow().asString().getValue(), "accepted")
+            let topicCreateOut = gatewayWithToolRuntimeContext(ctx, { =>
+                toolset.debugTelegramActionForTest("topic-create", Some("group:-100123"), None<String>, None<String>, None<String>, None<Array<String>>, None<String>, Some("Sprint"))
+            })
+            @Expect(JsonValue.fromStr(topicCreateOut).asObject().get("status").getOrThrow().asString().getValue(), "accepted")
+            let topicEditOut = gatewayWithToolRuntimeContext(ctx, { =>
+                toolset.debugTelegramActionForTest("topic-edit", Some("group:-100123"), None<String>, Some("42"), None<String>, None<Array<String>>, None<String>, Some("Renamed"))
+            })
+            @Expect(JsonValue.fromStr(topicEditOut).asObject().get("status").getOrThrow().asString().getValue(), "accepted")
+
+            @Expect(sent.size, 8)
+            @Expect(sent[0].get("text").getOrThrow().asString().getValue(), "hello")
+            @Expect(sent[1].get("text").getOrThrow().asString().getValue().contains("[reaction]"), true)
+            @Expect(sent[1].get("replyToMessageId").getOrThrow().asString().getValue(), "101")
+            @Expect(sent[2].get("text").getOrThrow().asString().getValue().contains("[poll]"), true)
+            @Expect(sent[3].get("text").getOrThrow().asString().getValue(), "[delete]")
+            @Expect(sent[4].get("text").getOrThrow().asString().getValue().contains("[edit]"), true)
+            @Expect(sent[5].get("text").getOrThrow().asString().getValue().contains("[sticker]"), true)
+            @Expect(sent[6].get("text").getOrThrow().asString().getValue().contains("[topic-create]"), true)
+            @Expect(sent[7].get("text").getOrThrow().asString().getValue().contains("[topic-edit]"), true)
+        } finally {
+            toolset.debugSetGatewayCallRunnerForTest(None<(String, JsonObject) -> JsonObject>)
+        }
+    }
+
+    @TestCase
+    public func telegramActionDisabledReturnsStructuredError(): Unit {
+        let toolset = GatewayTelegramMediaToolset()
+        toolset.debugSetGatewayCallRunnerForTest(Some({ _method: String, _params: JsonObject =>
+            let out = JsonObject()
+            out.put("ok", JsonBool(false))
+            out.put("reason", JsonString("telegram reaction action is disabled"))
+            out
+        }))
+        try {
+            let out = gatewayWithToolRuntimeContext(
+                GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:direct:user:8734062810"),
+                { => toolset.debugTelegramActionForTest("react", None<String>, None<String>, Some("101"), Some("👍"), None<Array<String>>, None<String>, None<String>) }
+            )
+            let json = JsonValue.fromStr(out).asObject()
+            @Expect(json.get("ok").getOrThrow().asBool().getValue(), false)
+            @Expect(json.get("status").getOrThrow().asString().getValue(), "error")
+            @Expect(json.get("errorCode").getOrThrow().asString().getValue(), "action_disabled")
+            @Expect(json.get("reason").getOrThrow().asString().getValue().contains("disabled"), true)
+        } finally {
+            toolset.debugSetGatewayCallRunnerForTest(None<(String, JsonObject) -> JsonObject>)
         }
     }
 }

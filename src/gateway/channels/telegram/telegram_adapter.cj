@@ -15,6 +15,7 @@ import std.fs.{Directory, File, FileInfo, Path, canonicalize, exists}
 import std.sync.Mutex
 import std.time.*
 import stdx.encoding.json.*
+import stdx.encoding.url.URL
 import stdx.net.http.*
 
 private let TELEGRAM_DEFAULT_ACCOUNT_ID = "default"
@@ -112,6 +113,28 @@ public func setTelegramAsrRunnerForTest(runner: Option<(String, String) -> Strin
     telegramAsrRunnerOverride = runner
 }
 
+public class TelegramOutboundMediaDownloadResult {
+    public let ok: Bool
+    public let bytes: Array<Byte>
+    public let mimeType: String
+    public let fileName: String
+    public let error: String
+
+    public init(ok: Bool, bytes!: Array<Byte> = [], mimeType!: String = "", fileName!: String = "", error!: String = "") {
+        this.ok = ok
+        this.bytes = bytes
+        this.mimeType = mimeType.trimAscii()
+        this.fileName = fileName.trimAscii()
+        this.error = error.trimAscii()
+    }
+}
+
+private var telegramOutboundMediaDownloaderOverride: Option<(String, Int64) -> TelegramOutboundMediaDownloadResult> = None<(String, Int64) -> TelegramOutboundMediaDownloadResult>
+
+public func setTelegramOutboundMediaDownloaderForTest(runner: Option<(String, Int64) -> TelegramOutboundMediaDownloadResult>): Unit {
+    telegramOutboundMediaDownloaderOverride = runner
+}
+
 private class TelegramWebhookBodyReadResult {
     public let ok: Bool
     public let payload: String
@@ -189,6 +212,7 @@ public class TelegramAdapter <: ChannelAdapter {
     private let pendingMediaGroups = HashMap<String, TelegramPendingMediaGroup>()
     private let pendingTextBursts = HashMap<String, TelegramPendingTextBurst>()
     private let groupHistoryByPeer = HashMap<String, ArrayList<JsonObject>>()
+    private let outboundRemoteMediaCache = HashMap<String, TelegramOutboundMediaDownloadResult>()
     private let webhookGuardMutex = Mutex()
     private let webhookRateWindowStartedAtBySource = HashMap<String, Int64>()
     private let webhookRateCountBySource = HashMap<String, Int64>()
@@ -2779,8 +2803,12 @@ public class TelegramAdapter <: ChannelAdapter {
         if (kind == "media-group" || kind == "edit-media") {
             return this.sendComplexMediaPayloadToTelegram(url, kind, payload)
         }
-        let responseOpt = match (this.localMediaUploadForPayload(kind, payload)) {
-            case Some(upload) => this.telegramMultipartPost(url, payload, upload[0], upload[1], context: "send:${kind}:multipart")
+        let uploadOpt = this.mediaUploadForPayload(kind, payload)
+        if (uploadOpt.isNone() && this.payloadHasRemoteUrlFetchMedia(kind, payload) && !this.lastSendError.trimAscii().isEmpty()) {
+            return ""
+        }
+        let responseOpt = match (uploadOpt) {
+            case Some(upload) => this.telegramMultipartPost(url, payload, upload, context: "send:${kind}:multipart")
             case None => this.telegramJsonPost(url, this.telegramApiBodyForPayload(payload, plainFallback: false), context: "send:${kind}")
         }
         let responseRaw = match (responseOpt) {
@@ -2803,8 +2831,12 @@ public class TelegramAdapter <: ChannelAdapter {
         }
         if (this.shouldRetryWithoutTelegramThread(payload)) {
             let threadlessPayload = this.telegramPayloadWithoutThread(payload)
-            let retryResponseOpt = match (this.localMediaUploadForPayload(kind, threadlessPayload)) {
-                case Some(upload) => this.telegramMultipartPost(url, threadlessPayload, upload[0], upload[1], context: "send:${kind}:threadless:multipart")
+            let retryUploadOpt = this.mediaUploadForPayload(kind, threadlessPayload)
+            if (retryUploadOpt.isNone() && this.payloadHasRemoteUrlFetchMedia(kind, threadlessPayload) && !this.lastSendError.trimAscii().isEmpty()) {
+                return ""
+            }
+            let retryResponseOpt = match (retryUploadOpt) {
+                case Some(upload) => this.telegramMultipartPost(url, threadlessPayload, upload, context: "send:${kind}:threadless:multipart")
                 case None => this.telegramJsonPost(url, this.telegramApiBodyForPayload(threadlessPayload, plainFallback: false), context: "send:${kind}:threadless")
             }
             match (retryResponseOpt) {
@@ -2838,8 +2870,12 @@ public class TelegramAdapter <: ChannelAdapter {
             }
             plainPayload[key] = value
         }
-        let plainResponseOpt = match (this.localMediaUploadForPayload(kind, plainPayload)) {
-            case Some(upload) => this.telegramMultipartPost(url, plainPayload, upload[0], upload[1], context: "send:${kind}:plain:multipart")
+        let plainUploadOpt = this.mediaUploadForPayload(kind, plainPayload)
+        if (plainUploadOpt.isNone() && this.payloadHasRemoteUrlFetchMedia(kind, plainPayload) && !this.lastSendError.trimAscii().isEmpty()) {
+            return ""
+        }
+        let plainResponseOpt = match (plainUploadOpt) {
+            case Some(upload) => this.telegramMultipartPost(url, plainPayload, upload, context: "send:${kind}:plain:multipart")
             case None => this.telegramJsonPost(url, this.telegramApiBodyForPayload(plainPayload, plainFallback: true), context: "send:${kind}:plain")
         }
         let plainResponseRaw = match (plainResponseOpt) {
@@ -3067,7 +3103,7 @@ public class TelegramAdapter <: ChannelAdapter {
         out
     }
 
-    private func localMediaUploadForPayload(kind: String, payload: HashMap<String, JsonValue>): Option<Array<String>> {
+    private func mediaUploadForPayload(kind: String, payload: HashMap<String, JsonValue>): Option<TelegramMultipartFile> {
         let mediaField = this.telegramMediaFieldForPayloadKind(kind)
         if (mediaField.isEmpty()) {
             return None
@@ -3077,9 +3113,207 @@ public class TelegramAdapter <: ChannelAdapter {
             case None => ""
         }
         if (ref.isEmpty() || !this.looksLikeLocalMediaPath(ref)) {
+            if (this.outboundRemoteUrlShouldFetch(ref)) {
+                return this.remoteMediaUploadForPayload(kind, mediaField, ref)
+            }
             return None
         }
-        Some([mediaField, this.normalizeOutboundLocalMediaPath(ref)])
+        Some(TelegramMultipartFile(mediaField, filePath: this.normalizeOutboundLocalMediaPath(ref)))
+    }
+
+    private func payloadHasRemoteUrlFetchMedia(kind: String, payload: HashMap<String, JsonValue>): Bool {
+        let mediaField = this.telegramMediaFieldForPayloadKind(kind)
+        if (mediaField.isEmpty()) {
+            return false
+        }
+        let ref = match (payload.get(mediaField)) {
+            case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
+            case None => ""
+        }
+        this.outboundRemoteUrlShouldFetch(ref)
+    }
+
+    private func outboundRemoteUrlShouldFetch(ref: String): Bool {
+        let lowered = ref.trimAscii().toAsciiLower()
+        (lowered.startsWith("http://") || lowered.startsWith("https://")) && this.config.media.outboundFetchUrl
+    }
+
+    private func remoteMediaUploadForPayload(kind: String, mediaField: String, ref: String): Option<TelegramMultipartFile> {
+        let policyError = this.validateOutboundRemoteMediaUrlPolicy(ref)
+        if (!policyError.isEmpty()) {
+            this.setLastSendError(policyError)
+            return None
+        }
+        let maxBytes = this.config.media.mediaMaxBytes
+        let media = this.loadOutboundRemoteMedia(ref, maxBytes)
+        if (!media.ok) {
+            this.setLastSendError(if (media.error.isEmpty()) { "telegram outbound media URL download failed" } else { media.error })
+            return None
+        }
+        let size = Int64(media.bytes.size)
+        if (size <= 0) {
+            this.setLastSendError("telegram outbound media URL returned empty body")
+            return None
+        }
+        if (maxBytes > 0 && size > maxBytes) {
+            this.setLastSendError("telegram outbound media URL exceeds mediaMaxBytes")
+            return None
+        }
+        let mime = this.normalizeOutboundRemoteMime(media.mimeType, ref)
+        let mimeError = this.validateOutboundRemoteMime(mime)
+        if (!mimeError.isEmpty()) {
+            this.setLastSendError(mimeError)
+            return None
+        }
+        let fileName = if (!media.fileName.trimAscii().isEmpty()) {
+            media.fileName.trimAscii()
+        } else {
+            this.fileNameFromRemoteUrl(ref, fallbackExt: this.telegramExtensionFromMime(mime))
+        }
+        Some(TelegramMultipartFile(mediaField, fileName: fileName, bytes: media.bytes))
+    }
+
+    private func loadOutboundRemoteMedia(ref: String, maxBytes: Int64): TelegramOutboundMediaDownloadResult {
+        match (this.outboundRemoteMediaCache.get(ref)) {
+            case Some(cached) => return cached
+            case None => ()
+        }
+        let media = match (telegramOutboundMediaDownloaderOverride) {
+            case Some(loader) => loader(ref, maxBytes)
+            case None => this.downloadOutboundRemoteMedia(ref, maxBytes)
+        }
+        this.outboundRemoteMediaCache[ref] = media
+        media
+    }
+
+    private func downloadOutboundRemoteMedia(ref: String, maxBytes: Int64): TelegramOutboundMediaDownloadResult {
+        let bytes = match (this.telegramGetBytes(ref, accept: "*/*", context: "outboundMediaUrl")) {
+            case Some(v) => v
+            case None => return TelegramOutboundMediaDownloadResult(false, error: if (this.lastSendError.isEmpty()) { "telegram outbound media URL download failed" } else { this.lastSendError })
+        }
+        if (maxBytes > 0 && Int64(bytes.size) > maxBytes) {
+            return TelegramOutboundMediaDownloadResult(false, error: "telegram outbound media URL exceeds mediaMaxBytes")
+        }
+        TelegramOutboundMediaDownloadResult(true, bytes: bytes, mimeType: this.inferMimeFromRemoteUrl(ref), fileName: this.fileNameFromRemoteUrl(ref, fallbackExt: ""))
+    }
+
+    private func validateOutboundRemoteMediaUrlPolicy(ref: String): String {
+        let maxBytes = this.config.media.mediaMaxBytes
+        if (maxBytes <= 0) {
+            return "telegram outbound media URL mediaMaxBytes must be positive"
+        }
+        let scheme = this.urlScheme(ref)
+        if (scheme.isEmpty()) {
+            return "telegram outbound media URL is invalid"
+        }
+        var schemeAllowed = false
+        for (raw in this.config.media.outboundAllowedUrlSchemes) {
+            if (raw.trimAscii().toAsciiLower() == scheme) {
+                schemeAllowed = true
+            }
+        }
+        if (!schemeAllowed) {
+            return "telegram outbound media URL scheme is not allowed"
+        }
+        let host = this.urlHost(ref)
+        if (host.isEmpty()) {
+            return "telegram outbound media URL host is empty"
+        }
+        if (this.config.media.outboundAllowedUrlDomains.isEmpty()) {
+            return "telegram outbound media URL requires outboundAllowedUrlDomains"
+        }
+        for (raw in this.config.media.outboundAllowedUrlDomains) {
+            let domain = raw.trimAscii().toAsciiLower()
+            if (domain == "*" || host == domain || host.endsWith("." + domain)) {
+                return ""
+            }
+        }
+        "telegram outbound media URL domain is not allowed"
+    }
+
+    private func validateOutboundRemoteMime(mimeType: String): String {
+        if (this.config.media.allowedMimes.isEmpty()) {
+            return ""
+        }
+        let normalized = mimeType.trimAscii().toAsciiLower()
+        if (normalized.isEmpty()) {
+            return "telegram outbound media URL mime type is unavailable"
+        }
+        for (raw in this.config.media.allowedMimes) {
+            let allowed = raw.trimAscii().toAsciiLower()
+            if (allowed == "*" || allowed == normalized || (allowed.endsWith("/*") && normalized.startsWith(allowed[..allowed.size - 1]))) {
+                return ""
+            }
+        }
+        "telegram outbound media URL mime type is not allowed"
+    }
+
+    private func normalizeOutboundRemoteMime(mimeType: String, ref: String): String {
+        let trimmed = mimeType.trimAscii().toAsciiLower()
+        if (!trimmed.isEmpty()) {
+            match (trimmed.indexOf(";")) {
+                case Some(idx) => return trimmed[..idx].trimAscii()
+                case None => return trimmed
+            }
+        }
+        this.inferMimeFromRemoteUrl(ref)
+    }
+
+    private func inferMimeFromRemoteUrl(ref: String): String {
+        let lower = ref.trimAscii().toAsciiLower()
+        if (lower.contains(".jpg") || lower.contains(".jpeg")) { return "image/jpeg" }
+        if (lower.contains(".png")) { return "image/png" }
+        if (lower.contains(".gif")) { return "image/gif" }
+        if (lower.contains(".webp")) { return "image/webp" }
+        if (lower.contains(".mp4")) { return "video/mp4" }
+        if (lower.contains(".mp3")) { return "audio/mpeg" }
+        if (lower.contains(".ogg") || lower.contains(".oga") || lower.contains(".opus")) { return "audio/ogg" }
+        if (lower.contains(".pdf")) { return "application/pdf" }
+        ""
+    }
+
+    private func telegramExtensionFromMime(mimeType: String): String {
+        let mime = mimeType.trimAscii().toAsciiLower()
+        if (mime == "image/jpeg") { return ".jpg" }
+        if (mime == "image/png") { return ".png" }
+        if (mime == "image/gif") { return ".gif" }
+        if (mime == "image/webp") { return ".webp" }
+        if (mime == "video/mp4") { return ".mp4" }
+        if (mime == "audio/mpeg") { return ".mp3" }
+        if (mime == "audio/ogg") { return ".ogg" }
+        if (mime == "application/pdf") { return ".pdf" }
+        ".bin"
+    }
+
+    private func fileNameFromRemoteUrl(ref: String, fallbackExt!: String): String {
+        var path = ref.trimAscii()
+        match (path.indexOf("?")) {
+            case Some(idx) => path = path[..idx]
+            case None => ()
+        }
+        match (path.lastIndexOf("/")) {
+            case Some(idx) =>
+                let name = path[idx + 1..].trimAscii()
+                if (!name.isEmpty()) { return name }
+            case None => ()
+        }
+        "remote-media${if (fallbackExt.trimAscii().isEmpty()) { ".bin" } else { fallbackExt.trimAscii() }}"
+    }
+
+    private func urlScheme(ref: String): String {
+        let lower = ref.trimAscii().toAsciiLower()
+        match (lower.indexOf("://")) {
+            case Some(idx) => lower[..idx].trimAscii()
+            case None => ""
+        }
+    }
+
+    private func urlHost(ref: String): String {
+        try {
+            return URL.parse(ref.trimAscii()).hostName.trimAscii().toAsciiLower()
+        } catch (_e: Exception) {
+            return ""
+        }
     }
 
     private func telegramMultipartFilesForPayload(kind: String, payload: HashMap<String, JsonValue>): Option<Array<TelegramMultipartFile>> {
@@ -5371,7 +5605,8 @@ public class TelegramAdapter <: ChannelAdapter {
     }
 
     private func buildPhotoPayload(message: OutboundMessage, fileId: String, caption: String): HashMap<String, JsonValue> {
-        if (this.telegramPhotoShouldFallbackToDocument(fileId)) {
+        let asAnimation = this.telegramRefLooksLikeGif(fileId)
+        if (!asAnimation && this.telegramPhotoShouldFallbackToDocument(fileId)) {
             return this.buildDocumentPayload(message, fileId, caption)
         }
         let normalizedPeer = message.peerId.trimAscii()
@@ -5379,7 +5614,6 @@ public class TelegramAdapter <: ChannelAdapter {
         let threadId = this.extractThreadId(normalizedPeer)
         let replyInThread = this.effectiveReplyInThread(message.replyInThread)
         let body = HashMap<String, JsonValue>()
-        let asAnimation = this.telegramRefLooksLikeGif(fileId)
         body["kind"] = JsonString(if (asAnimation) { "animation" } else { "photo" })
         body["peer"] = JsonString(normalizedPeer)
         body["chat_id"] = JsonString(chatId)
@@ -5416,6 +5650,10 @@ public class TelegramAdapter <: ChannelAdapter {
             return (0, 0)
         }
         let bytes = try { File.readFrom(path) } catch (_e: Exception) { return (0, 0) }
+        this.telegramImageDimensionsFromBytes(bytes)
+    }
+
+    private func telegramImageDimensionsFromBytes(bytes: Array<Byte>): (Int64, Int64) {
         if (bytes.size >= 24 &&
             bytes[0] == 137u8 && bytes[1] == 80u8 && bytes[2] == 78u8 && bytes[3] == 71u8 &&
             bytes[12] == 73u8 && bytes[13] == 72u8 && bytes[14] == 68u8 && bytes[15] == 82u8) {
@@ -5444,13 +5682,34 @@ public class TelegramAdapter <: ChannelAdapter {
     }
 
     private func telegramPhotoShouldFallbackToDocument(fileId: String): Bool {
-        if (!this.looksLikeLocalMediaPath(fileId)) {
+        var width: Int64 = 0
+        var height: Int64 = 0
+        if (this.looksLikeLocalMediaPath(fileId)) {
+            let localPath = this.normalizeOutboundLocalMediaPath(fileId)
+            let dims = this.telegramLocalImageDimensions(localPath)
+            width = dims[0]
+            height = dims[1]
+        } else if (this.outboundRemoteUrlShouldFetch(fileId)) {
+            let policyError = this.validateOutboundRemoteMediaUrlPolicy(fileId)
+            if (!policyError.isEmpty()) {
+                return false
+            }
+            let media = this.loadOutboundRemoteMedia(fileId, this.config.media.mediaMaxBytes)
+            if (!media.ok || media.bytes.isEmpty()) {
+                return false
+            }
+            let mime = this.normalizeOutboundRemoteMime(media.mimeType, fileId)
+            if (!(mime == "image/jpeg" || mime == "image/png")) {
+                return false
+            }
+            let dims = this.telegramImageDimensionsFromBytes(media.bytes)
+            width = dims[0]
+            height = dims[1]
+        } else {
             return false
         }
-        let localPath = this.normalizeOutboundLocalMediaPath(fileId)
-        let (width, height) = this.telegramLocalImageDimensions(localPath)
         if (width <= 0 || height <= 0) {
-            return false
+            return true
         }
         if (width + height > 10000) {
             return true
@@ -6424,6 +6683,12 @@ public class TelegramAdapter <: ChannelAdapter {
         if (lowered.startsWith("http://") || lowered.startsWith("https://")) {
             if (!this.config.media.outboundAllowUrl) {
                 return "telegram outbound media URL is disabled"
+            }
+            if (this.config.media.outboundFetchUrl) {
+                let policyError = this.validateOutboundRemoteMediaUrlPolicy(normalized)
+                if (!policyError.isEmpty()) {
+                    return policyError
+                }
             }
             if (kind == "video-note" && (lowered.startsWith("http://") || lowered.startsWith("https://"))) {
                 return "telegram video-note does not support outbound URL media"
@@ -7663,16 +7928,14 @@ public class TelegramAdapter <: ChannelAdapter {
     private func telegramMultipartPost(
         url: String,
         payload: HashMap<String, JsonValue>,
-        fileField: String,
-        filePath: String,
+        file: TelegramMultipartFile,
         context!: String
     ): Option<String> {
         this.handleTelegramTransportResponse(
-            this.telegramTransport().postMultipartFile(
+            this.telegramTransport().postMultipartFiles(
                 url,
-                this.telegramMultipartFieldsForPayload(payload, fileField),
-                fileField,
-                filePath,
+                this.telegramMultipartFieldsForPayload(payload, file.fieldName),
+                [file],
                 context: context
             ),
             context

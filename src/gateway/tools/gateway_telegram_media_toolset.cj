@@ -7,7 +7,7 @@ import magic.model.ModelManager
 import magic.prelude.*
 
 import metis.core.gatewayCurrentToolRuntimeContext
-import metis.core.{renderGatewayAudioText, renderGatewayDocumentText, renderGatewayPhotoText, renderGatewayStickerText, renderGatewayVideoNoteText, renderGatewayVideoText, renderGatewayVoiceText}
+import metis.core.{renderGatewayAudioText, renderGatewayDeleteText, renderGatewayDocumentText, renderGatewayEditText, renderGatewayPhotoText, renderGatewayPollText, renderGatewayReactionText, renderGatewayStickerText, renderGatewayTopicCreateText, renderGatewayTopicEditText, renderGatewayVideoNoteText, renderGatewayVideoText, renderGatewayVoiceText}
 import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager, MetisPaths}
 import metis.core.{gatewayMediaUnderstandingFirstText, gatewayMediaUnderstandingForRecord, gatewayMediaUnderstandingOutputs}
 import metis.io.PrintUtils
@@ -775,6 +775,19 @@ public class GatewayTelegramMediaToolset {
         this.telegramStickerCacheStats()
     }
 
+    public func debugTelegramActionForTest(
+        action: String,
+        target: Option<String>,
+        message: Option<String>,
+        messageId: Option<String>,
+        emoji: Option<String>,
+        pollOptions: Option<Array<String>>,
+        stickerFileId: Option<String>,
+        topicName: Option<String>
+    ): String {
+        this.telegramAction(action, target, message, messageId, emoji, pollOptions, stickerFileId, topicName)
+    }
+
     private func renderTelegramMediaList(): String {
         let records = telegramMediaToolRecords()
         let out = JsonObject()
@@ -1345,6 +1358,146 @@ public class GatewayTelegramMediaToolset {
         result.toJsonString()
     }
 
+    private func telegramAction(
+        action: String,
+        target: Option<String>,
+        message: Option<String>,
+        messageId: Option<String>,
+        emoji: Option<String>,
+        pollOptions: Option<Array<String>>,
+        stickerFileId: Option<String>,
+        topicName: Option<String>
+    ): String {
+        let normalized = this.normalizeTelegramActionName(action)
+        if (normalized.isEmpty()) {
+            return telegramMediaError("telegram_action", "unsupported telegram action: ${action.trimAscii()}")
+        }
+        if (normalized == "searchSticker") {
+            return this.searchTelegramStickers(message ?? "", None<Int64>)
+        }
+        let targetText = this.resolveTelegramActionTarget(target)
+        if (targetText.isEmpty()) {
+            return telegramMediaError("telegram_action", "telegram_action requires a target or current Telegram session")
+        }
+        let text = match (this.telegramActionPayloadText(normalized, message, emoji, pollOptions, stickerFileId, topicName)) {
+            case Some(v) => v
+            case None => return telegramMediaError("telegram_action", "telegram_action missing required parameters for ${normalized}")
+        }
+        let replyTo = messageId ?? ""
+        if ((normalized == "react" || normalized == "deleteMessage" || normalized == "editMessage" || normalized == "editForumTopic") && replyTo.trimAscii().isEmpty()) {
+            return telegramMediaError("telegram_action", "${normalized} requires messageId")
+        }
+        let payload = JsonObject()
+        payload.put("id", JsonString("telegram"))
+        payload.put("channel", JsonString("telegram"))
+        payload.put("peerId", JsonString(targetText))
+        payload.put("to", JsonString(targetText))
+        payload.put("text", JsonString(text))
+        payload.put("message", JsonString(text))
+        if (!replyTo.trimAscii().isEmpty()) {
+            payload.put("replyToMessageId", JsonString(replyTo.trimAscii()))
+        }
+        let sent = telegramMediaToolInvokeGatewayCall("channels.send", params: Some(payload))
+        let ok = telegramMediaToolBool(sent, "ok")
+        let out = JsonObject()
+        out.put("ok", ok.toJsonValue())
+        out.put("status", JsonString(if (ok) { "accepted" } else { "error" }))
+        out.put("action", JsonString("telegram_action"))
+        out.put("telegramAction", JsonString(normalized))
+        out.put("target", JsonString(targetText))
+        out.put("gateway", sent)
+        if (!ok) {
+            let reason = telegramMediaToolString(sent, "reason")
+            if (!reason.isEmpty()) {
+                out.put("reason", JsonString(reason))
+                if (reason.toAsciiLower().contains("disabled")) {
+                    out.put("errorCode", JsonString("action_disabled"))
+                }
+            }
+        }
+        out.toJsonString()
+    }
+
+    private func normalizeTelegramActionName(action: String): String {
+        let normalized = action.trimAscii().toAsciiLower().replace("_", "-")
+        if (normalized == "send" || normalized == "sendmessage" || normalized == "send-message") { return "sendMessage" }
+        if (normalized == "react" || normalized == "reaction") { return "react" }
+        if (normalized == "poll") { return "poll" }
+        if (normalized == "delete" || normalized == "deletemessage" || normalized == "delete-message") { return "deleteMessage" }
+        if (normalized == "edit" || normalized == "editmessage" || normalized == "edit-message") { return "editMessage" }
+        if (normalized == "sendsticker" || normalized == "send-sticker" || normalized == "sticker") { return "sendSticker" }
+        if (normalized == "searchsticker" || normalized == "search-sticker" || normalized == "sticker-search") { return "searchSticker" }
+        if (normalized == "topic-create" || normalized == "createforumtopic" || normalized == "create-forum-topic") { return "createForumTopic" }
+        if (normalized == "topic-edit" || normalized == "editforumtopic" || normalized == "edit-forum-topic") { return "editForumTopic" }
+        ""
+    }
+
+    private func resolveTelegramActionTarget(target: Option<String>): String {
+        let explicit = match (target) {
+            case Some(v) => v.trimAscii()
+            case None => ""
+        }
+        if (!explicit.isEmpty()) {
+            return explicit
+        }
+        let current = telegramMediaToolCurrentTarget()
+        if (current[0] == "telegram") { current[1] } else { "" }
+    }
+
+    private func telegramActionPayloadText(
+        normalized: String,
+        message: Option<String>,
+        emoji: Option<String>,
+        pollOptions: Option<Array<String>>,
+        stickerFileId: Option<String>,
+        topicName: Option<String>
+    ): Option<String> {
+        let msg = message ?? ""
+        if (normalized == "sendMessage") {
+            return if (msg.trimAscii().isEmpty()) { None<String> } else { Some(msg) }
+        }
+        if (normalized == "react") {
+            let token = emoji ?? msg
+            return if (token.trimAscii().isEmpty()) { None<String> } else { Some(renderGatewayReactionText(token)) }
+        }
+        if (normalized == "poll") {
+            let opts = pollOptions ?? []
+            if (msg.trimAscii().isEmpty() || opts.isEmpty()) {
+                return None<String>
+            }
+            let parts = ArrayList<String>()
+            parts.add(msg.trimAscii())
+            for (opt in opts) {
+                if (!opt.trimAscii().isEmpty()) {
+                    parts.add(opt.trimAscii())
+                }
+            }
+            if (parts.size < 3) {
+                return None<String>
+            }
+            return Some(renderGatewayPollText(String.join(parts.toArray(), delimiter: "|")))
+        }
+        if (normalized == "deleteMessage") {
+            return Some(renderGatewayDeleteText())
+        }
+        if (normalized == "editMessage") {
+            return if (msg.trimAscii().isEmpty()) { None<String> } else { Some(renderGatewayEditText(msg)) }
+        }
+        if (normalized == "sendSticker") {
+            let fileId = stickerFileId ?? msg
+            return if (fileId.trimAscii().isEmpty()) { None<String> } else { Some(renderGatewayStickerText(fileId.trimAscii())) }
+        }
+        if (normalized == "createForumTopic") {
+            let title = topicName ?? msg
+            return if (title.trimAscii().isEmpty()) { None<String> } else { Some(renderGatewayTopicCreateText(title)) }
+        }
+        if (normalized == "editForumTopic") {
+            let title = topicName ?? msg
+            return if (title.trimAscii().isEmpty()) { None<String> } else { Some(renderGatewayTopicEditText(title)) }
+        }
+        None<String>
+    }
+
     private func renderTelegramTargetListFromAudit(auditEnvelope: JsonObject): String {
         let rows = try {
             auditEnvelope.get("audit").getOrThrow().asObject().get("telegram").getOrThrow().asObject()
@@ -1768,6 +1921,35 @@ public class GatewayTelegramMediaToolset {
     public func telegram_media_send(pathOrUrl: String, caption: Option<String>, kind: Option<String>, forceDocument: Option<Bool>): String {
         PrintUtils.printTool("telegram_media_send", shortMessage: "current")
         let text = this.sendTelegramMedia(pathOrUrl, caption, kind, forceDocument)
+        PrintUtils.printToolResult(text)
+        return text
+    }
+
+    @tool[
+        description: "Run a Telegram channel action through Gateway channels.send. Supports sendMessage, react, poll, delete, edit, sendSticker, searchSticker, topic-create, and topic-edit.",
+        parameters: {
+            action: "Telegram action name or alias.",
+            target: "Optional Telegram target. Defaults to the current Telegram session target.",
+            message: "Message text, poll question, sticker query, or topic title depending on action.",
+            messageId: "Target message id for react, delete, edit, and topic-edit.",
+            emoji: "Reaction emoji for react.",
+            pollOptions: "Poll option labels for poll.",
+            stickerFileId: "Sticker file_id for sendSticker.",
+            topicName: "Forum topic name for topic-create or topic-edit."
+        }
+    ]
+    public func telegram_action(
+        action: String,
+        target: Option<String>,
+        message: Option<String>,
+        messageId: Option<String>,
+        emoji: Option<String>,
+        pollOptions: Option<Array<String>>,
+        stickerFileId: Option<String>,
+        topicName: Option<String>
+    ): String {
+        PrintUtils.printTool("telegram_action", shortMessage: action)
+        let text = this.telegramAction(action, target, message, messageId, emoji, pollOptions, stickerFileId, topicName)
         PrintUtils.printToolResult(text)
         return text
     }
