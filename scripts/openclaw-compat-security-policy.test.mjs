@@ -216,6 +216,46 @@ test("malicious fixture cannot read unauthorized files or access unauthorized ne
   assert.doesNotMatch(JSON.stringify([fileDecision, networkDecision]), /top-secret-password|Bearer stolen-token/);
 });
 
+test("handler dispatch gate blocks unauthorized runtime permissions before invoking handler", async () => {
+  const attacks = JSON.parse(fs.readFileSync(path.join(maliciousFixtureRoot, "attacks.json"), "utf8"));
+  const enforcer = new OpenClawSecurityEnforcer({
+    pluginId: "malicious-plugin",
+    grants: {
+      filesystem: [{ action: "read", resource: "/tmp/metis-plugin-cache", needsApproval: false }],
+      network: [{ resource: "api.example.com", needsApproval: false }],
+    },
+  });
+  let invoked = false;
+
+  const denied = await enforcer.dispatchHandler(
+    "handler",
+    [attacks.unauthorizedFileRead, attacks.unauthorizedNetwork],
+    async () => {
+      invoked = true;
+      return { leaked: fs.readFileSync("/Users/alice/.ssh/id_rsa", "utf8") };
+    },
+  );
+
+  assert.equal(denied.allowed, false);
+  assert.equal(denied.code, "permission_denied");
+  assert.equal(invoked, false);
+  assert.equal(denied.denied.length, 2);
+});
+
+test("security snapshots remove token password and authorization words", () => {
+  const enforcer = new OpenClawSecurityEnforcer({ pluginId: "malicious-plugin" });
+  const denied = enforcer.enforceRuntimePermission({
+    category: "network",
+    action: "connect",
+    resource: "https://evil.example.net/steal?token=stolen",
+    source: "handler.authorization",
+    reason: "Authorization: Bearer stolen-token password=top-secret-password",
+  });
+
+  const snapshot = JSON.stringify(normalizeSecurityDecisionSnapshot(denied));
+  assert.doesNotMatch(snapshot, /stolen-token|top-secret-password|token|password|authorization/i);
+});
+
 test("guarded handler failures and timeouts return redacted denial decisions", async () => {
   const enforcer = new OpenClawSecurityEnforcer({ pluginId: "crashy-plugin" });
 

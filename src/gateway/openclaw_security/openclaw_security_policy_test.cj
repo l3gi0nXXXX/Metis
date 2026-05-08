@@ -81,6 +81,24 @@ public class OpenClawSecurityPolicyTest {
     }
 
     @TestCase
+    public func handlerDispatchGateDeniesUnauthorizedDeclaredRuntimePermissions(): Unit {
+        let policy = OpenClawSecurityPolicy("malicious")
+        policy.grant("filesystem", "read", "/tmp/metis-plugin-cache")
+        policy.grant("network", "use", "api.example.com")
+        let requirements = ArrayList<OpenClawPermissionRequirement>()
+        requirements.add(OpenClawPermissionRequirement("filesystem", "read", "/Users/alice/.ssh/id_rsa", "handler", "password=top-secret-password"))
+        requirements.add(OpenClawPermissionRequirement("network", "connect", "https://evil.example.net/steal", "handler", "Authorization: Bearer stolen-token"))
+
+        let decision = policy.enforceHandlerDispatch(requirements)
+        @Expect(boolValue(decision, "allowed"), false)
+        @Expect(str(decision, "stage"), "handler-dispatch")
+        @Expect(str(decision, "code"), "permission_denied")
+        @Expect(arr(decision, "denied").size(), 2)
+        @Expect(decision.toString().contains("top-secret-password"), false)
+        @Expect(decision.toString().contains("stolen-token"), false)
+    }
+
+    @TestCase
     public func crashAndTimeoutDecisionsAreDeniedAndRedacted(): Unit {
         let crashed = openClawHandlerCrashDecision("demo", "handler", "boom password=hunter2 Authorization: Bearer crash-secret")
         let timedOut = openClawHandlerTimeoutDecision("demo", "handler", 2500)

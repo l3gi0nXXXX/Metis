@@ -58,6 +58,8 @@ private func sampleSchema(): JsonObject {
     properties.put("endpoint", endpoint)
     root.put("properties", properties)
     root.put("required", JsonArray([JsonString("botToken"), JsonString("endpoint")]))
+    root.put("x-setup-hints", JsonArray([JsonString("Create a bot token in OpenClaw setup.")]))
+    root.put("x-install-hints", JsonArray([JsonString("Restart the plugin after saving config.")]))
     return root
 }
 
@@ -96,6 +98,23 @@ public class OpenClawConfigModelTest {
     }
 
     @TestCase
+    public func savedConfigReadbackShowsPublicValuesAndSecretConfiguredState(): Unit {
+        let store = OpenClawFakeSecretStore()
+        let rendered = openClawRenderConfigSchema("telegram-openclaw", sampleSchema())
+        let values = JsonObject()
+        values.put("botToken", JsonString("123456789:AASecret"))
+        values.put("endpoint", JsonString("https://api.example.com"))
+        let saved = openClawPersistPluginConfig("telegram-openclaw", rendered, values, store)
+
+        let readback = openClawReadPluginConfig("telegram-openclaw", rendered, saved, store)
+        @Expect(str(readback, "schema"), "metis.openclaw.config.read.v1")
+        @Expect(str(obj(readback, "values"), "endpoint"), "https://api.example.com")
+        @Expect(obj(readback, "values").get("botToken").isNone(), true)
+        @Expect(boolValue(obj(readback, "secretConfigured"), "botToken"), true)
+        @Expect(readback.toString().contains("123456789:AASecret"), false)
+    }
+
+    @TestCase
     public func doctorRedactsDiagnosticsAndReportsMissingSetup(): Unit {
         let store = OpenClawFakeSecretStore()
         let values = JsonObject()
@@ -103,11 +122,15 @@ public class OpenClawConfigModelTest {
         let diagnostics = JsonObject()
         diagnostics.put("authorization", JsonString("Bearer secret-token"))
         diagnostics.put("plain", JsonString("network unreachable"))
+        diagnostics.put("events", JsonArray([JsonString("password=top-secret-password")]))
 
         let doctor = openClawPluginSetupDoctor("telegram-openclaw", openClawRenderConfigSchema("telegram-openclaw", sampleSchema()), values, store, JsonArray([]), "healthy", diagnostics)
         @Expect(str(doctor, "status"), "setup-required")
         @Expect(arr(doctor, "missingFields").size(), 2)
+        @Expect(arr(doctor, "setupHints").size(), 1)
+        @Expect(arr(doctor, "installHints").size(), 1)
         @Expect(str(obj(doctor, "diagnostics"), "authorization"), "[REDACTED]")
+        @Expect(doctor.toString().contains("top-secret-password"), false)
         @Expect(str(obj(doctor, "diagnostics"), "plain"), "network unreachable")
     }
 

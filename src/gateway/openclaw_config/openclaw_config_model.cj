@@ -63,6 +63,8 @@ public func openClawRenderConfigSchema(pluginId: String, schema: JsonObject): Js
         fields.add(rendered)
     }
     out.put("fields", fields)
+    out.put("setupHints", openClawJsonArray(schema, "x-setup-hints"))
+    out.put("installHints", openClawJsonArray(schema, "x-install-hints"))
     return out
 }
 
@@ -100,6 +102,42 @@ public func openClawPersistPluginConfig(
     return out
 }
 
+public func openClawReadPluginConfig(
+    pluginId: String,
+    renderedSchema: JsonObject,
+    savedConfig: JsonObject,
+    store: OpenClawFakeSecretStore
+): JsonObject {
+    let out = JsonObject()
+    let publicValues = JsonObject()
+    let secretConfigured = JsonObject()
+    let savedValues = openClawJsonObject(savedConfig, "values")
+    let secretRefs = openClawJsonObject(savedConfig, "secretRefs")
+    out.put("schema", JsonString("metis.openclaw.config.read.v1"))
+    out.put("pluginId", JsonString(pluginId.trimAscii()))
+    for (item in openClawJsonArray(renderedSchema, "fields").getItems()) {
+        let field = try { item.asObject() } catch (_e: Exception) { JsonObject() }
+        let name = openClawJsonString(field, "name")
+        if (name.isEmpty()) {
+            continue
+        }
+        if (openClawJsonBool(field, "secret")) {
+            let ref = openClawJsonString(secretRefs, name, fallback: openClawSecretRef(pluginId, name))
+            secretConfigured.put(name, store.contains(ref).toJsonValue())
+        } else {
+            match (savedValues.get(name)) {
+                case Some(value) => publicValues.put(name, value)
+                case None => ()
+            }
+        }
+    }
+    out.put("values", publicValues)
+    out.put("secretConfigured", secretConfigured)
+    out.put("setupHints", openClawJsonArray(renderedSchema, "setupHints"))
+    out.put("installHints", openClawJsonArray(renderedSchema, "installHints"))
+    return out
+}
+
 public func openClawPluginSetupDoctor(
     pluginId: String,
     renderedSchema: JsonObject,
@@ -131,6 +169,8 @@ public func openClawPluginSetupDoctor(
     out.put("missingFields", missing)
     out.put("capabilities", capabilities)
     out.put("health", JsonString(health.trimAscii()))
+    out.put("setupHints", openClawJsonArray(renderedSchema, "setupHints"))
+    out.put("installHints", openClawJsonArray(renderedSchema, "installHints"))
     out.put("diagnostics", openClawRedactJsonObject(diagnostics))
     return out
 }
@@ -181,14 +221,27 @@ private func openClawRedactJsonObject(input: JsonObject): JsonObject {
         if (openClawIsSensitiveKey(key)) {
             out.put(key, JsonString("[REDACTED]"))
         } else {
-            match (value) {
-                case s: JsonString => out.put(key, JsonString(openClawRedactString(s.getValue())))
-                case obj: JsonObject => out.put(key, openClawRedactJsonObject(obj))
-                case _ => out.put(key, value)
-            }
+            out.put(key, openClawRedactJsonValue(value))
         }
     }
     return out
+}
+
+private func openClawRedactJsonArray(input: JsonArray): JsonArray {
+    let out = JsonArray([])
+    for (value in input.getItems()) {
+        out.add(openClawRedactJsonValue(value))
+    }
+    return out
+}
+
+private func openClawRedactJsonValue(value: JsonValue): JsonValue {
+    match (value) {
+        case s: JsonString => JsonString(openClawRedactString(s.getValue()))
+        case obj: JsonObject => openClawRedactJsonObject(obj)
+        case arr: JsonArray => openClawRedactJsonArray(arr)
+        case _ => value
+    }
 }
 
 private func openClawRedactString(raw: String): String {

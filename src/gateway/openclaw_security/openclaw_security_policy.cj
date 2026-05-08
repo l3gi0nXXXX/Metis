@@ -78,6 +78,18 @@ public class OpenClawSecurityPolicy {
         return decision
     }
 
+    public func enforceHandlerDispatch(requirements: ArrayList<OpenClawPermissionRequirement>): JsonObject {
+        let denied = JsonArray([])
+        for (requirement in requirements) {
+            if (!this.hasGrant(requirement)) {
+                denied.add(openClawRequirementJson(requirement))
+            }
+        }
+        let decision = openClawDecision(this.pluginId, "handler-dispatch", denied.size() == 0, if (denied.size() == 0) { "allowed" } else { "permission_denied" })
+        decision.put("denied", denied)
+        return decision
+    }
+
     public func enforceRuntimePermission(requirement: OpenClawPermissionRequirement): JsonObject {
         let ok = this.hasGrant(requirement)
         let decision = openClawDecision(this.pluginId, "handler", ok, if (ok) { "allowed" } else { "permission_denied" })

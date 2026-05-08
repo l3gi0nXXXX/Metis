@@ -97,6 +97,27 @@ export class OpenClawSecurityEnforcer {
     });
   }
 
+  async dispatchHandler(stage, permissionRequests, handler, { timeoutMs = 30000 } = {}) {
+    const denied = [];
+    for (const request of normalizePermissionRequestList(permissionRequests)) {
+      const decision = this.enforceRuntimePermission(request);
+      if (!decision.allowed) {
+        denied.push(...(decision.denied ?? []));
+      }
+    }
+    if (denied.length > 0) {
+      return securityDecision({
+        pluginId: this.pluginId,
+        stage,
+        allowed: false,
+        code: "permission_denied",
+        diagnostics: { denied },
+        denied,
+      });
+    }
+    return this.runGuardedHandler(stage, handler, { timeoutMs });
+  }
+
   async runGuardedHandler(stage, handler, { timeoutMs = 30000 } = {}) {
     let timeoutId;
     try {
@@ -434,9 +455,9 @@ function sanitizeRequirement(requirement) {
     category,
     action: String(requirement?.action ?? ""),
     resource: shouldRedactRequirementResource(category, resource) ? "[REDACTED]" : resource,
-    source: redactDiagnostics(String(requirement?.source ?? "")),
-    reason: redactDiagnostics(String(requirement?.reason ?? "")),
-    grantSource: requirement?.grantSource == null ? undefined : redactDiagnostics(String(requirement.grantSource)),
+    source: redactRequirementText(String(requirement?.source ?? "")),
+    reason: redactRequirementText(String(requirement?.reason ?? "")),
+    grantSource: requirement?.grantSource == null ? undefined : redactRequirementText(String(requirement.grantSource)),
   };
 }
 
@@ -484,6 +505,12 @@ function normalizeRecordList(records) {
     return Object.values(records).filter(isObject);
   }
   return [];
+}
+
+function normalizePermissionRequestList(permissionRequests) {
+  if (permissionRequests == null) return [];
+  if (Array.isArray(permissionRequests)) return permissionRequests;
+  return [permissionRequests];
 }
 
 function normalizeAllowlist(allowlist) {
@@ -583,6 +610,15 @@ function redactString(value) {
     .replace(/([?&](?:token|secret|password|key|authorization)=)[^&#\s]+/gi, "$1[REDACTED]")
     .replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD|AUTH)[A-Z0-9_]*)=([^\s&]+)/g, "$1=[REDACTED]")
     .replace(/\b(password|token|secret|authorization)=([^\s&]+)/gi, "$1=[REDACTED]");
+}
+
+function redactRequirementText(value) {
+  const redacted = redactDiagnostics(value);
+  if (typeof redacted !== "string") return redacted;
+  if (/(?:token|password|authorization|api[_-]?key|credential|\bBearer\b)/i.test(redacted)) {
+    return "[REDACTED]";
+  }
+  return redacted;
 }
 
 function parseArgs(argv) {
