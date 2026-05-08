@@ -165,7 +165,6 @@ public class GatewayService {
         let request = gatewaySessionRequestFromInbound(message, sessionHint: conversationKey, accountId: effectiveAccountId)
         if (channelToString(message.channel) == "telegram") {
             this.maybeSendTelegramLifecycleSignal(user, message, effectiveAccountId, "typing")
-            this.maybeSendTelegramLifecycleSignal(user, message, effectiveAccountId, "thinking")
         }
         let turn = try {
             gatewayExecuteSessionRequestTurnForUser(
@@ -190,11 +189,17 @@ public class GatewayService {
                         accountId: if (!deliveryAccountId.trimAscii().isEmpty()) { deliveryAccountId } else { effectiveAccountId }
                     )
                 }),
-                transcriptHook: this.transcriptPublisher
+                transcriptHook: this.transcriptPublisher,
+                lifecycleHook: if (channelToString(message.channel) == "telegram") {
+                    Some({ status: String =>
+                        this.maybeSendTelegramLifecycleSignal(user, message, effectiveAccountId, status)
+                    })
+                } else {
+                    None<(String) -> Unit>
+                }
             )
         } catch (e: Exception) {
             if (channelToString(message.channel) == "telegram") {
-                this.maybeSendTelegramLifecycleSignal(user, message, effectiveAccountId, "error")
                 this.handleTelegramInboundExecutionError(user, message, effectiveAccountId, e)
                 return
             }
@@ -212,7 +217,6 @@ public class GatewayService {
         }
         if (execution.delivered) {
             if (channelToString(message.channel) == "telegram") {
-                this.maybeSendTelegramLifecycleSignal(user, message, effectiveAccountId, "done")
                 this.maybeAutoLabelTelegramTopic(user, message, effectiveAccountId)
             }
             return
@@ -475,14 +479,18 @@ public class GatewayService {
             return true
         }
         if (text == "/compact" || text.startsWith("/compact ")) {
+            this.maybeSendTelegramLifecycleSignal(user, message, accountId, "compacting")
+            let reply = this.renderTelegramCompactCommand(user, sessionKey)
             this.sendTextToPeerDetailed(
                 "telegram",
                 message.peerId,
-                this.renderTelegramCompactCommand(user, sessionKey),
+                reply,
                 replyToMessageId: message.replyTargetMessageId,
                 replyInThread: message.replyInThread,
                 accountId: accountId
             )
+            let status = if (reply.contains("\"status\":\"error\"")) { "error" } else { "done" }
+            this.maybeSendTelegramLifecycleSignal(user, message, accountId, status)
             return true
         }
         if (text == "/think" || text.startsWith("/think ") ||

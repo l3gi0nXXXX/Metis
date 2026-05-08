@@ -2555,6 +2555,9 @@ public class TelegramAdapter <: ChannelAdapter {
                 }
             case ChatType.Direct => this.telegramPeerId(chat)
         }
+        if (notifications == "own" && !this.sentMessageStateContains(peerId, messageId)) {
+            return None
+        }
         let token = this.readReactionEmoji(reaction)
         let text = if (token.isEmpty()) {
             "[telegram-reaction]\nmessageId=${messageId}\nby=${senderId}"
@@ -3036,11 +3039,33 @@ public class TelegramAdapter <: ChannelAdapter {
                 if (this.parseTelegramPayloadSuccess("edit", raw).isSome()) {
                     return messageId
                 }
-                ""
+                this.sendDraftFinalFallbackToTelegram(payload)
             case None =>
-                this.setLastSendError("empty http response")
-                ""
+                if (this.lastSendError.trimAscii().isEmpty()) {
+                    this.setLastSendError("empty http response")
+                }
+                this.sendDraftFinalFallbackToTelegram(payload)
         }
+    }
+
+    private func sendDraftFinalFallbackToTelegram(payload: HashMap<String, JsonValue>): String {
+        let fallback = HashMap<String, JsonValue>()
+        for ((key, value) in payload) {
+            if (key == "final_text" || key == "plain_final_text" || key == "message_id") {
+                continue
+            }
+            fallback[key] = value
+        }
+        fallback["kind"] = JsonString("text")
+        fallback["text"] = payload.get("final_text") ?? payload.get("text") ?? JsonString("")
+        fallback["plain_text"] = payload.get("plain_final_text") ?? payload.get("plain_text") ?? JsonString("")
+        fallback["parse_mode"] = JsonString("HTML")
+        let fallbackUrl = this.normalizeApiRoot() + "/bot${this.effectiveBotToken()}/sendMessage"
+        let raw = match (this.telegramJsonPost(fallbackUrl, this.telegramApiBodyForPayload(fallback, plainFallback: false), context: "send:draft:fallback-final")) {
+            case Some(resp) => resp
+            case None => return ""
+        }
+        this.parseTelegramPayloadSuccess("text", raw) ?? ""
     }
 
     private func telegramDraftMethodLooksUnsupported(raw: String): Bool {
@@ -4114,6 +4139,32 @@ public class TelegramAdapter <: ChannelAdapter {
             case Some(v) => try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
             case None => JsonArray([])
         }
+    }
+
+    private func sentMessageStateContains(peerId: String, messageId: String): Bool {
+        let normalizedMessageId = messageId.trimAscii()
+        if (normalizedMessageId.isEmpty()) {
+            return false
+        }
+        let normalizedPeer = peerId.trimAscii()
+        let normalizedChatId = this.normalizePeerId(normalizedPeer)
+        let root = this.readSentMessageState()
+        for (item in this.readSentMessageRecords(root).getItems()) {
+            try {
+                let record = item.asObject()
+                let recordMessageId = this.readStringField(record, "messageId").trimAscii()
+                if (recordMessageId != normalizedMessageId) {
+                    continue
+                }
+                let recordPeer = this.readStringField(record, "peerId").trimAscii()
+                if (recordPeer == normalizedPeer || this.normalizePeerId(recordPeer) == normalizedChatId) {
+                    return true
+                }
+            } catch (_e: Exception) {
+                ()
+            }
+        }
+        false
     }
 
     private func recordSentTelegramMessage(message: OutboundMessage, telegramMessageId: String): Unit {

@@ -238,7 +238,8 @@ public func gatewayExecuteSessionRequestTurn(
     deliverHook!: Option<(String, String, String, String, Option<String>, Bool) -> String> = None<(String, String, String, String, Option<String>, Bool) -> String>,
     transcriptHook!: Option<(GatewaySessionContext, Int64, String, String) -> Unit> = None<(GatewaySessionContext, Int64, String, String) -> Unit>,
     streamHook!: Option<(GatewaySessionContext, String) -> Unit> = None<(GatewaySessionContext, String) -> Unit>,
-    streamingEnabled!: Bool = false
+    streamingEnabled!: Bool = false,
+    lifecycleHook!: Option<(String) -> Unit> = None<(String) -> Unit>
 ): GatewayResolvedSessionTurnResult {
     let context = gatewayResolveSessionContext(request)
     let toolRuntimeContext = GatewayToolRuntimeContext(
@@ -249,7 +250,8 @@ public func gatewayExecuteSessionRequestTurn(
         declaredUser: request.declaredUser,
         operatorScopes: request.operatorScopes,
         prompt: prompt,
-        mediaContext: request.mediaContext
+        mediaContext: request.mediaContext,
+        lifecycleHook: lifecycleHook
     )
     let mediaPrompt = gatewayBuildMediaContextPrompt(request.mediaContext)
     let mergedExtraSystemPrompt = if (mediaPrompt.trimAscii().isEmpty()) {
@@ -280,7 +282,8 @@ public func gatewayExecuteSessionRequestTurn(
         deliverHook: deliverHook,
         transcriptHook: transcriptHook,
         streamHook: streamHook,
-        streamingEnabled: streamingEnabled
+        streamingEnabled: streamingEnabled,
+        lifecycleHook: lifecycleHook
     )
     GatewayResolvedSessionTurnResult(context, execution)
 }
@@ -297,7 +300,8 @@ public func gatewayExecuteSessionRequestTurnForUser(
     replyInThread!: Bool = false,
     deliverHook!: Option<(String, String, String, String, Option<String>, Bool) -> String> = None<(String, String, String, String, Option<String>, Bool) -> String>,
     transcriptHook!: Option<(GatewaySessionContext, Int64, String, String) -> Unit> = None<(GatewaySessionContext, Int64, String, String) -> Unit>,
-    streamHook!: Option<(GatewaySessionContext, String) -> Unit> = None<(GatewaySessionContext, String) -> Unit>
+    streamHook!: Option<(GatewaySessionContext, String) -> Unit> = None<(GatewaySessionContext, String) -> Unit>,
+    lifecycleHook!: Option<(String) -> Unit> = None<(String) -> Unit>
 ): GatewayResolvedSessionTurnResult {
     let bridge = gatewayBridgeForSessionRequest(user, request)
     let context = gatewayResolveSessionContext(request)
@@ -314,6 +318,7 @@ public func gatewayExecuteSessionRequestTurnForUser(
         deliverHook: deliverHook,
         transcriptHook: transcriptHook,
         streamHook: streamHook,
-        streamingEnabled: gatewayStreamingEnabledForUserChannel(user, context.channelName)
+        streamingEnabled: gatewayStreamingEnabledForUserChannel(user, context.channelName),
+        lifecycleHook: lifecycleHook
     )
 }

@@ -2,11 +2,12 @@ package metis.gateway.core
 
 import magic.dsl.*
 import magic.core.agent.*
-import magic.core.tool.Tool
+import magic.core.tool.*
+import magic.jsonable.TypeSchema
 import magic.prelude.*
 import magic.log.LogUtils
 
-import metis.core.{gatewayMainRuntimeRequiredToolNames, runtimeToolNamesContainAll}
+import metis.core.{gatewayMainRuntimeRequiredToolNames, gatewayNotifyCurrentToolRuntimeStatus, runtimeToolNamesContainAll}
 import metis.core.model.CliModelManager
 import metis.core.model.ModelTokenLimits
 import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings}
@@ -20,6 +21,7 @@ import metis.io.{PrintUtils, AnsiColor, WithColor}
 import std.collection.{HashMap, ArrayList, enumerate}
 import std.sync.Mutex
 import std.time.*
+import stdx.encoding.json.JsonValue
 import magic.model.ModelManager
 import magic.core.model.ChatModel
 
@@ -123,6 +125,64 @@ private func gatewayToolAuthorized(
     allow.contains(toolName)
 }
 
+private var gatewayAgentBridgeReplyRunnerForTest: Option<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String> =
+    None<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String>
+
+public func setGatewayAgentBridgeReplyRunnerForTest(
+    runner: Option<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String>
+): Unit {
+    gatewayAgentBridgeReplyRunnerForTest = runner
+}
+
+private class GatewayLifecycleToolWrapper <: Tool {
+    private let inner: Tool
+
+    public init(inner: Tool) {
+        this.inner = inner
+    }
+
+    public prop name: String {
+        get() { this.inner.name }
+    }
+
+    public prop description: String {
+        get() { this.inner.description }
+    }
+
+    public prop parameters: Array<ToolParameter> {
+        get() { this.inner.parameters }
+    }
+
+    public prop retType: TypeSchema {
+        get() { this.inner.retType }
+    }
+
+    public prop examples: Array<String> {
+        get() { this.inner.examples }
+    }
+
+    public prop extra: HashMap<String, String> {
+        get() { this.inner.extra }
+    }
+
+    override public func invoke(args: HashMap<String, JsonValue>): ToolResponse {
+        gatewayNotifyCurrentToolRuntimeStatus("tool")
+        this.inner.invoke(args)
+    }
+
+    override public func toJsonValue(): JsonValue {
+        this.inner.toJsonValue()
+    }
+}
+
+private func gatewayLifecycleWrappedTools(tools: ArrayList<Tool>): ArrayList<Tool> {
+    let wrapped = ArrayList<Tool>()
+    for (tool in tools) {
+        wrapped.add(GatewayLifecycleToolWrapper(tool))
+    }
+    wrapped
+}
+
 public func gatewayAuthorizedChatToolNames(): Array<String> {
     let user = CliSettingManager.readGatewaySettings()
     let (allow, deny, denyAll) = gatewayToolPolicyState(user)
@@ -153,10 +213,8 @@ private func gatewayApplyToolPolicy(agent: GatewayP1ChatAgent, user: GatewayUser
             restricted.add(tool.name)
         }
     }
-    if (restricted.size > 0) {
-        agent.toolManager.clear()
-        agent.toolManager.addTools(keep)
-    }
+    agent.toolManager.clear()
+    agent.toolManager.addTools(gatewayLifecycleWrappedTools(keep))
     restricted.toArray()
 }
 
@@ -339,6 +397,10 @@ public class AgentBridge {
             LogUtils.info(
                 "Gateway.reply: channel=${channelName.trimAscii().toAsciiLower()}, agentId=${agentId.trimAscii()}, conversationKey=${conversationKey}, rawPrompt='${prompt}'"
             )
+            match (gatewayAgentBridgeReplyRunnerForTest) {
+                case Some(runner) => return runner(conversationKey, prompt, channelName, agentId, streamingEnabled, streamChunkHook)
+                case None => ()
+            }
             // Unknown slash command should be handled deterministically and must not pollute session history.
             let trimmedPrompt = prompt.trimAscii()
             if (trimmedPrompt.startsWith("/")) {

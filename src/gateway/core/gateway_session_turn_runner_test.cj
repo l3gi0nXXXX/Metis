@@ -1,10 +1,11 @@
 package metis.gateway.core
 
-import metis.core.gatewayCurrentToolRuntimeContext
+import metis.core.{GatewayToolRuntimeContext, gatewayCurrentToolRuntimeContext, gatewayNotifyCurrentToolRuntimeStatus}
 import metis.core.{gatewayMediaUnderstandingFirstText, gatewayMediaUnderstandingForRecord, setGatewayMediaAsrRunnerForTest, setGatewayMediaDocumentExtractorForTest, setGatewayMediaVideoRunnerForTest, setGatewayMediaVisionRunnerForTest}
 import metis.core.config.GatewayUserSettings
-import metis.gateway.session.{GatewayIngressSource, GatewaySessionRequest}
+import metis.gateway.session.{GatewayDeliveryTarget, GatewayIngressSource, GatewaySessionContext, GatewaySessionRequest}
 
+import std.collection.ArrayList
 import std.fs.{Directory, File, Path, remove}
 import std.time.DateTime
 import std.unittest.testmacro.*
@@ -12,6 +13,103 @@ import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 
 @Test
 public class GatewaySessionTurnRunnerTest {
+    @TestCase
+    public func telegramLifecycleHookReportsThinkingToolDone(): Unit {
+        let statuses = ArrayList<String>()
+        setGatewayAgentBridgeReplyRunnerForTest(Some({
+            _conversationKey: String,
+            _prompt: String,
+            _channelName: String,
+            _agentId: String,
+            _streamingEnabled: Bool,
+            _streamChunkHook: Option<(String) -> Unit> =>
+                gatewayNotifyCurrentToolRuntimeStatus("tool")
+                "tool answer"
+        }))
+        try {
+            let store = GatewaySessionStore(Path("."), enabled: false, agentId: "general")
+            let bridge = AgentBridge(sessionStore: store)
+            let context = GatewaySessionContext(
+                GatewayIngressSource.Channel("telegram"),
+                "telegram",
+                "telegram",
+                "telegram:chat:1",
+                "general",
+                deliveryTarget: Some(GatewayDeliveryTarget("telegram", "user:1", accountId: "default", replyToMessageId: "7"))
+            )
+            let result = gatewayExecuteSessionTurn(
+                bridge,
+                context,
+                "run fake tool",
+                deliver: true,
+                toolRuntimeContext: Some(GatewayToolRuntimeContext(
+                    "telegram",
+                    channelName: "telegram",
+                    sessionKey: "telegram:chat:1",
+                    lifecycleHook: Some({ status: String => statuses.add(status) })
+                )),
+                deliverHook: Some({
+                    _channelName: String,
+                    _accountId: String,
+                    _peerId: String,
+                    _text: String,
+                    _replyToMessageId: Option<String>,
+                    _replyInThread: Bool => "501"
+                }),
+                lifecycleHook: Some({ status: String => statuses.add(status) })
+            )
+            @Expect(result.delivered, true)
+            @Expect(statuses.size, 3)
+            @Expect(statuses[0], "thinking")
+            @Expect(statuses[1], "tool")
+            @Expect(statuses[2], "done")
+        } finally {
+            setGatewayAgentBridgeReplyRunnerForTest(None<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String>)
+        }
+    }
+
+    @TestCase
+    public func telegramLifecycleHookReportsErrorWhenSessionFails(): Unit {
+        let statuses = ArrayList<String>()
+        setGatewayAgentBridgeReplyRunnerForTest(Some({
+            _conversationKey: String,
+            _prompt: String,
+            _channelName: String,
+            _agentId: String,
+            _streamingEnabled: Bool,
+            _streamChunkHook: Option<(String) -> Unit> =>
+                throw Exception("fake failure")
+        }))
+        try {
+            let store = GatewaySessionStore(Path("."), enabled: false, agentId: "general")
+            let bridge = AgentBridge(sessionStore: store)
+            let context = GatewaySessionContext(
+                GatewayIngressSource.Channel("telegram"),
+                "telegram",
+                "telegram",
+                "telegram:chat:1",
+                "general"
+            )
+            var failed = false
+            try {
+                let _ = gatewayExecuteSessionTurn(
+                    bridge,
+                    context,
+                    "fail",
+                    lifecycleHook: Some({ status: String => statuses.add(status) })
+                )
+            } catch (_e: Exception) {
+                failed = true
+            }
+            @Expect(failed, true)
+            @Expect(statuses.size, 2)
+            @Expect(statuses[0], "thinking")
+            @Expect(statuses[1], "error")
+        } finally {
+            setGatewayAgentBridgeReplyRunnerForTest(None<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String>)
+        }
+    }
+
     @TestCase
     public func telegramStreamingSplitsAnswerAndReasoningLanes(): Unit {
         let raw = "<think>check facts</think><final>visible answer</final>"
@@ -22,6 +120,65 @@ public class GatewaySessionTurnRunnerTest {
         let visible = gatewayDebugTelegramStreamingLanesForTest(raw, reasoningEnabled: true)
         @Expect(visible.get("answer").getOrThrow().asString().getValue(), "visible answer")
         @Expect(visible.get("reasoning").getOrThrow().asString().getValue(), "check facts")
+    }
+
+    @TestCase
+    public func telegramReasoningLaneDoesNotReplaceFinalAnswer(): Unit {
+        let root = Path("/tmp/metis-telegram-reasoning-lane-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root, recursive: true)
+        File.writeTo(root.join("sessions.json"), "{\"telegram:chat:1\":{\"reasoningVisibility\":\"on\"}}".toArray())
+        let sentTexts = ArrayList<String>()
+        setGatewayAgentBridgeReplyRunnerForTest(Some({
+            _conversationKey: String,
+            _prompt: String,
+            _channelName: String,
+            _agentId: String,
+            _streamingEnabled: Bool,
+            streamChunkHook: Option<(String) -> Unit> =>
+                match (streamChunkHook) {
+                    case Some(notify) => notify("<think>check facts</think>")
+                    case None => ()
+                }
+                "<think>check facts</think><final>visible answer</final>"
+        }))
+        try {
+            let store = GatewaySessionStore(root, enabled: true, agentId: "general")
+            let bridge = AgentBridge(sessionStore: store)
+            let context = GatewaySessionContext(
+                GatewayIngressSource.Channel("telegram"),
+                "telegram",
+                "telegram",
+                "telegram:chat:1",
+                "general",
+                deliveryTarget: Some(GatewayDeliveryTarget("telegram", "user:1", accountId: "default", replyToMessageId: "7"))
+            )
+            let result = gatewayExecuteSessionTurn(
+                bridge,
+                context,
+                "stream",
+                deliver: true,
+                streamingEnabled: true,
+                deliverHook: Some({
+                    _channelName: String,
+                    _accountId: String,
+                    _peerId: String,
+                    text: String,
+                    _replyToMessageId: Option<String>,
+                    _replyInThread: Bool =>
+                        sentTexts.add(text)
+                        "m-${sentTexts.size}"
+                })
+            )
+            @Expect(result.delivered, true)
+            @Expect(result.deliveryMessageId, "m-2")
+            @Expect(sentTexts.size, 2)
+            @Expect(sentTexts[0].contains("Reasoning"), true)
+            @Expect(sentTexts[0].contains("check facts"), true)
+            @Expect(sentTexts[1], "visible answer")
+        } finally {
+            setGatewayAgentBridgeReplyRunnerForTest(None<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String>)
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
     }
 
     @TestCase

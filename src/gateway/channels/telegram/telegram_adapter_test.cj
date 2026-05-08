@@ -22,6 +22,7 @@ private class TelegramFakeBotApi {
     public var bodySizes: ArrayList<Int64> = ArrayList<Int64>()
     public var pollingUpdatesEnabled: Bool = true
     public var setMyCommandsFailuresBeforeSuccess: Int64 = 0
+    public var failDraftFinalEdit: Bool = false
     private let lock: Mutex = Mutex()
     private var getUpdatesCount: Int64 = 0
     private var nextMessageId: Int64 = 500
@@ -88,6 +89,9 @@ private class TelegramFakeBotApi {
             if (request.context == "answerCallbackQuery" || request.context.startsWith("editMessageReplyMarkup:")) {
                 return TelegramTransportResponse(true, body: "{\"ok\":true,\"result\":true}", outcome: "ok")
             }
+            if (request.context.startsWith("send:draft:final") && this.failDraftFinalEdit) {
+                return TelegramTransportResponse(true, body: "{\"ok\":false,\"description\":\"Bad Request: message to edit not found\"}", outcome: "api-error")
+            }
             if (request.context.startsWith("send:delete") || request.context.startsWith("send:pin") || request.context.startsWith("send:unpin") || request.context.startsWith("send:reaction") || request.context.startsWith("send:topic-edit") || request.context.startsWith("send:draft:final") || request.context.startsWith("send:edit-media")) {
                 return TelegramTransportResponse(true, body: "{\"ok\":true,\"result\":true}", outcome: "ok")
             }
@@ -125,6 +129,18 @@ private class TelegramFakeBotApi {
         synchronized(this.lock) {
             for (call in this.calls) {
                 if (call.contains(method)) {
+                    total += 1
+                }
+            }
+        }
+        total
+    }
+
+    public func countCallContaining(text: String): Int64 {
+        var total: Int64 = 0
+        synchronized(this.lock) {
+            for (call in this.calls) {
+                if (call.contains(text)) {
                     total += 1
                 }
             }
@@ -4541,6 +4557,35 @@ public class TelegramAdapterTest {
     }
 
     @TestCase
+    public func draftPayloadFallsBackToFinalSendWhenEditFails(): Unit {
+        let fake = TelegramFakeBotApi()
+        fake.failDraftFinalEdit = true
+        setTelegramTransportRunnerForTest(Some({ request => fake.handle(request) }))
+        try {
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    actions: TelegramActionConfig(editMessage: true)
+                )
+            )
+            adapter.start()
+            let result = adapter.send(
+                OutboundMessage(ChannelType.Telegram, "user:8734062810", "[draft]\npreview=Working...\nfinal=Final answer")
+            )
+            match (result) {
+                case SendResult.Success => ()
+                case SendResult.Failed(reason) => @Expect(reason, "")
+            }
+            @Expect(fake.countCallContaining("send:draft:final|editMessageText"), 1)
+            @Expect(fake.countCallContaining("send:draft:fallback-final|sendMessage"), 1)
+            @Expect(fake.sawBodyContaining("Final answer"), true)
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+        }
+    }
+
+    @TestCase
     public func approvalPayloadBuildsInlineButtonsAndCallbackData(): Unit {
         let future = DateTime.now().toUnixTimeStamp().toMilliseconds() + 60000
         let fake = TelegramFakeBotApi()
@@ -4894,6 +4939,54 @@ public class TelegramAdapterTest {
         @Expect(inbound[0].systemEventKind, "telegram.message_reaction")
         @Expect(inbound[0].text.contains("[telegram-reaction]"), true)
         @Expect(inbound[0].text.contains("emoji=👍"), true)
+    }
+
+    @TestCase
+    public func reactionWebhookOwnModeOnlyAcceptsBotSentMessageReactions(): Unit {
+        let fake = TelegramFakeBotApi()
+        setTelegramTransportRunnerForTest(Some({ request => fake.handle(request) }))
+        let root = Path("/tmp/metis-telegram-reaction-own-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root, recursive: true)
+        try {
+            let groups = JsonObject()
+            let groupRule = JsonObject()
+            let allowFrom = JsonArray([])
+            allowFrom.add("8734062810".toJsonValue())
+            groupRule.put("requireMention", false.toJsonValue())
+            groupRule.put("allowFrom", allowFrom)
+            groups.put("-1001234567890", groupRule)
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(
+                    enabled: true,
+                    botToken: "telegram-token",
+                    groupPolicy: "allowlist",
+                    groups: Some(groups),
+                    reactionNotifications: "own"
+                ),
+                pairingRoot: root.toString()
+            )
+            adapter.start()
+            let sentMessageId = adapter.sendWithMessageId(
+                OutboundMessage(ChannelType.Telegram, "group:-1001234567890", "bot reply")
+            )
+            @Expect(sentMessageId.isEmpty(), false)
+
+            let ignoredPayload = "{\"update_id\":11,\"message_reaction\":{\"chat\":{\"id\":-1001234567890,\"type\":\"supergroup\"},\"message_id\":999,\"user\":{\"id\":8734062810},\"new_reaction\":[{\"type\":\"emoji\",\"emoji\":\"👍\"}]}}"
+            let ignoredAck = adapter.ingestWebhookPayload(ignoredPayload)
+            @Expect(ignoredAck.contains("\"ignored\":true"), true)
+            @Expect(adapter.pullInbound().size, 0)
+
+            let acceptedPayload = "{\"update_id\":12,\"message_reaction\":{\"chat\":{\"id\":-1001234567890,\"type\":\"supergroup\"},\"message_id\":${sentMessageId},\"user\":{\"id\":8734062810},\"new_reaction\":[{\"type\":\"emoji\",\"emoji\":\"👍\"}]}}"
+            let acceptedAck = adapter.ingestWebhookPayload(acceptedPayload)
+            @Expect(acceptedAck.contains("\"ok\":true"), true)
+            let inbound = adapter.pullInbound()
+            @Expect(inbound.size, 1)
+            @Expect(inbound[0].replyTargetMessageId.getOrThrow(), sentMessageId)
+            @Expect(inbound[0].systemEventKind, "telegram.message_reaction")
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
     }
 
     @TestCase
