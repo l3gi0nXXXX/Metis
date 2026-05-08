@@ -318,6 +318,9 @@ public struct TelegramMediaUserSettings {
     public var mediaMaxBytes: Int64 = 20 * 1024 * 1024
     public var allowedMimes: Array<String> = []
     public var outboundAllowUrl: Bool = false
+    public var outboundFetchUrl: Bool = false
+    public var outboundAllowedUrlDomains: Array<String> = []
+    public var outboundAllowedUrlSchemes: Array<String> = ["https"]
     public var outboundAllowLocalPath: Bool = false
     public var outboundLocalRoots: Array<String> = []
     public var trustedLocalFileRoots: Array<String> = []
@@ -340,6 +343,14 @@ public struct TelegramNetworkUserSettings {
 public struct TelegramCustomCommandUserSettings {
     public var command: String = ""
     public var description: String = ""
+    public var prompt: String = ""
+    public var reply: String = ""
+}
+
+@jsonable
+public struct TelegramCommandsUserSettings {
+    public var useAccessGroups: Bool = false
+    public var allowFrom: Array<String> = []
 }
 
 @jsonable
@@ -358,6 +369,7 @@ public struct TelegramUserSettings {
     public var dms: Option<JsonObject> = None
     public var accounts: Option<JsonObject> = None
     public var commandsNative: String = "auto"
+    public var commands: TelegramCommandsUserSettings = TelegramCommandsUserSettings()
     public var customCommands: Array<TelegramCustomCommandUserSettings> = []
     public var replyToMode: String = "off"
     public var groupHistoryEnabled: Bool = true

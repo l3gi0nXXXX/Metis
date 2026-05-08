@@ -90,6 +90,8 @@ test("interactive respond contract and unsupported capabilities are structured",
   const { root, pluginRoot } = writePlugin(`
     export default function(api) {
       api.registerTool({ name: "not_in_sidecar" });
+      api.registerProvider({ name: "not_in_sidecar" });
+      api.registerChannel({ name: "not_in_sidecar" });
       api.interactive.register({ namespace: "demo", channel: "telegram" }, async (ctx) => {
         const ack = await ctx.respond.answerCallbackQuery({ text: "ok" });
         await ctx.respond.reply({ text: "reply" });
@@ -115,13 +117,51 @@ test("interactive respond contract and unsupported capabilities are structured",
     assert.equal(result.matched, true);
     assert.deepEqual(
       result.intents.map((intent) => intent.type),
-      ["reply", "edit", "edit-buttons", "clear-buttons", "delete"],
+      ["answer-callback-query", "reply", "edit", "edit-buttons", "clear-buttons", "delete"],
     );
-    assert.equal(result.diagnostics[0].unsupportedCapability.capability, "api.registerTool");
+    assert.equal(result.intents[0].callbackId, "cb-1");
+    assert.deepEqual(
+      result.diagnostics.map((diagnostic) => diagnostic.unsupportedCapability.capability),
+      ["api.registerTool", "api.registerProvider", "api.registerChannel"],
+    );
 
     const unsupported = invoke("sdk.missing", {}, pluginRoot);
     assert.equal(unsupported.status, "unsupported");
     assert.equal(unsupported.unsupportedCapability.capability, "sdk.missing");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("approval callback handlers use respond intents and parse decision before approval id", () => {
+  const { root, pluginRoot } = writePlugin(`
+    export default function(api) {
+      api.approvals.register({ namespace: "demo", channel: "telegram" }, async (ctx) => {
+        await ctx.respond.answerCallbackQuery({ text: "approval " + ctx.decision });
+        await ctx.respond.editMessage({ text: "approval:" + ctx.decision + ":" + ctx.approvalId });
+        await ctx.respond.clearButtons();
+        return { type: "reply", text: "done" };
+      });
+    }
+  `);
+  try {
+    const result = invoke(
+      "approval.dispatch",
+      {
+        data: "plugin-approval:demo:allow:approval-1",
+        callbackId: "cb-approval",
+        callbackMessage: { messageId: "77", chatId: "8734062810", messageText: "Approve?" },
+        senderId: "8734062810",
+      },
+      pluginRoot,
+    );
+    assert.equal(result.matched, true);
+    assert.deepEqual(
+      result.intents.map((intent) => intent.type),
+      ["answer-callback-query", "edit", "clear-buttons", "reply"],
+    );
+    assert.equal(result.intents[1].text, "approval:allow:approval-1");
+    assert.equal(result.intents[1].targetMessageId, "77");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

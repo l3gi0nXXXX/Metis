@@ -110,6 +110,25 @@ public func gatewayDebugTelegramStreamingLanesForTest(raw: String, reasoningEnab
     out
 }
 
+private func gatewayNotifySessionLifecycle(
+    lifecycleHook: Option<(String) -> Unit>,
+    status: String
+): Unit {
+    let normalized = status.trimAscii().toAsciiLower()
+    if (normalized.isEmpty()) {
+        return
+    }
+    match (lifecycleHook) {
+        case Some(hook) =>
+            try {
+                hook(normalized)
+            } catch (_e: Exception) {
+                ()
+            }
+        case None => ()
+    }
+}
+
 private func gatewayReplyWithTimeout(
     bridge: AgentBridge,
     context: GatewaySessionContext,
@@ -205,7 +224,8 @@ public func gatewayExecuteSessionTurn(
     deliverHook!: Option<(String, String, String, String, Option<String>, Bool) -> String> = None<(String, String, String, String, Option<String>, Bool) -> String>,
     transcriptHook!: Option<(GatewaySessionContext, Int64, String, String) -> Unit> = None<(GatewaySessionContext, Int64, String, String) -> Unit>,
     streamHook!: Option<(GatewaySessionContext, String) -> Unit> = None<(GatewaySessionContext, String) -> Unit>,
-    streamingEnabled!: Bool = false
+    streamingEnabled!: Bool = false,
+    lifecycleHook!: Option<(String) -> Unit> = None<(String) -> Unit>
 ): GatewaySessionExecutionResult {
     let effectiveReplyToMessageId = match (context.deliveryTarget) {
         case Some(target) =>
@@ -237,15 +257,18 @@ public func gatewayExecuteSessionTurn(
     let streamingState = GatewayStreamingDeliveryState()
     let reasoningStreamingState = GatewayStreamingDeliveryState()
     let reasoningLaneEnabled = gatewayReasoningLaneEnabled(bridge, context)
-    let answer = gatewayReplyWithTimeout(
-        bridge,
-        context,
-        prompt,
-        extraSystemPrompt,
-        timeoutSeconds,
-        toolRuntimeContext: toolRuntimeContext,
-        streamingEnabled: streamingEnabled,
-        streamChunkHook: Some({ currentText =>
+    gatewayNotifySessionLifecycle(lifecycleHook, "thinking")
+    var answer = ""
+    try {
+        answer = gatewayReplyWithTimeout(
+            bridge,
+            context,
+            prompt,
+            extraSystemPrompt,
+            timeoutSeconds,
+            toolRuntimeContext: toolRuntimeContext,
+            streamingEnabled: streamingEnabled,
+            streamChunkHook: Some({ currentText =>
             let visibleText = gatewayVisibleDeliveryText(context.channelName, currentText)
             let normalized = visibleText.trimAscii()
             match (streamHook) {
@@ -343,8 +366,12 @@ public func gatewayExecuteSessionTurn(
                     }
                 case None => ()
             }
-        })
-    )
+            })
+        )
+    } catch (ex: Exception) {
+        gatewayNotifySessionLifecycle(lifecycleHook, "error")
+        throw ex
+    }
     match (transcriptHook) {
         case Some(notify) => notify(context, 2, "turn", "assistant")
         case None => ()
@@ -360,7 +387,7 @@ public func gatewayExecuteSessionTurn(
                         let visibleAnswer = gatewayVisibleDeliveryText(context.channelName, answer)
                         if (!streamingState.messageId.isEmpty() && !streamingState.failed) {
                             if (visibleAnswer != streamingState.lastText) {
-                                let _ = send(
+                                let finalEditMessageId = send(
                                     target.channelName,
                                     target.accountId,
                                     target.peerId,
@@ -368,8 +395,20 @@ public func gatewayExecuteSessionTurn(
                                     Some(streamingState.messageId),
                                     false
                                 )
+                                if (finalEditMessageId.trimAscii().isEmpty()) {
+                                    LogUtils.info("Gateway streaming final fallback: channel=${context.channelName}, session=${context.sessionKey}, messageId=${streamingState.messageId}")
+                                    let fallbackMessageId = send(target.channelName, target.accountId, target.peerId, visibleAnswer, effectiveReplyToMessageId, effectiveReplyInThread)
+                                    gatewayNotifySessionLifecycle(lifecycleHook, "done")
+                                    return GatewaySessionExecutionResult(
+                                        answer,
+                                        delivered: true,
+                                        deliveryStatus: "delivered",
+                                        deliveryMessageId: fallbackMessageId
+                                    )
+                                }
                             }
                             LogUtils.info("Gateway streaming finish: channel=${context.channelName}, session=${context.sessionKey}, messageId=${streamingState.messageId}")
+                            gatewayNotifySessionLifecycle(lifecycleHook, "done")
                             return GatewaySessionExecutionResult(
                                 answer,
                                 delivered: true,
@@ -378,6 +417,7 @@ public func gatewayExecuteSessionTurn(
                             )
                         }
                         let sentMessageId = send(target.channelName, target.accountId, target.peerId, visibleAnswer, effectiveReplyToMessageId, effectiveReplyInThread)
+                        gatewayNotifySessionLifecycle(lifecycleHook, "done")
                         return GatewaySessionExecutionResult(
                             answer,
                             delivered: true,
@@ -385,6 +425,7 @@ public func gatewayExecuteSessionTurn(
                             deliveryMessageId: sentMessageId
                         )
                     } catch (ex: Exception) {
+                        gatewayNotifySessionLifecycle(lifecycleHook, "error")
                         if (bestEffortDeliver) {
                             return GatewaySessionExecutionResult(
                                 answer,

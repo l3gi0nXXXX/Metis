@@ -5,7 +5,7 @@ import magic.prelude.*
 
 import metis.core.config.{CliConfig, CliSettingManager}
 import metis.core.memory.{MemorySessionTranscriptStore, memorySessionStoreForGatewayUser}
-import metis.core.{GatewaySubagentAgentSpec, GatewaySubagentEffectiveState, gatewayCurrentToolRuntimeContext, gatewaySubagentBuildBuiltinPrompt, gatewaySubagentBuildContextPrompt, gatewaySubagentBuildCustomPrompt, gatewaySubagentControllerCanAccessRun, gatewaySubagentCreateRunRecord, gatewaySubagentDeliverNoticeToChannel, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentIsBuiltinAgent, gatewaySubagentListRunRecords, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunState, gatewaySubagentMarkRunTimedOut, gatewaySubagentNormalizeBuiltinAgentId, gatewaySubagentNormalizeCleanupMode, gatewaySubagentNormalizeContextMode, gatewaySubagentNormalizeIsolationMode, gatewaySubagentNormalizeSandboxMode, gatewaySubagentNoticeShouldDeliver, gatewaySubagentNoticeTargetSession, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentPublishNoticeEvent, gatewaySubagentPutEffectiveState, gatewaySubagentRenderNotice, gatewaySubagentResolveAgent, gatewaySubagentResolveEffectiveState, gatewaySubagentResolveRunRecord, gatewaySubagentRunMatchesControlFilter, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentRunStatusIsTerminal, gatewaySubagentUpdateChannelNoticeStatus, gatewaySubagentUpdateNoticeStatus, gatewaySubagentWriteRunRecord}
+import metis.core.{GatewaySubagentAgentSpec, GatewaySubagentEffectiveState, gatewayCurrentToolRuntimeContext, gatewaySubagentBuildBuiltinPrompt, gatewaySubagentBuildContextPrompt, gatewaySubagentBuildCustomPrompt, gatewaySubagentControllerCanAccessRun, gatewaySubagentCreateRunRecord, gatewaySubagentDeliverNoticeToChannel, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentIsBuiltinAgent, gatewaySubagentListRunRecords, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunState, gatewaySubagentMarkRunTimedOut, gatewaySubagentNormalizeBuiltinAgentId, gatewaySubagentNormalizeCleanupMode, gatewaySubagentNormalizeContextMode, gatewaySubagentNormalizeIsolationMode, gatewaySubagentNormalizeSandboxMode, gatewaySubagentNoticeShouldDeliver, gatewaySubagentNoticeTargetSession, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentPublishNoticeEvent, gatewaySubagentPutEffectiveState, gatewaySubagentRenderNotice, gatewaySubagentResolveAgent, gatewaySubagentResolveEffectiveState, gatewaySubagentResolveRunRecord, gatewaySubagentRunMatchesControlFilter, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentRunStatusIsTerminal, gatewaySubagentUpdateChannelNoticeStatus, gatewaySubagentUpdateNoticeStatus, gatewaySubagentWriteRunRecord, renderGatewayTopicCreateText}
 import metis.io.PrintUtils
 
 import std.collection.{ArrayList, HashMap}
@@ -15,6 +15,7 @@ import std.fs.{Directory, File, OpenMode, Path, exists, remove}
 import std.io.StringReader
 import std.process.*
 import std.sync.Mutex
+import std.time.DateTime
 
 import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString, JsonValue}
 
@@ -23,6 +24,7 @@ private var gatewayManagedAgentIds = HashMap<String, String>()
 private var gatewayManagedStates = HashMap<String, String>()
 private var gatewayManagedFutures = HashMap<String, Future<Unit>>()
 private var gatewayManagedProcesses = HashMap<String, SubProcess>()
+private var gatewayManagedSessionsGatewayCallRunnerOverride: Option<(String, JsonObject) -> JsonObject> = None<(String, JsonObject) -> JsonObject>
 
 private class GatewayManagedWorkspaceSpec {
     public var ok: Bool = true
@@ -38,8 +40,41 @@ private class GatewayManagedWorkspaceSpec {
 
 @toolset
 public class GatewayManagedSessionsToolset {
+    public func debugSetGatewayCallRunnerForTest(runner: Option<(String, JsonObject) -> JsonObject>): Unit {
+        gatewayManagedSessionsGatewayCallRunnerOverride = runner
+    }
+
     private func gwStore(): MemorySessionTranscriptStore {
         memorySessionStoreForGatewayUser(CliSettingManager.readGatewaySettings())
+    }
+
+    private func invokeGatewayCall(method: String, params: JsonObject): JsonObject {
+        match (gatewayManagedSessionsGatewayCallRunnerOverride) {
+            case Some(runner) => return runner(method, params)
+            case None => ()
+        }
+        let args = ["gateway", "call", method, params.toJsonString()]
+        let (exitCode, stdoutBytes, stderrBytes) = executeWithOutput("metis", args)
+        let stdout = try { String.fromUtf8(stdoutBytes).trimAscii() } catch (_: Exception) { "" }
+        let stderr = try { String.fromUtf8(stderrBytes).trimAscii() } catch (_: Exception) { "" }
+        if (!stdout.isEmpty()) {
+            try {
+                let obj = JsonValue.fromStr(stdout).asObject()
+                obj.put("exitCode", exitCode.toJsonValue())
+                if (!stderr.isEmpty()) {
+                    obj.put("stderr", JsonString(stderr))
+                }
+                return obj
+            } catch (_: Exception) {
+                ()
+            }
+        }
+        let out = JsonObject()
+        out.put("ok", JsonBool(exitCode == 0))
+        out.put("exitCode", exitCode.toJsonValue())
+        out.put("stdout", JsonString(stdout))
+        out.put("stderr", JsonString(stderr))
+        out
     }
 
     private func buildSpawnLabel(label: String, runtime: String, agentId: String): String {
@@ -328,6 +363,168 @@ public class GatewayManagedSessionsToolset {
             case Some(v) => try { v.asBool().getValue() } catch (_: Exception) { false }
             case None => false
         }
+    }
+
+    private func jsonIntStringField(obj: JsonObject, key: String): String {
+        match (obj.get(key)) {
+            case Some(v) =>
+                try { return v.asString().getValue().trimAscii() } catch (_: Exception) { () }
+                v.toJsonString().trimAscii()
+            case None => ""
+        }
+    }
+
+    private func telegramRequesterAccountId(raw: String): String {
+        let trimmed = raw.trimAscii()
+        if (trimmed.startsWith("telegram:")) {
+            let rest = trimmed["telegram:".size..].trimAscii()
+            return if (rest.isEmpty()) { "default" } else { rest }
+        }
+        if (trimmed.isEmpty()) { "default" } else { trimmed }
+    }
+
+    private func telegramParentPeerForTopicCreate(peerId: String, conversationId: String): String {
+        let peer = if (!peerId.trimAscii().isEmpty()) { peerId.trimAscii() } else { conversationId.trimAscii() }
+        match (peer.indexOf(":topic:")) {
+            case Some(idx) => peer[..idx]
+            case None => peer
+        }
+    }
+
+    private func maybeCreateTelegramTopicAndBindForChild(
+        sessionKey: String,
+        runtime: String,
+        agentId: String,
+        task: String,
+        requesterChannel: String,
+        requesterAccountId: String,
+        requesterPeerId: String,
+        requesterConversationId: String,
+        requesterSessionKey: String
+    ): JsonObject {
+        let out = JsonObject()
+        out.put("attempted", JsonBool(false))
+        let user = CliSettingManager.readGatewaySettings()
+        if (!user.telegram.threadBindings.enabled || !user.telegram.actions.createForumTopic) {
+            out.put("status", JsonString("skipped"))
+            out.put("reason", JsonString("thread binding or createForumTopic action is disabled"))
+            return out
+        }
+        let normalizedRuntime = runtime.trimAscii().toAsciiLower()
+        if (!((normalizedRuntime == "subagent" && user.telegram.threadBindings.spawnSubagentSessions) ||
+            (normalizedRuntime == "acp" && user.telegram.threadBindings.spawnAcpSessions))) {
+            out.put("status", JsonString("skipped"))
+            out.put("reason", JsonString("spawn thread binding is disabled for runtime"))
+            return out
+        }
+        if (requesterChannel.trimAscii().toAsciiLower() != "telegram") {
+            out.put("status", JsonString("skipped"))
+            out.put("reason", JsonString("requester is not telegram"))
+            return out
+        }
+        let parentPeer = this.telegramParentPeerForTopicCreate(requesterPeerId, requesterConversationId)
+        if (!parentPeer.startsWith("group:")) {
+            out.put("status", JsonString("skipped"))
+            out.put("reason", JsonString("requester is not a telegram group/forum"))
+            return out
+        }
+        let titleSeed = if (!agentId.trimAscii().isEmpty()) { agentId.trimAscii() } else { "subagent" }
+        let label = if (task.trimAscii().isEmpty()) { "Metis ${titleSeed}" } else { "Metis ${titleSeed}" }
+        let payload = JsonObject()
+        payload.put("id", JsonString("telegram"))
+        payload.put("channel", JsonString("telegram"))
+        payload.put("peerId", JsonString(parentPeer))
+        payload.put("to", JsonString(parentPeer))
+        payload.put("accountId", JsonString(this.telegramRequesterAccountId(requesterAccountId)))
+        payload.put("text", JsonString(renderGatewayTopicCreateText(label)))
+        payload.put("message", payload.get("text").getOrThrow())
+        out.put("attempted", JsonBool(true))
+        out.put("parentPeerId", JsonString(parentPeer))
+        let sent = this.invokeGatewayCall("channels.send", payload)
+        out.put("gateway", sent)
+        if (!(try { sent.get("ok").getOrThrow().asBool().getValue() } catch (_e: Exception) { false })) {
+            out.put("status", JsonString("warning"))
+            out.put("warning", JsonString("createForumTopic failed; child run record was kept"))
+            return out
+        }
+        let threadId = this.jsonIntStringField(sent, "messageThreadId")
+        let effectiveThreadId = if (!threadId.isEmpty()) { threadId } else { this.jsonIntStringField(sent, "threadId") }
+        if (effectiveThreadId.isEmpty()) {
+            out.put("status", JsonString("warning"))
+            out.put("warning", JsonString("createForumTopic did not return message_thread_id; child run record was kept"))
+            return out
+        }
+        let conversationId = "${parentPeer}:topic:${effectiveThreadId}"
+        let binding = this.managedTelegramThreadBindingBind(
+            this.telegramRequesterAccountId(requesterAccountId),
+            conversationId,
+            sessionKey,
+            parentConversationId: parentPeer,
+            threadId: effectiveThreadId,
+            ownerId: requesterSessionKey
+        )
+        out.put("status", JsonString("bound"))
+        out.put("conversationId", JsonString(conversationId))
+        out.put("threadId", JsonString(effectiveThreadId))
+        out.put("binding", binding)
+        out
+    }
+
+    private func managedTelegramThreadBindingPath(): Path {
+        CliConfig.dotDir.join("gateway-telegram").join("thread-bindings.json")
+    }
+
+    private func managedTelegramThreadBindingLoad(): JsonArray {
+        let path = this.managedTelegramThreadBindingPath()
+        if (!exists(path)) {
+            return JsonArray([])
+        }
+        try { JsonValue.fromStr(String.fromUtf8(File.readFrom(path))).asArray() } catch (_e: Exception) { JsonArray([]) }
+    }
+
+    private func managedTelegramThreadBindingBind(
+        accountId: String,
+        conversationId: String,
+        sessionKey: String,
+        parentConversationId!: String,
+        threadId!: String,
+        ownerId!: String
+    ): JsonObject {
+        let path = this.managedTelegramThreadBindingPath()
+        if (!exists(path.parent)) {
+            Directory.create(path.parent, recursive: true)
+        }
+        let rows = this.managedTelegramThreadBindingLoad()
+        let next = JsonArray([])
+        let account = accountId.trimAscii()
+        let conversation = conversationId.trimAscii()
+        for (item in rows.getItems()) {
+            let row = try { item.asObject() } catch (_e: Exception) { JsonObject() }
+            if (!(this.jsonStringField(row, "channel") == "telegram" &&
+                this.jsonStringField(row, "accountId") == account &&
+                this.jsonStringField(row, "conversationId") == conversation)) {
+                next.add(row)
+            }
+        }
+        let nowMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
+        let record = JsonObject()
+        record.put("channel", JsonString("telegram"))
+        record.put("accountId", JsonString(account))
+        record.put("conversationId", JsonString(conversation))
+        record.put("parentConversationId", JsonString(parentConversationId.trimAscii()))
+        record.put("threadId", JsonString(threadId.trimAscii()))
+        record.put("sessionKey", JsonString(sessionKey.trimAscii().toAsciiLower()))
+        record.put("ownerId", JsonString(ownerId.trimAscii()))
+        record.put("createdAtMs", nowMs.toJsonValue())
+        record.put("updatedAtMs", nowMs.toJsonValue())
+        record.put("expiresAtMs", 0.toJsonValue())
+        next.add(record)
+        File.writeTo(path, next.toJsonString().toArray())
+        let out = JsonObject()
+        out.put("ok", JsonBool(true))
+        out.put("status", JsonString("bound"))
+        out.put("binding", record)
+        out
     }
 
     private func currentControllerSessionKey(): String {
@@ -1888,6 +2085,28 @@ public class GatewayManagedSessionsToolset {
             }
             if (!resolvedAgentSpec.agentDir.trimAscii().isEmpty()) {
                 result.put("agentDir", JsonString(resolvedAgentSpec.agentDir.trimAscii()))
+            }
+        }
+        let topicBinding = this.maybeCreateTelegramTopicAndBindForChild(
+            sessionKey,
+            runtimeText,
+            agentIdText,
+            trimmedTask,
+            requesterChannelText,
+            requesterAccountIdText,
+            requesterPeerIdText,
+            requesterConversationIdText,
+            requesterSessionKey
+        )
+        if (this.jsonBoolField(topicBinding, "attempted")) {
+            result.put("telegramTopicBinding", topicBinding)
+            runMetadata.put("telegramTopicBinding", topicBinding)
+            let topicStatus = this.jsonStringField(topicBinding, "status")
+            if (topicStatus == "warning") {
+                let warnings = JsonArray([])
+                warnings.add(JsonString(this.jsonStringField(topicBinding, "warning")))
+                result.put("warnings", warnings)
+                runMetadata.put("warnings", warnings)
             }
         }
         runRecord.put("metadata", runMetadata)

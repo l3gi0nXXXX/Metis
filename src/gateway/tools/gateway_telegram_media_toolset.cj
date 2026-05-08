@@ -7,7 +7,7 @@ import magic.model.ModelManager
 import magic.prelude.*
 
 import metis.core.gatewayCurrentToolRuntimeContext
-import metis.core.{renderGatewayAudioText, renderGatewayDocumentText, renderGatewayPhotoText, renderGatewayStickerText, renderGatewayVideoNoteText, renderGatewayVideoText, renderGatewayVoiceText}
+import metis.core.{renderGatewayAudioText, renderGatewayDeleteText, renderGatewayDocumentText, renderGatewayEditText, renderGatewayPhotoText, renderGatewayPollText, renderGatewayReactionText, renderGatewayStickerText, renderGatewayTopicCreateText, renderGatewayTopicEditText, renderGatewayVideoNoteText, renderGatewayVideoText, renderGatewayVoiceText}
 import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager, MetisPaths}
 import metis.core.{gatewayMediaUnderstandingFirstText, gatewayMediaUnderstandingForRecord, gatewayMediaUnderstandingOutputs}
 import metis.io.PrintUtils
@@ -469,6 +469,14 @@ private func telegramStickerCachePersistCurrentRecords(): JsonArray {
                 case None => ()
             }
         }
+        if (telegramMediaToolString(cached, "emoji").isEmpty()) {
+            let emoji = telegramMediaToolString(record, "stickerEmoji")
+            if (!emoji.isEmpty()) { cached.put("emoji", JsonString(emoji)) }
+        }
+        if (telegramMediaToolString(cached, "setName").isEmpty()) {
+            let setName = telegramMediaToolString(record, "stickerSetName")
+            if (!setName.isEmpty()) { cached.put("setName", JsonString(setName)) }
+        }
         cached.put("mediaKind", JsonString("sticker"))
         cached.put("cachedAtMs", DateTime.now().toUnixTimeStamp().toMilliseconds().toJsonValue())
         merged.add(cached)
@@ -506,6 +514,14 @@ private func telegramStickerCacheUpsertAnalysis(record: JsonObject, analysis: St
                 case Some(v) => cached.put(field, v)
                 case None => ()
             }
+        }
+        if (telegramMediaToolString(cached, "emoji").isEmpty()) {
+            let emoji = telegramMediaToolString(record, "stickerEmoji")
+            if (!emoji.isEmpty()) { cached.put("emoji", JsonString(emoji)) }
+        }
+        if (telegramMediaToolString(cached, "setName").isEmpty()) {
+            let setName = telegramMediaToolString(record, "stickerSetName")
+            if (!setName.isEmpty()) { cached.put("setName", JsonString(setName)) }
         }
         cached.put("mediaKind", JsonString("sticker"))
         cached.put("analysis", JsonString(analysis.trimAscii()))
@@ -763,6 +779,10 @@ public class GatewayTelegramMediaToolset {
         this.telegramTargetWritebackApply(target, resolvedChatId)
     }
 
+    public func debugTelegramSendToTargetForTest(target: String, message: String, writeback: Option<String>, dryRun: Option<Bool>): String {
+        this.telegramSendToTargetResolved(target, message, writeback, dryRun)
+    }
+
     public func debugTelegramStickerSearchForTest(query: String, limit: Option<Int64>): String {
         this.searchTelegramStickers(query, limit)
     }
@@ -773,6 +793,19 @@ public class GatewayTelegramMediaToolset {
 
     public func debugTelegramStickerCacheStatsForTest(): String {
         this.telegramStickerCacheStats()
+    }
+
+    public func debugTelegramActionForTest(
+        action: String,
+        target: Option<String>,
+        message: Option<String>,
+        messageId: Option<String>,
+        emoji: Option<String>,
+        pollOptions: Option<Array<String>>,
+        stickerFileId: Option<String>,
+        topicName: Option<String>
+    ): String {
+        this.telegramAction(action, target, message, messageId, emoji, pollOptions, stickerFileId, topicName)
     }
 
     private func renderTelegramMediaList(): String {
@@ -1182,7 +1215,9 @@ public class GatewayTelegramMediaToolset {
             telegramMediaToolString(record, "fileUniqueId") + " " +
             telegramMediaToolString(record, "caption") + " " +
             telegramMediaToolString(record, "emoji") + " " +
+            telegramMediaToolString(record, "stickerEmoji") + " " +
             telegramMediaToolString(record, "setName") + " " +
+            telegramMediaToolString(record, "stickerSetName") + " " +
             telegramMediaToolString(record, "description") + " " +
             telegramMediaToolString(record, "analysis")
         ).toAsciiLower()
@@ -1343,6 +1378,146 @@ public class GatewayTelegramMediaToolset {
         result.put("media", JsonString(media))
         result.put("gateway", sent)
         result.toJsonString()
+    }
+
+    private func telegramAction(
+        action: String,
+        target: Option<String>,
+        message: Option<String>,
+        messageId: Option<String>,
+        emoji: Option<String>,
+        pollOptions: Option<Array<String>>,
+        stickerFileId: Option<String>,
+        topicName: Option<String>
+    ): String {
+        let normalized = this.normalizeTelegramActionName(action)
+        if (normalized.isEmpty()) {
+            return telegramMediaError("telegram_action", "unsupported telegram action: ${action.trimAscii()}")
+        }
+        if (normalized == "searchSticker") {
+            return this.searchTelegramStickers(message ?? "", None<Int64>)
+        }
+        let targetText = this.resolveTelegramActionTarget(target)
+        if (targetText.isEmpty()) {
+            return telegramMediaError("telegram_action", "telegram_action requires a target or current Telegram session")
+        }
+        let text = match (this.telegramActionPayloadText(normalized, message, emoji, pollOptions, stickerFileId, topicName)) {
+            case Some(v) => v
+            case None => return telegramMediaError("telegram_action", "telegram_action missing required parameters for ${normalized}")
+        }
+        let replyTo = messageId ?? ""
+        if ((normalized == "react" || normalized == "deleteMessage" || normalized == "editMessage" || normalized == "editForumTopic") && replyTo.trimAscii().isEmpty()) {
+            return telegramMediaError("telegram_action", "${normalized} requires messageId")
+        }
+        let payload = JsonObject()
+        payload.put("id", JsonString("telegram"))
+        payload.put("channel", JsonString("telegram"))
+        payload.put("peerId", JsonString(targetText))
+        payload.put("to", JsonString(targetText))
+        payload.put("text", JsonString(text))
+        payload.put("message", JsonString(text))
+        if (!replyTo.trimAscii().isEmpty()) {
+            payload.put("replyToMessageId", JsonString(replyTo.trimAscii()))
+        }
+        let sent = telegramMediaToolInvokeGatewayCall("channels.send", params: Some(payload))
+        let ok = telegramMediaToolBool(sent, "ok")
+        let out = JsonObject()
+        out.put("ok", ok.toJsonValue())
+        out.put("status", JsonString(if (ok) { "accepted" } else { "error" }))
+        out.put("action", JsonString("telegram_action"))
+        out.put("telegramAction", JsonString(normalized))
+        out.put("target", JsonString(targetText))
+        out.put("gateway", sent)
+        if (!ok) {
+            let reason = telegramMediaToolString(sent, "reason")
+            if (!reason.isEmpty()) {
+                out.put("reason", JsonString(reason))
+                if (reason.toAsciiLower().contains("disabled")) {
+                    out.put("errorCode", JsonString("action_disabled"))
+                }
+            }
+        }
+        out.toJsonString()
+    }
+
+    private func normalizeTelegramActionName(action: String): String {
+        let normalized = action.trimAscii().toAsciiLower().replace("_", "-")
+        if (normalized == "send" || normalized == "sendmessage" || normalized == "send-message") { return "sendMessage" }
+        if (normalized == "react" || normalized == "reaction") { return "react" }
+        if (normalized == "poll") { return "poll" }
+        if (normalized == "delete" || normalized == "deletemessage" || normalized == "delete-message") { return "deleteMessage" }
+        if (normalized == "edit" || normalized == "editmessage" || normalized == "edit-message") { return "editMessage" }
+        if (normalized == "sendsticker" || normalized == "send-sticker" || normalized == "sticker") { return "sendSticker" }
+        if (normalized == "searchsticker" || normalized == "search-sticker" || normalized == "sticker-search") { return "searchSticker" }
+        if (normalized == "topic-create" || normalized == "createforumtopic" || normalized == "create-forum-topic") { return "createForumTopic" }
+        if (normalized == "topic-edit" || normalized == "editforumtopic" || normalized == "edit-forum-topic") { return "editForumTopic" }
+        ""
+    }
+
+    private func resolveTelegramActionTarget(target: Option<String>): String {
+        let explicit = match (target) {
+            case Some(v) => v.trimAscii()
+            case None => ""
+        }
+        if (!explicit.isEmpty()) {
+            return explicit
+        }
+        let current = telegramMediaToolCurrentTarget()
+        if (current[0] == "telegram") { current[1] } else { "" }
+    }
+
+    private func telegramActionPayloadText(
+        normalized: String,
+        message: Option<String>,
+        emoji: Option<String>,
+        pollOptions: Option<Array<String>>,
+        stickerFileId: Option<String>,
+        topicName: Option<String>
+    ): Option<String> {
+        let msg = message ?? ""
+        if (normalized == "sendMessage") {
+            return if (msg.trimAscii().isEmpty()) { None<String> } else { Some(msg) }
+        }
+        if (normalized == "react") {
+            let token = emoji ?? msg
+            return if (token.trimAscii().isEmpty()) { None<String> } else { Some(renderGatewayReactionText(token)) }
+        }
+        if (normalized == "poll") {
+            let opts = pollOptions ?? []
+            if (msg.trimAscii().isEmpty() || opts.isEmpty()) {
+                return None<String>
+            }
+            let parts = ArrayList<String>()
+            parts.add(msg.trimAscii())
+            for (opt in opts) {
+                if (!opt.trimAscii().isEmpty()) {
+                    parts.add(opt.trimAscii())
+                }
+            }
+            if (parts.size < 3) {
+                return None<String>
+            }
+            return Some(renderGatewayPollText(String.join(parts.toArray(), delimiter: "|")))
+        }
+        if (normalized == "deleteMessage") {
+            return Some(renderGatewayDeleteText())
+        }
+        if (normalized == "editMessage") {
+            return if (msg.trimAscii().isEmpty()) { None<String> } else { Some(renderGatewayEditText(msg)) }
+        }
+        if (normalized == "sendSticker") {
+            let fileId = stickerFileId ?? msg
+            return if (fileId.trimAscii().isEmpty()) { None<String> } else { Some(renderGatewayStickerText(fileId.trimAscii())) }
+        }
+        if (normalized == "createForumTopic") {
+            let title = topicName ?? msg
+            return if (title.trimAscii().isEmpty()) { None<String> } else { Some(renderGatewayTopicCreateText(title)) }
+        }
+        if (normalized == "editForumTopic") {
+            let title = topicName ?? msg
+            return if (title.trimAscii().isEmpty()) { None<String> } else { Some(renderGatewayTopicEditText(title)) }
+        }
+        None<String>
     }
 
     private func renderTelegramTargetListFromAudit(auditEnvelope: JsonObject): String {
@@ -1519,6 +1694,11 @@ public class GatewayTelegramMediaToolset {
         }
     }
 
+    private func telegramTargetConfigPathIsSafe(): Bool {
+        let path = MetisConfigManager.configPath().toString()
+        path.startsWith("/tmp/") || path.startsWith("/private/tmp/")
+    }
+
     private func telegramTargetWritebackEnvelope(action: String, target: String, resolvedChatId: Option<String>, apply!: Bool): JsonObject {
         let out = JsonObject()
         var effectiveResolvedChatId = resolvedChatId
@@ -1577,11 +1757,33 @@ public class GatewayTelegramMediaToolset {
             denied.put("error", JsonString("telegram target writeback requires operator.admin scope"))
             return denied.toJsonString()
         }
+        let currentSettings = CliSettingManager.readGatewaySettings()
+        if (!currentSettings.telegram.configWrites) {
+            let denied = JsonObject()
+            denied.put("ok", JsonBool(false))
+            denied.put("status", JsonString("denied"))
+            denied.put("action", JsonString("telegram_target_writeback_apply"))
+            denied.put("target", JsonString(target.trimAscii()))
+            denied.put("cronTarget", JsonString("not_applicable"))
+            denied.put("error", JsonString("telegram target writeback requires gateway.telegram.configWrites=true"))
+            return denied.toJsonString()
+        }
+        if (!this.telegramTargetConfigPathIsSafe()) {
+            let denied = JsonObject()
+            denied.put("ok", JsonBool(false))
+            denied.put("status", JsonString("denied"))
+            denied.put("action", JsonString("telegram_target_writeback_apply"))
+            denied.put("target", JsonString(target.trimAscii()))
+            denied.put("cronTarget", JsonString("not_applicable"))
+            denied.put("configPath", JsonString(MetisConfigManager.configPath().toString()))
+            denied.put("error", JsonString("telegram target writeback requires a temporary/explicit safe config path"))
+            return denied.toJsonString()
+        }
         let envelope = this.telegramTargetWritebackEnvelope("telegram_target_writeback_apply", target, resolvedChatId, apply: true)
         if (!(try { envelope.get("ok").getOrThrow().asBool().getValue() } catch (_e: Exception) { false })) {
             return envelope.toJsonString()
         }
-        var settings = CliSettingManager.readGatewaySettings()
+        var settings = currentSettings
         settings.telegram.defaultTo = telegramMediaToolString(envelope, "defaultTo")
         match (settings.telegram.accounts) {
             case Some(accounts) =>
@@ -1599,6 +1801,124 @@ public class GatewayTelegramMediaToolset {
         MetisConfigManager.setGatewaySettings(settings)
         envelope.put("configPath", JsonString(MetisConfigManager.configPath().toString()))
         envelope.toJsonString()
+    }
+
+    private func telegramResolveSendTarget(target: String): JsonObject {
+        let raw = target.trimAscii()
+        let out = JsonObject()
+        out.put("ok", JsonBool(false))
+        out.put("target", JsonString(raw))
+        if (raw.isEmpty()) {
+            out.put("error", JsonString("target is required"))
+            return out
+        }
+        let lookup = this.telegramTargetLookupFromRaw(raw)
+        if (!lookup.isEmpty()) {
+            let (resolvedOk, chatId, resolvedError, detail) = this.telegramTargetResolveViaGetChat(raw)
+            out.put("resolve", detail)
+            if (!resolvedOk) {
+                out.put("error", JsonString(resolvedError))
+                return out
+            }
+            let (normOk, normalized, normError) = this.telegramTargetWritebackNormalize(raw, Some(chatId))
+            if (!normOk) {
+                out.put("error", JsonString(normError))
+                return out
+            }
+            out.put("ok", JsonBool(true))
+            out.put("resolvedTarget", JsonString(normalized))
+            out.put("source", JsonString("getChat"))
+            out.put("resolvedChatId", JsonString(chatId))
+            return out
+        }
+        let normalized = this.telegramTargetWritebackNormalize(raw, None<String>)
+        if (normalized[0]) {
+            out.put("ok", JsonBool(true))
+            out.put("resolvedTarget", JsonString(normalized[1]))
+            out.put("source", JsonString("literal"))
+            return out
+        }
+        let params = JsonObject()
+        params.put("channelId", JsonString("telegram"))
+        let audit = telegramMediaToolInvokeGatewayCall("channels.audit", params: Some(params))
+        let resolved = JsonValue.fromStr(this.renderTelegramTargetResolveFromAudit(raw, audit)).asObject()
+        if (telegramMediaToolBool(resolved, "ok")) {
+            let row = try { resolved.get("target").getOrThrow().asObject() } catch (_e: Exception) { JsonObject() }
+            let id = telegramMediaToolString(row, "id")
+            if (!id.isEmpty() && telegramMediaToolBool(row, "canSend")) {
+                out.put("ok", JsonBool(true))
+                out.put("resolvedTarget", JsonString(id))
+                out.put("source", JsonString(telegramMediaToolString(row, "source")))
+                out.put("directoryTarget", row)
+                return out
+            }
+        }
+        out.put("error", JsonString("Unknown, unauthorized, or blocked Telegram target"))
+        out
+    }
+
+    private func telegramSendToTargetResolved(target: String, message: String, writeback: Option<String>, dryRun: Option<Bool>): String {
+        let targetText = target.trimAscii()
+        let msg = message.trimAscii()
+        if (targetText.isEmpty() || msg.isEmpty()) {
+            return telegramMediaError("telegram_send_to_target", "target and message are required")
+        }
+        let resolved = this.telegramResolveSendTarget(targetText)
+        if (!telegramMediaToolBool(resolved, "ok")) {
+            let err = JsonObject()
+            err.put("ok", JsonBool(false))
+            err.put("status", JsonString("error"))
+            err.put("action", JsonString("telegram_send_to_target"))
+            err.put("target", JsonString(targetText))
+            err.put("resolve", resolved)
+            err.put("error", JsonString(telegramMediaToolString(resolved, "error")))
+            return err.toJsonString()
+        }
+        let resolvedTarget = telegramMediaToolString(resolved, "resolvedTarget")
+        let payload = JsonObject()
+        payload.put("id", JsonString("telegram"))
+        payload.put("channel", JsonString("telegram"))
+        payload.put("peerId", JsonString(resolvedTarget))
+        payload.put("to", JsonString(resolvedTarget))
+        payload.put("text", JsonString(msg))
+        payload.put("message", JsonString(msg))
+        let sent = telegramMediaToolInvokeGatewayCall("channels.send", params: Some(payload))
+        let ok = try { sent.get("ok").getOrThrow().asBool().getValue() } catch (_e: Exception) { false }
+        let out = JsonObject()
+        out.put("ok", ok.toJsonValue())
+        out.put("status", JsonString(if (ok) { "accepted" } else { "error" }))
+        out.put("action", JsonString("telegram_send_to_target"))
+        out.put("target", JsonString(targetText))
+        out.put("resolvedTarget", JsonString(resolvedTarget))
+        out.put("resolve", resolved)
+        out.put("gateway", sent)
+        let writebackMode = match (writeback) {
+            case Some(v) => v.trimAscii().toAsciiLower()
+            case None => ""
+        }
+        let dry = match (dryRun) { case Some(v) => v case None => false }
+        if (dry || writebackMode == "dry-run" || writebackMode == "dry_run") {
+            out.put("writeback", JsonValue.fromStr(this.telegramTargetWritebackDryRun(targetText, Some(this.telegramTargetChatIdForWriteback(resolvedTarget)))).asObject())
+        } else if (writebackMode == "apply" || writebackMode == "true" || writebackMode == "on") {
+            out.put("writeback", JsonValue.fromStr(this.telegramTargetWritebackApply(targetText, Some(this.telegramTargetChatIdForWriteback(resolvedTarget)))).asObject())
+        }
+        out.toJsonString()
+    }
+
+    private func telegramTargetChatIdForWriteback(resolvedTarget: String): String {
+        let target = resolvedTarget.trimAscii()
+        if (target.startsWith("user:")) {
+            return target["user:".size..]
+        }
+        if (target.startsWith("group:")) {
+            let group = target["group:".size..]
+            match (group.indexOf(":topic:")) {
+                case Some(idx) => group[..idx]
+                case None => group
+            }
+        } else {
+            target
+        }
     }
 
     @tool[
@@ -1773,6 +2093,35 @@ public class GatewayTelegramMediaToolset {
     }
 
     @tool[
+        description: "Run a Telegram channel action through Gateway channels.send. Supports sendMessage, react, poll, delete, edit, sendSticker, searchSticker, topic-create, and topic-edit.",
+        parameters: {
+            action: "Telegram action name or alias.",
+            target: "Optional Telegram target. Defaults to the current Telegram session target.",
+            message: "Message text, poll question, sticker query, or topic title depending on action.",
+            messageId: "Target message id for react, delete, edit, and topic-edit.",
+            emoji: "Reaction emoji for react.",
+            pollOptions: "Poll option labels for poll.",
+            stickerFileId: "Sticker file_id for sendSticker.",
+            topicName: "Forum topic name for topic-create or topic-edit."
+        }
+    ]
+    public func telegram_action(
+        action: String,
+        target: Option<String>,
+        message: Option<String>,
+        messageId: Option<String>,
+        emoji: Option<String>,
+        pollOptions: Option<Array<String>>,
+        stickerFileId: Option<String>,
+        topicName: Option<String>
+    ): String {
+        PrintUtils.printTool("telegram_action", shortMessage: action)
+        let text = this.telegramAction(action, target, message, messageId, emoji, pollOptions, stickerFileId, topicName)
+        PrintUtils.printToolResult(text)
+        return text
+    }
+
+    @tool[
         description: "List known Telegram targets from Gateway channels.audit. This is read-only and does not expand permissions.",
         parameters: {}
     ]
@@ -1831,36 +2180,17 @@ public class GatewayTelegramMediaToolset {
     }
 
     @tool[
-        description: "Send a text message to a known Telegram target through Gateway channels.send. This does not write back target configuration.",
+        description: "Send a text message to a Telegram target through Gateway channels.send. Supports known directory/display targets and @username getChat resolution; target writeback is optional and policy-gated.",
         parameters: {
-            target: "Target id from telegram_target_list.",
-            message: "Message text to send."
+            target: "Target id, display name, session key from telegram_target_list, numeric chat id, user:<id>, group:<id>, t.me link, or @username.",
+            message: "Message text to send.",
+            writeback: "Optional target writeback mode: off, dry-run, or apply. apply requires operator.admin, configWrites=true, and a safe config path.",
+            dryRun: "Optional. When true, previews writeback only and never mutates config."
         }
     ]
-    public func telegram_send_to_target(target: String, message: String): String {
+    public func telegram_send_to_target(target: String, message: String, writeback: Option<String>, dryRun: Option<Bool>): String {
         PrintUtils.printTool("telegram_send_to_target", shortMessage: target)
-        let targetText = target.trimAscii()
-        let msg = message.trimAscii()
-        if (targetText.isEmpty() || msg.isEmpty()) {
-            let err = telegramMediaError("telegram_send_to_target", "target and message are required")
-            PrintUtils.printToolResult(err)
-            return err
-        }
-        let payload = JsonObject()
-        payload.put("id", JsonString("telegram"))
-        payload.put("channel", JsonString("telegram"))
-        payload.put("peerId", JsonString(targetText))
-        payload.put("to", JsonString(targetText))
-        payload.put("text", JsonString(msg))
-        payload.put("message", JsonString(msg))
-        let sent = telegramMediaToolInvokeGatewayCall("channels.send", params: Some(payload))
-        let out = JsonObject()
-        out.put("ok", sent.get("ok") ?? JsonBool(false))
-        out.put("status", JsonString(if (try { sent.get("ok").getOrThrow().asBool().getValue() } catch (_e: Exception) { false }) { "accepted" } else { "error" }))
-        out.put("action", JsonString("telegram_send_to_target"))
-        out.put("target", JsonString(targetText))
-        out.put("gateway", sent)
-        let text = out.toJsonString()
+        let text = this.telegramSendToTargetResolved(target, message, writeback, dryRun)
         PrintUtils.printToolResult(text)
         return text
     }

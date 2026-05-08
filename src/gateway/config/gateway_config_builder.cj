@@ -350,7 +350,9 @@ private func mergeTelegram(user: GatewayUserSettings): TelegramConfig {
         customCommands.add(
             TelegramCustomCommandConfig(
                 command: one.command.trimAscii(),
-                description: one.description.trimAscii()
+                description: one.description.trimAscii(),
+                prompt: one.prompt.trimAscii(),
+                reply: one.reply.trimAscii()
             )
         )
     }
@@ -456,6 +458,9 @@ private func mergeTelegram(user: GatewayUserSettings): TelegramConfig {
             mediaMaxBytes: user.telegram.media.mediaMaxBytes,
             allowedMimes: user.telegram.media.allowedMimes,
             outboundAllowUrl: user.telegram.media.outboundAllowUrl,
+            outboundFetchUrl: user.telegram.media.outboundFetchUrl,
+            outboundAllowedUrlDomains: user.telegram.media.outboundAllowedUrlDomains,
+            outboundAllowedUrlSchemes: user.telegram.media.outboundAllowedUrlSchemes,
             outboundAllowLocalPath: user.telegram.media.outboundAllowLocalPath,
             outboundLocalRoots: user.telegram.media.outboundLocalRoots,
             trustedLocalFileRoots: user.telegram.media.trustedLocalFileRoots,

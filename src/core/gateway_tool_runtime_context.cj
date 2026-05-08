@@ -13,6 +13,7 @@ public class GatewayToolRuntimeContext {
     public let operatorScopes: Array<String>
     public let prompt: String
     public let mediaContext: JsonObject
+    public let lifecycleHook: Option<(String) -> Unit>
 
     public init(
         sourceLabel: String,
@@ -22,7 +23,8 @@ public class GatewayToolRuntimeContext {
         declaredUser!: String = "",
         operatorScopes!: Array<String> = [],
         prompt!: String = "",
-        mediaContext!: JsonObject = JsonObject()
+        mediaContext!: JsonObject = JsonObject(),
+        lifecycleHook!: Option<(String) -> Unit> = None<(String) -> Unit>
     ) {
         this.sourceLabel = sourceLabel.trimAscii().toAsciiLower()
         this.channelName = channelName.trimAscii().toAsciiLower()
@@ -39,6 +41,23 @@ public class GatewayToolRuntimeContext {
         this.operatorScopes = normalizedScopes.toArray()
         this.prompt = prompt
         this.mediaContext = mediaContext
+        this.lifecycleHook = lifecycleHook
+    }
+
+    public func notifyLifecycleStatus(status: String): Unit {
+        let normalized = status.trimAscii().toAsciiLower()
+        if (normalized.isEmpty()) {
+            return
+        }
+        match (this.lifecycleHook) {
+            case Some(hook) =>
+                try {
+                    hook(normalized)
+                } catch (_e: Exception) {
+                    ()
+                }
+            case None => ()
+        }
     }
 }
 
@@ -92,6 +111,13 @@ public func gatewayCurrentToolRuntimeContext(): Option<GatewayToolRuntimeContext
                 }
             case None => None<GatewayToolRuntimeContext>
         }
+    }
+}
+
+public func gatewayNotifyCurrentToolRuntimeStatus(status: String): Unit {
+    match (gatewayCurrentToolRuntimeContext()) {
+        case Some(context) => context.notifyLifecycleStatus(status)
+        case None => ()
     }
 }
 
