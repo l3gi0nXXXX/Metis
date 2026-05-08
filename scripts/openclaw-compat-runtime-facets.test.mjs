@@ -108,3 +108,18 @@ test("reply conversation thread and process facets use permission gates", async 
   assert.deepEqual(await allowedRuntime.thread.get("thread-1"), { ok: true, id: "thread-1", title: "Thread" });
   assert.deepEqual(await allowedRuntime.process.spawn({ command: "node" }), { ok: true, pid: 123, command: "node" });
 });
+
+test("allowed but unwired runtime facets return not_applicable diagnostics instead of fake success", async () => {
+  const state = createRuntimeState({
+    permissions: { reply: true, conversation: true, thread: true, process: true },
+  });
+  const runtime = createRuntimeFacets(state, "fixture-plugin");
+
+  assert.equal((await runtime.reply.send({ text: "hi" })).status, "not_applicable");
+  assert.equal((await runtime.conversation.get("conversation-1")).status, "not_applicable");
+  assert.equal((await runtime.thread.get("thread-1")).status, "not_applicable");
+  assert.equal((await runtime.process.spawn({ command: "node" })).status, "not_applicable");
+
+  assert.ok(state.diagnostics.some((diagnostic) => diagnostic.code === "runtime_facet_not_applicable" && diagnostic.facet === "reply"));
+  assert.ok(state.diagnostics.some((diagnostic) => diagnostic.code === "runtime_facet_not_applicable" && diagnostic.facet === "process"));
+});

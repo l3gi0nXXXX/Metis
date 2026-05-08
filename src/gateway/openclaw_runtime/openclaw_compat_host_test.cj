@@ -1,6 +1,6 @@
 package metis.gateway.openclaw_runtime
 
-import metis.core.config.GatewayUserSettings
+import metis.core.config.{CliConfig, GatewayUserSettings}
 import magic.jsonable.*
 import std.collection.ArrayList
 import std.unittest.testmacro.*
@@ -71,6 +71,24 @@ private func okResult(status: String): JsonObject {
     out
 }
 
+private func registeredCapabilitiesResult(): JsonObject {
+    let result = okResult("registered")
+    let registries = JsonObject()
+    let channels = JsonArray([])
+    let channel = JsonObject()
+    channel.put("pluginId", JsonString("fixture-plugin"))
+    channel.put("name", JsonString("fixture-channel"))
+    channel.put("id", JsonString("fixture-channel"))
+    channels.add(channel)
+    registries.put("channels", channels)
+    registries.put("httpRoutes", JsonArray([]))
+    registries.put("tools", JsonArray([]))
+    registries.put("providers", JsonArray([]))
+    registries.put("hooks", JsonArray([]))
+    result.put("gatewayRegistries", registries)
+    result
+}
+
 private func jstr(obj: JsonObject, key: String): String {
     match (obj.get(key)) {
         case Some(v) => try { v.asString().getValue() } catch (_: Exception) { "" }
@@ -111,9 +129,33 @@ private func runtimeSettings(): GatewayUserSettings {
     runtime.put("pluginRoots", roots)
     runtime.put("timeoutMs", 2500.toJsonValue())
     runtime.put("restartPolicy", JsonString("on-failure"))
+    runtime.put("permissions", JsonObject())
     let extra = JsonObject()
     extra.put("openclawRuntime", runtime)
     user.channelsExtra = Some(extra)
+    user
+}
+
+private func realRuntimeSettings(): GatewayUserSettings {
+    var user = runtimeSettings()
+    let extra = user.channelsExtra.getOrThrow()
+    let runtime = extra.get("openclawRuntime").getOrThrow().asObject()
+    runtime.put("nodeCommand", JsonString("node"))
+    runtime.put("hostScript", JsonString(CliConfig.cwd.join("scripts").join("openclaw-compat-host.mjs").toString()))
+    let roots = JsonArray([])
+    roots.add(JsonString(CliConfig.cwd.join("scripts").join("fixtures").join("openclaw-compat-host").join("raw-register").toString()))
+    runtime.put("pluginRoots", roots)
+    runtime.put("timeoutMs", 5000.toJsonValue())
+    let secrets = JsonObject()
+    secrets.put("OPENCLAW_TOKEN", JsonString("super-secret-token"))
+    runtime.put("secrets", secrets)
+    let permissions = JsonObject()
+    permissions.put("media", true.toJsonValue())
+    permissions.put("reply", true.toJsonValue())
+    permissions.put("conversation", true.toJsonValue())
+    permissions.put("thread", true.toJsonValue())
+    permissions.put("process", false.toJsonValue())
+    runtime.put("permissions", permissions)
     user
 }
 
@@ -188,6 +230,7 @@ public class OpenClawCompatHostTest {
     public func managerStartLaunchesPersistentHostAndLoadsPluginRoots(): Unit {
         let runner = FakeOpenClawCompatHostProcessRunner()
         runner.transport.enqueue(jsonRpcResponse(1, okResult("loaded")))
+        runner.transport.enqueue(jsonRpcResponse(2, registeredCapabilitiesResult()))
         let manager = OpenClawCompatHostManager(
             openClawCompatHostConfigFromGatewaySettings(runtimeSettings()),
             runner: runner
@@ -203,13 +246,16 @@ public class OpenClawCompatHostTest {
         @Expect(runner.starts[0].pluginRoots.size, 2)
         @Expect(jstr(runner.transport.frames[0], "method"), "plugin.load")
         @Expect(jarr(jobj(runner.transport.frames[0], "params"), "roots").size(), 2)
+        @Expect(jstr(runner.transport.frames[1], "method"), "plugin.registeredCapabilities")
+        @Expect(manager.gatewayRegistryBridge().channelCount(), 1)
     }
 
     @TestCase
     public func managerStopSendsRuntimeStop(): Unit {
         let runner = FakeOpenClawCompatHostProcessRunner()
         runner.transport.enqueue(jsonRpcResponse(1, okResult("loaded")))
-        runner.transport.enqueue(jsonRpcResponse(2, okResult("stopping")))
+        runner.transport.enqueue(jsonRpcResponse(2, registeredCapabilitiesResult()))
+        runner.transport.enqueue(jsonRpcResponse(3, okResult("stopping")))
         let manager = OpenClawCompatHostManager(
             openClawCompatHostConfigFromGatewaySettings(runtimeSettings()),
             runner: runner
@@ -220,7 +266,7 @@ public class OpenClawCompatHostTest {
 
         @Expect(stopped.ok, true)
         @Expect(stopped.state, "stopped")
-        @Expect(jstr(runner.transport.frames[1], "method"), "runtime.stop")
+        @Expect(jstr(runner.transport.frames[2], "method"), "runtime.stop")
         @Expect(runner.transport.closed, true)
     }
 
@@ -228,6 +274,7 @@ public class OpenClawCompatHostTest {
     public func managerCrashHealthIsDiagnosticAndBackoffPreventsImmediateRestart(): Unit {
         let runner = FakeOpenClawCompatHostProcessRunner()
         runner.transport.enqueue(jsonRpcResponse(1, okResult("loaded")))
+        runner.transport.enqueue(jsonRpcResponse(2, registeredCapabilitiesResult()))
         let manager = OpenClawCompatHostManager(
             openClawCompatHostConfigFromGatewaySettings(runtimeSettings()),
             runner: runner
@@ -245,5 +292,24 @@ public class OpenClawCompatHostTest {
         @Expect(restart.state, "backoff")
         @Expect(jstr(restart.diagnostic, "kind"), "restart_backoff")
         @Expect(runner.starts.size, 1)
+    }
+
+    @TestCase
+    public func realStdioRunnerLoadsNodeHostAndSyncsRegisteredCapabilities(): Unit {
+        let manager = OpenClawCompatHostManager(
+            openClawCompatHostConfigFromGatewaySettings(realRuntimeSettings()),
+            runner: OpenClawCompatStdioProcessRunner()
+        )
+
+        let status = manager.start()
+        let bridge = manager.gatewayRegistryBridge()
+        let stopped = manager.stop()
+
+        @Expect(status.ok, true)
+        @Expect(status.state, "running")
+        @Expect(bridge.channelCount(), 1)
+        @Expect(bridge.toolCount(), 1)
+        @Expect(bridge.httpRouteCount(), 1)
+        @Expect(stopped.state, "stopped")
     }
 }

@@ -4,7 +4,10 @@ import metis.core.config.GatewayUserSettings
 import magic.jsonable.*
 import std.collection.ArrayList
 import std.convert.Parsable
-import stdx.encoding.json.{JsonArray, JsonObject, JsonString}
+import std.core.Duration
+import std.io.*
+import std.process.*
+import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
 
 public class OpenClawCompatHostConfig {
     public var enabled: Bool = false
@@ -14,6 +17,7 @@ public class OpenClawCompatHostConfig {
     public var timeoutMs: Int64 = 10000
     public var restartPolicy: String = "on-failure"
     public var backoffMs: Int64 = 1000
+    public var runtimeParams: JsonObject = JsonObject()
 
     public init() {}
 }
@@ -41,9 +45,130 @@ public interface OpenClawCompatHostProcessRunner {
     func start(spec: OpenClawCompatHostLaunchSpec): OpenClawCompatHostStartResult
 }
 
-private class OpenClawCompatUnavailableProcessRunner <: OpenClawCompatHostProcessRunner {
-    public func start(_spec: OpenClawCompatHostLaunchSpec): OpenClawCompatHostStartResult {
-        OpenClawCompatHostStartResult.Failed("native OpenClaw host process runner is not configured")
+private class OpenClawCompatStdioHostTransport <: OpenClawCompatHostTransport {
+    private let process: SubProcess
+    private let reader: StringReader<InputStream>
+    private let writer: StringWriter<OutputStream>
+    private var closed: Bool = false
+
+    public init(process: SubProcess) {
+        this.process = process
+        this.reader = StringReader<InputStream>(process.stdOutPipe)
+        this.writer = StringWriter<OutputStream>(process.stdInPipe)
+    }
+
+    private func compactJsonLine(raw: String): String {
+        let out = StringBuilder()
+        var inString = false
+        var escaped = false
+        for (ch in raw.toRuneArray()) {
+            if (escaped) {
+                out.append(ch)
+                escaped = false
+                continue
+            }
+            if (inString && ch == r'\\') {
+                out.append(ch)
+                escaped = true
+                continue
+            }
+            if (ch == r'"') {
+                out.append(ch)
+                inString = !inString
+                continue
+            }
+            if (!inString && (ch == r' ' || ch == r'\n' || ch == r'\r' || ch == r'\t')) {
+                continue
+            }
+            out.append(ch)
+        }
+        out.toString()
+    }
+
+    private func readLine(timeoutMs: Int64): Option<String> {
+        let effectiveTimeoutMs = if (timeoutMs > 0) { timeoutMs } else { 10000 }
+        let fut = spawn {
+            try { this.reader.readln() } catch (_: Exception) { None<String> }
+        }
+        let watchdog = spawn {
+            sleep(Duration.millisecond * effectiveTimeoutMs)
+            fut.cancel()
+        }
+        try {
+            let line = fut.get()
+            watchdog.cancel()
+            return line
+        } catch (_: Exception) {
+            try { watchdog.cancel() } catch (_e: Exception) { () }
+            return None<String>
+        }
+    }
+
+    public func send(frame: JsonObject, timeoutMs!: Int64): OpenClawCompatHostTransportResult {
+        if (this.closed) {
+            return OpenClawCompatHostTransportResult.Failure("OpenClaw compatibility host transport is closed")
+        }
+        try {
+            this.writer.writeln(this.compactJsonLine(frame.toJsonString()))
+            this.writer.flush()
+        } catch (e: Exception) {
+            this.closed = true
+            return OpenClawCompatHostTransportResult.Failure("OpenClaw compatibility host write failed: ${e.message}")
+        }
+        match (this.readLine(timeoutMs)) {
+            case Some(line) =>
+                let trimmed = line.trimAscii()
+                if (trimmed.isEmpty()) {
+                    return OpenClawCompatHostTransportResult.Failure("OpenClaw compatibility host returned an empty frame")
+                }
+                try {
+                    return OpenClawCompatHostTransportResult.Response(JsonValue.fromStr(trimmed).asObject())
+                } catch (e: Exception) {
+                    return OpenClawCompatHostTransportResult.Failure("OpenClaw compatibility host returned invalid json: ${e.message}")
+                }
+            case None =>
+                OpenClawCompatHostTransportResult.Timeout
+        }
+    }
+
+    public func close(): Unit {
+        if (this.closed) {
+            return
+        }
+        this.closed = true
+        try {
+            let _ = this.process.wait(timeout: Some(Duration.millisecond * 250))
+        } catch (_: Exception) {
+            try { this.process.terminate(force: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    public func isAlive(): Bool {
+        !this.closed && this.process.isAlive()
+    }
+}
+
+public class OpenClawCompatStdioProcessRunner <: OpenClawCompatHostProcessRunner {
+    public init() {}
+
+    public func start(spec: OpenClawCompatHostLaunchSpec): OpenClawCompatHostStartResult {
+        let command = spec.nodeCommand.trimAscii()
+        let script = spec.hostScript.trimAscii()
+        if (command.isEmpty() || script.isEmpty()) {
+            return OpenClawCompatHostStartResult.Failed("nodeCommand and hostScript are required")
+        }
+        try {
+            let process = launch(
+                command,
+                [script],
+                stdIn: ProcessRedirect.Pipe,
+                stdOut: ProcessRedirect.Pipe,
+                stdErr: ProcessRedirect.Pipe
+            )
+            OpenClawCompatHostStartResult.Started(OpenClawCompatStdioHostTransport(process))
+        } catch (e: Exception) {
+            OpenClawCompatHostStartResult.Failed(e.message)
+        }
     }
 }
 
@@ -111,6 +236,13 @@ private func ocManagerArray(obj: JsonObject, key: String): JsonArray {
     }
 }
 
+private func ocManagerObject(obj: JsonObject, key: String): JsonObject {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asObject() } catch (_: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+}
+
 private func ocManagerConfigObject(user: GatewayUserSettings): JsonObject {
     match (user.channelsExtra) {
         case Some(extra) =>
@@ -128,6 +260,7 @@ private func ocManagerConfigObject(user: GatewayUserSettings): JsonObject {
 public func openClawCompatHostConfigFromGatewaySettings(user: GatewayUserSettings): OpenClawCompatHostConfig {
     let raw = ocManagerConfigObject(user)
     let config = OpenClawCompatHostConfig()
+    config.runtimeParams = raw
     config.enabled = ocManagerBool(raw, "enabled", false)
     config.nodeCommand = ocManagerString(raw, "nodeCommand", "node")
     config.hostScript = ocManagerString(raw, "hostScript", "")
@@ -148,6 +281,37 @@ public func openClawCompatHostConfigFromGatewaySettings(user: GatewayUserSetting
     config
 }
 
+private func ocManagerRegistryArray(obj: JsonObject, key: String): JsonArray {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asArray() } catch (_: Exception) { JsonArray([]) }
+        case None => JsonArray([])
+    }
+}
+
+public class OpenClawCompatGatewayRegistryBridge {
+    public let raw: JsonObject
+    public let channels: JsonArray
+    public let httpRoutes: JsonArray
+    public let tools: JsonArray
+    public let providers: JsonArray
+    public let hooks: JsonArray
+
+    public init(raw!: JsonObject = JsonObject()) {
+        this.raw = raw
+        this.channels = ocManagerRegistryArray(raw, "channels")
+        this.httpRoutes = ocManagerRegistryArray(raw, "httpRoutes")
+        this.tools = ocManagerRegistryArray(raw, "tools")
+        this.providers = ocManagerRegistryArray(raw, "providers")
+        this.hooks = ocManagerRegistryArray(raw, "hooks")
+    }
+
+    public func channelCount(): Int64 { this.channels.size() }
+    public func httpRouteCount(): Int64 { this.httpRoutes.size() }
+    public func toolCount(): Int64 { this.tools.size() }
+    public func providerCount(): Int64 { this.providers.size() }
+    public func hookCount(): Int64 { this.hooks.size() }
+}
+
 public class OpenClawCompatHostManager {
     private let config: OpenClawCompatHostConfig
     private let runner: OpenClawCompatHostProcessRunner
@@ -155,10 +319,11 @@ public class OpenClawCompatHostManager {
     private var state: String = "stopped"
     private var restartBackoffActive: Bool = false
     private var lastDiagnostic: JsonObject = JsonObject()
+    private var registryBridge: OpenClawCompatGatewayRegistryBridge = OpenClawCompatGatewayRegistryBridge()
 
     public init(
         config: OpenClawCompatHostConfig,
-        runner!: OpenClawCompatHostProcessRunner = OpenClawCompatUnavailableProcessRunner()
+        runner!: OpenClawCompatHostProcessRunner = OpenClawCompatStdioProcessRunner()
     ) {
         this.config = config
         this.runner = runner
@@ -174,7 +339,21 @@ public class OpenClawCompatHostManager {
         let runtime = JsonObject()
         runtime.put("version", JsonString("metis-openclaw-compat"))
         params.put("runtime", runtime)
+        for (key in ["config", "secrets", "permissions", "fetchPolicy"]) {
+            match (this.config.runtimeParams.get(key)) {
+                case Some(v) => params.put(key, v)
+                case None => ()
+            }
+        }
         params
+    }
+
+    private func syncRegisteredCapabilities(client: OpenClawCompatHostClient): OpenClawCompatHostClientResult {
+        let registered = client.request("plugin.registeredCapabilities")
+        if (registered.ok) {
+            this.registryBridge = OpenClawCompatGatewayRegistryBridge(raw: ocManagerObject(registered.result, "gatewayRegistries"))
+        }
+        registered
     }
 
     private func status(ok: Bool, state: String, diagnostic!: JsonObject = JsonObject(), raw!: JsonObject = JsonObject()): OpenClawCompatHostManagerStatus {
@@ -209,6 +388,10 @@ public class OpenClawCompatHostManager {
                 this.client = Some(client)
                 let loaded = client.request("plugin.load", params: this.pluginLoadParams())
                 if (loaded.ok) {
+                    let registered = this.syncRegisteredCapabilities(client)
+                    if (!registered.ok) {
+                        return this.status(false, registered.status, diagnostic: registered.diagnostic, raw: registered.raw)
+                    }
                     return this.status(true, "running", raw: loaded.raw)
                 }
                 return this.status(false, loaded.status, diagnostic: loaded.diagnostic, raw: loaded.raw)
@@ -268,5 +451,9 @@ public class OpenClawCompatHostManager {
             this.state,
             diagnostic: this.lastDiagnostic
         )
+    }
+
+    public func gatewayRegistryBridge(): OpenClawCompatGatewayRegistryBridge {
+        this.registryBridge
     }
 }

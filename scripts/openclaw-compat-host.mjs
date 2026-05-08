@@ -592,9 +592,44 @@ function registeredResult(state, extra = {}) {
     loadedPluginCount: state.plugins.length,
     plugins: state.redactor.sanitize(state.plugins),
     capabilities: state.redactor.sanitize(state.capabilities),
+    gatewayRegistries: state.redactor.sanitize(buildGatewayRegistries(state)),
     config: state.redactor.sanitize(state.configSnapshot),
     diagnostics: state.redactor.sanitize(state.diagnostics),
     ...extra,
+  };
+}
+
+function registryRecord(record, method, params = {}) {
+  return {
+    pluginId: record.pluginId,
+    name: record.name,
+    id: record.id,
+    path: record.path,
+    command: record.command,
+    method: record.method,
+    kind: record.kind,
+    spec: record.spec,
+    handlerRegistered: Boolean(record.handlerRegistered),
+    dispatch: { method, params },
+  };
+}
+
+function buildGatewayRegistries(state) {
+  return {
+    channels: state.capabilities.channels.map((record) =>
+      registryRecord(record, "channel.start", { id: record.id || record.name }),
+    ),
+    httpRoutes: state.capabilities.httpRoutes.map((record) =>
+      registryRecord(record, "http.dispatch", { method: record.method || "GET", path: record.path }),
+    ),
+    httpHandlers: state.capabilities.httpHandlers.map((record) =>
+      registryRecord(record, "http.dispatch", { name: record.name || record.id }),
+    ),
+    tools: state.capabilities.tools.map((record) => registryRecord(record, "tool.execute", { name: record.name || record.id })),
+    providers: state.capabilities.providers.map((record) =>
+      registryRecord(record, "provider.invoke", { id: record.id || record.name }),
+    ),
+    hooks: state.capabilities.hooks.map((record) => registryRecord(record, "hook.dispatch", { name: record.name || record.id })),
   };
 }
 

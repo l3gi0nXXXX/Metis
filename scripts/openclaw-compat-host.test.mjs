@@ -130,6 +130,16 @@ test("persistent host loads raw register(api) plugin and captures OpenClaw capab
   assert.ok(byName(capabilities.gatewayMethods, "fixture.gateway"));
   assert.ok(byName(capabilities.services, "fixture-service"));
 
+  const registries = registered.result.gatewayRegistries;
+  assert.ok(byName(registries.tools, "fixture.tool"));
+  assert.ok(byName(registries.providers, "fixture-provider"));
+  assert.ok(byName(registries.channels, "fixture-channel"));
+  assert.ok(byName(registries.hooks, "message.received"));
+  assert.ok(byName(registries.httpRoutes, "/fixture"));
+  assert.equal(byName(registries.tools, "fixture.tool").dispatch.method, "tool.execute");
+  assert.equal(byName(registries.channels, "fixture-channel").dispatch.method, "channel.start");
+  assert.equal(byName(registries.httpRoutes, "/fixture").dispatch.method, "http.dispatch");
+
   assert.ok(
     registered.result.diagnostics.some((diagnostic) => diagnostic.code === "unknown_capability" && diagnostic.capability === "registerWidget"),
   );

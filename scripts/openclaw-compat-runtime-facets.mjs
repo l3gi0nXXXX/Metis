@@ -241,6 +241,17 @@ function gatedAdapter(state, pluginId, facet, action, fallback) {
   };
 }
 
+function notApplicableFacet(state, pluginId, facet, action) {
+  addDiagnostic(state, {
+    code: "runtime_facet_not_applicable",
+    pluginId,
+    facet,
+    action,
+    message: `${facet}.${action} requires a Gateway adapter that is not wired in this runtime slice`,
+  });
+  return { ok: false, status: "not_applicable", facet, action };
+}
+
 export function createRuntimeFacets(state, pluginId) {
   const config = deepFreeze(state.redactor.sanitize(clone(state.configSnapshot)));
   return {
@@ -253,19 +264,25 @@ export function createRuntimeFacets(state, pluginId) {
     media: createMediaRuntime(state, pluginId),
     fetch: async (url, init = {}) => runtimeFetch(state, pluginId, url, init),
     reply: {
-      send: gatedAdapter(state, pluginId, "reply", "send", async (message) => ({ ok: true, message })),
+      send: gatedAdapter(state, pluginId, "reply", "send", async () => notApplicableFacet(state, pluginId, "reply", "send")),
     },
     conversation: {
-      get: gatedAdapter(state, pluginId, "conversation", "get", async (id) => ({ ok: true, id })),
-      list: gatedAdapter(state, pluginId, "conversation", "list", async () => ({ ok: true, conversations: [] })),
+      get: gatedAdapter(state, pluginId, "conversation", "get", async () =>
+        notApplicableFacet(state, pluginId, "conversation", "get"),
+      ),
+      list: gatedAdapter(state, pluginId, "conversation", "list", async () =>
+        notApplicableFacet(state, pluginId, "conversation", "list"),
+      ),
     },
     thread: {
-      get: gatedAdapter(state, pluginId, "thread", "get", async (id) => ({ ok: true, id })),
-      list: gatedAdapter(state, pluginId, "thread", "list", async () => ({ ok: true, threads: [] })),
+      get: gatedAdapter(state, pluginId, "thread", "get", async () => notApplicableFacet(state, pluginId, "thread", "get")),
+      list: gatedAdapter(state, pluginId, "thread", "list", async () => notApplicableFacet(state, pluginId, "thread", "list")),
     },
     process: {
-      spawn: gatedAdapter(state, pluginId, "process", "spawn", async () => ({ ok: false, status: "not_configured" })),
-      env: gatedAdapter(state, pluginId, "process", "env", async () => ({ ok: true, env: {} })),
+      spawn: gatedAdapter(state, pluginId, "process", "spawn", async () =>
+        notApplicableFacet(state, pluginId, "process", "spawn"),
+      ),
+      env: gatedAdapter(state, pluginId, "process", "env", async () => notApplicableFacet(state, pluginId, "process", "env")),
     },
   };
 }
