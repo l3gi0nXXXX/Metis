@@ -929,11 +929,11 @@ Subagent 用法见 `docs/user/subagents.md`。
 Telegram 的 setup、directory、account ops 通过 Gateway channel surface 暴露给 CLI、Control UI 和 RPC，不在 Telegram adapter 内直接写配置。
 
 ```bash
-cjpm run --skip-build --name metis --run-args "gateway channels get telegram"
-cjpm run --skip-build --name metis --run-args "gateway channels runtime telegram"
+cjpm run --skip-build --name metis --run-args "gateway channel list"
+cjpm run --skip-build --name metis --run-args "gateway discover"
 ```
 
-`channels get telegram` 会包含：
+`gateway discover` 的 Telegram channel 条目会包含：
 
 - `setup`：是否 configured、当前 mode、必填字段、是否可 probe。
 - `directory`：`defaultTo`、已配置 groups、accounts、已批准 pairing sender、session/delivery 历史、可推断 targets 与统一 `rows`。
@@ -1044,11 +1044,11 @@ Metis 提供受控的 Telegram target writeback 工具，用来把已确认的 T
 ```bash
 cjpm run --skip-build --name metis --run-args "gateway status"
 cjpm run --skip-build --name metis --run-args "doctor"
-cjpm run --skip-build --name metis --run-args "gateway channels health"
-cjpm run --skip-build --name metis --run-args "gateway channels audit"
+cjpm run --skip-build --name metis --run-args "gateway channel list"
+cjpm run --skip-build --name metis --run-args "gateway discover"
 ```
 
-`channels health` / `channels runtime` 会暴露 Telegram 能力状态，例如：
+`gateway discover` 会暴露 Telegram 能力状态，例如：
 
 - `mediaUnderstandingState`
 - `approvalResolverState`
@@ -1056,7 +1056,7 @@ cjpm run --skip-build --name metis --run-args "gateway channels audit"
 - `directoryAggregationState`
 - `modelButtonState`
 
-`doctor` / `channels audit` 会检查 token、webhook secret、proxy、媒体下载限制、本地媒体白名单、高风险 action、approval resolver、streaming draft、directory aggregation 等项。
+`doctor` 和 `gateway discover` 可用于检查 token、webhook secret、proxy、媒体下载限制、本地媒体白名单、高风险 action、approval resolver、streaming draft、directory aggregation 等项。
 
 Telegram audit 还应覆盖 live membership/security 项：
 
