@@ -83,11 +83,15 @@ public class OpenClawHttpDispatcherTest {
         @Expect(first.ok, true)
         @Expect(duplicate.ok, false)
         @Expect(duplicate.diagnosticKind, "route_collision")
+        @Expect(jstr(duplicate.diagnostic, "method"), "POST")
+        @Expect(jstr(duplicate.diagnostic, "path"), "/webhook/wecom")
 
         let tooLarge = OpenClawHttpDispatcher.dispatch("POST", "/webhook/wecom", body: "12345")
         @Expect(tooLarge.ok, false)
         @Expect(tooLarge.statusCode, 413)
         @Expect(tooLarge.diagnosticKind, "body_too_large")
+        @Expect(jstr(tooLarge.diagnostic, "method"), "POST")
+        @Expect(jstr(tooLarge.diagnostic, "path"), "/webhook/wecom")
 
         let timeoutRaw = JsonObject()
         timeoutRaw.put("ok", false.toJsonValue())
@@ -117,6 +121,13 @@ public class OpenClawHttpDispatcherTest {
         @Expect(handler.ok, false)
         @Expect(handler.statusCode, 500)
         @Expect(handler.diagnosticKind, "handler_error")
+
+        let missing = OpenClawHttpDispatcher.dispatch("GET", "/webhook/wecom")
+        @Expect(missing.ok, false)
+        @Expect(missing.statusCode, 404)
+        @Expect(missing.diagnosticKind, "route_not_found")
+        @Expect(jstr(missing.diagnostic, "method"), "GET")
+        @Expect(jstr(missing.diagnostic, "path"), "/webhook/wecom")
     }
 
     @TestCase
@@ -170,5 +181,35 @@ public class OpenClawHttpDispatcherTest {
             @Expect(jstr(payload, "body"), "{\"plugin\":\"${pluginId}\",\"message\":\"mock\"}")
         }
         @Expect(openClawHttpSidecarPublicListenerEnabled(), false)
+    }
+
+    @TestCase
+    public func hostGatewayRegistryEnvelopeHttpRoutesAutoRegister(): Unit {
+        OpenClawHttpRouteRegistry.clearForTest()
+        let runner = FakeOpenClawHttpRunner()
+        let routes = JsonArray([])
+        let spec = JsonObject()
+        spec.put("method", JsonString("POST"))
+        spec.put("path", JsonString("/webhook/weixin"))
+        spec.put("timeoutMs", 2400.toJsonValue())
+        let route = JsonObject()
+        route.put("pluginId", JsonString("openclaw-weixin"))
+        route.put("method", JsonString("POST"))
+        route.put("path", JsonString("/webhook/weixin"))
+        route.put("spec", spec)
+        routes.add(route)
+        let gatewayRegistries = JsonObject()
+        gatewayRegistries.put("httpRoutes", routes)
+        let capture = JsonObject()
+        capture.put("gatewayRegistries", gatewayRegistries)
+
+        let registered = registerOpenClawCapturedHttpRoutes(capture, runner)
+
+        @Expect(registered, 1)
+        runner.enqueue(okHttp(200, "{\"ok\":true}"))
+        let result = OpenClawHttpDispatcher.dispatch("POST", "/webhook/weixin", body: "{\"msg\":\"hi\"}")
+        @Expect(result.ok, true)
+        @Expect(result.body, "{\"ok\":true}")
+        @Expect(jstr(runner.payloads[0], "path"), "/webhook/weixin")
     }
 }

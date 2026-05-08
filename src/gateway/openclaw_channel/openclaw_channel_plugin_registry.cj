@@ -75,7 +75,15 @@ private func openClawCapturedCapabilityArray(capture: JsonObject, key: String): 
     if (direct.size() > 0) {
         return direct
     }
-    openClawCaptureArray(openClawCaptureObject(capture, "capabilities"), key)
+    let capabilities = openClawCaptureArray(openClawCaptureObject(capture, "capabilities"), key)
+    if (capabilities.size() > 0) {
+        return capabilities
+    }
+    let gatewayRegistries = openClawCaptureArray(openClawCaptureObject(capture, "gatewayRegistries"), key)
+    if (gatewayRegistries.size() > 0) {
+        return gatewayRegistries
+    }
+    openClawCaptureArray(openClawCaptureObject(capture, "registry"), key)
 }
 
 private func openClawCapturedAccounts(record: JsonObject, spec: JsonObject): Array<String> {

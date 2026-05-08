@@ -202,4 +202,33 @@ public class OpenClawChannelAdapterTest {
             @Expect(sent, "out-${channelId}")
         }
     }
+
+    @TestCase
+    public func hostRegistryEnvelopeChannelsAutoRegisterFromGatewayRegistries(): Unit {
+        let runner = FakeOpenClawChannelRunner()
+        let channels = JsonArray([])
+        let channel = JsonObject()
+        channel.put("pluginId", JsonString("openclaw-weixin"))
+        channel.put("id", JsonString("weixin"))
+        let spec = JsonObject()
+        spec.put("channelId", JsonString("weixin"))
+        let accounts = JsonArray([])
+        accounts.add(JsonString("wx-a"))
+        accounts.add(JsonString("wx-b"))
+        spec.put("accountIds", accounts)
+        channel.put("spec", spec)
+        channels.add(channel)
+        let gatewayRegistries = JsonObject()
+        gatewayRegistries.put("channels", channels)
+        let capture = JsonObject()
+        capture.put("gatewayRegistries", gatewayRegistries)
+
+        let registered = registerOpenClawCapturedChannelPlugins(capture, runner)
+
+        @Expect(registered, 1)
+        let plugin = GatewayChannelPluginRegistry.getById("openclaw-weixin").getOrThrow()
+        let adapters = plugin.createAdapters(JsonObject())
+        @Expect(plugin.declaredChannelIds()[0], "weixin")
+        @Expect(adapters.size, 2)
+    }
 }

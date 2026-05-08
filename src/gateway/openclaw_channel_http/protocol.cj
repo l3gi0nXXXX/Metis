@@ -208,6 +208,7 @@ public func openClawChannelSendPayload(
     mediaRefs!: JsonArray = JsonArray([]),
     threadId!: String = "",
     chatType!: String = "direct",
+    replyInThread!: Bool = false,
     rawMetadata!: JsonObject = JsonObject()
 ): JsonObject {
     let out = ocChannelBasePayload("channel.send", channelId, accountId)
@@ -216,6 +217,7 @@ public func openClawChannelSendPayload(
     out.put("replyToMessageId", JsonString(replyToMessageId.trimAscii()))
     out.put("mediaRefs", mediaRefs)
     out.put("chatType", JsonString(chatType.trimAscii().toAsciiLower()))
+    out.put("replyInThread", replyInThread.toJsonValue())
     out.put("rawMetadata", rawMetadata)
     let message = JsonObject()
     message.put("channelId", JsonString(channelId.trimAscii()))
@@ -226,6 +228,7 @@ public func openClawChannelSendPayload(
     message.put("replyToMessageId", JsonString(replyToMessageId.trimAscii()))
     message.put("mediaRefs", mediaRefs)
     message.put("chatType", JsonString(chatType.trimAscii().toAsciiLower()))
+    message.put("replyInThread", replyInThread.toJsonValue())
     message.put("rawMetadata", rawMetadata)
     out.put("message", message)
     ocPutOptionalString(out, "threadId", threadId)
@@ -461,7 +464,8 @@ public class OpenClawChannelAdapterBridge <: ChannelAdapter {
                     message.peerId,
                     message.text,
                     replyToMessageId: replyTo,
-                    chatType: "direct"
+                    chatType: "direct",
+                    replyInThread: message.replyInThread
                 )
             )
         )

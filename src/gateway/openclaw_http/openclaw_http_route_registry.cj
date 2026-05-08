@@ -41,7 +41,15 @@ public class OpenClawHttpRouteRegistryResult {
     public let diagnosticMessage: String
     public let diagnostic: JsonObject
 
-    public init(ok: Bool, status: String, diagnosticKind!: String = "", diagnosticMessage!: String = "") {
+    public init(
+        ok: Bool,
+        status: String,
+        diagnosticKind!: String = "",
+        diagnosticMessage!: String = "",
+        method!: String = "",
+        path!: String = "",
+        pluginId!: String = ""
+    ) {
         this.ok = ok
         this.status = status
         this.diagnosticKind = diagnosticKind
@@ -52,6 +60,15 @@ public class OpenClawHttpRouteRegistryResult {
         }
         if (!diagnosticMessage.isEmpty()) {
             d.put("message", JsonString(diagnosticMessage))
+        }
+        if (!method.trimAscii().isEmpty()) {
+            d.put("method", JsonString(method.trimAscii().toAsciiUpper()))
+        }
+        if (!path.trimAscii().isEmpty()) {
+            d.put("path", JsonString(path.trimAscii()))
+        }
+        if (!pluginId.trimAscii().isEmpty()) {
+            d.put("pluginId", JsonString(pluginId.trimAscii().toAsciiLower()))
         }
         this.diagnostic = d
     }
@@ -70,7 +87,14 @@ public class OpenClawHttpRouteRegistry {
 
     public static func register(route: OpenClawHttpRouteRegistration): OpenClawHttpRouteRegistryResult {
         if (route.path.isEmpty()) {
-            return OpenClawHttpRouteRegistryResult(false, "invalid", diagnosticKind: "invalid_path", diagnosticMessage: "route path is empty")
+            return OpenClawHttpRouteRegistryResult(
+                false,
+                "invalid",
+                diagnosticKind: "invalid_path",
+                diagnosticMessage: "route path is empty",
+                method: route.method,
+                pluginId: route.pluginId
+            )
         }
         for (existing in routes) {
             if (existing.method == route.method && existing.path == route.path) {
@@ -89,7 +113,10 @@ public class OpenClawHttpRouteRegistry {
                     false,
                     "collision",
                     diagnosticKind: "route_collision",
-                    diagnosticMessage: "${route.method} ${route.path} already registered"
+                    diagnosticMessage: "${route.method} ${route.path} already registered",
+                    method: route.method,
+                    path: route.path,
+                    pluginId: existing.pluginId
                 )
             }
         }
@@ -161,7 +188,15 @@ private func openClawHttpCapturedCapabilityArray(capture: JsonObject, key: Strin
     if (direct.size() > 0) {
         return direct
     }
-    openClawHttpCaptureArray(openClawHttpCaptureObject(capture, "capabilities"), key)
+    let capabilities = openClawHttpCaptureArray(openClawHttpCaptureObject(capture, "capabilities"), key)
+    if (capabilities.size() > 0) {
+        return capabilities
+    }
+    let gatewayRegistries = openClawHttpCaptureArray(openClawHttpCaptureObject(capture, "gatewayRegistries"), key)
+    if (gatewayRegistries.size() > 0) {
+        return gatewayRegistries
+    }
+    openClawHttpCaptureArray(openClawHttpCaptureObject(capture, "registry"), key)
 }
 
 private func registerOpenClawCapturedHttpRouteRecord(record: JsonObject, runner: OpenClawBridgeRunner): Bool {

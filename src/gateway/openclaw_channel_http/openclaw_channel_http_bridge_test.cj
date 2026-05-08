@@ -45,6 +45,13 @@ private func jint(o: JsonObject, key: String): Int64 {
     }
 }
 
+private func jbool(o: JsonObject, key: String): Bool {
+    match (o.get(key)) {
+        case Some(v) => try { v.asBool().getValue() } catch (_e: Exception) { false }
+        case None => false
+    }
+}
+
 private func jobj(o: JsonObject, key: String): JsonObject {
     match (o.get(key)) {
         case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
@@ -95,6 +102,33 @@ public class OpenClawChannelHttpBridgeTest {
         @Expect(jstr(payload, "text"), "hello from metis")
         @Expect(jstr(payload, "replyToMessageId"), "in-41")
         @Expect(jstr(payload, "chatType"), "direct")
+        @Expect(jbool(payload, "replyInThread"), false)
+    }
+
+    @TestCase
+    public func channelAdapterPreservesThreadReplyMetadataInSendPayload(): Unit {
+        let runner = FakeOpenClawRunner()
+        let response = okResponse("sent")
+        response.put("messageId", JsonString("out-thread"))
+        runner.enqueue(response)
+
+        let bridge = OpenClawChannelAdapterBridge("wecom", "acct-a", runner)
+        let sentId = bridge.sendWithMessageId(
+            OutboundMessage(
+                ChannelType.Extension("wecom"),
+                "room-1",
+                "thread reply",
+                replyToMessageId: Some("msg-root"),
+                replyInThread: true,
+                accountId: "acct-a"
+            )
+        )
+
+        @Expect(sentId, "out-thread")
+        let payload = runner.payloads[0]
+        @Expect(jstr(payload, "replyToMessageId"), "msg-root")
+        @Expect(jbool(payload, "replyInThread"), true)
+        @Expect(jbool(jobj(payload, "message"), "replyInThread"), true)
     }
 
     @TestCase

@@ -11,11 +11,23 @@ private func openClawHttpDiagnosticResult(
     statusCode: Int64,
     status: String,
     kind: String,
-    message: String
+    message: String,
+    method!: String = "",
+    path!: String = "",
+    pluginId!: String = ""
 ): OpenClawHttpDispatchResult {
     let diagnostic = JsonObject()
     diagnostic.put("kind", JsonString(kind))
     diagnostic.put("message", JsonString(message))
+    if (!method.trimAscii().isEmpty()) {
+        diagnostic.put("method", JsonString(method.trimAscii().toAsciiUpper()))
+    }
+    if (!path.trimAscii().isEmpty()) {
+        diagnostic.put("path", JsonString(path.trimAscii()))
+    }
+    if (!pluginId.trimAscii().isEmpty()) {
+        diagnostic.put("pluginId", JsonString(pluginId.trimAscii().toAsciiLower()))
+    }
     let raw = JsonObject()
     raw.put("ok", false.toJsonValue())
     raw.put("status", JsonString(status))
@@ -67,7 +79,15 @@ public class OpenClawHttpDispatcher {
         match (OpenClawHttpRouteRegistry.find(method, path)) {
             case Some(route) =>
                 if (route.maxBodyBytes >= 0 && Int64(body.toArray().size) > route.maxBodyBytes) {
-                    return openClawHttpDiagnosticResult(413, "body_too_large", "body_too_large", "request body exceeds route limit")
+                    return openClawHttpDiagnosticResult(
+                        413,
+                        "body_too_large",
+                        "body_too_large",
+                        "request body exceeds route limit",
+                        method: route.method,
+                        path: route.path,
+                        pluginId: route.pluginId
+                    )
                 }
                 OpenClawHttpRouteBridge(route.runner).dispatch(
                     route.method,
@@ -78,7 +98,14 @@ public class OpenClawHttpDispatcher {
                     timeoutMs: route.timeoutMs
                 )
             case None =>
-                openClawHttpDiagnosticResult(404, "not_found", "route_not_found", "${method.trimAscii().toAsciiUpper()} ${path.trimAscii()} is not registered")
+                openClawHttpDiagnosticResult(
+                    404,
+                    "not_found",
+                    "route_not_found",
+                    "${method.trimAscii().toAsciiUpper()} ${path.trimAscii()} is not registered",
+                    method: method,
+                    path: path
+                )
         }
     }
 }
