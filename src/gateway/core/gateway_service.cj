@@ -696,9 +696,10 @@ public class GatewayService {
                     this.applyTelegramModelSelection(modelArg, message.senderId, user, sessionKey)
                 }
             case "models" => this.renderTelegramModelsEntry(user, sessionKey, commandText: text)
+            case "allowlist" => gatewayTelegramRenderAllowlistCommand(text, user, accountId, message.senderId)
             case "session" => this.renderTelegramCurrentSessionCommand(sessionKey)
-            case "sessions" => this.renderTelegramSessionsCommand(text)
-            case "approvals" => this.renderTelegramApprovalsCommand()
+            case "sessions" => gatewayTelegramRenderSessionsCommand(text, user)
+            case "approvals" => gatewayTelegramRenderApprovalsCommand()
             case "focus" | "unfocus" | "agents" => this.renderTelegramThreadBindingCommand(text, message, accountId, user, sessionKey)
             case "subagents" => gatewayHandleSubagentsCommandLine(text) ?? this.renderTelegramSubagentsFallback(text)
             case "new" | "reset" => this.renderTelegramSessionLifecycleCommand(text, user, sessionKey)
@@ -706,20 +707,20 @@ public class GatewayService {
             case "think" | "reasoning" | "fast" | "verbose" | "send" | "usage" | "queue" | "elevated" | "exec" => this.renderTelegramSessionOptionCommand(spec.command, text, user, sessionKey)
             case "tasks" => this.renderTelegramTasksCommand(user, sessionKey)
             case "context" => this.renderTelegramContextCommand(message, accountId, sessionKey)
-            case "plugins" => this.renderTelegramPluginsCommand(text, user)
-            case "mcp" => this.renderTelegramMcpCommand(text, user)
-            case "config" => this.renderTelegramConfigCommand(text, user)
-            case "debug" => this.renderTelegramDebugCommand(text, user)
+            case "plugins" => this.renderTelegramPluginsCommand(text, user, message.senderId)
+            case "mcp" => this.renderTelegramMcpCommand(text, user, message.senderId)
+            case "config" => this.renderTelegramConfigCommand(text, user, message.senderId)
+            case "debug" => this.renderTelegramDebugCommand(text, user, message.senderId)
             case "export-session" => this.renderTelegramExportSessionCommand(text, user, sessionKey)
-            case "stop" => this.renderTelegramStopCommand(sessionKey)
+            case "stop" => gatewayTelegramRenderStopCommand(user, sessionKey)
             case "kill" => gatewayHandleSubagentsCommandLine("/subagents kill ${this.telegramCommandArgText(text)}") ?? this.renderTelegramSubagentsFallback(text)
             case "steer" => gatewayHandleSubagentsCommandLine("/subagents steer ${this.telegramCommandArgText(text)}") ?? this.renderTelegramSubagentsFallback(text)
             case "approve" => this.renderTelegramApproveCommand(text, user, message.senderId)
-            case "restart" => this.renderTelegramRestartCommand()
-            case "bash" => this.renderTelegramBashCommand(text)
-            case "skill" => this.renderTelegramSkillCommand(text)
-            case "btw" => this.renderTelegramBtwCommand(text)
-            case "tts" => this.renderTelegramTtsCommand(text)
+            case "restart" => gatewayTelegramRenderRestartCommand(text, message.senderId)
+            case "bash" => gatewayTelegramRenderBashCommand(text, message.senderId)
+            case "skill" => gatewayTelegramRenderSkillCommand(text)
+            case "btw" => gatewayTelegramRenderBtwCommand(text, sessionKey)
+            case "tts" => gatewayTelegramRenderTtsCommand(text, user)
             case _ => this.telegramCommandJson(spec.command, "not_supported", ok: false, message: "No Metis Telegram native handler is registered for this catalog entry.").toJsonString()
         }
     }
@@ -1012,15 +1013,12 @@ public class GatewayService {
         out.toJsonString()
     }
 
-    private func renderTelegramPluginsCommand(text: String, user: GatewayUserSettings): String {
+    private func renderTelegramPluginsCommand(text: String, user: GatewayUserSettings, senderId: String): String {
         let action = this.telegramCommandArgText(text).split(" ")[0].trimAscii().toAsciiLower()
         let out = this.telegramCommandJson("plugins", "ok")
         out.put("requested", JsonString(if (action.isEmpty()) { "list" } else { action }))
         if (action == "enable" || action == "disable") {
-            out.put("status", JsonString("not_supported"))
-            out.put("ok", false.toJsonValue())
-            out.put("message", JsonString("Plugin enable/disable is not mutated from Telegram; use the Gateway control surface with approval."))
-            return out.toJsonString()
+            return gatewayTelegramRenderConfigMutationApproval("plugins", text, senderId, "Plugin enable/disable is not applied directly from Telegram.")
         }
         out.put("health", gatewayOpenClawPluginSidecarHealth(user))
         let rows = JsonArray([])
@@ -1042,7 +1040,7 @@ public class GatewayService {
         }
     }
 
-    private func renderTelegramMcpCommand(text: String, _user: GatewayUserSettings): String {
+    private func renderTelegramMcpCommand(text: String, _user: GatewayUserSettings, senderId: String): String {
         let args = this.telegramCommandArgText(text).split(" ", 3)
         let action = if (args.size > 0 && !args[0].trimAscii().isEmpty()) { args[0].trimAscii().toAsciiLower() } else { "show" }
         let out = this.telegramCommandJson("mcp", "ok")
@@ -1055,13 +1053,10 @@ public class GatewayService {
             }
             return out.toJsonString()
         }
-        out.put("ok", false.toJsonValue())
-        out.put("status", JsonString("approval_required"))
-        out.put("message", JsonString("/mcp set/unset is a config mutation and must use the Gateway control approval surface."))
-        out.toJsonString()
+        gatewayTelegramRenderConfigMutationApproval("mcp", text, senderId, "/mcp set/unset is a config mutation and must use the Gateway approval surface.")
     }
 
-    private func renderTelegramConfigCommand(text: String, user: GatewayUserSettings): String {
+    private func renderTelegramConfigCommand(text: String, user: GatewayUserSettings, senderId: String): String {
         let args = this.telegramCommandArgText(text).split(" ", 3)
         let action = if (args.size > 0 && !args[0].trimAscii().isEmpty()) { args[0].trimAscii().toAsciiLower() } else { "show" }
         let out = this.telegramCommandJson("config", "ok")
@@ -1083,10 +1078,7 @@ public class GatewayService {
             out.put("message", JsonString("gateway.telegram.configWrites is disabled."))
             return out.toJsonString()
         }
-        out.put("ok", false.toJsonValue())
-        out.put("status", JsonString("approval_required"))
-        out.put("message", JsonString("/config set/unset is intentionally not applied from Telegram without the Gateway control approval path."))
-        out.toJsonString()
+        gatewayTelegramRenderConfigMutationApproval("config", text, senderId, "/config set/unset is intentionally not applied from Telegram without the Gateway approval path.")
     }
 
     private func telegramConfigPathValue(path: String): String {
@@ -1120,8 +1112,11 @@ public class GatewayService {
         ""
     }
 
-    private func renderTelegramDebugCommand(text: String, _user: GatewayUserSettings): String {
+    private func renderTelegramDebugCommand(text: String, _user: GatewayUserSettings, senderId: String): String {
         let action = this.telegramCommandArgText(text).split(" ")[0].trimAscii().toAsciiLower()
+        if (action == "set" || action == "unset" || action == "reset") {
+            return gatewayTelegramRenderConfigMutationApproval("debug", text, senderId, "Debug mutations require the Gateway approval surface.")
+        }
         let out = this.telegramCommandJson("debug", if (action == "set" || action == "unset" || action == "reset") { "approval_required" } else { "ok" }, ok: !(action == "set" || action == "unset" || action == "reset"))
         out.put("configPath", JsonString(MetisConfigManager.configPath().toString()))
         out.put("message", JsonString(if (out.get("ok").getOrThrow().asBool().getValue()) { "Debug overrides are read-only from Telegram." } else { "Debug mutations require the Gateway control approval surface." }))

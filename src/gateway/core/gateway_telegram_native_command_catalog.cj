@@ -73,7 +73,7 @@ public func gatewayTelegramNativeCommandCatalog(): Array<GatewayTelegramNativeCo
         spec("skill", "Run a Metis skill by name.", "tools", auth: "operator", args: ["name", "input"]),
         spec("status", "Show current status.", "status"),
         spec("tasks", "List background tasks for this session.", "status"),
-        spec("allowlist", "OpenClaw text allowlist management is not a Metis Telegram native surface.", "management", status: "stub", reason: "Metis Telegram authorization uses gateway.telegram allowFrom/groupAllowFrom and pairing stores."),
+        spec("allowlist", "List or request changes to Telegram allowlist entries.", "management", auth: "operator", args: ["action", "scope", "entry"], menu: ["list", "dm", "group"]),
         spec("approve", "Approve or deny exec requests.", "management", auth: "approval", args: ["id", "decision"]),
         spec("context", "Explain how context is built and used.", "status"),
         spec("btw", "Ask a side question without changing future session context.", "tools", auth: "operator", args: ["question"]),
