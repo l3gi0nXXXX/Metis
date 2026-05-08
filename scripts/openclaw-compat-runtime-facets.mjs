@@ -284,5 +284,60 @@ export function createRuntimeFacets(state, pluginId) {
       ),
       env: gatedAdapter(state, pluginId, "process", "env", async () => notApplicableFacet(state, pluginId, "process", "env")),
     },
+    provider: {
+      listModels: gatedAdapter(state, pluginId, "provider", "listModels", async (request = {}) => ({
+        ok: false,
+        status: "not_configured",
+        contract: "metis.model-provider-registry.v1",
+        providerId: String(request.providerId ?? ""),
+        models: [],
+      })),
+      stream: gatedAdapter(state, pluginId, "provider", "stream", async (request = {}) => ({
+        ok: false,
+        status: "not_configured",
+        contract: "metis.model-provider-stream.v1",
+        model: String(request.model ?? ""),
+        chunks: [],
+      })),
+      toolCall: gatedAdapter(state, pluginId, "provider", "toolCall", async (request = {}) => ({
+        ok: false,
+        status: "not_configured",
+        contract: "metis.model-provider-tool-call.v1",
+        name: String(request.name ?? ""),
+      })),
+    },
+    memory: {
+      search: gatedAdapter(state, pluginId, "memory", "search", async (request = {}) => ({
+        ok: false,
+        status: "not_configured",
+        contract: "metis.memory-context-backend.v1",
+        query: String(request.query ?? ""),
+        hits: [],
+      })),
+      write: gatedAdapter(state, pluginId, "memory", "write", async (request = {}) => ({
+        ok: false,
+        status: "not_configured",
+        contract: "metis.memory-context-backend.v1",
+        key: String(request.key ?? ""),
+      })),
+    },
+    browser: {
+      open: gatedAdapter(state, pluginId, "browser", "open", async () => ({
+        ok: false,
+        status: "not_applicable",
+        facet: "browser",
+        notApplicable: true,
+        reason: "browser automation is not exposed by this Metis OpenClaw runtime slice",
+      })),
+    },
+    realtime: {
+      connect: gatedAdapter(state, pluginId, "realtime", "connect", async () => ({
+        ok: false,
+        status: "not_applicable",
+        facet: "realtime",
+        notApplicable: true,
+        reason: "realtime socket/session runtime is not exposed by this Metis OpenClaw runtime slice",
+      })),
+    },
   };
 }

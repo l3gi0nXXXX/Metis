@@ -123,3 +123,59 @@ test("allowed but unwired runtime facets return not_applicable diagnostics inste
   assert.ok(state.diagnostics.some((diagnostic) => diagnostic.code === "runtime_facet_not_applicable" && diagnostic.facet === "reply"));
   assert.ok(state.diagnostics.some((diagnostic) => diagnostic.code === "runtime_facet_not_applicable" && diagnostic.facet === "process"));
 });
+
+test("provider memory browser and realtime facets expose production bridge contracts", async () => {
+  const deniedState = createRuntimeState();
+  const deniedRuntime = createRuntimeFacets(deniedState, "fixture-plugin");
+
+  assert.equal((await deniedRuntime.provider.listModels({ providerId: "openai" })).status, "permission_denied");
+  assert.equal((await deniedRuntime.memory.search({ query: "metis" })).status, "permission_denied");
+  assert.equal((await deniedRuntime.browser.open({ url: "https://example.com" })).status, "permission_denied");
+  assert.equal((await deniedRuntime.realtime.connect({ url: "wss://example.com" })).status, "permission_denied");
+
+  const allowedState = createRuntimeState({
+    permissions: { provider: true, memory: true, browser: true, realtime: true },
+    adapters: {
+      provider: {
+        listModels: async (request) => ({
+          ok: true,
+          contract: "metis.model-provider-registry.v1",
+          providerId: request.providerId,
+          models: ["openai:gpt-4o-mini"],
+        }),
+        stream: async (request) => ({
+          ok: true,
+          contract: "metis.model-provider-stream.v1",
+          model: request.model,
+          chunks: [{ kind: "delta", text: "hello" }],
+        }),
+        toolCall: async (request) => ({
+          ok: true,
+          contract: "metis.model-provider-tool-call.v1",
+          name: request.name,
+        }),
+      },
+      memory: {
+        search: async (request) => ({
+          ok: true,
+          contract: "metis.memory-context-backend.v1",
+          backendId: "memory-core",
+          hits: [{ text: request.query, score: 1 }],
+        }),
+      },
+    },
+  });
+  const allowedRuntime = createRuntimeFacets(allowedState, "fixture-plugin");
+
+  assert.deepEqual(await allowedRuntime.provider.listModels({ providerId: "openai" }), {
+    ok: true,
+    contract: "metis.model-provider-registry.v1",
+    providerId: "openai",
+    models: ["openai:gpt-4o-mini"],
+  });
+  assert.equal((await allowedRuntime.provider.stream({ model: "openai:gpt-4o-mini" })).contract, "metis.model-provider-stream.v1");
+  assert.equal((await allowedRuntime.provider.toolCall({ name: "search" })).contract, "metis.model-provider-tool-call.v1");
+  assert.equal((await allowedRuntime.memory.search({ query: "metis" })).contract, "metis.memory-context-backend.v1");
+  assert.equal((await allowedRuntime.browser.open({ url: "https://example.com" })).status, "not_applicable");
+  assert.equal((await allowedRuntime.realtime.connect({ url: "wss://example.com" })).status, "not_applicable");
+});
