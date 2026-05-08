@@ -311,6 +311,97 @@ test("persistent host dispatches OpenClaw search tool fixtures through tool brid
   }
 });
 
+test("persistent host start gate blocks denied manifest permissions before plugin code runs", async (t) => {
+  const host = startHost(t);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "metis-openclaw-start-gate-"));
+  const marker = path.join(root, "invoked.txt");
+  fs.writeFileSync(
+    path.join(root, "package.json"),
+    JSON.stringify({ name: "start-gate-fixture", type: "module", main: "index.mjs" }),
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(root, "openclaw.plugin.json"),
+    JSON.stringify({
+      id: "start-gate-fixture",
+      permissions: { network: ["https://denied.example"] },
+    }),
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(root, "index.mjs"),
+    `
+import fs from "node:fs";
+export default async function register(api) {
+  fs.writeFileSync(${JSON.stringify(marker)}, "invoked");
+  api.registerTool({ name: "should.not.load" }, async () => ({ ok: true }));
+}
+`,
+    "utf8",
+  );
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const load = await host.request("plugin.load", {
+    roots: [root],
+    security: {
+      enabled: true,
+      grants: { network: [] },
+    },
+  });
+
+  assert.equal(load.result.loadedPluginCount, 0);
+  assert.equal(fs.existsSync(marker), false);
+  assert.ok(load.result.diagnostics.some((diagnostic) => diagnostic.code === "security_start_denied"));
+});
+
+test("persistent host handler dispatch gate blocks denied capability permissions before invoking handler", async (t) => {
+  const host = startHost(t);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "metis-openclaw-handler-gate-"));
+  const marker = path.join(root, "handler-invoked.txt");
+  fs.writeFileSync(
+    path.join(root, "package.json"),
+    JSON.stringify({ name: "handler-gate-fixture", type: "module", main: "index.mjs" }),
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(root, "index.mjs"),
+    `
+import fs from "node:fs";
+export default async function register(api) {
+  api.registerTool(
+    {
+      name: "network.denied.tool",
+      permissions: ["network:https://evil.example"],
+    },
+    async () => {
+      fs.writeFileSync(${JSON.stringify(marker)}, "invoked");
+      return { ok: true };
+    }
+  );
+}
+`,
+    "utf8",
+  );
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const load = await host.request("plugin.load", {
+    roots: [root],
+    security: {
+      enabled: true,
+      grants: {
+        network: [{ resource: "api.example.com", needsApproval: false }],
+      },
+    },
+  });
+
+  assert.equal(load.result.loadedPluginCount, 0);
+  assert.ok(load.result.diagnostics.some((diagnostic) => diagnostic.code === "security_start_denied"));
+
+  const dispatched = await host.request("tool.execute", { name: "network.denied.tool", input: { query: "metis" } });
+  assert.equal(dispatched.result.status, "handler_not_found");
+  assert.equal(fs.existsSync(marker), false);
+});
+
 test("--once plugin.discover reports missing entry diagnostics without executing plugins", () => {
   const response = once({
     jsonrpc: "2.0",

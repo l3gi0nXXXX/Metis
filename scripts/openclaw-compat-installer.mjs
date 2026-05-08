@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { enforceOpenClawInstallSource } from "./openclaw-compat-security-policy.mjs";
+
 function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -111,6 +113,48 @@ function installCommandFor(packageManager) {
   return packageManager.reason === "npm-lockfile" ? ["npm", "ci", "--ignore-scripts"] : ["npm", "install", "--ignore-scripts"];
 }
 
+function sourceGateConfigured(options) {
+  return (
+    options.security?.enabled === true ||
+    isObject(options.source) ||
+    Array.isArray(options.sourceAllowlist) ||
+    isObject(options.sourceAllowlist) ||
+    Array.isArray(options.security?.sourceAllowlist) ||
+    isObject(options.security?.sourceAllowlist)
+  );
+}
+
+function sourceAllowlistFromOptions(options) {
+  return options.sourceAllowlist ?? options.security?.sourceAllowlist ?? [];
+}
+
+function sourceFromOptions(root, options) {
+  const source = isObject(options.source) ? options.source : isObject(options.security?.source) ? options.security.source : {};
+  return {
+    url: source.url ?? source.repository ?? source.repo ?? options.sourceUrl ?? "",
+    ref: source.ref ?? source.tag ?? source.commit ?? options.sourceRef ?? "",
+    hash: source.hash ?? source.sha256 ?? source.integrity ?? options.sourceHash ?? "",
+    root,
+  };
+}
+
+function installSecurityDecision(root, packageName, options) {
+  if (!sourceGateConfigured(options)) {
+    return {
+      pluginId: packageName,
+      stage: "install",
+      allowed: true,
+      code: "not_configured",
+      diagnostics: {},
+    };
+  }
+  return enforceOpenClawInstallSource({
+    pluginId: packageName,
+    source: sourceFromOptions(root, options),
+    sourceAllowlist: sourceAllowlistFromOptions(options),
+  });
+}
+
 function hasUnlinkedDependencies(pkg, workspaceLinks) {
   const linked = new Set(workspaceLinks.map((link) => link.name));
   for (const name of Object.keys(dependencyEntries(pkg))) {
@@ -165,11 +209,13 @@ export function createInstallPlan(pluginRoot, options = {}) {
   const stageRoot = path.resolve(options.stageRoot ?? path.join(root, ".metis-openclaw-stage"));
   const packageManager = detectPackageManager(root, workspaceRoot);
   const installCommand = installCommandFor(packageManager);
+  const packageName = typeof pkg.name === "string" ? pkg.name : path.basename(root);
+  const security = installSecurityDecision(root, packageName, options);
 
   return {
-    ok: true,
+    ok: security.allowed,
     pluginRoot: root,
-    packageName: typeof pkg.name === "string" ? pkg.name : path.basename(root),
+    packageName,
     stageRoot,
     stagedPluginRoot: path.join(stageRoot, "package"),
     requiresInstall: hasUnlinkedDependencies(pkg, workspaceLinks),
@@ -177,11 +223,17 @@ export function createInstallPlan(pluginRoot, options = {}) {
     installCommand,
     workspaceRoot,
     workspaceLinks,
+    security,
   };
 }
 
 export function preparePluginStage(pluginRoot, options = {}) {
   const plan = createInstallPlan(pluginRoot, options);
+  if (plan.security && plan.security.allowed === false) {
+    const error = new Error(`OpenClaw install source denied: ${plan.security.code}`);
+    error.security = plan.security;
+    throw error;
+  }
   const stageRoot = plan.stageRoot;
   const nodeModules = path.join(stageRoot, "node_modules");
   fs.mkdirSync(nodeModules, { recursive: true });

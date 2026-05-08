@@ -9,6 +9,7 @@ import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 
 import { createRuntimeFacets, createRuntimeState } from "./openclaw-compat-runtime-facets.mjs";
+import { OpenClawSecurityEnforcer, derivePermissionRequirements } from "./openclaw-compat-security-policy.mjs";
 
 const HOST_VERSION = "0.1.0";
 const ENTRY_FALLBACKS = ["dist/index.js", "dist/index.mjs", "index.js", "index.mjs", "src/index.ts", "index.ts"];
@@ -127,6 +128,7 @@ function createState() {
     redactor: createRedactor(),
     runtimeState: createRuntimeState(),
     runtimeVersion: HOST_VERSION,
+    security: defaultSecurityOptions(),
   };
 }
 
@@ -143,6 +145,18 @@ function emptyHandlers() {
     interactiveHandlers: [],
     approvalHandlers: [],
     gatewayMethods: [],
+  };
+}
+
+function defaultSecurityOptions() {
+  return {
+    enabled: false,
+    grants: {},
+    source: {},
+    sources: {},
+    sourceAllowlist: [],
+    approvalCategories: undefined,
+    handlerTimeoutMs: 30000,
   };
 }
 
@@ -173,6 +187,7 @@ function resetStateForLoad(state, params) {
   state.secrets = isObject(params.secrets) ? params.secrets : {};
   state.redactor = createRedactor(state.configSnapshot, state.secrets);
   state.runtimeVersion = String(params.runtime?.version ?? params.version ?? HOST_VERSION);
+  state.security = securityOptionsFromParams(params);
   state.runtimeState = createRuntimeState({
     ...params.runtime,
     version: state.runtimeVersion,
@@ -183,6 +198,20 @@ function resetStateForLoad(state, params) {
     diagnostics: state.diagnostics,
     redactor: state.redactor,
   });
+}
+
+function securityOptionsFromParams(params) {
+  const security = isObject(params.security) ? params.security : {};
+  const handlerTimeoutMs = Number(security.handlerTimeoutMs ?? params.handlerTimeoutMs ?? 30000);
+  return {
+    enabled: security.enabled === true,
+    grants: isObject(security.grants) ? security.grants : isObject(params.securityGrants) ? params.securityGrants : {},
+    source: isObject(security.source) ? security.source : isObject(params.source) ? params.source : {},
+    sources: isObject(security.sources) ? security.sources : isObject(params.sources) ? params.sources : {},
+    sourceAllowlist: security.sourceAllowlist ?? params.sourceAllowlist ?? [],
+    approvalCategories: Array.isArray(security.approvalCategories) ? security.approvalCategories : undefined,
+    handlerTimeoutMs: Number.isFinite(handlerTimeoutMs) && handlerTimeoutMs > 0 ? handlerTimeoutMs : 30000,
+  };
 }
 
 function rootsFromParams(params = {}) {
@@ -435,6 +464,104 @@ function registerCapabilityWithHandler(state, collection, pluginId, spec, handle
   storeHandler(state, collection, record, resolvedHandler);
 }
 
+function pluginManifest(plugin) {
+  return plugin.manifestPath.endsWith("openclaw.plugin.json") ? readJsonFile(plugin.manifestPath) : {};
+}
+
+function pluginPackageJson(plugin) {
+  return plugin.packagePath ? readJsonFile(plugin.packagePath) : {};
+}
+
+function sourceForPlugin(state, plugin) {
+  const sources = state.security.sources;
+  if (isObject(sources)) {
+    if (isObject(sources[plugin.id])) {
+      return sources[plugin.id];
+    }
+    if (isObject(sources[plugin.root])) {
+      return sources[plugin.root];
+    }
+    if (isObject(sources.default)) {
+      return sources.default;
+    }
+  }
+  return state.security.source;
+}
+
+function capabilityRecordsForPlugin(state, pluginId) {
+  const records = [];
+  for (const collection of Object.values(state.capabilities)) {
+    for (const record of collection) {
+      if (record.pluginId === pluginId) {
+        records.push(record.spec ?? record);
+      }
+    }
+  }
+  return records;
+}
+
+function prunePluginRegistrations(state, pluginId) {
+  for (const [key, collection] of Object.entries(state.capabilities)) {
+    state.capabilities[key] = collection.filter((record) => record.pluginId !== pluginId);
+  }
+  for (const [key, collection] of Object.entries(state.handlers)) {
+    state.handlers[key] = collection.filter((entry) => entry.record.pluginId !== pluginId);
+  }
+}
+
+function createSecurityEnforcer(state, plugin, capabilityRecords = []) {
+  const options = {
+    pluginId: plugin.id,
+    manifest: pluginManifest(plugin),
+    packageJson: pluginPackageJson(plugin),
+    capabilityRecords,
+    source: sourceForPlugin(state, plugin),
+    sourceAllowlist: state.security.sourceAllowlist,
+    grants: state.security.grants,
+  };
+  if (state.security.approvalCategories) {
+    options.approvalCategories = state.security.approvalCategories;
+  }
+  return new OpenClawSecurityEnforcer(options);
+}
+
+function enforceStartGate(state, plugin, capabilityRecords, phase) {
+  if (!state.security.enabled) {
+    return true;
+  }
+  const decision = createSecurityEnforcer(state, plugin, capabilityRecords).enforceStart();
+  if (decision.allowed) {
+    return true;
+  }
+  addDiagnostic(state, {
+    code: "security_start_denied",
+    pluginId: plugin.id,
+    phase,
+    decision,
+  });
+  return false;
+}
+
+async function dispatchThroughSecurity(state, entry, stage, handler) {
+  if (!state.security.enabled) {
+    return handler();
+  }
+  const plugin = state.plugins.find((candidate) => candidate.id === entry.record.pluginId) ?? {
+    id: entry.record.pluginId,
+    root: "",
+    manifestPath: "",
+    packagePath: "",
+  };
+  const permissionRequests = derivePermissionRequirements({ capabilityRecords: [entry.record.spec ?? entry.record] });
+  const decision = await createSecurityEnforcer(state, plugin, []).dispatchHandler(stage, permissionRequests, handler, {
+    timeoutMs: state.security.handlerTimeoutMs,
+  });
+  if (!decision.allowed) {
+    return decision;
+  }
+  return decision.diagnostics?.result ?? { ok: true };
+}
+
 function buildApi(state, plugin) {
   const pluginId = plugin.id;
   const runtime = buildRuntimeFacade(state, pluginId);
@@ -491,6 +618,9 @@ async function loadPlugin(state, plugin) {
     addDiagnostic(state, { code: "entry_not_found", pluginId: plugin.id, root: plugin.root });
     return;
   }
+  if (!enforceStartGate(state, plugin, [], "preload")) {
+    return;
+  }
 
   try {
     const module = await importPluginModule(state, plugin);
@@ -507,6 +637,11 @@ async function loadPlugin(state, plugin) {
       await module.register(api);
     } else {
       addDiagnostic(state, { code: "register_not_found", pluginId: plugin.id, entry: plugin.entry });
+      return;
+    }
+    const capabilityRecords = capabilityRecordsForPlugin(state, plugin.id);
+    if (!enforceStartGate(state, plugin, capabilityRecords, "capabilities")) {
+      prunePluginRegistrations(state, plugin.id);
       return;
     }
     state.plugins.push(plugin);
@@ -689,19 +824,25 @@ async function dispatchChannel(state, action, params) {
     return handlerNotFound("channels", params);
   }
   if (action === "start") {
-    return callHandler(entry.handler, [params.context ?? params], ["start"]);
+    return dispatchThroughSecurity(state, entry, "channel.start", () => callHandler(entry.handler, [params.context ?? params], ["start"]));
   }
   if (action === "stop") {
-    return callHandler(entry.handler, [params.context ?? params], ["stop"]);
+    return dispatchThroughSecurity(state, entry, "channel.stop", () => callHandler(entry.handler, [params.context ?? params], ["stop"]));
   }
   if (action === "health") {
-    return callHandler(entry.handler, [params.context ?? params], ["health"]);
+    return dispatchThroughSecurity(state, entry, "channel.health", () =>
+      callHandler(entry.handler, [params.context ?? params], ["health"]),
+    );
   }
   if (action === "pullInbound") {
-    return callHandler(entry.handler, [params], ["pullInbound", "pull", "poll"]);
+    return dispatchThroughSecurity(state, entry, "channel.pullInbound", () =>
+      callHandler(entry.handler, [params], ["pullInbound", "pull", "poll"]),
+    );
   }
   if (action === "send") {
-    return callHandler(entry.handler, [params.message ?? params, params.context ?? {}], ["send", "sendMessage"]);
+    return dispatchThroughSecurity(state, entry, "channel.send", () =>
+      callHandler(entry.handler, [params.message ?? params, params.context ?? {}], ["send", "sendMessage"]),
+    );
   }
   return { ok: false, status: "unknown_channel_action", action };
 }
@@ -718,7 +859,9 @@ async function dispatchHttp(state, params) {
   if (!entry) {
     return handlerNotFound("http", params);
   }
-  return callHandler(entry.handler, [{ ...params, method, path: pathValue }], ["dispatch", "handle", "request"]);
+  return dispatchThroughSecurity(state, entry, "http.dispatch", () =>
+    callHandler(entry.handler, [{ ...params, method, path: pathValue }], ["dispatch", "handle", "request"]),
+  );
 }
 
 async function dispatchTool(state, params) {
@@ -726,7 +869,9 @@ async function dispatchTool(state, params) {
   if (!entry) {
     return handlerNotFound("tools", params);
   }
-  return callHandler(entry.handler, [params.input ?? {}, params.context ?? {}], ["execute", "run"]);
+  return dispatchThroughSecurity(state, entry, "tool.execute", () =>
+    callHandler(entry.handler, [params.input ?? {}, params.context ?? {}], ["execute", "run"]),
+  );
 }
 
 async function dispatchProvider(state, params) {
@@ -734,7 +879,9 @@ async function dispatchProvider(state, params) {
   if (!entry) {
     return handlerNotFound("providers", params);
   }
-  return callHandler(entry.handler, [params.request ?? {}, params.context ?? {}], ["invoke", "generate", "complete"]);
+  return dispatchThroughSecurity(state, entry, "provider.invoke", () =>
+    callHandler(entry.handler, [params.request ?? {}, params.context ?? {}], ["invoke", "generate", "complete"]),
+  );
 }
 
 async function dispatchHook(state, params) {
@@ -742,7 +889,9 @@ async function dispatchHook(state, params) {
   if (!entry) {
     return handlerNotFound("hooks", params);
   }
-  return callHandler(entry.handler, [params.payload ?? {}, params.context ?? {}], ["dispatch", "handle"]);
+  return dispatchThroughSecurity(state, entry, "hook.dispatch", () =>
+    callHandler(entry.handler, [params.payload ?? {}, params.context ?? {}], ["dispatch", "handle"]),
+  );
 }
 
 async function dispatchCommand(state, params) {
@@ -750,7 +899,9 @@ async function dispatchCommand(state, params) {
   if (!entry) {
     return handlerNotFound("commands", params);
   }
-  return callHandler(entry.handler, [params.args ?? [], params.context ?? {}], ["execute", "run", "handle"]);
+  return dispatchThroughSecurity(state, entry, "command.execute", () =>
+    callHandler(entry.handler, [params.args ?? [], params.context ?? {}], ["execute", "run", "handle"]),
+  );
 }
 
 async function dispatchInteractive(state, params) {
@@ -758,7 +909,9 @@ async function dispatchInteractive(state, params) {
   if (!entry) {
     return handlerNotFound("interactiveHandlers", params);
   }
-  return callHandler(entry.handler, [params.payload ?? {}, params.scope ?? {}, params.context ?? {}], ["dispatch", "handle"]);
+  return dispatchThroughSecurity(state, entry, "interactive.dispatch", () =>
+    callHandler(entry.handler, [params.payload ?? {}, params.scope ?? {}, params.context ?? {}], ["dispatch", "handle"]),
+  );
 }
 
 async function dispatchApproval(state, params) {
@@ -766,7 +919,9 @@ async function dispatchApproval(state, params) {
   if (!entry) {
     return handlerNotFound("approvalHandlers", params);
   }
-  return callHandler(entry.handler, [params.payload ?? {}, params.scope ?? {}, params.context ?? {}], ["dispatch", "handle"]);
+  return dispatchThroughSecurity(state, entry, "approval.dispatch", () =>
+    callHandler(entry.handler, [params.payload ?? {}, params.scope ?? {}, params.context ?? {}], ["dispatch", "handle"]),
+  );
 }
 
 async function handleRequest(state, request) {

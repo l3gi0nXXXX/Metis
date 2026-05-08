@@ -99,6 +99,36 @@ test("installer stages workspace links without writing node_modules into plugin 
   fs.rmSync(stageRoot, { recursive: true, force: true });
 });
 
+test("installer source gate blocks unallowlisted plugin staging before copying files", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "metis-openclaw-install-gate-"));
+  try {
+    fs.writeFileSync(path.join(tmp, "package.json"), JSON.stringify({ name: "install-gate", version: "1.0.0" }), "utf8");
+    const stageRoot = path.join(tmp, "stage");
+    const source = {
+      url: "https://github.com/openclaw/install-gate.git",
+      ref: "refs/heads/main",
+      hash: "sha256:bad",
+    };
+    const sourceAllowlist = [
+      {
+        url: "https://github.com/openclaw/install-gate.git",
+        ref: "refs/tags/v1.0.0",
+        hash: "sha256:good",
+      },
+    ];
+
+    const plan = createInstallPlan(tmp, { stageRoot, source, sourceAllowlist });
+
+    assert.equal(plan.ok, false);
+    assert.equal(plan.security.stage, "install");
+    assert.equal(plan.security.code, "source_ref_mismatch");
+    assert.throws(() => preparePluginStage(tmp, { stageRoot, source, sourceAllowlist }), /source_ref_mismatch/);
+    assert.equal(fs.existsSync(path.join(stageRoot, "package", "package.json")), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("real smoke runner stages raw package, loads register(api), and maps matrix smoke status", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "metis-openclaw-smoke-"));
   try {
