@@ -617,6 +617,146 @@ public class GatewayManagedSessionsToolsetTest {
     }
 
     @TestCase
+    public func telegramSubagentSpawnCreatesForumTopicAndThreadBindingWhenEnabled(): Unit {
+        withManagedSessionsToolsetTestHome("/tmp/metis-managed-subagents-telegram-create-topic") {
+            createManagedSubagentsCustomAgentFixture("phase13-topic", false)
+            var settings = CliSettingManager.readGatewaySettings()
+            settings.subagents.allowCustomAgents = true
+            settings.telegram.threadBindings.enabled = true
+            settings.telegram.threadBindings.spawnSubagentSessions = true
+            settings.telegram.actions.createForumTopic = true
+            let _ = MetisConfigManager.setGatewaySettings(settings)
+            CliSettingManager.invalidate()
+            let store = memorySessionStoreForGatewayUser(CliSettingManager.readGatewaySettings())
+            let requesterSessionKey = "telegram:group:group:-1001234567890:topic:42"
+            appendManagedSubagentsBindingSnapshot(
+                requesterSessionKey,
+                "telegram",
+                "group:-1001234567890:topic:42",
+                "telegram:default",
+                "group:-1001234567890:topic:42",
+                "42",
+                "777",
+                "777",
+                true
+            )
+            let toolset = GatewayManagedSessionsToolset()
+            let marker = JsonObject()
+            marker.put("sawTopicCreate", JsonBool(false))
+            toolset.debugSetGatewayCallRunnerForTest(Some({ method: String, params: JsonObject =>
+                @Expect(method, "channels.send")
+                @Expect(params.get("peerId").getOrThrow().asString().getValue(), "group:-1001234567890")
+                @Expect(params.get("text").getOrThrow().asString().getValue().startsWith("[topic-create]"), true)
+                marker.put("sawTopicCreate", JsonBool(true))
+                let out = JsonObject()
+                out.put("ok", JsonBool(true))
+                out.put("messageThreadId", JsonString("88"))
+                out
+            }))
+            try {
+                let spawned = gatewayWithToolRuntimeContext(
+                    GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: requesterSessionKey),
+                    { => managedSubagentsJson(toolset.sessionsSpawnForCommand(
+                        "inspect topic creation",
+                        Some("topic-create"),
+                        Some("subagent"),
+                        Some("phase13-topic"),
+                        None<String>,
+                        None<String>,
+                        None<String>,
+                        None<String>,
+                        None<Int64>,
+                        None<Int64>,
+                        Some("fresh"),
+                        None<String>,
+                        None<Bool>,
+                        None<String>,
+                        None<String>,
+                        None<String>,
+                        None<String>
+                    )) }
+                )
+                @Expect(managedSubagentsString(spawned, "status"), "accepted")
+                @Expect(marker.get("sawTopicCreate").getOrThrow().asBool().getValue(), true)
+                let topic = spawned.get("telegramTopicBinding").getOrThrow().asObject()
+                @Expect(managedSubagentsString(topic, "status"), "bound")
+                let bindingPath = CliConfig.dotDir.join("gateway-telegram").join("thread-bindings.json")
+                let rows = JsonValue.fromStr(String.fromUtf8(File.readFrom(bindingPath))).asArray()
+                let binding = rows[0].asObject()
+                @Expect(binding.get("conversationId").getOrThrow().asString().getValue(), "group:-1001234567890:topic:88")
+                @Expect(binding.get("sessionKey").getOrThrow().asString().getValue(), managedSubagentsString(spawned, "sessionKey"))
+            } finally {
+                toolset.debugSetGatewayCallRunnerForTest(None<(String, JsonObject) -> JsonObject>)
+            }
+        }
+    }
+
+    @TestCase
+    public func telegramSubagentTopicCreateFailureReturnsWarningButKeepsRunRecord(): Unit {
+        withManagedSessionsToolsetTestHome("/tmp/metis-managed-subagents-telegram-create-topic-warning") {
+            createManagedSubagentsCustomAgentFixture("phase13-topic-warning", false)
+            var settings = CliSettingManager.readGatewaySettings()
+            settings.subagents.allowCustomAgents = true
+            settings.telegram.threadBindings.enabled = true
+            settings.telegram.threadBindings.spawnSubagentSessions = true
+            settings.telegram.actions.createForumTopic = true
+            let _ = MetisConfigManager.setGatewaySettings(settings)
+            CliSettingManager.invalidate()
+            let store = memorySessionStoreForGatewayUser(CliSettingManager.readGatewaySettings())
+            let requesterSessionKey = "telegram:group:group:-1002222222222:topic:42"
+            appendManagedSubagentsBindingSnapshot(
+                requesterSessionKey,
+                "telegram",
+                "group:-1002222222222:topic:42",
+                "telegram:default",
+                "group:-1002222222222:topic:42",
+                "42",
+                "777",
+                "777",
+                true
+            )
+            let toolset = GatewayManagedSessionsToolset()
+            toolset.debugSetGatewayCallRunnerForTest(Some({ _method: String, _params: JsonObject =>
+                let out = JsonObject()
+                out.put("ok", JsonBool(false))
+                out.put("reason", JsonString("forum topic create denied"))
+                out
+            }))
+            try {
+                let spawned = gatewayWithToolRuntimeContext(
+                    GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: requesterSessionKey),
+                    { => managedSubagentsJson(toolset.sessionsSpawnForCommand(
+                        "inspect topic warning",
+                        Some("topic-warning"),
+                        Some("subagent"),
+                        Some("phase13-topic-warning"),
+                        None<String>,
+                        None<String>,
+                        None<String>,
+                        None<String>,
+                        None<Int64>,
+                        None<Int64>,
+                        Some("fresh"),
+                        None<String>,
+                        None<Bool>,
+                        None<String>,
+                        None<String>,
+                        None<String>,
+                        None<String>
+                    )) }
+                )
+                @Expect(managedSubagentsString(spawned, "status"), "accepted")
+                let topic = spawned.get("telegramTopicBinding").getOrThrow().asObject()
+                @Expect(managedSubagentsString(topic, "status"), "warning")
+                let found = gatewaySubagentResolveRunRecord(store.sessionsRoot(), managedSubagentsString(spawned, "runId"))
+                @Expect(found.isSome(), true)
+            } finally {
+                toolset.debugSetGatewayCallRunnerForTest(None<(String, JsonObject) -> JsonObject>)
+            }
+        }
+    }
+
+    @TestCase
     public func telegramTopicSubagentTerminalNoticeUsesGatewayChannelHook(): Unit {
         withManagedSessionsToolsetTestHome("/tmp/metis-managed-subagents-telegram-topic-notice") {
             let store = memorySessionStoreForGatewayUser(CliSettingManager.readGatewaySettings())

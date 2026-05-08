@@ -1,7 +1,7 @@
 package metis.gateway.channels.telegram
 
 import metis.core.{GatewayToolRuntimeContext, gatewayWithToolRuntimeContext, setGatewayMediaAsrRunnerForTest, setGatewayMediaVisionRunnerForTest}
-import metis.core.config.CliConfig
+import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager}
 import metis.gateway.core.{gatewayBuildMediaContextPrompt, setGatewayOpenClawPluginSidecarRunnerForTest}
 import metis.gateway.model.*
 import metis.gateway.tools.{GatewayTelegramMediaToolset, setGatewayTelegramStickerCacheRootForTest}
@@ -5631,5 +5631,125 @@ public class TelegramAdapterTest {
         let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
         let raw = "{\"ok\":false,\"error_code\":429,\"description\":\"Too Many Requests\",\"parameters\":{\"retry_after\":30}}"
         @Expect(adapter.debugRetryAfterSecondsForTest(raw), 30)
+    }
+
+    @TestCase
+    public func groupMigrationConfigWritesFalseRecordsOnly(): Unit {
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+        var user = GatewayUserSettings()
+        user.telegram.configWrites = false
+        let groups = JsonObject()
+        let oldGroup = JsonObject()
+        oldGroup.put("label", JsonString("old"))
+        groups.put("-222333444", oldGroup)
+        user.telegram.groups = Some(groups)
+        MetisConfigManager.setGatewaySettings(user)
+
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(enabled: true, botToken: "telegram-token", configWrites: false),
+            pairingRoot: "/tmp/metis-telegram-group-migration-config-false"
+        )
+        let payload = "{\"update_id\":188,\"message\":{\"message_id\":45,\"migrate_to_chat_id\":\"-100222333444\",\"chat\":{\"id\":\"-222333444\",\"type\":\"group\"},\"from\":{\"id\":8734062810}}}"
+        let ack = adapter.ingestWebhookPayload(payload)
+        @Expect(ack.contains("\"ok\":true"), true)
+        let migrations = adapter.debugReadGroupMigrationStateForTest()
+        let row = migrations[0].asObject()
+        @Expect(row.get("configMigrationStatus").getOrThrow().asString().getValue(), "diagnostic_only")
+        let after = CliSettingManager.readGatewaySettings()
+        @Expect(after.telegram.groups.getOrThrow().get("-222333444").isSome(), true)
+        @Expect(after.telegram.groups.getOrThrow().get("-100222333444").isNone(), true)
+    }
+
+    @TestCase
+    public func groupMigrationConfigWritesTrueMigratesTempConfigOnly(): Unit {
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+        var user = GatewayUserSettings()
+        user.telegram.configWrites = true
+        let groups = JsonObject()
+        let oldGroup = JsonObject()
+        oldGroup.put("label", JsonString("old"))
+        groups.put("-333444555", oldGroup)
+        user.telegram.groups = Some(groups)
+        MetisConfigManager.setGatewaySettings(user)
+
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(enabled: true, botToken: "telegram-token", configWrites: true),
+            pairingRoot: "/tmp/metis-telegram-group-migration-config-true"
+        )
+        let payload = "{\"update_id\":189,\"message\":{\"message_id\":46,\"migrate_to_chat_id\":\"-100333444555\",\"chat\":{\"id\":\"-333444555\",\"type\":\"group\"},\"from\":{\"id\":8734062810}}}"
+        let ack = adapter.ingestWebhookPayload(payload)
+        @Expect(ack.contains("\"ok\":true"), true)
+        let migrations = adapter.debugReadGroupMigrationStateForTest()
+        let row = migrations[0].asObject()
+        @Expect(row.get("configMigrationStatus").getOrThrow().asString().getValue(), "migrated")
+        @Expect(row.get("configPath").getOrThrow().asString().getValue().startsWith("/tmp/"), true)
+        let after = CliSettingManager.readGatewaySettings()
+        @Expect(after.telegram.groups.getOrThrow().get("-333444555").isNone(), true)
+        @Expect(after.telegram.groups.getOrThrow().get("-100333444555").isSome(), true)
+    }
+
+    @TestCase
+    public func sendActionRetryAndSoftErrorClassificationUseFakeTransport(): Unit {
+        let editState = JsonObject()
+        editState.put("calls", 0.toJsonValue())
+        try {
+            setTelegramTransportRunnerForTest(Some({ request: TelegramTransportRequest =>
+                if (request.context.startsWith("send:edit")) {
+                    let calls = try { editState.get("calls").getOrThrow().asInt().getValue() } catch (_e: Exception) { 0 }
+                    editState.put("calls", (calls + 1).toJsonValue())
+                    if (calls == 0) {
+                        return TelegramTransportResponse(true, body: "{\"ok\":false,\"error_code\":500,\"description\":\"Internal Server Error\"}", outcome: "api-ok-false")
+                    }
+                    return TelegramTransportResponse(true, body: "{\"ok\":true,\"result\":true}", outcome: "ok")
+                }
+                TelegramTransportResponse(true, body: "{\"ok\":true,\"result\":{\"message_id\":777}}", outcome: "ok")
+            }))
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(enabled: true, botToken: "telegram-token", actions: TelegramActionConfig(editMessage: true))
+            )
+            adapter.start()
+            let result = adapter.send(OutboundMessage(ChannelType.Telegram, "user:8734062810", "[edit]\nupdated", replyToMessageId: Some("99")))
+            match (result) {
+                case SendResult.Success => ()
+                case SendResult.Failed(reason) => @Expect(reason, "success")
+            }
+            @Expect(editState.get("calls").getOrThrow().asInt().getValue(), 2)
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+        }
+
+        try {
+            setTelegramTransportRunnerForTest(Some({ _request: TelegramTransportRequest =>
+                TelegramTransportResponse(true, body: "{\"ok\":false,\"error_code\":400,\"description\":\"Bad Request: message is not modified\"}", outcome: "api-ok-false")
+            }))
+            let adapter = TelegramAdapter(
+                config: TelegramConfig(enabled: true, botToken: "telegram-token", actions: TelegramActionConfig(editMessage: true))
+            )
+            adapter.start()
+            let result = adapter.send(OutboundMessage(ChannelType.Telegram, "user:8734062810", "[edit]\nsame", replyToMessageId: Some("99")))
+            match (result) {
+                case SendResult.Success => ()
+                case SendResult.Failed(reason) => @Expect(reason, "success")
+            }
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+        }
+
+        try {
+            setTelegramTransportRunnerForTest(Some({ _request: TelegramTransportRequest =>
+                TelegramTransportResponse(true, body: "{\"ok\":false,\"error_code\":400,\"description\":\"Bad Request: invalid reaction type\"}", outcome: "api-ok-false")
+            }))
+            let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
+            adapter.start()
+            let result = adapter.send(OutboundMessage(ChannelType.Telegram, "user:8734062810", "[reaction]\ntoken=invalid\nrender=invalid", replyToMessageId: Some("99")))
+            match (result) {
+                case SendResult.Success => @Expect(false, true)
+                case SendResult.Failed(reason) => @Expect(reason.contains("reaction-invalid"), true)
+            }
+        } finally {
+            setTelegramTransportRunnerForTest(None)
+        }
     }
 }
