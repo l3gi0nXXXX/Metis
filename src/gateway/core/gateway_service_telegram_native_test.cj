@@ -639,7 +639,7 @@ public class GatewayServiceTelegramNativeTest {
                 out.put("matched", (method == "interactive.dispatch").toJsonValue())
                 if (method == "interactive.dispatch") {
                     let intents = JsonArray([])
-                    for ((kind, text) in [("edit", "edited"), ("edit-buttons", ""), ("clear-buttons", ""), ("delete", "")]) {
+                    for ((kind, text) in [("answer-callback-query", "ack"), ("edit", "edited"), ("edit-buttons", ""), ("clear-buttons", ""), ("delete", "")]) {
                         let intent = JsonObject()
                         intent.put("type", JsonString(kind))
                         if (!text.isEmpty()) {
@@ -677,6 +677,59 @@ public class GatewayServiceTelegramNativeTest {
             @Expect(adapter.sentText(1).contains("button=OK|callback:plugin:demo:ok"), true)
             @Expect(adapter.sentText(2), "[clear-buttons]")
             @Expect(adapter.sentText(3), "[delete]")
+            @Expect(adapter.sentCount(), 4)
+        }
+    }
+
+    @TestCase
+    public func pluginUnsupportedCapabilityDispatchReturnsStructuredTelegramError(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+            setGatewayOpenClawPluginSidecarRunnerForTest(Some({ method: String, _payload: JsonObject =>
+                let out = JsonObject()
+                if (method == "commands.list") {
+                    out.put("ok", true.toJsonValue())
+                    let commands = JsonArray([])
+                    let row = JsonObject()
+                    row.put("command", JsonString("plugin_tool"))
+                    row.put("description", JsonString("Unsupported tool command"))
+                    commands.add(row)
+                    out.put("commands", commands)
+                } else if (method == "command.dispatch") {
+                    out.put("ok", false.toJsonValue())
+                    out.put("matched", true.toJsonValue())
+                    out.put("status", JsonString("unsupported"))
+                    out.put("reason", JsonString("not implemented by the Metis OpenClaw plugin compatibility sidecar"))
+                    let unsupported = JsonObject()
+                    unsupported.put("capability", JsonString("api.registerTool"))
+                    unsupported.put("runtime", JsonString("metis-openclaw-plugin-compat-sidecar"))
+                    unsupported.put("reason", JsonString("not implemented by the Metis OpenClaw plugin compatibility sidecar"))
+                    unsupported.put("pluginId", JsonString("fixture"))
+                    out.put("unsupportedCapability", unsupported)
+                } else if (method == "hook.message_sending") {
+                    out.put("ok", true.toJsonValue())
+                    out.put("cancelled", false.toJsonValue())
+                    out.put("text", _payload.get("text").getOrThrow())
+                } else {
+                    out.put("ok", true.toJsonValue())
+                }
+                out
+            }))
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/plugin_tool")
+            service.processOnce()
+
+            let text = adapter.sentText(1)
+            @Expect(text.contains("\"status\":\"unsupported\""), true)
+            @Expect(text.contains("\"unsupportedCapability\""), true)
+            @Expect(text.contains("api.registerTool"), true)
+            @Expect(text.contains("compatibility sidecar"), true)
         }
     }
 

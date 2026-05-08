@@ -309,15 +309,24 @@ function approvalNamespace(data) {
 
 function approvalDecision(data) {
   const parts = String(data ?? "").trim().split(":");
-  const last = parts[parts.length - 1] ?? "";
-  const normalized = String(last).trim().toLowerCase();
-  if (["allow", "approve", "approved", "allow-once", "allow-always"].includes(normalized)) {
-    return normalized;
-  }
-  if (["deny", "denied", "reject", "rejected"].includes(normalized)) {
-    return normalized;
+  for (const part of parts) {
+    const normalized = String(part).trim().toLowerCase();
+    if (["allow", "approve", "approved", "allow-once", "allow-always"].includes(normalized)) {
+      return normalized;
+    }
+    if (["deny", "denied", "reject", "rejected"].includes(normalized)) {
+      return normalized;
+    }
   }
   return "";
+}
+
+function approvalId(data) {
+  const parts = String(data ?? "").trim().split(":").filter(Boolean);
+  const decision = approvalDecision(data);
+  if (!decision) return "";
+  const index = parts.findIndex((part) => String(part).trim().toLowerCase() === decision);
+  return index >= 0 ? String(parts[index + 1] ?? "").trim() : "";
 }
 
 async function buildRegistry(config) {
@@ -328,9 +337,21 @@ async function buildRegistry(config) {
   return registry;
 }
 
+function normalizeIntentType(raw) {
+  const normalized = String(raw ?? "").trim();
+  const folded = normalized.replace(/[_-]/g, "").toLowerCase();
+  if (folded === "editbuttons") return "edit-buttons";
+  if (folded === "clearbuttons") return "clear-buttons";
+  if (folded === "delete" || folded === "deletemessage") return "delete";
+  if (folded === "answercallbackquery" || folded === "answercallback") return "answer-callback-query";
+  if (folded === "reply" || folded === "send" || folded === "message") return "reply";
+  if (folded === "edit" || folded === "editmessage") return "edit";
+  return normalized;
+}
+
 function normalizeIntent(value) {
   if (!isObject(value)) return null;
-  const type = String(value.type ?? value.kind ?? "").trim();
+  const type = normalizeIntentType(value.type ?? value.kind ?? "");
   if (!type) return null;
   const out = {
     type,
@@ -339,6 +360,13 @@ function normalizeIntent(value) {
     reason: String(value.reason ?? ""),
   };
   if (Array.isArray(value.buttons)) out.buttons = value.buttons;
+  if (value.callbackId != null) out.callbackId = String(value.callbackId);
+  if (value.callbackQueryId != null) out.callbackQueryId = String(value.callbackQueryId);
+  if (value.showAlert != null) out.showAlert = value.showAlert === true || value.showAlert === "true";
+  if (value.show_alert != null) out.showAlert = value.show_alert === true || value.show_alert === "true";
+  if (value.url != null) out.url = String(value.url);
+  if (value.cacheTime != null) out.cacheTime = Number(value.cacheTime) || 0;
+  if (value.cache_time != null) out.cacheTime = Number(value.cache_time) || 0;
   if (value.op != null) out.op = String(value.op);
   if (value.channel != null) out.channel = String(value.channel);
   if (value.sessionKey != null) out.sessionKey = String(value.sessionKey);
@@ -464,6 +492,14 @@ function buildInteractiveContext(payload, namespace, intents, bindingIntents) {
         pushIntent({ type: "delete" });
       },
       async answerCallbackQuery(params = {}) {
+        pushIntent({
+          type: "answer-callback-query",
+          callbackId: String(params.callbackId ?? payload.callbackId ?? "").trim(),
+          text: String(params.text ?? ""),
+          showAlert: params.showAlert === true || params.show_alert === true,
+          url: params.url,
+          cacheTime: params.cacheTime ?? params.cache_time,
+        });
         ctx.callbackAnswer = {
           ok: true,
           status: "already_acknowledged_by_gateway",
@@ -502,6 +538,23 @@ function buildInteractiveContext(payload, namespace, intents, bindingIntents) {
     },
   };
   return ctx;
+}
+
+function buildApprovalContext(payload, namespace, intents, bindingIntents) {
+  const ctx = buildInteractiveContext(payload, namespace, intents, bindingIntents);
+  const decision = String(payload.decision ?? approvalDecision(payload.data)).trim();
+  return {
+    ...ctx,
+    namespace,
+    decision,
+    approvalId: String(payload.approvalId ?? approvalId(payload.data)).trim(),
+    approval: {
+      namespace,
+      decision,
+      id: String(payload.approvalId ?? approvalId(payload.data)).trim(),
+      data: String(payload.data ?? "").trim(),
+    },
+  };
 }
 
 function commandArgs(payload) {
@@ -547,6 +600,38 @@ function buildCommandContext(payload, intents, bindingIntents) {
       async editMessage(params = {}) {
         const normalized = normalizeIntent({ type: "edit", text: String(params.text ?? ""), targetMessageId: params.targetMessageId });
         if (normalized) intents.push(normalized);
+        if (Array.isArray(params.buttons)) {
+          const buttons = normalizeIntent({ type: "edit-buttons", buttons: params.buttons, targetMessageId: params.targetMessageId });
+          if (buttons) intents.push(buttons);
+        }
+      },
+      async editButtons(params = {}) {
+        const normalized = normalizeIntent({ type: "edit-buttons", buttons: params.buttons, targetMessageId: params.targetMessageId });
+        if (normalized) intents.push(normalized);
+      },
+      async clearButtons(params = {}) {
+        const normalized = normalizeIntent({ type: "clear-buttons", targetMessageId: params.targetMessageId });
+        if (normalized) intents.push(normalized);
+      },
+      async deleteMessage(params = {}) {
+        const normalized = normalizeIntent({ type: "delete", targetMessageId: params.targetMessageId });
+        if (normalized) intents.push(normalized);
+      },
+      async answerCallbackQuery(params = {}) {
+        const normalized = normalizeIntent({
+          type: "answer-callback-query",
+          callbackId: String(params.callbackId ?? payload.callbackId ?? "").trim(),
+          text: String(params.text ?? ""),
+          showAlert: params.showAlert === true || params.show_alert === true,
+          url: params.url,
+          cacheTime: params.cacheTime ?? params.cache_time,
+        });
+        if (normalized) intents.push(normalized);
+        return {
+          ok: true,
+          status: "already_acknowledged_by_gateway",
+          callbackId: String(params.callbackId ?? payload.callbackId ?? "").trim(),
+        };
       },
     },
     async requestConversationBinding(params = {}) {
@@ -746,13 +831,9 @@ async function main() {
       );
       return;
     }
-    const result = normalizeHandlerResult(
-      await handler.handler({
-        ...payload,
-        namespace,
-        decision: payload.decision ?? approvalDecision(payload.data),
-      }),
-    );
+    const intents = [];
+    const bindingIntents = [];
+    const result = normalizeHandlerResult(await handler.handler(buildApprovalContext(payload, namespace, intents, bindingIntents)), intents, bindingIntents);
     process.stdout.write(JSON.stringify({ ...result, pluginId: handler.pluginId, namespace, diagnostics: registry.diagnostics }));
     return;
   }

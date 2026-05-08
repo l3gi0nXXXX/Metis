@@ -1452,6 +1452,22 @@ public class GatewayService {
     ): Bool {
         if (!this.telegramJsonBool(result, "ok", false)) {
             let reason = this.telegramJsonString(result, "reason", "OpenClaw plugin sidecar error")
+            let status = this.telegramJsonString(result, "status", "error")
+            if (status == "unsupported") {
+                let unsupported = match (result.get("unsupportedCapability")) {
+                    case Some(v) => v.toJsonString()
+                    case None => "null"
+                }
+                this.sendTextToPeerDetailed(
+                    "telegram",
+                    message.peerId,
+                    "{\"ok\":false,\"status\":\"unsupported\",\"action\":\"${fallbackAction}\",\"reason\":\"${this.telegramCallbackJsonEscape(reason)}\",\"unsupportedCapability\":${unsupported}}",
+                    replyToMessageId: message.replyTargetMessageId,
+                    replyInThread: message.replyInThread,
+                    accountId: accountId
+                )
+                return true
+            }
             this.sendTextToPeerDetailed(
                 "telegram",
                 message.peerId,
@@ -1560,6 +1576,9 @@ public class GatewayService {
                 replyInThread: message.replyInThread,
                 accountId: accountId
             )
+            return true
+        }
+        if (kind == "answercallbackquery" || kind == "answer-callback-query" || kind == "answer-callback") {
             return true
         }
         false
