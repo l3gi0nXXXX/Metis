@@ -1,0 +1,9 @@
+{
+  "name": "openclaw",
+  "version": "2026.3.23",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./plugin-sdk/*": "./plugin-sdk/*.js"
+  }
+}

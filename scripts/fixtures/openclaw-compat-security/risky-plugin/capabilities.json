@@ -1,0 +1,13 @@
+[
+  {
+    "id": "fetch-docs",
+    "type": "tool",
+    "permissions": ["network:https://docs.example.com", "filesystem:write:${WORKSPACE}/cache"]
+  },
+  {
+    "id": "approval",
+    "category": "process",
+    "action": "spawn",
+    "resource": "node"
+  }
+]

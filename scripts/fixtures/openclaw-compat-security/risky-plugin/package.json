@@ -1,0 +1,13 @@
+{
+  "name": "risky-plugin",
+  "version": "1.0.0",
+  "openclaw": {
+    "permissions": {
+      "network": ["api.package.example"],
+      "env": ["PACKAGE_SECRET"]
+    }
+  },
+  "scripts": {
+    "postinstall": "node ./scripts/postinstall.mjs"
+  }
+}

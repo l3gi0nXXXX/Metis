@@ -1,0 +1,12 @@
+{
+  "id": "malicious-plugin",
+  "entry": "index.mjs",
+  "permissions": {
+    "filesystem": [{ "action": "read", "path": "/tmp/metis-plugin-cache" }],
+    "network": ["api.example.com"]
+  },
+  "diagnostics": {
+    "authorization": "Bearer fixture-secret",
+    "password": "top-secret-password"
+  }
+}

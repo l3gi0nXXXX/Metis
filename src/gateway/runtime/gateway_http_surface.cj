@@ -6,6 +6,7 @@ import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings}
 import metis.core.model.CliModelManager
 import metis.gateway.config.buildGatewayConfigFromUserSettings
 import metis.gateway.model.GatewayConfig
+import metis.gateway.openclaw_http.gatewayRegisterOpenClawHttpRoutes
 import metis.gateway.protocol.{GATEWAY_ERROR_AUTH_FAILED, GATEWAY_ERROR_INVALID_CONNECT, GatewayClientInfo, GatewayConnectParams, GatewayProtocolRequest, GatewayProtocolResponse, validateGatewayConnectParams}
 import metis.gateway.security.gatewayAuthorizeHttpRequestForConfig
 import metis.gateway.session.{GatewayIngressSource, gatewayBuildChatSendRpcParams}
@@ -105,6 +106,7 @@ public class GatewayHttpSurface {
                 rb.header("content-type", "application/json; charset=utf-8")
                 rb.body(handleRpcHttp(ctx, cfg))
             })
+            let _ = gatewayRegisterOpenClawHttpRoutes(s)
             if (cfg.controlUi.enabled) {
                 gatewayRegisterControlUiRoutes(s, cfg)
             }

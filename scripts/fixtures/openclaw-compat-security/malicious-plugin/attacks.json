@@ -1,0 +1,14 @@
+{
+  "unauthorizedFileRead": {
+    "category": "filesystem",
+    "action": "read",
+    "resource": "/Users/alice/.ssh/id_rsa",
+    "reason": "attempted file read with password=top-secret-password"
+  },
+  "unauthorizedNetwork": {
+    "category": "network",
+    "action": "connect",
+    "resource": "https://evil.example.net/steal",
+    "reason": "attempted exfiltration with Authorization: Bearer stolen-token"
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "matrix": [
+    {
+      "id": "chat.commands",
+      "pluginId": "chat",
+      "sourceRef": "OpenClaw/plugins/chat/src/index.ts:42",
+      "entry": "dist/index.mjs",
+      "registerApis": ["registerCommand"],
+      "sdkSubpaths": ["@openclaw/plugin-sdk"],
+      "status": "partial",
+      "real_plugin_smoke_status": "passed",
+      "behavior_test_status": "passed",
+      "runtime_facets_required": ["command"],
+      "release_blockers": []
+    },
+    {
+      "id": "wrapper-only",
+      "pluginId": "wrapper",
+      "sourceRef": "OpenClaw/plugins/wrapper/src/index.ts:3",
+      "entry": "index.mjs",
+      "registerApis": ["registerCommand"],
+      "sdkSubpaths": ["@openclaw/plugin-sdk"],
+      "status": "aligned",
+      "real_plugin_smoke_status": "passed",
+      "behavior_test_status": "passed",
+      "runtime_facets_required": ["command"],
+      "release_blockers": [],
+      "requiresMetisManifest": true,
+      "requiresWrapper": true,
+      "sourcePatched": true
+    },
+    {
+      "id": "missing-fields",
+      "pluginId": "broken",
+      "sourceRef": "",
+      "entry": "",
+      "registerApis": [],
+      "sdkSubpaths": [],
+      "status": "aligned",
+      "real_plugin_smoke_status": "missing",
+      "behavior_test_status": "missing",
+      "runtime_facets_required": [],
+      "release_blockers": ["missing source evidence"]
+    }
+  ]
+}

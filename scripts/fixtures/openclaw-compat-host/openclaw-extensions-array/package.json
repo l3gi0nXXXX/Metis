@@ -1,0 +1,10 @@
+{
+  "name": "openclaw-extensions-array-fixture",
+  "version": "1.0.0",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./extension.mjs"
+    ]
+  }
+}

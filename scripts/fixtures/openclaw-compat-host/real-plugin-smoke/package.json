@@ -1,0 +1,20 @@
+{
+  "name": "@fixture/real-plugin-smoke",
+  "version": "1.0.0",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "install": {
+      "npmSpec": "@fixture/real-plugin-smoke",
+      "defaultChoice": "npm"
+    }
+  },
+  "exports": {
+    ".": {
+      "default": "./dist/index.js",
+      "import": "./dist/index.js"
+    }
+  }
+}

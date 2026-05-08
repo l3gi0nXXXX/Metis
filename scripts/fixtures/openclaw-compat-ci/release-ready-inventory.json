@@ -1,0 +1,28 @@
+{
+  "plugins": [
+    {
+      "id": "chat",
+      "sourceRef": "OpenClaw/plugins/chat/package.json:1",
+      "entry": "dist/index.mjs",
+      "registerApis": ["registerCommand"],
+      "sdkSubpaths": ["@openclaw/plugin-sdk"],
+      "status": "aligned",
+      "real_plugin_smoke_status": "passed",
+      "behavior_test_status": "passed",
+      "runtime_facets_required": ["command"],
+      "release_blockers": []
+    },
+    {
+      "id": "theme",
+      "sourceRef": "OpenClaw/plugins/theme/package.json:1",
+      "entry": "index.mjs",
+      "registerApis": ["registerTheme"],
+      "sdkSubpaths": ["@openclaw/plugin-sdk/theme"],
+      "status": "not-applicable",
+      "real_plugin_smoke_status": "not-applicable",
+      "behavior_test_status": "not-applicable",
+      "runtime_facets_required": [],
+      "release_blockers": []
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "id": "risky-plugin",
+  "entry": "dist/index.mjs",
+  "permissions": {
+    "network": ["https://api.example.com/v1"],
+    "filesystem": [{ "action": "read", "path": "${HOME}/.metis/config.json" }],
+    "env": ["OPENAI_API_KEY"],
+    "process": ["git"],
+    "browser": true,
+    "webhook": [{ "url": "https://hooks.example.com/plugin" }],
+    "model": ["openai:gpt-5"],
+    "secret": ["TELEGRAM_BOT_TOKEN"],
+    "media": ["image"]
+  },
+  "diagnostics": {
+    "token": "123456789:AAExampleSecretValue",
+    "webhookUrl": "https://bot:secret@example.com/hook"
+  }
+}
