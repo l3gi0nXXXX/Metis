@@ -546,6 +546,14 @@ public class GatewayServiceTelegramNativeTest {
                     commands.add(row)
                     out.put("commands", commands)
                 } else if (method == "command.dispatch") {
+                    @Expect(payload.get("commandBody").getOrThrow().asString().getValue(), "/plugin_demo now")
+                    @Expect(payload.get("args").getOrThrow().asString().getValue(), "now")
+                    @Expect(payload.get("sessionKey").getOrThrow().asString().getValue(), "telegram:direct:8734062810")
+                    @Expect(payload.get("from").getOrThrow().asString().getValue(), "8734062810")
+                    @Expect(payload.get("to").getOrThrow().asString().getValue(), "8734062810")
+                    @Expect(payload.get("accountId").getOrThrow().asString().getValue(), "default")
+                    @Expect(payload.get("messageThreadId").getOrThrow().asString().getValue(), "")
+                    @Expect(payload.get("isAuthorizedSender").getOrThrow().asBool().getValue(), true)
                     out.put("matched", true.toJsonValue())
                     let intents = JsonArray([])
                     let reply = JsonObject()
@@ -725,17 +733,24 @@ public class GatewayServiceTelegramNativeTest {
                 out.put("ok", true.toJsonValue())
                 if (method == "hook.message_received") {
                     @Expect(payload.get("accountId").getOrThrow().asString().getValue(), "default")
+                    @Expect(payload.get("from").getOrThrow().asString().getValue(), "8734062810")
+                    @Expect(payload.get("content").getOrThrow().asString().getValue(), "photo caption")
                     @Expect(payload.get("conversationId").getOrThrow().asString().getValue(), "group:-100:topic:42")
                     @Expect(payload.get("threadId").getOrThrow().asString().getValue(), "42")
                     @Expect(payload.get("mediaSummary").getOrThrow().asObject().get("count").getOrThrow().asInt().getValue(), 1)
+                    @Expect(payload.get("metadata").getOrThrow().asObject().get("senderId").getOrThrow().asString().getValue(), "8734062810")
                     @Expect(payload.get("mediaSummary").getOrThrow().asObject().get("kinds").getOrThrow().asArray()[0].asString().getValue(), "photo")
                 } else if (method == "hook.message_sending") {
+                    @Expect(payload.get("to").getOrThrow().asString().getValue(), "group:-100:topic:42")
+                    @Expect(payload.get("content").getOrThrow().asString().getValue(), "cancel me")
                     @Expect(payload.get("conversationId").getOrThrow().asString().getValue(), "group:-100:topic:42")
                     @Expect(payload.get("threadId").getOrThrow().asString().getValue(), "42")
                     @Expect(payload.get("reply").getOrThrow().asObject().get("messageId").getOrThrow().asString().getValue(), "77")
                     out.put("cancelled", true.toJsonValue())
                     out.put("reason", JsonString("blocked by fixture"))
                 } else if (method == "hook.message_sent") {
+                    @Expect(payload.get("success").getOrThrow().asBool().getValue(), false)
+                    @Expect(payload.get("error").getOrThrow().asString().getValue(), "blocked by fixture")
                     @Expect(payload.get("delivered").getOrThrow().asBool().getValue(), false)
                     @Expect(payload.get("reason").getOrThrow().asString().getValue(), "blocked by fixture")
                     @Expect(payload.get("messageIds").getOrThrow().asArray().size(), 0)
@@ -797,11 +812,12 @@ public class GatewayServiceTelegramNativeTest {
                 pluginRoot.join("index.mjs"),
                 (
                     "export default function(api) {\n" +
-                    "  api.commands.register({ command: 'demo', description: 'Demo command' }, async () => ({ type: 'reply', text: 'command ok' }));\n" +
+                    "  api.registerCommand({ name: 'demo', description: 'Demo command', handler: async (ctx) => ({ text: 'command ok ' + ctx.args + ' ' + ctx.isAuthorizedSender }) });\n" +
                     "  api.interactive.register({ namespace: 'demo', channel: 'telegram' }, async () => ({ intents: [{ type: 'reply', text: 'interactive ok', buttons: [[{ text: 'OK', callback_data: 'plugin:demo:ok' }]] }] }));\n" +
                     "  api.approvals.register({ namespace: 'demo', channel: 'telegram' }, async (ctx) => ({ type: 'reply', text: 'approval ' + ctx.decision }));\n" +
-                    "  api.hooks.message_sending(async (ctx) => ({ text: '[hooked] ' + ctx.text }));\n" +
-                    "  api.hooks.message_received(async (ctx) => { globalThis.__metis_received = ctx.messageId; });\n" +
+                    "  api.registerHook('message_sending', async (event, ctx) => ({ content: '[hooked] ' + event.content + ' ' + ctx.accountId }));\n" +
+                    "  api.registerHook('message_received', async (event, ctx) => { globalThis.__metis_received = event.metadata.messageId + ':' + ctx.accountId; });\n" +
+                    "  api.registerTool({ name: 'unsupported_tool' });\n" +
                     "}\n"
                 ).toArray()
             )
@@ -826,6 +842,18 @@ public class GatewayServiceTelegramNativeTest {
                 let commandRows = commands.get("commands").getOrThrow().asArray()
                 @Expect(commandRows.size(), 1)
                 @Expect(commandRows[0].asObject().get("command").getOrThrow().asString().getValue(), "demo")
+                @Expect(commands.get("diagnostics").getOrThrow().asArray()[0].asObject().get("unsupportedCapability").getOrThrow().asObject().get("capability").getOrThrow().asString().getValue(), "api.registerTool")
+
+                let commandPayload = JsonObject()
+                commandPayload.put("command", JsonString("demo"))
+                commandPayload.put("args", JsonString("now"))
+                commandPayload.put("commandBody", JsonString("/demo now"))
+                commandPayload.put("channel", JsonString("telegram"))
+                commandPayload.put("accountId", JsonString("default"))
+                commandPayload.put("isAuthorizedSender", true.toJsonValue())
+                let command = gatewayOpenClawPluginSidecarInvoke(user, "command.dispatch", commandPayload)
+                @Expect(command.get("matched").getOrThrow().asBool().getValue(), true)
+                @Expect(command.get("intents").getOrThrow().asArray()[0].asObject().get("text").getOrThrow().asString().getValue(), "command ok now true")
 
                 let callbackPayload = JsonObject()
                 callbackPayload.put("data", JsonString("plugin:demo:ok"))
@@ -843,9 +871,11 @@ public class GatewayServiceTelegramNativeTest {
 
                 let hookPayload = JsonObject()
                 hookPayload.put("channel", JsonString("telegram"))
+                hookPayload.put("accountId", JsonString("default"))
                 hookPayload.put("text", JsonString("hello"))
+                hookPayload.put("content", JsonString("hello"))
                 let hook = gatewayOpenClawPluginSidecarInvoke(user, "hook.message_sending", hookPayload)
-                @Expect(hook.get("text").getOrThrow().asString().getValue(), "[hooked] hello")
+                @Expect(hook.get("text").getOrThrow().asString().getValue(), "[hooked] hello default")
 
                 let receivedPayload = JsonObject()
                 receivedPayload.put("channel", JsonString("telegram"))

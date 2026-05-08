@@ -1253,6 +1253,10 @@ public class GatewayService {
         payload.put("command", JsonString(command))
         payload.put("text", JsonString(message.text))
         payload.put("commandBody", JsonString(message.text))
+        payload.put("args", JsonString(this.telegramCommandArgText(message.text)))
+        payload.put("from", JsonString(message.senderId.trimAscii()))
+        payload.put("to", JsonString(message.peerId.trimAscii()))
+        payload.put("isAuthorizedSender", true.toJsonValue())
         var progressMessageId = ""
         try {
             progressMessageId = this.sendTextToPeerDetailed(
@@ -1354,6 +1358,8 @@ public class GatewayService {
         payload.put("peerId", JsonString(message.peerId.trimAscii()))
         payload.put("senderId", JsonString(message.senderId.trimAscii()))
         payload.put("senderUsername", JsonString(""))
+        payload.put("from", JsonString(message.senderId.trimAscii()))
+        payload.put("to", JsonString(message.peerId.trimAscii()))
         let sender = JsonObject()
         sender.put("id", JsonString(message.senderId.trimAscii()))
         sender.put("username", JsonString(""))
@@ -1368,8 +1374,12 @@ public class GatewayService {
         auth.put("isAuthorizedSender", true.toJsonValue())
         payload.put("auth", auth)
         match (message.threadId) {
-            case Some(v) => payload.put("threadId", JsonString(v.trimAscii()))
-            case None => payload.put("threadId", JsonString(""))
+            case Some(v) =>
+                payload.put("threadId", JsonString(v.trimAscii()))
+                payload.put("messageThreadId", JsonString(v.trimAscii()))
+            case None =>
+                payload.put("threadId", JsonString(""))
+                payload.put("messageThreadId", JsonString(""))
         }
         match (message.replyTargetMessageId) {
             case Some(v) => payload.put("replyTargetMessageId", JsonString(v.trimAscii()))

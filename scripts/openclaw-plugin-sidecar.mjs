@@ -122,6 +122,19 @@ async function registerPlugin(pluginRoot, registry) {
 }
 
 function buildApi(pluginId, pluginRoot, registry) {
+  const unsupportedRegistration = (capability) => (..._args) => {
+    const result = unsupportedCapability(capability, {
+      pluginId,
+      reason: "not implemented by the Metis OpenClaw plugin compatibility sidecar",
+    });
+    registry.diagnostics.push({
+      pluginId,
+      status: "unsupported",
+      reason: "unsupportedCapability",
+      unsupportedCapability: result.unsupportedCapability,
+    });
+    return result;
+  };
   const api = {
     pluginId,
     pluginRoot,
@@ -137,15 +150,22 @@ function buildApi(pluginId, pluginRoot, registry) {
     registerCommand(spec, handler) {
       const command = normalizeCommand(spec?.command ?? spec?.name);
       const description = String(spec?.description ?? spec?.summary ?? "Plugin command").trim() || "Plugin command";
-      if (!command || typeof handler !== "function") {
+      const effectiveHandler = typeof handler === "function" ? handler : spec?.handler;
+      if (!command || typeof effectiveHandler !== "function") {
         registry.diagnostics.push({ pluginId, status: "error", reason: "invalid_command_handler" });
         return;
       }
-      registry.commands.push({ pluginId, command, description, handler });
+      registry.commands.push({ pluginId, command, description, handler: effectiveHandler, requireAuth: spec?.requireAuth !== false });
     },
     registerMessageHook(kind, handler) {
       if (typeof handler === "function") {
         registry.hooks.push({ pluginId, kind: String(kind ?? "").trim(), handler });
+      }
+    },
+    registerHook(events, handler) {
+      const names = Array.isArray(events) ? events : [events];
+      for (const event of names) {
+        api.registerMessageHook(event, handler);
       }
     },
     registerApprovalHandler(registration, handler) {
@@ -173,6 +193,54 @@ function buildApi(pluginId, pluginRoot, registry) {
           registry.hooks.push({ pluginId, kind: "message_received", handler });
         }
       },
+    },
+    on(kind, handler) {
+      api.registerMessageHook(kind, handler);
+    },
+    unsupportedCapability(capability, details = {}) {
+      return unsupportedCapability(capability, { pluginId, ...details });
+    },
+    logger: {
+      debug() {},
+      info() {},
+      warn() {},
+      error() {},
+    },
+    runtime: {
+      kind: "metis-openclaw-plugin-compat-sidecar",
+      unsupportedCapability(capability, details = {}) {
+        return unsupportedCapability(capability, { pluginId, ...details });
+      },
+    },
+    registerTool: unsupportedRegistration("api.registerTool"),
+    registerHttpRoute: unsupportedRegistration("api.registerHttpRoute"),
+    registerChannel: unsupportedRegistration("api.registerChannel"),
+    registerGatewayMethod: unsupportedRegistration("api.registerGatewayMethod"),
+    registerCli: unsupportedRegistration("api.registerCli"),
+    registerReload: unsupportedRegistration("api.registerReload"),
+    registerNodeHostCommand: unsupportedRegistration("api.registerNodeHostCommand"),
+    registerSecurityAuditCollector: unsupportedRegistration("api.registerSecurityAuditCollector"),
+    registerService: unsupportedRegistration("api.registerService"),
+    registerConfigMigration: unsupportedRegistration("api.registerConfigMigration"),
+    registerAutoEnableProbe: unsupportedRegistration("api.registerAutoEnableProbe"),
+    registerProvider: unsupportedRegistration("api.registerProvider"),
+    registerSpeechProvider: unsupportedRegistration("api.registerSpeechProvider"),
+    registerRealtimeTranscriptionProvider: unsupportedRegistration("api.registerRealtimeTranscriptionProvider"),
+    registerRealtimeVoiceProvider: unsupportedRegistration("api.registerRealtimeVoiceProvider"),
+    registerMediaUnderstandingProvider: unsupportedRegistration("api.registerMediaUnderstandingProvider"),
+    registerImageGenerationProvider: unsupportedRegistration("api.registerImageGenerationProvider"),
+    registerVideoGenerationProvider: unsupportedRegistration("api.registerVideoGenerationProvider"),
+    registerMusicGenerationProvider: unsupportedRegistration("api.registerMusicGenerationProvider"),
+    registerWebFetchProvider: unsupportedRegistration("api.registerWebFetchProvider"),
+    registerWebSearchProvider: unsupportedRegistration("api.registerWebSearchProvider"),
+    registerContextEngine: unsupportedRegistration("api.registerContextEngine"),
+    registerMemoryPromptSection: unsupportedRegistration("api.registerMemoryPromptSection"),
+    registerMemoryFlushPlan: unsupportedRegistration("api.registerMemoryFlushPlan"),
+    registerMemoryRuntime: unsupportedRegistration("api.registerMemoryRuntime"),
+    registerMemoryEmbeddingProvider: unsupportedRegistration("api.registerMemoryEmbeddingProvider"),
+    onConversationBindingResolved: unsupportedRegistration("api.onConversationBindingResolved"),
+    resolvePath(input) {
+      return path.resolve(pluginRoot, String(input ?? ""));
     },
   };
   api.interactive = { register: api.registerInteractiveHandler };
@@ -204,6 +272,20 @@ function normalizeNamespace(raw) {
 function normalizeCommand(raw) {
   const value = String(raw ?? "").trim().replace(/^\/+/, "").toLowerCase();
   return /^[a-z0-9_]{1,32}$/.test(value) ? value : "";
+}
+
+function unsupportedCapability(capability, details = {}) {
+  const name = String(capability ?? "").trim() || "unknown";
+  return {
+    ok: false,
+    status: "unsupported",
+    unsupportedCapability: {
+      capability: name,
+      runtime: "metis-openclaw-plugin-compat-sidecar",
+      reason: String(details.reason ?? "not implemented by the Metis OpenClaw plugin compatibility sidecar"),
+      pluginId: String(details.pluginId ?? ""),
+    },
+  };
 }
 
 function callbackNamespace(data) {
@@ -281,10 +363,23 @@ function normalizeHandlerResult(value, collectedIntents = [], collectedBindingIn
   if (!isObject(value)) {
     return { ok: true, matched: true, intents: collectedIntents, bindingIntents: collectedBindingIntents };
   }
+  if (isObject(value.unsupportedCapability)) {
+    return {
+      ok: false,
+      matched: true,
+      status: "unsupported",
+      unsupportedCapability: value.unsupportedCapability,
+      reason: value.unsupportedCapability.reason ?? "unsupported OpenClaw plugin capability",
+      intents: collectedIntents,
+      bindingIntents: collectedBindingIntents,
+    };
+  }
   const intents = Array.isArray(value.intents)
     ? value.intents.map(normalizeIntent).filter(Boolean)
     : normalizeIntent(value)
       ? [normalizeIntent(value)]
+      : typeof value.text === "string" || typeof value.content === "string"
+        ? [{ type: "reply", text: String(value.text ?? value.content ?? "") }]
       : [];
   const bindingIntents = Array.isArray(value.bindingIntents)
     ? value.bindingIntents.map(normalizeIntent).filter(Boolean)
@@ -327,7 +422,7 @@ function buildInteractiveContext(payload, namespace, intents, bindingIntents) {
     if (normalized) intents.push(normalized);
   };
   const currentBinding = conversationSnapshot(payload, isObject(payload.currentConversationBinding) ? payload.currentConversationBinding : {});
-  return {
+  const ctx = {
     ...payload,
     channel: "telegram",
     accountId: String(payload.accountId ?? "").trim(),
@@ -337,6 +432,7 @@ function buildInteractiveContext(payload, namespace, intents, bindingIntents) {
     senderId: String(payload.senderId ?? payload.callbackSenderId ?? "").trim(),
     senderUsername: String(payload.senderUsername ?? "").trim(),
     threadId: currentBinding.threadId,
+    messageThreadId: String(payload.messageThreadId ?? currentBinding.threadId ?? "").trim(),
     isGroup: payload.isGroup === true,
     isForum: payload.isForum === true,
     auth: isObject(payload.auth) ? payload.auth : { isAuthorizedSender: false },
@@ -367,6 +463,16 @@ function buildInteractiveContext(payload, namespace, intents, bindingIntents) {
       async deleteMessage() {
         pushIntent({ type: "delete" });
       },
+      async answerCallbackQuery(params = {}) {
+        ctx.callbackAnswer = {
+          ok: true,
+          status: "already_acknowledged_by_gateway",
+          callbackId: String(payload.callbackId ?? "").trim(),
+          text: String(params.text ?? ""),
+          showAlert: params.showAlert === true || params.show_alert === true,
+        };
+        return ctx.callbackAnswer;
+      },
     },
     async requestConversationBinding(params = {}) {
       const binding = conversationSnapshot(payload, {
@@ -395,16 +501,44 @@ function buildInteractiveContext(payload, namespace, intents, bindingIntents) {
       return { ok: true, status: "queued", binding };
     },
   };
+  return ctx;
 }
 
-function buildCommandContext(payload, intents) {
+function commandArgs(payload) {
+  if (typeof payload.args === "string") return payload.args.trim();
+  if (Array.isArray(payload.args)) return payload.args.map((v) => String(v ?? "")).join(" ").trim();
+  const body = String(payload.commandBody ?? payload.text ?? "").trim();
+  return body.split(/\s+/).slice(1).join(" ").trim();
+}
+
+function commandArgv(payload) {
+  if (Array.isArray(payload.argv)) return payload.argv.map((v) => String(v ?? ""));
+  const args = commandArgs(payload);
+  return args ? args.split(/\s+/) : [];
+}
+
+function buildCommandContext(payload, intents, bindingIntents) {
+  const binding = conversationSnapshot(payload);
+  const pushBindingIntent = (op, params = {}) => {
+    const intent = normalizeIntent({ type: "binding", op, ...binding, ...params });
+    if (intent) bindingIntents.push(intent);
+    return intent;
+  };
   return {
     ...payload,
     channel: String(payload.channel ?? "telegram").trim() || "telegram",
     accountId: String(payload.accountId ?? "").trim(),
     command: String(payload.command ?? "").trim(),
-    args: Array.isArray(payload.args) ? payload.args : String(payload.text ?? "").trim().split(/\s+/).slice(1),
+    args: commandArgs(payload),
+    argv: commandArgv(payload),
     text: String(payload.text ?? payload.commandBody ?? "").trim(),
+    commandBody: String(payload.commandBody ?? payload.text ?? "").trim(),
+    from: String(payload.from ?? payload.senderId ?? "").trim(),
+    to: String(payload.to ?? payload.peerId ?? payload.conversationId ?? "").trim(),
+    senderId: String(payload.senderId ?? "").trim(),
+    isAuthorizedSender: payload.isAuthorizedSender === true || payload.auth?.isAuthorizedSender === true,
+    sessionKey: String(payload.sessionKey ?? "").trim(),
+    messageThreadId: String(payload.messageThreadId ?? payload.threadId ?? "").trim(),
     respond: {
       async reply(params = {}) {
         const normalized = normalizeIntent({ type: "reply", text: String(params.text ?? ""), buttons: params.buttons });
@@ -415,7 +549,88 @@ function buildCommandContext(payload, intents) {
         if (normalized) intents.push(normalized);
       },
     },
+    async requestConversationBinding(params = {}) {
+      const intent = pushBindingIntent("bind", {
+        sessionKey: params.sessionKey ?? payload.sessionKey,
+        ownerId: params.ownerId ?? payload.senderId,
+        ttlMs: params.ttlMs ?? 0,
+      });
+      return { ok: true, status: "queued", binding: intent?.binding ?? binding };
+    },
+    async detachConversationBinding() {
+      pushBindingIntent("detach");
+      return { removed: true };
+    },
+    async getCurrentConversationBinding() {
+      if (!binding.conversationId || !binding.sessionKey) return null;
+      return binding;
+    },
   };
+}
+
+function hookMetadata(payload) {
+  return {
+    channel: String(payload.channel ?? "telegram"),
+    accountId: String(payload.accountId ?? ""),
+    peerId: String(payload.peerId ?? ""),
+    conversationId: String(payload.conversationId ?? payload.peerId ?? ""),
+    parentConversationId: String(payload.parentConversationId ?? ""),
+    threadId: String(payload.threadId ?? payload.messageThreadId ?? ""),
+    reply: isObject(payload.reply) ? payload.reply : undefined,
+    mediaKinds: Array.isArray(payload.mediaKinds) ? payload.mediaKinds : undefined,
+    mediaSummary: isObject(payload.mediaSummary) ? payload.mediaSummary : undefined,
+    messageId: String(payload.messageId ?? payload.sentMessageId ?? ""),
+    senderId: String(payload.senderId ?? ""),
+  };
+}
+
+function hookContext(payload) {
+  const metadata = hookMetadata(payload);
+  return {
+    channelId: metadata.channel,
+    accountId: metadata.accountId,
+    conversationId: metadata.conversationId,
+    parentConversationId: metadata.parentConversationId,
+    threadId: metadata.threadId,
+    messageThreadId: metadata.threadId,
+    peerId: metadata.peerId,
+    senderId: metadata.senderId,
+    metadata,
+  };
+}
+
+function messageSendingEvent(payload) {
+  return {
+    to: String(payload.to ?? payload.peerId ?? payload.conversationId ?? ""),
+    content: String(payload.content ?? payload.text ?? ""),
+    metadata: hookMetadata(payload),
+  };
+}
+
+function messageSentEvent(payload) {
+  return {
+    to: String(payload.to ?? payload.peerId ?? payload.conversationId ?? ""),
+    content: String(payload.content ?? payload.text ?? ""),
+    success: payload.success === true || payload.delivered === true,
+    error: String(payload.error ?? payload.reason ?? ""),
+    metadata: hookMetadata(payload),
+  };
+}
+
+function messageReceivedEvent(payload) {
+  return {
+    from: String(payload.from ?? payload.senderId ?? payload.peerId ?? ""),
+    content: String(payload.content ?? payload.text ?? ""),
+    timestamp: Number(payload.timestamp ?? payload.receivedAtMs ?? 0) || undefined,
+    metadata: hookMetadata(payload),
+  };
+}
+
+async function runSidecarHook(hook, payload, event, ctx) {
+  if (hook.handler.length >= 2) {
+    return await hook.handler(event, ctx);
+  }
+  return await hook.handler({ ...payload, event, ctx, content: event.content, metadata: event.metadata });
 }
 
 async function main() {
@@ -508,7 +723,8 @@ async function main() {
       return;
     }
     const intents = [];
-    const result = normalizeHandlerResult(await handler.handler(buildCommandContext(payload, intents)), intents);
+    const bindingIntents = [];
+    const result = normalizeHandlerResult(await handler.handler(buildCommandContext(payload, intents, bindingIntents)), intents, bindingIntents);
     process.stdout.write(JSON.stringify({ ...result, pluginId: handler.pluginId, command, diagnostics: registry.diagnostics }));
     return;
   }
@@ -545,7 +761,7 @@ async function main() {
     let current = { ...payload };
     const hookErrors = [];
     for (const hook of registry.hooks.filter((h) => h.kind === "message_sending")) {
-      const result = await hook.handler(current).catch((error) => {
+      const result = await runSidecarHook(hook, current, messageSendingEvent(current), hookContext(current)).catch((error) => {
         hookErrors.push({ pluginId: hook.pluginId, kind: hook.kind, reason: String(error) });
         return null;
       });
@@ -565,6 +781,10 @@ async function main() {
         if (typeof result.text === "string") {
           current.text = result.text;
         }
+        if (typeof result.content === "string") {
+          current.text = result.content;
+          current.content = result.content;
+        }
       }
     }
     process.stdout.write(JSON.stringify({ ok: true, status: "ok", cancelled: false, text: current.text, diagnostics: [...registry.diagnostics, ...hookErrors] }));
@@ -575,7 +795,7 @@ async function main() {
     const hookErrors = [];
     for (const hook of registry.hooks.filter((h) => h.kind === "message_sent")) {
       try {
-        await hook.handler(payload);
+        await runSidecarHook(hook, payload, messageSentEvent(payload), hookContext(payload));
       } catch (error) {
         hookErrors.push({ pluginId: hook.pluginId, kind: hook.kind, reason: String(error) });
       }
@@ -588,7 +808,7 @@ async function main() {
     const hookErrors = [];
     for (const hook of registry.hooks.filter((h) => h.kind === "message_received" || h.kind === "message:received")) {
       try {
-        await hook.handler(payload);
+        await runSidecarHook(hook, payload, messageReceivedEvent(payload), hookContext(payload));
       } catch (error) {
         hookErrors.push({ pluginId: hook.pluginId, kind: hook.kind, reason: String(error) });
       }
@@ -597,7 +817,7 @@ async function main() {
     return;
   }
 
-  process.stdout.write(JSON.stringify({ ok: false, status: "error", reason: `unknown method: ${method}` }));
+  process.stdout.write(JSON.stringify(unsupportedCapability(method, { reason: `unknown sidecar method: ${method}` })));
 }
 
 await main();
