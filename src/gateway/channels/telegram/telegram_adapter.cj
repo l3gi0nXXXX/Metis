@@ -6699,7 +6699,12 @@ public class TelegramAdapter <: ChannelAdapter {
             inbound.text,
             accepted,
             reason,
-            raw
+            raw,
+            conversationId: inbound.conversationId ?? inbound.peerId,
+            threadId: inbound.threadId ?? "",
+            replyToMessageId: inbound.replyTargetMessageId ?? "",
+            replyInThread: inbound.replyInThread,
+            mediaContext: inbound.mediaContext
         )
     }
 
@@ -6729,7 +6734,10 @@ public class TelegramAdapter <: ChannelAdapter {
             text,
             false,
             reason,
-            raw
+            raw,
+            conversationId: peerId,
+            threadId: threadIdRaw,
+            mediaContext: JsonObject()
         )
     }
 
