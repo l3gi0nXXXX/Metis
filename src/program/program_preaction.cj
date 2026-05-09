@@ -16,12 +16,12 @@ private func tryHandleRootHelpCommand(ctx: CliProgramContext): Option<Int64> {
         return Some(runGatewayCli(["--help"]))
     }
     if (target == "channel" || target == "channels") {
-        return Some(runGatewayCli(["channel", "list"]))
+        return Some(runGatewayCli(["channel", "help"]))
     }
     if (target == "plugin" || target == "plugins") {
-        return Some(runGatewayCli(["plugin", "list"]))
+        return Some(runGatewayCli(["plugin", "help"]))
     }
-    if (target == "sessions" || target == "cron") {
+    if (target == "sessions" || target == "subagents" || target == "cron") {
         return Some(runGatewayCli([target, "help"]))
     }
     Some(cliReturnUnknownHelpTarget(target))

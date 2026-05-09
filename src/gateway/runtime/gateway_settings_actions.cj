@@ -111,24 +111,31 @@ public func gatewayActionsPrintStatus(): Unit {
 }
 
 public func gatewayActionsPrintChannelsHelp(): Unit {
-    PrintUtils.printLine("Built-in channels: ${String.join(builtinGatewayChannelIds(), delimiter: ", ")}")
+    PrintUtils.printLine("Gateway channels")
+    PrintUtils.printLine("Meaning: builtin=shipped with Metis, plugin=installed external channel, enabled=config switch.")
+    PrintUtils.printLine("Built-in:")
+    for (id in builtinGatewayChannelIds()) {
+        PrintUtils.printLine("  - ${id}")
+    }
     let reg = registeredGatewayPluginIds()
     if (reg.size > 0) {
-        PrintUtils.printLine("Registered plugin ids: ${String.join(reg, delimiter: ", ")}")
+        PrintUtils.printLine("Registered plugins:")
+        for (id in reg) {
+            PrintUtils.printLine("  - ${id}")
+        }
     } else {
         PrintUtils.printLine("Registered plugins: (none)")
     }
-    PrintUtils.printLine(
-        "External channels are auto-discovered from ~/.metis/gateway-plugins. Enable them in gateway.gatewayPlugins and store channel config in gateway.channelsExtra.<pluginId>."
-    )
     let installed = gatewayActionsDiscoverInstalledPluginIds()
     if (installed.isEmpty()) {
         PrintUtils.printLine("Installed plugins: (none)")
     } else {
-        PrintUtils.printLine("Installed plugins: ${String.join(installed, delimiter: ", ")}")
+        PrintUtils.printLine("Installed plugins:")
+        for (id in installed) {
+            PrintUtils.printLine("  - ${id}")
+        }
     }
-    PrintUtils.printLine("channel catalog: ${gatewayChannelCatalogJson().toJsonString()}")
-    PrintUtils.printLine("plugin catalog: ${gatewayPluginCatalogJson().toJsonString()}")
+    PrintUtils.printLine("Next: use `gateway discover` for runtime details, `gateway channel enable <id>` or `gateway channel disable <id>` to change built-in channel switches.")
 }
 
 /** 扫描 `~/.metis/gateway-plugins/xx/` 下的兼容 manifest，提取 `id`。 */
@@ -330,7 +337,8 @@ public func gatewayActionsIsBuiltinChannel(id: String): Bool {
 
 public func gatewayActionsSetChannelEnabled(id: String, on: Bool): Bool {
     if (!gatewayActionsIsBuiltinChannel(id)) {
-        PrintUtils.printLine("未知渠道: ${id}。内置: feishu, qq, telegram。")
+        PrintUtils.printLine("未知或不可由此命令修改的渠道: ${id}。")
+        PrintUtils.printLine("可用: feishu, qq。Telegram 请通过 metis.json 的 gateway.telegram 配置或 Control UI 修改。")
         return false
     }
     var g = CliSettingManager.readGatewaySettings()

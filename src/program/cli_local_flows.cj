@@ -48,6 +48,210 @@ private func printJsonObject(obj: JsonObject): Int64 {
     CLI_EXIT_OK
 }
 
+private func localArgsWantJson(args: Array<String>): Bool {
+    for (arg in args) {
+        let low = arg.trimAscii().toAsciiLower()
+        if (low == "--json" || low == "json") {
+            return true
+        }
+    }
+    false
+}
+
+private func localJsonString(obj: JsonObject, key: String): String {
+    match (obj.get(key)) {
+        case Some(value) =>
+            try { value.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func localJsonArraySummary(value: JsonValue): String {
+    let arr = try {
+        value.asArray()
+    } catch (_e: Exception) {
+        return ""
+    }
+    if (arr.size() == 0) {
+        return "(none)"
+    }
+    let items = ArrayList<String>()
+    var allStrings = true
+    for (idx in 0..arr.size()) {
+        try {
+            items.add(arr[idx].asString().getValue())
+        } catch (_e: Exception) {
+            allStrings = false
+        }
+    }
+    if (allStrings) {
+        return String.join(items.toArray(), delimiter: ", ")
+    }
+    return "${arr.size()} item(s)"
+}
+
+private func localJsonScalarSummary(value: JsonValue): String {
+    try {
+        return value.asString().getValue()
+    } catch (_e: Exception) {
+        ()
+    }
+    try {
+        return if (value.asBool().getValue()) { "true" } else { "false" }
+    } catch (_e: Exception) {
+        ()
+    }
+    try {
+        return "${value.asInt().getValue()}"
+    } catch (_e: Exception) {
+        ()
+    }
+    let arrayText = localJsonArraySummary(value)
+    if (!arrayText.isEmpty()) {
+        return arrayText
+    }
+    return "available with --json"
+}
+
+private func localSummaryKnownField(key: String): Bool {
+    key == "kind" ||
+    key == "command" ||
+    key == "subcommand" ||
+    key == "status" ||
+    key == "nextSteps" ||
+    key == "modelConfig" ||
+    key == "modelRuntime" ||
+    key == "runtimeState" ||
+    key == "modelSelection" ||
+    key == "authChoices" ||
+    key == "authChoiceGroups" ||
+    key == "providers" ||
+    key == "pending" ||
+    key == "approvedSenders" ||
+    key == "approved" ||
+    key == "code"
+}
+
+private func localFieldLabel(key: String): String {
+    if (key == "configPath") { return "Config path" }
+    if (key == "logsDir") { return "Logs dir" }
+    if (key == "storeRoot") { return "Store root" }
+    if (key == "accountId") { return "Account" }
+    if (key == "currentModel") { return "Current model" }
+    if (key == "availableProviders") { return "Available providers" }
+    if (key == "rootRemoval") { return "Would remove root" }
+    if (key == "pendingCount") { return "Pending" }
+    if (key == "approvedCount") { return "Approved senders" }
+    if (key == "dispatchMode") { return "Dispatch mode" }
+    if (key == "primaryPath") { return "Primary path" }
+    return key
+}
+
+private func localAppendField(lines: ArrayList<String>, obj: JsonObject, key: String): Unit {
+    match (obj.get(key)) {
+        case Some(value) =>
+            let text = localJsonScalarSummary(value)
+            if (!text.isEmpty()) {
+                lines.add("  ${localFieldLabel(key)}: ${text}")
+            }
+        case None => ()
+    }
+}
+
+public func cliRenderLocalCommandSummary(obj: JsonObject): String {
+    let kind = localJsonString(obj, "kind")
+    let command = if (kind.isEmpty()) { localJsonString(obj, "command") } else { kind }
+    let sub = localJsonString(obj, "subcommand")
+    let mode = localJsonString(obj, "mode")
+    let action = localJsonString(obj, "action")
+    let detail = if (!sub.isEmpty()) {
+        sub
+    } else if (!mode.isEmpty()) {
+        mode
+    } else {
+        action
+    }
+    let title = if (detail.isEmpty()) { "Metis ${command}" } else { "Metis ${command} ${detail}" }
+    let lines = ArrayList<String>()
+    lines.add(title)
+
+    let orderedFields = [
+        "surface", "mode", "action", "field", "key", "value", "provider", "currentModel", "resolved",
+        "workspace", "home", "path", "configPath", "logsDir", "storeRoot", "channel", "accountId",
+        "exists", "enabled", "entrypoint", "profile", "preview", "url", "primaryPath", "query",
+        "target", "source", "dispatchMode", "model", "pendingCount", "approvedCount", "rootRemoval",
+        "availableProviders", "recommended"
+    ]
+    for (key in orderedFields) {
+        localAppendField(lines, obj, key)
+    }
+    for ((key, value) in obj.getFields()) {
+        if (localSummaryKnownField(key)) {
+            continue
+        }
+        var alreadyPrinted = false
+        for (known in orderedFields) {
+            if (known == key) {
+                alreadyPrinted = true
+            }
+        }
+        if (!alreadyPrinted) {
+            let text = localJsonScalarSummary(value)
+            if (!text.isEmpty()) {
+                lines.add("  ${localFieldLabel(key)}: ${text}")
+            }
+        }
+    }
+    if (obj.get("modelConfig").isSome() || obj.get("modelRuntime").isSome() || obj.get("runtimeState").isSome() || obj.get("modelSelection").isSome()) {
+        lines.add("  Model details: available with --json")
+    }
+    if (obj.get("providers").isSome() || obj.get("authChoices").isSome() || obj.get("authChoiceGroups").isSome()) {
+        lines.add("  Catalog details: available with --json")
+    }
+    if (obj.get("pending").isSome() || obj.get("approvedSenders").isSome()) {
+        lines.add("  Pairing details: codes and sender records are hidden by default; use --json for machine output.")
+    }
+    match (obj.get("nextSteps")) {
+        case Some(value) =>
+            let arr = try { value.asArray() } catch (_e: Exception) { JsonArray([]) }
+            if (arr.size() > 0) {
+                lines.add("Next steps:")
+                for (idx in 0..arr.size()) {
+                    try {
+                        lines.add("  - ${arr[idx].asString().getValue()}")
+                    } catch (_e: Exception) {
+                        ()
+                    }
+                }
+            }
+        case None => ()
+    }
+    lines.add("Machine output: rerun with --json.")
+    String.join(lines.toArray(), delimiter: "\n")
+}
+
+private func printLocalCommandHuman(obj: JsonObject): Int64 {
+    for (line in cliRenderLocalCommandSummary(obj).split("\n")) {
+        PrintUtils.printLine(line)
+    }
+    CLI_EXIT_OK
+}
+
+private func localPrintCommandResult(args: Array<String>, obj: JsonObject): Int64 {
+    if (localArgsWantJson(args)) {
+        return printJsonObject(obj)
+    }
+    printLocalCommandHuman(obj)
+}
+
+private func localPrintMutationResult(args: Array<String>, obj: JsonObject, warning: String): Int64 {
+    if (localArgsWantJson(args)) {
+        return printJsonObject(obj)
+    }
+    PrintUtils.printLine("Warning: ${warning}")
+    printLocalCommandHuman(obj)
+}
+
 private func printGatewayRpcFailure(scope: String, method: String, error: String): Int64 {
     PrintUtils.printLine("Gateway ${scope} failed: ${error}")
     PrintUtils.printLine("Start the unified Gateway main runtime with `metis gateway run`, then retry `${method}`.")
@@ -205,6 +409,7 @@ private func printLocalFlowUsage(title: String, subtitle: String, usage: Array<S
     PrintUtils.printLine("")
     PrintUtils.printLine("Supported subcommands: ${subcommands}")
     PrintUtils.printLine("Hint: run metis ${title} help for command details.")
+    PrintUtils.printLine("Machine output: add --json to read-only commands that support structured output.")
     CLI_EXIT_OK
 }
 
@@ -217,6 +422,23 @@ private func resolveCliLocalModel(): String {
         CliConfig.model
     } catch (_ : Exception) {
         "ark:kimi-k2-250905"
+    }
+}
+
+private func cliBuildLocalModelSelectionView(): JsonObject {
+    try {
+        return cliBuildModelSelectionView()
+    } catch (_ : Exception) {
+        let obj = JsonObject()
+        obj.put("current", JsonString(cliCurrentModelRef()))
+        obj.put("runtimeCurrent", JsonString(""))
+        obj.put("fastModel", JsonString(cliFastModelRef()))
+        obj.put("fallbackModels", cliFallbackModelJson())
+        let candidates = ArrayList<JsonValue>()
+        candidates.add(JsonString(cliCurrentModelRef()))
+        obj.put("candidateModels", JsonArray(candidates))
+        obj.put("diagnostic", JsonString("runtime model selection is not configured; using local default summary"))
+        return obj
     }
 }
 
@@ -474,12 +696,20 @@ public func cliRunConfigFlow(args: Array<String>): Int64 {
     }
     if (sub == "show") {
         let path = MetisPaths.configPath()
-        if (exists(path)) {
-            PrintUtils.printLine(readFile(path))
-        } else {
-            PrintUtils.printLine("{}")
+        if (localArgsWantJson(args)) {
+            if (exists(path)) {
+                PrintUtils.printLine(readFile(path))
+            } else {
+                PrintUtils.printLine("{}")
+            }
+            return CLI_EXIT_OK
         }
-        return CLI_EXIT_OK
+        let obj = buildCommandEnvelope("config", "show")
+        obj.put("exists", JsonBool(exists(path)))
+        obj.put("configPath", JsonString(path.toString()))
+        obj.put("workspace", JsonString(CliConfig.cwd.toString()))
+        putNextSteps(obj, ["metis config show --json", "metis config validate"])
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "workspace") {
         PrintUtils.printLine(CliConfig.cwd.toString())
@@ -492,9 +722,9 @@ public func cliRunConfigFlow(args: Array<String>): Int64 {
         obj.put("configPath", JsonString(MetisPaths.configPath().toString()))
         obj.put("modelConfig", cliBuildCurrentModelConfigView())
         obj.put("modelRuntime", cliBuildModelRuntimeStateView())
-        obj.put("modelSelection", cliBuildModelSelectionView())
+        obj.put("modelSelection", cliBuildLocalModelSelectionView())
         putNextSteps(obj, ["metis configure", "metis config show"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "validate") {
         let obj = JsonObject()
@@ -505,9 +735,9 @@ public func cliRunConfigFlow(args: Array<String>): Int64 {
         obj.put("gatewayEnabled", JsonBool(CliSettingManager.readGatewaySettings().enabled))
         obj.put("modelConfig", cliBuildCurrentModelConfigView())
         obj.put("modelRuntime", cliBuildModelRuntimeStateView())
-        obj.put("modelSelection", cliBuildModelSelectionView())
+        obj.put("modelSelection", cliBuildLocalModelSelectionView())
         putNextSteps(obj, ["metis config show", "metis configure"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "get") {
         let key = argAt(args, 1).toAsciiLower()
@@ -520,57 +750,57 @@ public func cliRunConfigFlow(args: Array<String>): Int64 {
         if (key == "model") {
             obj.put("value", JsonString(resolveCliLocalModel()))
             putNextSteps(obj, ["metis models current", "metis config defaults"])
-            return printJsonObject(obj)
+            return localPrintCommandResult(args, obj)
         }
         if (key == "provider") {
             obj.put("value", JsonString(cliCurrentProviderId()))
             putNextSteps(obj, ["metis models providers", "metis models status"])
-            return printJsonObject(obj)
+            return localPrintCommandResult(args, obj)
         }
         if (key == "api-key-config-path") {
             obj.put("value", JsonString(cliCurrentApiKeyConfigPath()))
             putNextSteps(obj, ["metis models status", "metis configure"])
-            return printJsonObject(obj)
+            return localPrintCommandResult(args, obj)
         }
         if (key == "base-url-config-path") {
             obj.put("value", JsonString(cliCurrentBaseUrlConfigPath()))
             putNextSteps(obj, ["metis models status", "metis configure"])
-            return printJsonObject(obj)
+            return localPrintCommandResult(args, obj)
         }
         if (key == "base-url") {
             obj.put("value", JsonString(cliCurrentBaseUrl()))
             putNextSteps(obj, ["metis models status", "metis configure"])
-            return printJsonObject(obj)
+            return localPrintCommandResult(args, obj)
         }
         if (key == "fast-model") {
             obj.put("value", JsonString(cliFastModelRef()))
             putNextSteps(obj, ["metis models status", "metis config defaults"])
-            return printJsonObject(obj)
+            return localPrintCommandResult(args, obj)
         }
         if (key == "fallback-models") {
             obj.put("value", cliFallbackModelJson())
             putNextSteps(obj, ["metis models status", "metis config defaults"])
-            return printJsonObject(obj)
+            return localPrintCommandResult(args, obj)
         }
         if (key == "input-limit") {
             obj.put("value", CliConfig.defaultModelInputLimit.toJsonValue())
             putNextSteps(obj, ["metis config defaults", "metis models status"])
-            return printJsonObject(obj)
+            return localPrintCommandResult(args, obj)
         }
         if (key == "output-limit") {
             obj.put("value", CliConfig.defaultModelOutputLimit.toJsonValue())
             putNextSteps(obj, ["metis config defaults", "metis models status"])
-            return printJsonObject(obj)
+            return localPrintCommandResult(args, obj)
         }
         if (key == "workspace") {
             obj.put("value", JsonString(CliConfig.cwd.toString()))
             putNextSteps(obj, ["metis system paths", "metis config path"])
-            return printJsonObject(obj)
+            return localPrintCommandResult(args, obj)
         }
         if (key == "config-path" || key == "config") {
             obj.put("value", JsonString(MetisPaths.configPath().toString()))
             putNextSteps(obj, ["metis config show", "metis config validate"])
-            return printJsonObject(obj)
+            return localPrintCommandResult(args, obj)
         }
         return printUnknownLocalSubcommand("config", "get", "<model|provider|api-key-env|base-url-env|base-url|fast-model|fallback-models|input-limit|output-limit|workspace|config-path> | help")
     }
@@ -592,9 +822,9 @@ public func cliRunConfigFlow(args: Array<String>): Int64 {
             obj.put("value", JsonString(next))
             obj.put("modelConfig", cliBuildCurrentModelConfigView())
             obj.put("modelRuntime", cliBuildModelRuntimeStateView())
-            obj.put("modelSelection", cliBuildModelSelectionView())
+            obj.put("modelSelection", cliBuildLocalModelSelectionView())
             putNextSteps(obj, ["metis models status", "metis config defaults"])
-            return printJsonObject(obj)
+            return localPrintMutationResult(args, obj, "this updates local model configuration.")
         }
         if (field == "provider") {
             let provider = argAt(args, 2)
@@ -608,9 +838,9 @@ public func cliRunConfigFlow(args: Array<String>): Int64 {
                     obj.put("value", JsonString(next))
                     obj.put("modelConfig", cliBuildCurrentModelConfigView())
                     obj.put("modelRuntime", cliBuildModelRuntimeStateView())
-                    obj.put("modelSelection", cliBuildModelSelectionView())
+                    obj.put("modelSelection", cliBuildLocalModelSelectionView())
                     putNextSteps(obj, ["metis models providers", "metis models status"])
-                    return printJsonObject(obj)
+                    return localPrintMutationResult(args, obj, "this updates local model configuration.")
                 case None =>
                     return cliReturnInvalidArgument("config", "set", provider, "known provider id")
             }
@@ -628,9 +858,9 @@ public func cliRunConfigFlow(args: Array<String>): Int64 {
             }
             obj.put("value", cliFallbackModelJson())
             obj.put("applied", JsonArray(applied))
-            obj.put("modelSelection", cliBuildModelSelectionView())
+            obj.put("modelSelection", cliBuildLocalModelSelectionView())
             putNextSteps(obj, ["metis models status", "metis config defaults"])
-            return printJsonObject(obj)
+            return localPrintMutationResult(args, obj, "this updates local model fallback configuration.")
         }
         if (field == "workspace") {
             let value = joinArgs(args, start: 2)
@@ -640,7 +870,7 @@ public func cliRunConfigFlow(args: Array<String>): Int64 {
             let next = MetisConfigManager.setWorkspace(value)
             obj.put("value", JsonString(next))
             putNextSteps(obj, ["metis config path", "metis system paths"])
-            return printJsonObject(obj)
+            return localPrintMutationResult(args, obj, "this updates the default workspace in local configuration.")
         }
         if (field == "api-key") {
             let provider = argAt(args, 2)
@@ -653,7 +883,7 @@ public func cliRunConfigFlow(args: Array<String>): Int64 {
             obj.put("value", JsonString(applied))
             obj.put("modelConfig", cliBuildCurrentModelConfigView())
             putNextSteps(obj, ["metis models providers", "metis models status"])
-            return printJsonObject(obj)
+            return localPrintMutationResult(args, obj, "this stores provider credentials in local configuration.")
         }
         if (field == "base-url") {
             let provider = argAt(args, 2)
@@ -670,7 +900,7 @@ public func cliRunConfigFlow(args: Array<String>): Int64 {
             obj.put("value", JsonString(applied))
             obj.put("modelConfig", cliBuildCurrentModelConfigView())
             putNextSteps(obj, ["metis models providers", "metis models status"])
-            return printJsonObject(obj)
+            return localPrintMutationResult(args, obj, "this updates provider endpoint configuration.")
         }
         return printUnknownLocalSubcommand("config", "set", "<model|provider|fallback-models|workspace|api-key|base-url>")
     }
@@ -700,7 +930,7 @@ public func cliRunBackupFlow(args: Array<String>): Int64 {
         scope.add(JsonString("workspace"))
         obj.put("scope", JsonArray(scope))
         putNextSteps(obj, ["metis backup preview", "metis backup path"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "preview") {
         let obj = JsonObject()
@@ -708,7 +938,7 @@ public func cliRunBackupFlow(args: Array<String>): Int64 {
         obj.put("mode", JsonString("preview"))
         obj.put("path", JsonString(CliConfig.dotDir.toString()))
         putNextSteps(obj, ["metis backup state", "metis config path"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("backup", sub, "state | path | preview | help")
 }
@@ -731,7 +961,7 @@ public func cliRunResetFlow(args: Array<String>): Int64 {
         targets.add(JsonString("conversation-history"))
         obj.put("targets", JsonArray(targets))
         putNextSteps(obj, ["metis reset targets", "metis backup state"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "targets") {
         let obj = JsonObject()
@@ -742,7 +972,7 @@ public func cliRunResetFlow(args: Array<String>): Int64 {
         obj.put("kind", JsonString("reset"))
         obj.put("targets", JsonArray(targets))
         putNextSteps(obj, ["metis reset preview", "metis backup state"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("reset", sub, "state | preview | targets | help")
 }
@@ -765,7 +995,7 @@ public func cliRunUninstallFlow(args: Array<String>): Int64 {
         let obj = buildPathSummary("uninstall")
         obj.put("rootRemoval", JsonBool(true))
         putNextSteps(obj, ["metis uninstall path", "metis backup preview"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("uninstall", sub, "preview | state | path | help")
 }
@@ -806,7 +1036,7 @@ public func cliRunMessageFlow(args: Array<String>): Int64 {
         obj.put("dispatchMode", JsonString("local-preview"))
         obj.put("model", JsonString(resolveCliLocalModel()))
         putNextSteps(obj, ["metis agent --message \"$(cat ${path})\"", "metis --prompt-file ${path}"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     let payload = if (sub == "preview" || sub == "json") { joinArgs(args, start: 1) } else { joinArgs(args) }
     if ((sub == "preview" || sub == "json") && payload.isEmpty()) {
@@ -819,7 +1049,7 @@ public func cliRunMessageFlow(args: Array<String>): Int64 {
         obj.put("dispatchMode", JsonString("local-preview"))
         obj.put("model", JsonString(resolveCliLocalModel()))
         putNextSteps(obj, ["metis agent --message \"${payload}\"", "metis tasks current"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("message", sub, "preview <text...> | json <text...> | file <path> | help")
 }
@@ -1547,7 +1777,7 @@ public func cliRunTasksFlow(args: Array<String>): Int64 {
         obj.put("kind", JsonString("tasks"))
         obj.put("entries", JsonArray(entries))
         putNextSteps(obj, ["metis tasks show", "metis tasks current"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "show") {
         let obj = JsonObject()
@@ -1556,7 +1786,7 @@ public func cliRunTasksFlow(args: Array<String>): Int64 {
         obj.put("cronFlow", JsonString("gateway cron list"))
         obj.put("messageFlow", JsonString("message <text...>"))
         putNextSteps(obj, ["metis tasks current", "metis message preview hello"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "current") {
         let obj = JsonObject()
@@ -1564,7 +1794,7 @@ public func cliRunTasksFlow(args: Array<String>): Int64 {
         obj.put("current", JsonString("agent --message"))
         obj.put("next", JsonString("gateway cron list"))
         putNextSteps(obj, ["metis agent --message \"Summarize this repo\"", "metis gateway cron list"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "next") {
         let obj = JsonObject()
@@ -1573,7 +1803,7 @@ public func cliRunTasksFlow(args: Array<String>): Int64 {
         obj.put("recommended", JsonString("gateway cron list"))
         obj.put("messageFallback", JsonString("message <text...>"))
         putNextSteps(obj, ["metis gateway cron list", "metis message preview hello"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("tasks", sub, "list | show | current | next | help")
 }
@@ -1594,7 +1824,7 @@ public func cliRunModelsFlow(args: Array<String>): Int64 {
         let obj = buildCommandEnvelope("models", "list")
         obj.put("currentModel", JsonString(resolveCliLocalModel()))
         putNextSteps(obj, ["metis models current", "metis models providers"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "current") {
         PrintUtils.printLine(cliCurrentModelRef())
@@ -1605,14 +1835,14 @@ public func cliRunModelsFlow(args: Array<String>): Int64 {
         obj.put("providers", cliBuildProviderCatalog())
         obj.put("authChoiceGroups", cliBuildModelAuthChoiceGroups())
         putNextSteps(obj, ["metis models current", "metis config defaults"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "auth") {
         let obj = buildCommandEnvelope("models", "auth")
         obj.put("groups", cliBuildModelAuthChoiceGroups())
         obj.put("authChoices", cliBuildModelAuthChoiceCatalog())
         putNextSteps(obj, ["metis models providers", "metis configure"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "resolve") {
         let model = if (argAt(args, 1).isEmpty()) { cliCurrentModelRef() } else { argAt(args, 1) }
@@ -1622,7 +1852,7 @@ public func cliRunModelsFlow(args: Array<String>): Int64 {
         obj.put("resolved", JsonString(resolved))
         obj.put("provider", JsonString(provider))
         putNextSteps(obj, ["metis models providers", "metis config defaults"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "set") {
         let model = argAt(args, 1)
@@ -1635,9 +1865,9 @@ public func cliRunModelsFlow(args: Array<String>): Int64 {
         obj.put("provider", JsonString(cliCurrentProviderId()))
         obj.put("modelConfig", cliBuildCurrentModelConfigView())
         obj.put("runtimeState", cliBuildModelRuntimeStateView())
-        obj.put("modelSelection", cliBuildModelSelectionView())
+        obj.put("modelSelection", cliBuildLocalModelSelectionView())
         putNextSteps(obj, ["metis models status", "metis config defaults"])
-        return printJsonObject(obj)
+        return localPrintMutationResult(args, obj, "this updates local model configuration.")
     }
     if (sub == "status") {
         let obj = buildCommandEnvelope("models", "status")
@@ -1650,10 +1880,10 @@ public func cliRunModelsFlow(args: Array<String>): Int64 {
         obj.put("availableProviders", JsonString(String.join(providerIds.toArray(), delimiter: ", ")))
         obj.put("modelConfig", cliBuildCurrentModelConfigView())
         obj.put("runtimeState", cliBuildModelRuntimeStateView())
-        obj.put("modelSelection", cliBuildModelSelectionView())
+        obj.put("modelSelection", cliBuildLocalModelSelectionView())
         obj.put("authChoices", cliBuildModelAuthChoiceCatalog())
         putNextSteps(obj, ["metis models current", "metis models providers"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "search") {
         let query = joinArgs(args, start: 1)
@@ -1667,7 +1897,7 @@ public func cliRunModelsFlow(args: Array<String>): Int64 {
         matches.add(JsonString("openai:gpt-5.4"))
         obj.put("matches", JsonArray(matches))
         putNextSteps(obj, ["metis models resolve ${query}", "metis models providers"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("models", sub, "list | current | providers | auth | resolve <model> | set <model> | status | search <term> | help")
 }
@@ -1696,7 +1926,7 @@ public func cliRunLogsFlow(args: Array<String>): Int64 {
         entries.add(JsonString("gateway.log"))
         obj.put("entries", JsonArray(entries))
         putNextSteps(obj, ["metis logs path", "metis system paths"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "tail" || sub == "show") {
         let obj = buildCommandEnvelope("logs", sub)
@@ -1704,7 +1934,7 @@ public func cliRunLogsFlow(args: Array<String>): Int64 {
         obj.put("target", JsonString(if (argAt(args, 1).isEmpty()) { "cli.log" } else { argAt(args, 1) }))
         obj.put("preview", JsonString("log output is truncated in local flow mode"))
         putNextSteps(obj, ["metis logs recent", "metis logs path"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("logs", sub, "path | recent | current | tail [file] | show [file] | help")
 }
@@ -1724,7 +1954,7 @@ public func cliRunDocsFlow(args: Array<String>): Int64 {
         let obj = buildCommandEnvelope("docs", "open")
         obj.put("url", JsonString("https://docs.metis.ai/cli"))
         putNextSteps(obj, ["metis docs help", "metis acp status"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "topics") {
         let obj = buildCommandEnvelope("docs", "topics")
@@ -1735,7 +1965,7 @@ public func cliRunDocsFlow(args: Array<String>): Int64 {
         topics.add(JsonString("agents"))
         obj.put("topics", JsonArray(topics))
         putNextSteps(obj, ["metis docs open", "metis docs search gateway"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "search") {
         let term = joinArgs(args, start: 1)
@@ -1746,14 +1976,14 @@ public func cliRunDocsFlow(args: Array<String>): Int64 {
         obj.put("query", JsonString(term))
         obj.put("url", JsonString("https://docs.metis.ai/cli"))
         putNextSteps(obj, ["metis docs topics", "metis docs open"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "index" || sub == "path") {
         let obj = buildCommandEnvelope("docs", sub)
         obj.put("url", JsonString("https://docs.metis.ai/cli"))
         obj.put("primaryPath", JsonString("/cli"))
         putNextSteps(obj, ["metis docs open", "metis docs topics"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("docs", sub, "open | topics | search <term> | index | path | help")
 }
@@ -1776,7 +2006,7 @@ public func cliRunSystemFlow(args: Array<String>): Int64 {
         obj.put("subcommand", JsonString("info"))
         obj.put("version", JsonString(CliConfig.version))
         putNextSteps(obj, ["metis system paths", "metis logs path"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "paths") {
         let obj = buildCommandEnvelope("system", "paths")
@@ -1784,14 +2014,14 @@ public func cliRunSystemFlow(args: Array<String>): Int64 {
         obj.put("logsDir", JsonString(CliConfig.logsDir.toString()))
         obj.put("configPath", JsonString(MetisPaths.configPath().toString()))
         putNextSteps(obj, ["metis system info", "metis config path"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "env") {
         let obj = buildCommandEnvelope("system", "env")
         obj.put("METIS_HOME", JsonString(CliConfig.dotDir.toString()))
         obj.put("METIS_CJPM_ROOT", JsonString(CliConfig.cwd.toString()))
         putNextSteps(obj, ["metis system paths", "metis docs open"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "status" || sub == "doctor") {
         let obj = buildCommandEnvelope("system", sub)
@@ -1799,7 +2029,7 @@ public func cliRunSystemFlow(args: Array<String>): Int64 {
         obj.put("configPath", JsonString(MetisPaths.configPath().toString()))
         obj.put("logsDir", JsonString(CliConfig.logsDir.toString()))
         putNextSteps(obj, ["metis system info", "metis doctor"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("system", sub, "info | paths | env | status | doctor | help")
 }
@@ -1824,7 +2054,7 @@ public func cliRunApprovalsFlow(args: Array<String>): Int64 {
         obj.put("kind", JsonString("approvals"))
         obj.put("entries", JsonArray(entries))
         putNextSteps(obj, ["metis approvals status", "metis gateway call plugins.approvals"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "status") {
         let obj = JsonObject()
@@ -1832,7 +2062,7 @@ public func cliRunApprovalsFlow(args: Array<String>): Int64 {
         obj.put("surface", JsonString("gateway"))
         obj.put("recommended", JsonString("metis gateway call plugins.approvals"))
         putNextSteps(obj, ["metis approvals list", "metis gateway call devices.policy.audit"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "current" || sub == "open") {
         let obj = buildCommandEnvelope("approvals", sub)
@@ -1840,14 +2070,14 @@ public func cliRunApprovalsFlow(args: Array<String>): Int64 {
         obj.put("mode", JsonString(sub))
         obj.put("recommended", JsonString("metis gateway call plugins.approvals"))
         putNextSteps(obj, ["metis approvals status", "metis gateway call plugins.approvals"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "policy" || sub == "json") {
         let obj = buildCommandEnvelope("approvals", sub)
         obj.put("surface", JsonString("gateway"))
         obj.put("recommended", JsonString("metis gateway call devices.policy.audit"))
         putNextSteps(obj, ["metis approvals current", "metis gateway call devices.policy.audit"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("approvals", sub, "list | status | current | open | policy | json | help")
 }
@@ -1870,7 +2100,7 @@ public func cliRunSandboxFlow(args: Array<String>): Int64 {
         obj.put("enabled", JsonBool(false))
         obj.put("entrypoint", JsonString("metis --sandbox --prompt \"...\""))
         putNextSteps(obj, ["metis --sandbox --prompt \"Summarize this repo\"", "metis sandbox help"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "rules") {
         let obj = JsonObject()
@@ -1881,20 +2111,20 @@ public func cliRunSandboxFlow(args: Array<String>): Int64 {
         rules.add(JsonString("explicit-approval-for-escalation"))
         obj.put("rules", JsonArray(rules))
         putNextSteps(obj, ["metis sandbox status", "metis --sandbox --prompt \"Summarize this repo\""])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "entry") {
         let obj = buildCommandEnvelope("sandbox", "entry")
         obj.put("entrypoint", JsonString("metis --sandbox --prompt \"...\""))
         putNextSteps(obj, ["metis sandbox rules", "metis sandbox status"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "check" || sub == "profile") {
         let obj = buildCommandEnvelope("sandbox", sub)
         obj.put("enabled", JsonBool(false))
         obj.put("profile", JsonString("workspace-write"))
         putNextSteps(obj, ["metis sandbox rules", "metis sandbox status"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("sandbox", sub, "status | mode | rules | entry | check | profile | help")
 }
@@ -1917,7 +2147,7 @@ public func cliRunNodeFlow(args: Array<String>): Int64 {
         obj.put("surface", JsonString("gateway"))
         obj.put("recommended", JsonString("metis gateway call nodes.policy"))
         putNextSteps(obj, ["metis nodes list", "metis gateway call nodes.policy.audit"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "policy" || sub == "audit") {
         let obj = buildCommandEnvelope("node", sub)
@@ -1925,14 +2155,14 @@ public func cliRunNodeFlow(args: Array<String>): Int64 {
         obj.put("mode", JsonString(sub))
         obj.put("recommended", JsonString("metis gateway call nodes.policy${if (sub == "audit") { ".audit" } else { "" }}"))
         putNextSteps(obj, ["metis node show", "metis nodes list"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "status" || sub == "history") {
         let obj = buildCommandEnvelope("node", sub)
         obj.put("surface", JsonString("gateway"))
         obj.put("recommended", JsonString("metis node current"))
         putNextSteps(obj, ["metis node current", "metis nodes list"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("node", sub, "show | current | policy | audit | status | history | help")
 }
@@ -1954,7 +2184,7 @@ public func cliRunQaFlow(args: Array<String>): Int64 {
         obj.put("surface", JsonString("local"))
         obj.put("recommended", JsonString("bash scripts/cli-contract-regression.sh"))
         putNextSteps(obj, ["bash scripts/cli-contract-regression.sh", "bash scripts/cli-regression.sh"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "run" || sub == "scripts") {
         let obj = buildCommandEnvelope("qa", sub)
@@ -1964,14 +2194,14 @@ public func cliRunQaFlow(args: Array<String>): Int64 {
         obj.put("scripts", JsonArray(scripts))
         obj.put("mode", JsonString(sub))
         putNextSteps(obj, ["bash scripts/cli-contract-regression.sh", "bash scripts/cli-regression.sh"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "report" || sub == "history") {
         let obj = buildCommandEnvelope("qa", sub)
         obj.put("surface", JsonString("local"))
         obj.put("recommended", JsonString("bash scripts/cli-contract-regression.sh"))
         putNextSteps(obj, ["metis qa run", "bash scripts/cli-regression.sh"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("qa", sub, "status | list | run | scripts | report | history | help")
 }
@@ -1994,7 +2224,7 @@ public func cliRunHooksFlow(args: Array<String>): Int64 {
         obj.put("surface", JsonString("local"))
         obj.put("recommended", JsonString("metis interactive"))
         putNextSteps(obj, ["metis interactive", "metis help hooks"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "current" || sub == "runbook") {
         let obj = buildCommandEnvelope("hooks", sub)
@@ -2002,14 +2232,14 @@ public func cliRunHooksFlow(args: Array<String>): Int64 {
         obj.put("mode", JsonString(sub))
         obj.put("recommended", JsonString("metis interactive"))
         putNextSteps(obj, ["metis hooks status", "metis interactive"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "validate" || sub == "open") {
         let obj = buildCommandEnvelope("hooks", sub)
         obj.put("surface", JsonString("local"))
         obj.put("recommended", JsonString("metis hooks runbook"))
         putNextSteps(obj, ["metis hooks current", "metis hooks runbook"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("hooks", sub, "list | status | current | runbook | validate | open | help")
 }
@@ -2032,21 +2262,21 @@ public func cliRunWebhooksFlow(args: Array<String>): Int64 {
         obj.put("surface", JsonString("gateway"))
         obj.put("recommended", JsonString("metis gateway health"))
         putNextSteps(obj, ["metis gateway health", "metis gateway discover"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "deliveries" || sub == "endpoints") {
         let obj = buildCommandEnvelope("webhooks", sub)
         obj.put("surface", JsonString("gateway"))
         obj.put("mode", JsonString(sub))
         putNextSteps(obj, ["metis webhooks status", "metis gateway discover"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "current" || sub == "replay") {
         let obj = buildCommandEnvelope("webhooks", sub)
         obj.put("surface", JsonString("gateway"))
         obj.put("recommended", JsonString("metis webhooks deliveries"))
         putNextSteps(obj, ["metis webhooks deliveries", "metis webhooks endpoints"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("webhooks", sub, "list | status | deliveries | endpoints | current | replay | help")
 }
@@ -2068,7 +2298,7 @@ public func cliRunQrFlow(args: Array<String>): Int64 {
         obj.put("surface", JsonString("local"))
         obj.put("recommended", JsonString("metis pairing status"))
         putNextSteps(obj, ["metis pairing status", "metis qr help"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "open" || sub == "payload") {
         let obj = buildCommandEnvelope("qr", sub)
@@ -2076,14 +2306,14 @@ public func cliRunQrFlow(args: Array<String>): Int64 {
         obj.put("mode", JsonString(sub))
         obj.put("recommended", JsonString("metis pairing status"))
         putNextSteps(obj, ["metis qr show", "metis pairing status"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "copy" || sub == "link") {
         let obj = buildCommandEnvelope("qr", sub)
         obj.put("surface", JsonString("local"))
         obj.put("recommended", JsonString("metis qr payload"))
         putNextSteps(obj, ["metis qr payload", "metis pairing open"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("qr", sub, "show | status | open | payload | copy | link | help")
 }
@@ -2125,14 +2355,14 @@ public func cliRunPairingFlow(args: Array<String>): Int64 {
             obj.put("approvedCount", Int64(approved.size()).toJsonValue())
             obj.put("recommended", JsonString("metis pairing approve telegram <CODE>"))
             putNextSteps(obj, ["metis pairing approve telegram <CODE>", "send Telegram DM again after approval"])
-            return printJsonObject(obj)
+            return localPrintCommandResult(args, obj)
         }
         let obj = JsonObject()
         obj.put("kind", JsonString("pairing"))
         obj.put("surface", JsonString("local"))
         obj.put("recommended", JsonString("metis qr show"))
         putNextSteps(obj, ["metis qr show", "metis pairing help"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "approve") {
         let channel = argAt(args, 1).trimAscii().toAsciiLower()
@@ -2159,7 +2389,7 @@ public func cliRunPairingFlow(args: Array<String>): Int64 {
         obj.put("approved", approved.toJsonValue())
         obj.put("recommended", JsonString("send Telegram DM again"))
         putNextSteps(obj, ["send Telegram DM again", "metis pairing list telegram"])
-        return printJsonObject(obj)
+        return localPrintMutationResult(args, obj, "this approves a pending Telegram sender in local pairing state.")
     }
     if (sub == "current" || sub == "open") {
         let obj = buildCommandEnvelope("pairing", sub)
@@ -2167,14 +2397,14 @@ public func cliRunPairingFlow(args: Array<String>): Int64 {
         obj.put("mode", JsonString(sub))
         obj.put("recommended", JsonString("metis qr show"))
         putNextSteps(obj, ["metis pairing status", "metis qr show"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "code" || sub == "sessions") {
         let obj = buildCommandEnvelope("pairing", sub)
         obj.put("surface", JsonString("local"))
         obj.put("recommended", JsonString("metis qr open"))
         putNextSteps(obj, ["metis pairing current", "metis qr open"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("pairing", sub, "status | list | approve | current | open | code | sessions | help")
 }
@@ -2197,21 +2427,21 @@ public func cliRunDaemonFlow(args: Array<String>): Int64 {
         obj.put("surface", JsonString("local"))
         obj.put("recommended", JsonString("metis gateway status"))
         putNextSteps(obj, ["metis gateway status", "metis daemon help"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "logs" || sub == "pid") {
         let obj = buildCommandEnvelope("daemon", sub)
         obj.put("surface", JsonString("local"))
         obj.put("mode", JsonString(sub))
         putNextSteps(obj, ["metis daemon status", "metis gateway status"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "socket" || sub == "restart") {
         let obj = buildCommandEnvelope("daemon", sub)
         obj.put("surface", JsonString("local"))
         obj.put("recommended", JsonString("metis gateway restart"))
         putNextSteps(obj, ["metis daemon status", "metis gateway restart"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("daemon", sub, "status | info | logs | pid | socket | restart | help")
 }
@@ -2234,7 +2464,7 @@ public func cliRunAcpFlow(args: Array<String>): Int64 {
         obj.put("surface", JsonString("local"))
         obj.put("recommended", JsonString("metis docs open"))
         putNextSteps(obj, ["metis docs open", "metis acp help"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "current" || sub == "docs") {
         let obj = buildCommandEnvelope("acp", sub)
@@ -2242,14 +2472,14 @@ public func cliRunAcpFlow(args: Array<String>): Int64 {
         obj.put("mode", JsonString(sub))
         obj.put("recommended", JsonString("metis docs open"))
         putNextSteps(obj, ["metis acp status", "metis docs open"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "mode" || sub == "runtime") {
         let obj = buildCommandEnvelope("acp", sub)
         obj.put("surface", JsonString("local"))
         obj.put("recommended", JsonString("metis acp current"))
         putNextSteps(obj, ["metis acp current", "metis docs open"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("acp", sub, "status | list | current | docs | mode | runtime | help")
 }
@@ -2271,7 +2501,7 @@ public func cliRunNodesFlow(args: Array<String>): Int64 {
         obj.put("surface", JsonString("gateway"))
         obj.put("recommended", JsonString("metis gateway call nodes.policy.audit"))
         putNextSteps(obj, ["metis node show", "metis gateway call nodes.policy.audit"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "policy" || sub == "audit") {
         let obj = buildCommandEnvelope("nodes", sub)
@@ -2279,14 +2509,14 @@ public func cliRunNodesFlow(args: Array<String>): Int64 {
         obj.put("mode", JsonString(sub))
         obj.put("recommended", JsonString("metis gateway call nodes.policy${if (sub == "audit") { ".audit" } else { "" }}"))
         putNextSteps(obj, ["metis nodes list", "metis node show"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "status" || sub == "current") {
         let obj = buildCommandEnvelope("nodes", sub)
         obj.put("surface", JsonString("gateway"))
         obj.put("recommended", JsonString("metis nodes policy"))
         putNextSteps(obj, ["metis nodes policy", "metis node current"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("nodes", sub, "list | policy | audit | status | current | help")
 }
@@ -2308,7 +2538,7 @@ public func cliRunDevicesFlow(args: Array<String>): Int64 {
         obj.put("surface", JsonString("gateway"))
         obj.put("recommended", JsonString("metis gateway call devices.policy.audit"))
         putNextSteps(obj, ["metis approvals status", "metis gateway call devices.policy.audit"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "policy" || sub == "audit") {
         let obj = buildCommandEnvelope("devices", sub)
@@ -2316,14 +2546,14 @@ public func cliRunDevicesFlow(args: Array<String>): Int64 {
         obj.put("mode", JsonString(sub))
         obj.put("recommended", JsonString("metis gateway call devices.policy${if (sub == "audit") { ".audit" } else { "" }}"))
         putNextSteps(obj, ["metis devices list", "metis approvals status"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     if (sub == "status" || sub == "current") {
         let obj = buildCommandEnvelope("devices", sub)
         obj.put("surface", JsonString("gateway"))
         obj.put("recommended", JsonString("metis devices policy"))
         putNextSteps(obj, ["metis devices policy", "metis approvals status"])
-        return printJsonObject(obj)
+        return localPrintCommandResult(args, obj)
     }
     printUnknownLocalSubcommand("devices", sub, "list | policy | audit | status | current | help")
 }

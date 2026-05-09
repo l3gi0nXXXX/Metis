@@ -5,7 +5,7 @@ import metis.gateway.core.setGatewayOpenClawCompatHostLifecycleHooks
 import metis.gateway.openclaw_channel.registerOpenClawCapturedChannelPlugins
 import metis.gateway.openclaw_channel_http.OpenClawBridgeRunner
 import metis.gateway.openclaw_http.registerOpenClawCapturedHttpRoutes
-import metis.gateway.openclaw_runtime.{OpenClawCompatHostManager, OpenClawCompatRegistrySyncSummary, openClawCompatHostConfigFromGatewaySettings}
+import metis.gateway.openclaw_runtime.{OpenClawCompatHostManager, OpenClawCompatHostProcessRunner, OpenClawCompatRegistrySyncSummary, openClawCompatHostConfigFromGatewaySettings}
 
 import stdx.encoding.json.{JsonObject, JsonString}
 
@@ -55,6 +55,16 @@ public func gatewayInstallOpenClawCompatHostLifecycleHooks(): Unit {
 
 public func gatewayOpenClawCompatHostStart(user: GatewayUserSettings): JsonObject {
     let manager = OpenClawCompatHostManager(openClawCompatHostConfigFromGatewaySettings(user))
+    gatewayOpenClawCompatHostManager = Some(manager)
+    let status = manager.start()
+    if (status.ok && status.state == "running") {
+        gatewayOpenClawCompatHostSyncGatewayRegistries(manager)
+    }
+    manager.snapshotJson()
+}
+
+public func gatewayOpenClawCompatHostStartWithRunnerForTest(user: GatewayUserSettings, runner: OpenClawCompatHostProcessRunner): JsonObject {
+    let manager = OpenClawCompatHostManager(openClawCompatHostConfigFromGatewaySettings(user), runner: runner)
     gatewayOpenClawCompatHostManager = Some(manager)
     let status = manager.start()
     if (status.ok && status.state == "running") {

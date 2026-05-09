@@ -15,6 +15,7 @@ import metis.gateway.core.{
 import metis.io.PrintUtils
 
 import std.collection.ArrayList
+import std.convert.Parsable
 import std.fs.{Path, exists, Directory}
 
 /**
@@ -28,13 +29,17 @@ public func runGatewaySessionsCli(sub: Array<String>): Int64 {
         PrintUtils.printLine("Inspect persisted gateway sessions.")
         PrintUtils.printLine("")
         PrintUtils.printLine("Usage:")
-        PrintUtils.printLine("  gateway sessions <path|list|show|clear> [...]")
+        PrintUtils.printLine("  gateway sessions <path|list|show|export|clear|delete|remove> [...]")
         PrintUtils.printLine("")
         PrintUtils.printLine("Commands:")
         PrintUtils.printLine("  gateway sessions path          Print the sessions directory path")
         PrintUtils.printLine("  gateway sessions list          List persisted session keys")
-        PrintUtils.printLine("  gateway sessions show <key>    Print one persisted session transcript")
+        PrintUtils.printLine("  gateway sessions show <key> [--limit <n>]")
+        PrintUtils.printLine("                                      Preview one persisted session transcript")
+        PrintUtils.printLine("  gateway sessions export <key>  Print the full raw JSONL transcript")
         PrintUtils.printLine("  gateway sessions clear <key>   Delete one persisted session transcript")
+        PrintUtils.printLine("  gateway sessions delete <key>  Alias for clear")
+        PrintUtils.printLine("  gateway sessions remove <key>  Alias for clear")
         return 0
     }
 
@@ -53,7 +58,31 @@ public func runGatewaySessionsCli(sub: Array<String>): Int64 {
     }
     if (sc == "show") {
         if (sub.size < 3) {
-            PrintUtils.printLine("Usage: gateway sessions show <sessionKey-or-fileStem>")
+            PrintUtils.printLine("Usage: gateway sessions show <sessionKey-or-fileStem> [--limit <n>]")
+            return 1
+        }
+        let parsed = parseGatewaySessionsShowArgs(sub, 2)
+        let arg = parsed[0]
+        let limit = parseGatewaySessionsShowLimit(parsed[1])
+        if (arg.isEmpty()) {
+            PrintUtils.printLine("Usage: gateway sessions show <sessionKey-or-fileStem> [--limit <n>]")
+            return 1
+        }
+        let sessionStore = gatewaySessionStoreForSessionKey(user, arg)
+        match (sessionStore.readTranscriptRaw(arg)) {
+            case Some(raw) =>
+                for (line in gatewaySessionsShowLinesForRaw(arg, raw, limit)) {
+                    PrintUtils.printLine(line)
+                }
+            case None =>
+                PrintUtils.printLine("Session not found: ${arg}")
+                return 1
+        }
+        return 0
+    }
+    if (sc == "export") {
+        if (sub.size < 3) {
+            PrintUtils.printLine("Usage: gateway sessions export <sessionKey-or-fileStem>")
             return 1
         }
         let arg = joinGatewayCliArgsFrom(sub, 2)
@@ -84,6 +113,79 @@ public func runGatewaySessionsCli(sub: Array<String>): Int64 {
     PrintUtils.printLine("Unknown gateway sessions subcommand: ${sub[1]}")
     PrintUtils.printLine("Try: gateway sessions help")
     1
+}
+
+private let DEFAULT_GATEWAY_SESSIONS_SHOW_LIMIT: Int64 = 80
+
+func gatewaySessionsShowLinesForUser(user: GatewayUserSettings, key: String, limit: Int64): Array<String> {
+    let sessionStore = gatewaySessionStoreForSessionKey(user, key)
+    match (sessionStore.readTranscriptRaw(key)) {
+        case Some(raw) => gatewaySessionsShowLinesForRaw(key, raw, limit)
+        case None =>
+            let lines = ArrayList<String>()
+            lines.add("Session not found: ${key}")
+            lines.toArray()
+    }
+}
+
+private func gatewaySessionsShowLinesForRaw(key: String, raw: String, limit: Int64): Array<String> {
+    let lines = ArrayList<String>()
+    let transcriptLines = gatewaySessionsTranscriptLines(raw)
+    let cappedLimit = max(1, limit)
+    let shown = min(cappedLimit, transcriptLines.size)
+    lines.add("Transcript preview: ${key}")
+    lines.add("Showing ${shown} of ${transcriptLines.size} JSONL line(s). Use `gateway sessions export ${key}` for the full raw transcript.")
+    var i: Int64 = 0
+    while (i < shown) {
+        lines.add(transcriptLines[i])
+        i += 1
+    }
+    if (shown < transcriptLines.size) {
+        lines.add("... truncated ${transcriptLines.size - shown} line(s); rerun with `--limit <n>` or use `export`.")
+    }
+    lines.toArray()
+}
+
+private func gatewaySessionsTranscriptLines(raw: String): Array<String> {
+    let out = ArrayList<String>()
+    let split = raw.split("\n")
+    for (i in 0..split.size) {
+        if (i == split.size - 1 && split[i].isEmpty()) {
+            continue
+        }
+        out.add(split[i])
+    }
+    out.toArray()
+}
+
+private func parseGatewaySessionsShowArgs(sub: Array<String>, start: Int64): Array<String> {
+    let keyParts = ArrayList<String>()
+    var limit = "${DEFAULT_GATEWAY_SESSIONS_SHOW_LIMIT}"
+    var i = start
+    while (i < sub.size) {
+        let k = sub[i].trimAscii().toAsciiLower()
+        if ((k == "--limit" || k == "-n") && i + 1 < sub.size) {
+            limit = sub[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        keyParts.add(sub[i])
+        i += 1
+    }
+    let key = String.join(keyParts.toArray(), delimiter: " ").trimAscii()
+    [key, limit]
+}
+
+private func parseGatewaySessionsShowLimit(raw: String): Int64 {
+    try {
+        let n = Int64.parse(raw.trimAscii())
+        if (n > 0) {
+            return n
+        }
+    } catch (_: Exception) {
+        ()
+    }
+    DEFAULT_GATEWAY_SESSIONS_SHOW_LIMIT
 }
 
 func gatewaySessionsPathLinesForUser(user: GatewayUserSettings): Array<String> {

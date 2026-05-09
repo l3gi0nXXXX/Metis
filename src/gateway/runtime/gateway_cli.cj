@@ -200,20 +200,20 @@ private func gatewayRunForeground(flowName!: String = "run"): Int64 {
 
 private func gatewayPrintHealth(): Unit {
     let res = gatewayCliClient().call("health")
-    PrintUtils.printLine(res.toJson().toJsonString())
+    gatewayPrintCommandOutput(res.toJson().toJsonString())
 }
 
 private func gatewayPrintProbe(): Unit {
     let health = gatewayCliClient().call("health")
     let status = gatewayCliClient().call("status")
     PrintUtils.printLine("Gateway Probe")
-    PrintUtils.printLine(health.toJson().toJsonString())
-    PrintUtils.printLine(status.toJson().toJsonString())
+    gatewayPrintCommandOutput(health.toJson().toJsonString())
+    gatewayPrintCommandOutput(status.toJson().toJsonString())
 }
 
 private func gatewayPrintDiscover(): Unit {
     let res = gatewayCliClient().call("discover")
-    PrintUtils.printLine(res.toJson().toJsonString())
+    gatewayPrintCommandOutput(res.toJson().toJsonString())
 }
 
 private func gatewayParseCallParams(raw: String): JsonObject {
@@ -238,13 +238,136 @@ private func gatewayCallLocalMethod(methodRaw: String, paramsRaw!: String = ""):
     }
     let params = gatewayParseCallParams(paramsRaw)
     let res = gatewayCliClient().call(method, params: params)
-    PrintUtils.printLine(res.toJson().toJsonString())
+    gatewayPrintCommandOutput(res.toJson().toJsonString())
     if (res.ok) { 0 } else { 1 }
 }
 
 private func gatewayPrintUsageCost(): Unit {
     let res = gatewayCliClient().call("usage-cost")
-    PrintUtils.printLine(res.toJson().toJsonString())
+    gatewayPrintCommandOutput(res.toJson().toJsonString())
+}
+
+private func gatewayChannelRpcParams(channelId: String): JsonObject {
+    let params = JsonObject()
+    if (!channelId.trimAscii().isEmpty()) {
+        params.put("channelId", JsonString(channelId.trimAscii().toAsciiLower()))
+    }
+    params
+}
+
+private func gatewayPrintChannelHelp(): Unit {
+    PrintUtils.printLine("Metis gateway channel")
+    PrintUtils.printLine("Inspect and update gateway channels.")
+    PrintUtils.printLine("")
+    PrintUtils.printLine("Usage:")
+    PrintUtils.printLine("  gateway channel list")
+    PrintUtils.printLine("  gateway channel health [id]")
+    PrintUtils.printLine("  gateway channel runtime [id]")
+    PrintUtils.printLine("  gateway channel get <id>")
+    PrintUtils.printLine("  gateway channel audit [id]")
+    PrintUtils.printLine("  gateway channel enable <id>")
+    PrintUtils.printLine("  gateway channel disable <id>")
+    PrintUtils.printLine("  gateway channel set <feishu|qq> <key> <value...>")
+    PrintUtils.printLine("")
+    PrintUtils.printLine("Notes:")
+    PrintUtils.printLine("  `gateway channels ...` is accepted as an alias for `gateway channel ...`.")
+    PrintUtils.printLine("  Gateway output is summarized for humans; dedicated RPC surfaces still carry the full structured data.")
+}
+
+public func gatewayRunChannelCli(sub: Array<String>): Int64 {
+    if (sub.size < 2 || sub[1] == "help" || sub[1] == "-h" || sub[1] == "--help") {
+        gatewayPrintChannelHelp()
+        return 0
+    }
+    let subcmd = sub[1].trimAscii().toAsciiLower()
+    if (subcmd == "list") {
+        gatewayActionsPrintChannelsHelp()
+        return 0
+    }
+    if (subcmd == "health" || subcmd == "runtime" || subcmd == "audit" || subcmd == "get") {
+        let channelId = if (sub.size >= 3) { sub[2].trimAscii() } else { "" }
+        if (subcmd == "get" && channelId.isEmpty()) {
+            PrintUtils.printLine("Usage: gateway channel get <id>")
+            return 1
+        }
+        let method = match (subcmd) {
+            case "health" => "channels.health"
+            case "runtime" => "channels.runtime"
+            case "audit" => "channels.audit"
+            case _ => "channels.get"
+        }
+        let res = gatewayCliClient().call(method, params: gatewayChannelRpcParams(channelId))
+        gatewayPrintCommandOutput(res.toJson().toJsonString())
+        return if (res.ok) { 0 } else { 1 }
+    }
+    if (subcmd == "enable") {
+        if (sub.size < 3) {
+            PrintUtils.printLine("Usage: gateway channel enable <id>")
+            return 1
+        }
+        return if (gatewayActionsSetChannelEnabled(sub[2].trimAscii().toAsciiLower(), true)) {
+            0
+        } else {
+            1
+        }
+    }
+    if (subcmd == "disable") {
+        if (sub.size < 3) {
+            PrintUtils.printLine("Usage: gateway channel disable <id>")
+            return 1
+        }
+        return if (gatewayActionsSetChannelEnabled(sub[2].trimAscii().toAsciiLower(), false)) {
+            0
+        } else {
+            1
+        }
+    }
+    if (subcmd == "set") {
+        if (sub.size < 5) {
+            PrintUtils.printLine("Usage: gateway channel set <feishu|qq> <key> <value...>")
+            return 1
+        }
+        let cid = sub[2].trimAscii().toAsciiLower()
+        let key = sub[3].trimAscii().toAsciiLower()
+        let value = joinFrom(sub, 4)
+        if (cid == "feishu") {
+            return if (gatewayActionsSetFeishu(key, value)) { 0 } else { 1 }
+        }
+        if (cid == "qq") {
+            return if (gatewayActionsSetQq(key, value)) { 0 } else { 1 }
+        }
+        PrintUtils.printLine("Interactive native field editing currently supports feishu and qq only.")
+        PrintUtils.printLine("Try: gateway channel list")
+        return 1
+    }
+    PrintUtils.printLine("Unknown gateway channel subcommand: ${subcmd}")
+    PrintUtils.printLine("Try: gateway channel help")
+    1
+}
+
+public func gatewayPluginHelpLines(): Array<String> {
+    [
+        "Metis gateway plugin",
+        "Inspect and update installed Gateway plugins.",
+        "",
+        "Usage:",
+        "  gateway plugin list",
+        "  gateway plugin list-supported",
+        "  gateway plugin install <name> [--app-id <id>] [--app-secret <secret>] [--force]",
+        "  gateway plugin enable <id>",
+        "  gateway plugin disable <id>",
+        "  gateway plugin set <id> <key> <value...>",
+        "",
+        "Notes:",
+        "  `gateway plugins ...` is accepted as an alias for `gateway plugin ...`.",
+        "  Plugin configuration writes update metis.json; restart gateway serve if the running process must reload settings."
+    ]
+}
+
+private func gatewayPrintPluginHelp(): Unit {
+    for (line in gatewayPluginHelpLines()) {
+        PrintUtils.printLine(line)
+    }
 }
 
 private func gatewayDashboardBuildUrl(): String {
@@ -819,7 +942,7 @@ public func runGatewayCli(sub: Array<String>): Int64 {
         let commandLine = "/" + joinFrom(sub, 0)
         let (ok, answer, err) = gatewayInvokeCliAgent(commandLine, sessionKey: "main", channel: "cli")
         if (ok) {
-            PrintUtils.printLine(answer)
+            gatewayPrintCommandOutput(answer)
             return if (answer.contains("\"ok\":false")) { 1 } else { 0 }
         }
         PrintUtils.printLine("Gateway agent failed: ${err}")
@@ -828,74 +951,13 @@ public func runGatewayCli(sub: Array<String>): Int64 {
     if (cmd == "cron") {
         return runGatewayCronCli(sub)
     }
-    if (cmd == "channel") {
-        if (sub.size < 2) {
-            PrintUtils.printLine("Usage: gateway channel <list|enable|disable|set> [...]")
-            PrintUtils.printLine("Try: gateway channel list")
-            return 1
-        }
-        let subcmd = sub[1]
-        if (subcmd == "list") {
-            gatewayActionsPrintChannelsHelp()
-            return 0
-        }
-        if (subcmd == "enable") {
-            if (sub.size < 3) {
-                PrintUtils.printLine("Usage: gateway channel enable <id>")
-                return 1
-            }
-            return if (gatewayActionsSetChannelEnabled(sub[2].trimAscii().toAsciiLower(), true)) {
-                0
-            } else {
-                1
-            }
-        }
-        if (subcmd == "disable") {
-            if (sub.size < 3) {
-                PrintUtils.printLine("Usage: gateway channel disable <id>")
-                return 1
-            }
-            return if (gatewayActionsSetChannelEnabled(sub[2].trimAscii().toAsciiLower(), false)) {
-                0
-            } else {
-                1
-            }
-        }
-        if (subcmd == "set") {
-            if (sub.size < 5) {
-                PrintUtils.printLine("Usage: gateway channel set <id> <key> <value...>")
-                return 1
-            }
-            let cid = sub[2].trimAscii().toAsciiLower()
-            let key = sub[3].trimAscii().toAsciiLower()
-            let value = joinFrom(sub, 4)
-            if (cid == "feishu") {
-                return if (gatewayActionsSetFeishu(key, value)) {
-                    0
-                } else {
-                    1
-                }
-            }
-            if (cid == "qq") {
-                return if (gatewayActionsSetQq(key, value)) {
-                    0
-                } else {
-                    1
-                }
-            }
-            PrintUtils.printLine("Interactive native field editing currently supports feishu and qq only.")
-            PrintUtils.printLine("Try: gateway channel list")
-            return 1
-        }
-        PrintUtils.printLine("Unknown gateway channel subcommand: ${subcmd}")
-        PrintUtils.printLine("Try: gateway channel list")
-        return 1
+    if (cmd == "channel" || cmd == "channels") {
+        return gatewayRunChannelCli(sub)
     }
-    if (cmd == "plugin") {
-        if (sub.size < 2) {
-            PrintUtils.printLine("Usage: gateway plugin <list|list-supported|install|enable|disable|set> [...]")
-            PrintUtils.printLine("Try: gateway plugin list")
-            return 1
+    if (cmd == "plugin" || cmd == "plugins") {
+        if (sub.size < 2 || sub[1] == "help" || sub[1] == "-h" || sub[1] == "--help") {
+            gatewayPrintPluginHelp()
+            return 0
         }
         let subcmd = sub[1].trimAscii().toAsciiLower()
         if (subcmd == "list") {

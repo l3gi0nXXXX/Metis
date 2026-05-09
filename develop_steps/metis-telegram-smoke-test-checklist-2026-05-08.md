@@ -63,7 +63,7 @@ cjpm run --skip-build --name metis --run-args "gateway discover"
 | 编号 | 操作 | 预期结果 | 测试结果 |
 |---|---|---|---|
 | TG-SMOKE-08 | 发送普通文本消息 | Telegram 侧出现已读/处理中体验；如配置支持 reaction，应出现小眼睛等 ack reaction | 待填写 |
-| TG-SMOKE-09 | 发送会触发较长处理的需求 | Bot 回复前不应无声失败；日志不应出现 chat-action adapter not found | 待填写 |
+| TG-SMOKE-09 | 发送会触发较长处理的需求 | Bot 回复前不应无声失败；日志不应出现 chat-action adapter not found | 部分通过/需修复：2026-05-09 12:26:27 收到真实 Telegram 入站并最终有回复，但日志 12:26:29 出现 `Telegram lifecycle chat-action skipped: no adapter for channel='telegram' ... adapter not found for accountId=default` |
 
 失败时记录：
 
@@ -216,3 +216,25 @@ grep -nE "Gateway.inbound|telegram|Telegram|adapter|sendTextToPeer|downloadFile|
 5. Subagent 完成后能通过 Gateway 主动通知 Telegram 当前会话。
 6. 日志中不再出现 accountId 不一致导致的 `adapter not found for accountId=default`。
 7. 没有测试或运行逻辑写坏真实 `metis.json`。
+
+## 15. 2026-05-09 本地自动/只读验证记录
+
+已执行，不修改真实 Telegram 配置：
+
+```bash
+source /Users/l3gi0n/cangjie100/envsetup.sh
+export DYLD_LIBRARY_PATH="/Users/l3gi0n/cangjie100/runtime/lib/darwin_aarch64_llvm:/Users/l3gi0n/cangjie100/tools/lib:/Users/l3gi0n/work/workspace_cangjie/CangjieMagic/libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/dynamic/stdx:/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
+cjpm run --skip-build --name metis --run-args "gateway status"
+cjpm run --skip-build --name metis --run-args "gateway channel list"
+cjpm run --skip-build --name metis --run-args "gateway discover"
+```
+
+结果：
+
+- `gateway status`：通过，输出为人类可读配置摘要。
+- `gateway channel list`：通过，内置 channel 列表包含 `telegram`。
+- `gateway discover`：通过，Telegram 显示 `enabled=true`、`configured=true`、`mode=polling`。
+- Telegram media 当前运行配置可见：`download=true`、`local-send=true`、`url-send=false`。
+- Telegram network 当前运行配置可见：`apiRoot=https://api.telegram.org`、`proxy=true`。
+
+仍需真实 Telegram bot 手工验证的项目见第 2-12 节。真实 bot smoke 的结果应逐项写回对应 `TG-SMOKE-*` 的“测试结果”列。

@@ -25,7 +25,10 @@ import type {
   SessionsPatchResult,
 } from "../types.ts";
 import { generateUUID } from "../uuid.ts";
-import { SLASH_COMMANDS } from "./slash-commands.ts";
+import {
+  CATEGORY_LABELS,
+  getSlashCommandCompletions,
+} from "./slash-commands.ts";
 
 export type SlashCommandResult = {
   /** Markdown-formatted result to display in chat. */
@@ -82,13 +85,14 @@ export async function executeSlashCommand(
 ): Promise<SlashCommandResult> {
   switch (commandName) {
     case "help":
+    case "commands":
       return executeHelp();
     case "new":
       return { content: "Starting new session...", action: "new-session" };
     case "reset":
       return { content: "Resetting session...", action: "reset" };
     case "stop":
-      return { content: "Stopping current run...", action: "stop" };
+      return { content: "Stopping current Control UI chat run...", action: "stop" };
     case "clear":
       return { content: "Chat history cleared.", action: "clear" };
     case "focus":
@@ -126,11 +130,11 @@ function executeHelp(): SlashCommandResult {
   const lines = ["**Available Commands**\n"];
   let currentCategory = "";
 
-  for (const cmd of SLASH_COMMANDS) {
+  for (const cmd of getSlashCommandCompletions("")) {
     const cat = cmd.category ?? "session";
     if (cat !== currentCategory) {
       currentCategory = cat;
-      lines.push(`**${cat.charAt(0).toUpperCase() + cat.slice(1)}**`);
+      lines.push(`**${CATEGORY_LABELS[cat]}**`);
     }
     const argStr = cmd.args ? ` ${cmd.args}` : "";
     const local = cmd.executeLocal ? "" : " *(agent)*";

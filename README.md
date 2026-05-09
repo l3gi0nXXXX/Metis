@@ -182,6 +182,24 @@ Background subagents can be started from CLI or IM sessions without blocking the
 
 See `docs/user/subagents.md` for CLI, Telegram, natural-language, custom agent, policy, and control-ui usage.
 
+### Control UI Slash Commands
+
+The dashboard chat input supports the same slash menu shown by `/help` and `/commands`.
+Local Control UI commands return readable chat summaries and do not print raw JSON by default.
+
+Common Control UI commands:
+
+```text
+/help
+/commands
+/stop
+/kill <id|all>
+/steer [id] <message>
+/redirect [id] <message>
+```
+
+`/stop` aborts only the current Control UI chat turn. `/kill` targets matching sub-agent sessions in the current Control UI session subtree. `/steer` soft-injects guidance into an active run without restarting it; use `/redirect` when the run should be aborted and restarted with a new message.
+
 ### Scheduled Jobs
 
 Cron jobs let you run agent work on recurring schedules and optionally route successful results back into channels or session targets.

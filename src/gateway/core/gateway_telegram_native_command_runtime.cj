@@ -54,7 +54,7 @@ public class GatewayTelegramNativeCommandDecision {
 }
 
 public func gatewayTelegramNativeCommandNameFromText(text: String): String {
-    let normalized = text.trimAscii()
+    let normalized = text.trimAscii().split("\n", 2)[0].trimAscii()
     if (!normalized.startsWith("/")) {
         return ""
     }
@@ -70,7 +70,7 @@ public func gatewayTelegramNativeCommandNameFromText(text: String): String {
 }
 
 public func gatewayTelegramNativeCommandArgsFromText(text: String): String {
-    let normalized = text.trimAscii()
+    let normalized = text.trimAscii().split("\n", 2)[0].trimAscii()
     if (!normalized.startsWith("/")) {
         return ""
     }

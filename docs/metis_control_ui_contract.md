@@ -25,6 +25,23 @@ Goal:
 
 These methods are the current compatibility baseline.
 
+## Chat Slash Commands
+
+Control UI chat slash command metadata is maintained in `ui/src/ui/chat/slash-command-manifest.ts`.
+The command palette, UI `/help` output, and local executor semantics must stay derived from that manifest.
+
+Current local Control UI semantics:
+
+| Command | Semantics | Output contract |
+| --- | --- | --- |
+| `/help` and `/commands` | Render the Control UI slash command list from the UI manifest. | Human-readable markdown; no raw JSON. |
+| `/stop` | Abort only the current Control UI chat turn. It does not kill subagents and is not a Telegram-wide stop. | Short human-readable status. |
+| `/kill <id|all>` | Abort matching sub-agent sessions in the current Control UI session subtree. `all` means active subagents under this session only. | Human-readable count/no-op/error summary; no duplicate raw RPC output. |
+| `/steer [id] <message>` | Soft-inject guidance into the current active run or a named subagent. It requires an active run and does not restart the run. | Human-readable success/no-op/error summary. |
+| `/redirect [id] <message>` | Abort and restart the current run or named subagent with a new message. | Human-readable success/error summary; current-session redirects may track the returned run id. |
+
+Slash command defaults must be readable in the chat transcript. Raw JSON is reserved for explicit API/RPC consumers, not command output shown to users.
+
 ### 1. `channels.status`
 
 Used by:

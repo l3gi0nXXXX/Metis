@@ -8,6 +8,7 @@ import {
 import type { GatewayBrowserClient } from "../gateway.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../types.ts";
 import { executeSlashCommand } from "./slash-command-executor.ts";
+import { SLASH_COMMANDS } from "./slash-commands.ts";
 
 function row(key: string, overrides?: Partial<GatewaySessionRow>): GatewaySessionRow {
   return {
@@ -18,6 +19,49 @@ function row(key: string, overrides?: Partial<GatewaySessionRow>): GatewaySessio
     ...overrides,
   };
 }
+
+describe("executeSlashCommand help", () => {
+  it("renders slash help from the shared command manifest without raw JSON or duplicate entries", async () => {
+    const request = vi.fn();
+    const result = await executeSlashCommand(
+      { request } as unknown as GatewayBrowserClient,
+      "main",
+      "help",
+      "",
+    );
+
+    expect(result.content).toContain(
+      "`/stop` — Abort the current Control UI chat turn only; does not kill subagents.",
+    );
+    expect(result.content).toContain("`/kill <id|all>` — Abort matching sub-agent sessions");
+    expect(result.content).toContain(
+      "`/steer [id] <message>` — Soft-inject a message into the current active run or one named subagent; does not restart the run.",
+    );
+    expect(result.content).not.toContain("{");
+    expect(result.content).not.toContain("[object Object]");
+
+    const names = [...result.content.matchAll(/`\/([^`\s]+)[^`]*`/gu)].map((match) => match[1]);
+    expect(new Set(names).size).toBe(names.length);
+    for (const command of SLASH_COMMANDS) {
+      expect(names).toContain(command.name);
+    }
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("treats /commands as the same local help command", async () => {
+    const request = vi.fn();
+    const result = await executeSlashCommand(
+      { request } as unknown as GatewayBrowserClient,
+      "main",
+      "commands",
+      "",
+    );
+
+    expect(result.content).toContain("**Available Commands**");
+    expect(result.content).toContain("Type `/` to open the command menu.");
+    expect(request).not.toHaveBeenCalled();
+  });
+});
 
 describe("executeSlashCommand /kill", () => {
   it("aborts every sub-agent session for /kill all", async () => {

@@ -10,7 +10,9 @@ import metis.gateway.runtime.{gatewayActionsMaskSecret, gatewayActionsPrintChann
     gatewayActionsSetChannelEnabled, gatewayActionsSetFeishu, gatewayActionsSetMaster, gatewayActionsSetQq,
     gatewayActionsSetPluginEnabled, gatewayActionsSetPluginField,
     gatewayAnotherServeInstanceSeemsRunning, gatewayExecuteRestartServe, gatewayExecuteStopServe,
-    gatewayExecuteCronWithUnifiedRun, gatewayInvokeCliAgent, gatewayLaunchDedicatedConsole, runGatewaySessionsCli}
+    gatewayExecuteCronWithUnifiedRun, gatewayInvokeCliAgent, gatewayLaunchDedicatedConsole, gatewayPrintCommandOutput,
+    gatewayPluginHelpLines, gatewayRunChannelCli,
+    runGatewaySessionsCli}
 import metis.io.{InputUtils, PrintUtils, Theme, WithColor, AnsiColor}
 import metis.core.skills.SkillsPrompt
 
@@ -106,35 +108,14 @@ protected func handleGatewayChannelLine(raw: String): Unit {
         handleGatewayChannelMenu()
         return
     }
-    let sub = tokens[1].toAsciiLower()
-    if (sub == "list") {
-        gatewayActionsPrintChannelsHelp()
-        return
+    let args = ArrayList<String>()
+    args.add("channel")
+    var i: Int64 = 1
+    while (i < tokens.size) {
+        args.add(tokens[i])
+        i += 1
     }
-    if (sub == "enable" && tokens.size >= 3) {
-        let _ = gatewayActionsSetChannelEnabled(tokens[2].trimAscii().toAsciiLower(), true)
-        return
-    }
-    if (sub == "disable" && tokens.size >= 3) {
-        let _ = gatewayActionsSetChannelEnabled(tokens[2].trimAscii().toAsciiLower(), false)
-        return
-    }
-    if (sub == "set" && tokens.size >= 5) {
-        let id = tokens[2].trimAscii().toAsciiLower()
-        let key = tokens[3].trimAscii().toAsciiLower()
-        let value = metisJoinFrom(tokens, 4)
-        if (id == "feishu") {
-            let _ = gatewayActionsSetFeishu(key, value)
-            return
-        }
-        if (id == "qq") {
-            let _ = gatewayActionsSetQq(key, value)
-            return
-        }
-        PrintUtils.printLine("当前交互式原生字段编辑仅提供 feishu / qq。其它渠道请用 /plugin set <id> <key> <value...> 或配置文件。")
-        return
-    }
-    PrintUtils.printLine("用法: /channel list | enable <id> | disable <id> | set <id> <key> <value...>")
+    let _ = gatewayRunChannelCli(args.toArray())
 }
 
 private func handleGatewayChannelMenu(): Unit {
@@ -223,7 +204,7 @@ protected func handleGatewaySubagentsLine(raw: String): Unit {
         PrintUtils.printLine("Gateway agent failed: ${err}")
         return
     }
-    PrintUtils.printLine(answer)
+    gatewayPrintCommandOutput(answer)
 }
 
 /** 顶层 `/plugin`：与 `gateway plugin` 一致。 */
@@ -235,6 +216,12 @@ protected func handleGatewayPluginLine(raw: String): Unit {
         return
     }
     let sub = tokens[1].toAsciiLower()
+    if (sub == "help" || sub == "-h" || sub == "--help") {
+        for (line in gatewayPluginHelpLines()) {
+            PrintUtils.printLine(line)
+        }
+        return
+    }
     if (sub == "list") {
         gatewayActionsPrintPluginsList()
         return
@@ -267,7 +254,7 @@ protected func handleGatewayPluginLine(raw: String): Unit {
         return
     }
     PrintUtils.printLine(
-        "用法: /plugin list | list-supported | install <name> [--app-id <id>] [--app-secret <secret>] [--force] | enable <id> | disable <id> | set <id> <key> <value...>"
+        "用法: /plugin list | list-supported | install <name> [--app-id <id>] [--app-secret <secret>] [--force] | enable <id> | disable <id> | set <id> <key> <value...> | help"
     )
 }
 

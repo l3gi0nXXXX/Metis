@@ -1,6 +1,6 @@
 package metis.gateway.runtime
 
-import metis.core.config.{CliSettingManager, GatewayUserSettings, MetisConfigManager}
+import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager}
 import metis.gateway.core.{gatewaySessionStoreForSessionKey, gatewaySessionStoreForUserWithAgentId}
 
 import magic.jsonable.*
@@ -81,6 +81,7 @@ private func withGatewaySessionsTestHome<T>(block: () -> T): T {
     Directory.create(testHome, recursive: true)
     let oldHome = getVariable("METIS_HOME")
     setVariable("METIS_HOME", testHome)
+    CliConfig.invalidatePathCache()
     MetisConfigManager.invalidate()
     CliSettingManager.invalidate()
     try {
@@ -90,6 +91,7 @@ private func withGatewaySessionsTestHome<T>(block: () -> T): T {
             case Some(value) => setVariable("METIS_HOME", value)
             case None => setVariable("METIS_HOME", "")
         }
+        CliConfig.invalidatePathCache()
         MetisConfigManager.invalidate()
         CliSettingManager.invalidate()
     }
@@ -720,6 +722,25 @@ public class GatewayServerMethodsSessionsTest {
 
         mainStore.deleteSession(mainKey)
         generalStore.deleteSession(generalKey)
+    }
+
+    @TestCase
+    public func sessionsCliShowDefaultsToBoundedPreview(): Unit {
+        withGatewaySessionsTestHome({ =>
+            let store = gatewaySessionStoreForUserWithAgentId(GatewayUserSettings(), "main")
+            let sessionKey = "agent:main:cli-show-preview"
+            store.deleteSession(sessionKey)
+            store.appendUser(sessionKey, "one")
+            store.appendUser(sessionKey, "two")
+
+            let lines = concatLines(gatewaySessionsShowLinesForUser(GatewayUserSettings(), sessionKey, 1))
+            @Expect(lines.contains("Transcript preview: ${sessionKey}"), true)
+            @Expect(lines.contains("Showing 1 of"), true)
+            @Expect(lines.contains("truncated"), true)
+            @Expect(lines.contains("gateway sessions export ${sessionKey}"), true)
+
+            store.deleteSession(sessionKey)
+        })
     }
 
     @TestCase

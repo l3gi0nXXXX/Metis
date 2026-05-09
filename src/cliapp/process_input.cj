@@ -19,7 +19,7 @@ import metis.utils.ShellUtils
 import metis.telemetry.DataCollector
 import metis.io.CompletionListUtils
 
-import std.collection.{ArrayList, enumerate}
+import std.collection.{ArrayList, enumerate, filter, map, collectArray}
 import std.fs.{exists, File, FSException, Path, Directory}
 import std.sync.{AtomicOptionReference, AtomicBool}
 
@@ -135,15 +135,16 @@ private func executeCommand(input: String, app: CliApp): Option<Bool> {
             return true
 
         case "/status" | "status" =>
+            PrintUtils.printLine("Status scope: CLI chat token/session usage. This is not gateway runtime status; use `metis gateway status` or `/dashboard` for gateway health.")
             app.tokenStatusManager.printStatus()
             return true
 
-        case "/models" | "models" =>
-            handleModelsCommand(app)
+        case _input where isModelsCommandLine(_input) =>
+            handleModelsCommandLine(app, _input)
             return true
 
-        case "/dashboard" | "dashboard" =>
-            openDashboard(app)
+        case _input where isDashboardCommandLine(_input) =>
+            openDashboard(_input)
             return true
 
         case _input where _input.trimAscii().startsWith("/skills ") || _input.trimAscii().startsWith("skills ") =>
@@ -233,8 +234,23 @@ private func executeCommand(input: String, app: CliApp): Option<Bool> {
 
 //-------------------------------------------------------
 
-private func openDashboard(app: CliApp): Unit {
-    let _ = runGatewayDashboardCli(Array<String>())
+private func isDashboardCommandLine(raw: String): Bool {
+    let t = raw.trimAscii().toAsciiLower()
+    t == "/dashboard" || t == "dashboard" || t.startsWith("/dashboard ") || t.startsWith("dashboard ")
+}
+
+private func openDashboard(raw: String): Unit {
+    let tokens = raw.trimAscii().split(" ") |>
+        filter { x => !x.trimAscii().isEmpty() } |>
+        map { x => x.trimAscii() } |>
+        collectArray
+    let args = ArrayList<String>()
+    var i: Int64 = 1
+    while (i < tokens.size) {
+        args.add(tokens[i])
+        i += 1
+    }
+    let _ = runGatewayDashboardCli(args.toArray())
 }
 
 //-------------------------------------------------------

@@ -69,5 +69,10 @@ public class GatewayTelegramNativeCommandRuntimeTest {
         @Expect(validation.get("missingHandlers").getOrThrow().asArray().size(), 0)
         @Expect(gatewayFindTelegramNativeCommandSpec("allowlist").getOrThrow().status, "implemented")
         @Expect(gatewayFindTelegramNativeCommandSpec("acp").getOrThrow().status, "not_applicable")
+        @Expect(gatewayFindTelegramNativeCommandSpec("btw").getOrThrow().status, "not_applicable")
+        @Expect(gatewayFindTelegramNativeCommandSpec("session").getOrThrow().argsMenuChoices.size, 0)
+        @Expect(gatewayFindTelegramNativeCommandSpec("tools").getOrThrow().argsMenuChoices.size, 0)
+        @Expect(gatewayFindTelegramNativeCommandSpec("activation").getOrThrow().argsMenuChoices.size, 0)
+        @Expect(gatewayFindTelegramNativeCommandSpec("compact").getOrThrow().args.size, 0)
     }
 }

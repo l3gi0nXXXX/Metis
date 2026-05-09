@@ -8,6 +8,7 @@ public class AppPackageSmokeTest {
     public func commandLinePredicatesKeepMetisSurfaceNames(): Unit {
         @Expect(isGatewayChannelCommandLine("/channel list"), true)
         @Expect(isGatewayPluginCommandLine("/plugin list"), true)
+        @Expect(isGatewayPluginCommandLine("/plugin help"), true)
         @Expect(isGatewaySessionsCommandLine("/sessions list"), true)
         @Expect(isGatewaySubagentsCommandLine("/subagents list"), true)
         @Expect(isGatewayCronCommandLine("/cron list"), true)

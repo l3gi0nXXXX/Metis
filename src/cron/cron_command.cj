@@ -72,6 +72,9 @@ public func executeGatewayCronCommand(sub: Array<String>): (String, Int64) {
         return (path.toString(), 0)
     }
     if (cmd == "status") {
+        if (cronArgvHasJsonFlag(sub, 2)) {
+            return cronCmdStatusJson(path)
+        }
         return cronCmdStatus(path)
     }
     if (cmd == "list") {
@@ -180,6 +183,17 @@ private func cronArgvHasHelpFlag(sub: Array<String>, fromIdx: Int64): Bool {
     while (i < sub.size) {
         let t = sub[i].trimAscii().toAsciiLower()
         if (t == "--help" || t == "-h") {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+private func cronArgvHasJsonFlag(sub: Array<String>, fromIdx: Int64): Bool {
+    var i = fromIdx
+    while (i < sub.size) {
+        if (sub[i].trimAscii().toAsciiLower() == "--json") {
             return true
         }
         i += 1
@@ -344,9 +358,10 @@ private func cronSubcommandHelpText(subCmdNorm: String): String {
     if (subCmdNorm == "list") {
         return "Usage: gateway cron list [options]\n" +
             "\n" +
-            "List cron jobs as JSON.\n" +
+            "List cron jobs in a human-readable table. Use --json for machine output.\n" +
             "\n" +
             "Options:\n" +
+            "  --json                     Print JSON instead of text\n" +
             "  --all                      Synonym for --include-disabled\n" +
             "  --include-disabled         List disabled jobs too (default: only enabled)\n" +
             "  --limit <n>                Max jobs to return (default 50, min 1)\n" +
@@ -355,10 +370,11 @@ private func cronSubcommandHelpText(subCmdNorm: String): String {
     if (subCmdNorm == "runs") {
         return "Usage: gateway cron runs [options]\n" +
             "\n" +
-            "Print run log as JSON: entries[], total, offset, limit, hasMore, nextOffset.\n" +
+            "Print run log in a human-readable table. Use --json for machine output.\n" +
             "Without --job-id: merge entries from all jobs, sort by ts descending, then paginate.\n" +
             "\n" +
             "Options:\n" +
+            "  --json                     Print JSON instead of text\n" +
             "  --job-id, --id <id>        Only runs for this job id\n" +
             "  --limit <n>                Page size (default 50)\n" +
             "  --offset <n>               Skip entries (default 0)\n"
@@ -389,9 +405,9 @@ private func cronSubcommandHelpText(subCmdNorm: String): String {
             "Print the absolute path to the cron job store file.\n"
     }
     if (subCmdNorm == "status") {
-        return "Usage: gateway cron status\n" +
+        return "Usage: gateway cron status [--json]\n" +
             "\n" +
-            "Print cron runtime status as JSON.\n"
+            "Print cron runtime status as text. Use --json for machine output.\n"
     }
     if (subCmdNorm == "help") {
         return cronHelpText()
@@ -436,15 +452,32 @@ private func cronCmdStatus(path: Path): (String, Int64) {
         nextWakeAtMsText = "${nextWakeAtMs}"
     }
     let cronEnabled = CliSettingManager.readGatewaySettings().enabled
-    return (
-        "{\n" +
-            "  \"enabled\": ${if (cronEnabled) { "true" } else { "false" }},\n" +
-            "  \"storePath\": \"${path.toString().replace("\\", "\\\\")}\",\n" +
-            "  \"jobs\": ${jobs.size},\n" +
-            "  \"nextWakeAtMs\": ${nextWakeAtMsText}\n" +
-            "}",
-        0
-    )
+    let out = ArrayList<String>()
+    out.add("Cron status")
+    out.add("Enabled: ${if (cronEnabled) { "true" } else { "false" }}")
+    out.add("Store: ${path.toString()}")
+    out.add("Jobs: ${jobs.size}")
+    out.add("Next wake: ${nextWakeAtMsText}")
+    (String.join(out.toArray(), delimiter: "\n"), 0)
+}
+
+private func cronCmdStatusJson(path: Path): (String, Int64) {
+    let jobs = cronLoadOrEmpty(path)
+    var nextWakeAtMs: Int64 = 0
+    for (j in jobs) {
+        if (!j.enabled || j.state.nextRunAtMs <= 0) {
+            continue
+        }
+        if (nextWakeAtMs <= 0 || j.state.nextRunAtMs < nextWakeAtMs) {
+            nextWakeAtMs = j.state.nextRunAtMs
+        }
+    }
+    let out = JsonObject()
+    out.put("enabled", JsonBool(CliSettingManager.readGatewaySettings().enabled))
+    out.put("storePath", JsonString(path.toString()))
+    out.put("jobs", JsonInt(jobs.size))
+    out.put("nextWakeAtMs", if (nextWakeAtMs > 0) { JsonInt(nextWakeAtMs) } else { JsonValue.fromStr("null") })
+    (out.toJsonString(), 0)
 }
 
 private func cronJobToJson(j: CronJob): JsonObject {
@@ -572,11 +605,17 @@ private func formatRelativePast(ms: Int64, nowMs: Int64): String {
 
 private func cronCmdList(path: Path, sub: Array<String>): (String, Int64) {
     var includeDisabled = false
+    var json = false
     var offset: Int64 = 0
     var limit: Int64 = 50
     var i: Int64 = 2
     while (i < sub.size) {
         let k = sub[i].trimAscii().toAsciiLower()
+        if (k == "--json") {
+            json = true
+            i += 1
+            continue
+        }
         if (k == "--include-disabled" || k == "--all") {
             includeDisabled = true
             i += 1
@@ -601,6 +640,9 @@ private func cronCmdList(path: Path, sub: Array<String>): (String, Int64) {
         }
     }
     let total = all.size
+    if (json) {
+        return cronCmdListJson(all.toArray(), offset, limit)
+    }
     if (total == 0) {
         return ("No cron jobs.", 0)
     }
@@ -643,6 +685,27 @@ private func cronCmdList(path: Path, sub: Array<String>): (String, Int64) {
         idx += 1
     }
     (String.join(lines.toArray(), delimiter: "\n"), 0)
+}
+
+private func cronCmdListJson(all: Array<CronJob>, offset: Int64, limit: Int64): (String, Int64) {
+    let total = all.size
+    let off = min(max(0, offset), total)
+    let lim = max(1, limit)
+    let end = min(off + lim, total)
+    let items = ArrayList<JsonValue>()
+    var idx = off
+    while (idx < end) {
+        items.add(cronJobToJson(all[idx]))
+        idx += 1
+    }
+    let out = JsonObject()
+    out.put("jobs", JsonArray(items))
+    out.put("total", JsonInt(total))
+    out.put("offset", JsonInt(off))
+    out.put("limit", JsonInt(lim))
+    out.put("hasMore", JsonBool(end < total))
+    out.put("nextOffset", if (end < total) { JsonInt(end) } else { JsonValue.fromStr("null") })
+    (out.toJsonString(), 0)
 }
 
 private func joinFrom(parts: Array<String>, start: Int64): String {
@@ -1997,11 +2060,16 @@ private func cronCmdRuns(path: Path, sub: Array<String>): (String, Int64) {
         case Some(v) => v
         case None => ""
     }
+    let json = cronArgvHasJsonFlag(sub, 2)
     var limit: Int64 = 50
     var offset: Int64 = 0
     var i: Int64 = 2
     while (i < sub.size) {
         let k = sub[i].trimAscii().toAsciiLower()
+        if (k == "--json") {
+            i += 1
+            continue
+        }
         if (k == "--limit" && i + 1 < sub.size) {
             try {
                 let v = Int64.parse(sub[i + 1].trimAscii())
@@ -2030,7 +2098,10 @@ private func cronCmdRuns(path: Path, sub: Array<String>): (String, Int64) {
     }
     if (!targetId.isEmpty()) {
         let page = readCronRunLogEntriesForJob(path, targetId, limit: limit, offset: offset)
-        return (page.toJsonString(), 0)
+        if (json) {
+            return (page.toJsonString(), 0)
+        }
+        return (formatCronRunsPageForHuman(page, targetId), 0)
     }
     let all = ArrayList<JsonValue>()
     for (j in cronLoadOrEmpty(path)) {
@@ -2081,7 +2152,68 @@ private func cronCmdRuns(path: Path, sub: Array<String>): (String, Int64) {
     outAll.put("limit", JsonInt(lim))
     outAll.put("hasMore", JsonBool(end < total))
     outAll.put("nextOffset", if (end < total) { JsonInt(end) } else { JsonValue.fromStr("null") })
-    (outAll.toJsonString(), 0)
+    if (json) {
+        return (outAll.toJsonString(), 0)
+    }
+    (formatCronRunsPageForHuman(outAll, ""), 0)
+}
+
+private func jsonObjString(o: JsonObject, key: String): String {
+    match (o.get(key)) {
+        case Some(v) => try {
+            v.asString().getValue()
+        } catch (_: Exception) {
+            ""
+        }
+        case None => ""
+    }
+}
+
+private func jsonObjInt(o: JsonObject, key: String): Int64 {
+    match (o.get(key)) {
+        case Some(v) => try {
+            v.asInt().getValue()
+        } catch (_: Exception) {
+            0
+        }
+        case None => 0
+    }
+}
+
+private func formatCronRunsPageForHuman(page: JsonObject, targetId: String): String {
+    let entries = page.get("entries").getOrThrow().asArray()
+    let total = jsonObjInt(page, "total")
+    if (entries.size() == 0) {
+        return if (targetId.isEmpty()) {
+            "No cron runs."
+        } else {
+            "No cron runs for ${targetId}."
+        }
+    }
+    let lines = ArrayList<String>()
+    let scope = if (targetId.isEmpty()) { "all jobs" } else { targetId }
+    lines.add("Cron runs (${scope})")
+    lines.add("Showing ${entries.size()} of ${total} run(s).")
+    lines.add(
+        padRight("TS", 14) + " " +
+            padRight("Job ID", 28) + " " +
+            padRight("Status", 8) + " " +
+            padRight("Duration", 10) + " " +
+            padRight("Delivery", 14) + " " +
+            "Summary"
+    )
+    for (it in entries.getItems()) {
+        let row = it.asObject()
+        lines.add(
+            padRight("${jsonObjInt(row, "ts")}", 14) + " " +
+                padRight(ellipsis(jsonObjString(row, "jobId"), 28), 28) + " " +
+                padRight(ellipsis(jsonObjString(row, "status"), 8), 8) + " " +
+                padRight("${jsonObjInt(row, "durationMs")}ms", 10) + " " +
+                padRight(ellipsis(jsonObjString(row, "deliveryStatus"), 14), 14) + " " +
+                ellipsis(jsonObjString(row, "summary"), 60)
+        )
+    }
+    String.join(lines.toArray(), delimiter: "\n")
 }
 
 private func cronCmdWake(path: Path, sub: Array<String>): (String, Int64) {

@@ -2334,8 +2334,6 @@ public class GatewayManagedSessionsToolset {
                 if (t.isEmpty()) { "list" } else { t }
             case None => "list"
         }
-        PrintUtils.printTool("subagents", shortMessage: act)
-
         if (act == "list") {
             let rawFilter = match (target) {
                 case Some(v) =>
@@ -2425,9 +2423,7 @@ public class GatewayManagedSessionsToolset {
                     result.put("compatNote", JsonString("recentMinutes=${v} was provided, but subagents list does not currently filter by recency."))
                 }
             }
-            let out = result.toJsonString()
-            PrintUtils.printToolResult(out)
-            return out
+            return result.toJsonString()
         }
 
         if (act == "status" || act == "poll" || act == "logs") {
@@ -2444,9 +2440,7 @@ public class GatewayManagedSessionsToolset {
                     err.put("action", JsonString(act))
                     err.put("target", JsonString(tgt))
                     err.put("error", JsonString("Unknown subagent target."))
-                    let out = err.toJsonString()
-                    PrintUtils.printToolResult(out)
-                    return out
+                    return err.toJsonString()
             }
             if (!this.controllerCanAccessRun(record)) {
                 return this.subagentControlDeniedJson(act, tgt)
@@ -2459,9 +2453,7 @@ public class GatewayManagedSessionsToolset {
                 err.put("action", JsonString(act))
                 err.put("target", JsonString(tgt))
                 err.put("error", JsonString("Unknown subagent target."))
-                let out = err.toJsonString()
-                PrintUtils.printToolResult(out)
-                return out
+                return err.toJsonString()
             }
             if (act == "logs") {
                 let effective = this.managedEffectiveState(record)
@@ -2476,9 +2468,7 @@ public class GatewayManagedSessionsToolset {
                 result.put("outputPath", JsonString(gatewaySubagentRunRecordString(record, "outputPath")))
                 result.put("logs", JsonString(this.gwStore().formatHistoryAsText(resolved, 40)))
                 gatewaySubagentPutEffectiveState(result, effective)
-                let out = result.toJsonString()
-                PrintUtils.printToolResult(out)
-                return out
+                return result.toJsonString()
             }
             let effective = this.managedEffectiveState(record)
             let result = JsonObject()
@@ -2495,9 +2485,7 @@ public class GatewayManagedSessionsToolset {
             result.put("hasLiveProcess", JsonBool(this.managedHasLiveProcess(resolved)))
             result.put("transcriptPath", JsonString(this.gwStore().transcriptPath(resolved).toString()))
             gatewaySubagentPutEffectiveState(result, effective)
-            let out = result.toJsonString()
-            PrintUtils.printToolResult(out)
-            return out
+            return result.toJsonString()
         }
 
         if (act == "steer" || act == "send") {
@@ -2515,9 +2503,7 @@ public class GatewayManagedSessionsToolset {
                 err.put("status", JsonString("error"))
                 err.put("action", JsonString(act))
                 err.put("error", JsonString("${act} requires target and message"))
-                let out = err.toJsonString()
-                PrintUtils.printToolResult(out)
-                return out
+                return err.toJsonString()
             }
             let record = match (this.resolveManagedRunForControl(tgt)) {
                 case Some(value) => value
@@ -2528,9 +2514,7 @@ public class GatewayManagedSessionsToolset {
                     err.put("action", JsonString(act))
                     err.put("target", JsonString(tgt))
                     err.put("error", JsonString("Unknown subagent target."))
-                    let out = err.toJsonString()
-                    PrintUtils.printToolResult(out)
-                    return out
+                    return err.toJsonString()
             }
             if (!this.controllerCanAccessRun(record)) {
                 return this.subagentControlDeniedJson(act, tgt)
@@ -2543,9 +2527,7 @@ public class GatewayManagedSessionsToolset {
                 err.put("action", JsonString(act))
                 err.put("target", JsonString(tgt))
                 err.put("error", JsonString("Unknown subagent target."))
-                let out = err.toJsonString()
-                PrintUtils.printToolResult(out)
-                return out
+                return err.toJsonString()
             }
             let agentIdText = this.managedAgentId(resolved)
             let runtimeText = this.managedRuntime(resolved)
@@ -2556,9 +2538,7 @@ public class GatewayManagedSessionsToolset {
                 err.put("action", JsonString(act))
                 err.put("target", JsonString(tgt))
                 err.put("error", JsonString("The target subagent has no recorded agentId and cannot be steered yet."))
-                let out = err.toJsonString()
-                PrintUtils.printToolResult(out)
-                return out
+                return err.toJsonString()
             }
             let effective = this.managedEffectiveState(record)
             if (effective.isTerminal) {
@@ -2571,9 +2551,7 @@ public class GatewayManagedSessionsToolset {
                 err.put("sessionKey", JsonString(resolved))
                 err.put("error", JsonString("Cannot ${act} a terminal subagent run. Spawn a new subagent for follow-up work."))
                 gatewaySubagentPutEffectiveState(err, effective)
-                let out = err.toJsonString()
-                PrintUtils.printToolResult(out)
-                return out
+                return err.toJsonString()
             }
             if (effective.isStale || effective.isRecordedOnly) {
                 let err = JsonObject()
@@ -2585,9 +2563,7 @@ public class GatewayManagedSessionsToolset {
                 err.put("sessionKey", JsonString(resolved))
                 err.put("error", JsonString(if (effective.isStale) { "Cannot ${act} a stale subagent run. Use /subagents kill <runId> to clean it up, or spawn a new subagent." } else { "Cannot ${act} a recorded-only subagent run in this build. Spawn a background-enabled subagent for follow-up work." }))
                 gatewaySubagentPutEffectiveState(err, effective)
-                let out = err.toJsonString()
-                PrintUtils.printToolResult(out)
-                return out
+                return err.toJsonString()
             }
             this.gwStore().appendTranscriptEntry(resolved, "user", msg)
             let launched = this.launchManagedSessionTurn(resolved, msg)
@@ -2603,9 +2579,7 @@ public class GatewayManagedSessionsToolset {
             result.put("message", JsonString(msg))
             result.put("text", JsonString(if (launched) { "steered ${resolved}" } else { "subagent ${resolved} is already queued or running" }))
             gatewaySubagentPutEffectiveState(result, effective)
-            let out = result.toJsonString()
-            PrintUtils.printToolResult(out)
-            return out
+            return result.toJsonString()
         }
 
         if (act == "cleanup") {
@@ -2619,9 +2593,7 @@ public class GatewayManagedSessionsToolset {
                 err.put("status", JsonString("error"))
                 err.put("action", JsonString("cleanup"))
                 err.put("error", JsonString("cleanup requires target, usually stale"))
-                let out = err.toJsonString()
-                PrintUtils.printToolResult(out)
-                return out
+                return err.toJsonString()
             }
             let cleaned = JsonArray([])
             var count: Int64 = 0
@@ -2654,9 +2626,7 @@ public class GatewayManagedSessionsToolset {
                         err.put("action", JsonString("cleanup"))
                         err.put("target", JsonString(tgt))
                         err.put("error", JsonString("Unknown subagent target."))
-                        let out = err.toJsonString()
-                        PrintUtils.printToolResult(out)
-                        return out
+                        return err.toJsonString()
                 }
                 if (!this.controllerCanAccessRun(record)) {
                     return this.subagentControlDeniedJson("cleanup", tgt)
@@ -2681,9 +2651,7 @@ public class GatewayManagedSessionsToolset {
             result.put("target", JsonString(tgt))
             result.put("count", count.toJsonValue())
             result.put("cleaned", cleaned)
-            let out = result.toJsonString()
-            PrintUtils.printToolResult(out)
-            return out
+            return result.toJsonString()
         }
 
         if (act == "kill") {
@@ -2733,9 +2701,7 @@ public class GatewayManagedSessionsToolset {
                 result.put("target", JsonString("all"))
                 result.put("count", count.toJsonValue())
                 result.put("killed", killed)
-                let out = result.toJsonString()
-                PrintUtils.printToolResult(out)
-                return out
+                return result.toJsonString()
             }
 
             if (tgt.isEmpty()) {
@@ -2744,9 +2710,7 @@ public class GatewayManagedSessionsToolset {
                 err.put("status", JsonString("error"))
                 err.put("action", JsonString("kill"))
                 err.put("error", JsonString("kill requires target"))
-                let out = err.toJsonString()
-                PrintUtils.printToolResult(out)
-                return out
+                return err.toJsonString()
             }
             let record = match (this.resolveManagedRunForControl(tgt)) {
                 case Some(value) => value
@@ -2757,9 +2721,7 @@ public class GatewayManagedSessionsToolset {
                     err.put("action", JsonString("kill"))
                     err.put("target", JsonString(tgt))
                     err.put("error", JsonString("Unknown subagent target."))
-                    let out = err.toJsonString()
-                    PrintUtils.printToolResult(out)
-                    return out
+                    return err.toJsonString()
             }
             if (!this.controllerCanAccessRun(record)) {
                 return this.subagentControlDeniedJson("kill", tgt)
@@ -2772,9 +2734,7 @@ public class GatewayManagedSessionsToolset {
                 err.put("action", JsonString("kill"))
                 err.put("target", JsonString(tgt))
                 err.put("error", JsonString("Unknown subagent target."))
-                let out = err.toJsonString()
-                PrintUtils.printToolResult(out)
-                return out
+                return err.toJsonString()
             }
             let snapshot = this.managedKillSnapshot(resolved)
             let priorState = snapshot[0]
@@ -2806,9 +2766,7 @@ public class GatewayManagedSessionsToolset {
             result.put("cancelRequested", cancelRequested.toJsonValue())
             result.put("deleted", JsonBool(false))
             gatewaySubagentPutEffectiveState(result, effective)
-            let out = result.toJsonString()
-            PrintUtils.printToolResult(out)
-            return out
+            return result.toJsonString()
         }
 
         let unsupported = JsonObject()
@@ -2816,8 +2774,6 @@ public class GatewayManagedSessionsToolset {
         unsupported.put("status", JsonString("unsupported"))
         unsupported.put("action", JsonString(act))
         unsupported.put("error", JsonString("Supported actions are list, status, poll, logs, steer, send, kill, and cleanup."))
-        let out = unsupported.toJsonString()
-        PrintUtils.printToolResult(out)
-        return out
+        return unsupported.toJsonString()
     }
 }

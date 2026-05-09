@@ -451,7 +451,7 @@ public class GatewayService {
             this.sendTextToPeerDetailed(
                 "telegram",
                 message.peerId,
-                this.renderTelegramCurrentSessionCommand(sessionKey),
+                this.renderTelegramCurrentSessionCommand(text, sessionKey),
                 replyToMessageId: message.replyTargetMessageId,
                 replyInThread: message.replyInThread,
                 accountId: accountId
@@ -484,7 +484,7 @@ public class GatewayService {
         }
         if (text == "/compact" || text.startsWith("/compact ")) {
             this.maybeSendTelegramLifecycleSignal(user, message, accountId, "compacting")
-            let reply = this.renderTelegramCompactCommand(user, sessionKey)
+            let reply = this.renderTelegramCompactCommand(text, user, sessionKey)
             this.sendTextToPeerDetailed(
                 "telegram",
                 message.peerId,
@@ -617,7 +617,7 @@ public class GatewayService {
                 return true
             }
             if (data.startsWith("commands:help:")) {
-                let reply = gatewayHandleNativeCommandLine("/help").getOrThrow()
+                let reply = this.renderTelegramNativeHumanReply(gatewayHandleNativeCommandLine("/help").getOrThrow())
                 this.sendTextToPeerDetailed(
                     "telegram",
                     message.peerId,
@@ -632,7 +632,7 @@ public class GatewayService {
                 this.sendTextToPeerDetailed(
                     "telegram",
                     message.peerId,
-                    this.renderTelegramSessionsCommand("/sessions list"),
+                    this.renderTelegramNativeHumanReply(this.renderTelegramSessionsCommand("/sessions list")),
                     replyToMessageId: message.replyTargetMessageId,
                     replyInThread: message.replyInThread,
                     accountId: accountId
@@ -640,7 +640,7 @@ public class GatewayService {
                 return true
             }
             if (data.startsWith("subagents:")) {
-                let reply = gatewayHandleSubagentsCommandLine("/subagents list current") ?? "{\"ok\":true,\"status\":\"ok\",\"action\":\"subagents\",\"message\":\"Telegram subagent callback was acknowledged.\"}"
+                let reply = this.renderTelegramNativeHumanReply(gatewayHandleSubagentsCommandLine("/subagents list current") ?? "{\"ok\":true,\"status\":\"ok\",\"action\":\"subagents\",\"message\":\"Telegram subagent callback was acknowledged.\"}")
                 this.sendTextToPeerDetailed(
                     "telegram",
                     message.peerId,
@@ -685,12 +685,13 @@ public class GatewayService {
         if (!decision.handled) {
             return false
         }
-        let reply = if (!decision.preflightReply.trimAscii().isEmpty()) {
+        let rawReply = if (!decision.preflightReply.trimAscii().isEmpty()) {
             decision.preflightReply
         } else {
             let context = decision.context.getOrThrow()
             this.renderTelegramCatalogCommand(context.spec, context.commandText, message, accountId, user, sessionKey)
         }
+        let reply = this.renderTelegramNativeHumanReply(rawReply)
         this.sendTextToPeerDetailed(
             "telegram",
             message.peerId,
@@ -700,6 +701,452 @@ public class GatewayService {
             accountId: accountId
         )
         true
+    }
+
+    private func renderTelegramNativeHumanReply(raw: String): String {
+        let trimmed = raw.trimAscii()
+        if (trimmed.isEmpty() || trimmed.startsWith("[inline-keyboard]") || trimmed.startsWith("[voice]") || trimmed.startsWith("[audio]")) {
+            return raw
+        }
+        let root = try { JsonValue.fromStr(trimmed).asObject() } catch (_e: Exception) { return raw }
+        let action = this.telegramJsonString(root, "action", "command")
+        let status = this.telegramJsonString(root, "status", "ok")
+        let message = this.telegramJsonString(root, "message", "")
+        if (status == "not_applicable") {
+            return "Not applicable: /${action}\n${if (message.isEmpty()) { "This command is not available in this Metis Telegram runtime." } else { message }}"
+        }
+        if (status == "approval_required" || status == "rejected" || status == "handler_missing" || status == "not_supported" || status == "usage" || status == "disabled" || status == "no_active_run" || status == "error") {
+            return this.renderTelegramGenericCommandText(root)
+        }
+        match (action) {
+            case "help" =>
+                match (root.get("examples")) {
+                    case Some(_) => return this.renderTelegramSubagentsText(root)
+                    case None => return this.renderTelegramNativeHelpText(root, message)
+                }
+            case "commands" => return this.renderTelegramCommandsText(root)
+            case "tools" => return this.renderTelegramToolsText(root)
+            case "status" =>
+                match (root.get("usage")) {
+                    case Some(_) => if (!message.isEmpty()) { return "/status: ${status}\n${message}" }
+                    case None => return this.renderTelegramSubagentsText(root)
+                }
+            case "sessions" => return this.renderTelegramSessionsText(root)
+            case "approvals" => return this.renderTelegramApprovalsText(root)
+            case "tasks" => return this.renderTelegramTasksText(root)
+            case "context" => return this.renderTelegramContextText(root)
+            case "allowlist" => return this.renderTelegramAllowlistText(root)
+            case "plugins" => return this.renderTelegramPluginsText(root)
+            case "mcp" => return this.renderTelegramMcpText(root)
+            case "config" => return this.renderTelegramConfigText(root)
+            case "debug" => return this.renderTelegramGenericCommandText(root)
+            case "export-session" => return this.renderTelegramExportSessionText(root)
+            case "new" | "reset" => return this.renderTelegramSessionLifecycleText(root)
+            case "compact" => return this.renderTelegramCompactText(root)
+            case "focus" | "unfocus" | "agents" | "thread_binding" => return this.renderTelegramThreadBindingText(root)
+            case "think" | "reasoning" | "fast" | "verbose" | "send" | "usage" | "queue" | "elevated" | "exec" => return this.renderTelegramSessionOptionText(root)
+            case "tts" => return this.renderTelegramTtsText(root)
+            case "list" | "status" | "logs" | "info" | "kill" | "send" | "steer" | "spawn" => return this.renderTelegramSubagentsText(root)
+            case _ => ()
+        }
+        if (status == "handler_missing" || status == "not_supported" || status == "rejected" || status == "approval_required" || status == "usage" || status == "not_found" || status == "not_configured" || status == "disabled" || status == "no_active_run" || status == "error") {
+            return this.renderTelegramGenericCommandText(root)
+        }
+        if (trimmed.startsWith("{") && root.get("action").isSome()) {
+            return this.renderTelegramGenericCommandText(root)
+        }
+        raw
+    }
+
+    private func renderTelegramNativeHelpText(root: JsonObject, message: String): String {
+        let lines = ArrayList<String>()
+        lines.add("Metis Telegram commands")
+        if (!message.isEmpty()) {
+            lines.add(message)
+        }
+        match (root.get("commands")) {
+            case Some(v) =>
+                try {
+                    let commands = v.asArray()
+                    for (i in 0..commands.size()) {
+                        let row = commands[i].asObject()
+                        lines.add("- ${this.telegramJsonString(row, "command", "")}: ${this.telegramJsonString(row, "description", "")}")
+                    }
+                } catch (_e: Exception) { () }
+            case None => ()
+        }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramCommandsText(root: JsonObject): String {
+        let lines = ArrayList<String>()
+        lines.add("Metis Telegram command catalog")
+        match (root.get("native")) {
+            case Some(v) =>
+                try {
+                    let rows = v.asArray()
+                    lines.add("Native commands:")
+                    for (i in 0..rows.size()) {
+                        let row = rows[i].asObject()
+                        let status = this.telegramJsonString(row, "status", "implemented")
+                        let auth = this.telegramJsonString(row, "auth", "authorized")
+                        let reason = this.telegramJsonString(row, "reason", "")
+                        let tail = if (reason.isEmpty()) { "" } else { " - ${reason}" }
+                        lines.add("- ${this.telegramJsonString(row, "command", "")} [${status}, ${auth}]: ${this.telegramJsonString(row, "description", "")}${tail}")
+                    }
+                } catch (_e: Exception) { () }
+            case None => ()
+        }
+        match (root.get("plugin")) {
+            case Some(v) =>
+                try {
+                    let rows = v.asArray()
+                    if (rows.size() > 0) {
+                        lines.add("Plugin commands:")
+                        for (i in 0..rows.size()) {
+                            let row = rows[i].asObject()
+                            lines.add("- ${this.telegramJsonString(row, "command", "")}: ${this.telegramJsonString(row, "description", "")}")
+                        }
+                    }
+                } catch (_e: Exception) { () }
+            case None => ()
+        }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramToolsText(root: JsonObject): String {
+        let lines = ArrayList<String>()
+        lines.add("Telegram tools")
+        lines.add("Toolsets:")
+        match (root.get("toolsets")) {
+            case Some(v) =>
+                try {
+                    let rows = v.asArray()
+                    if (rows.size() == 0) {
+                        lines.add("- none")
+                    }
+                    for (i in 0..rows.size()) {
+                        lines.add("- ${rows[i].asString().getValue()}")
+                    }
+                } catch (_e: Exception) {
+                    lines.add("- unavailable")
+                }
+            case None => lines.add("- unavailable")
+        }
+        lines.add("OpenClaw plugin sidecar: ${this.telegramJsonString(root, "openclawPluginSidecar", "unknown")}")
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramSessionsText(root: JsonObject): String {
+        let requested = this.telegramJsonString(root, "requested", "list")
+        let lines = ArrayList<String>()
+        if (requested == "path") {
+            lines.add("Gateway sessions path")
+            lines.add(this.telegramJsonString(root, "root", ""))
+            return String.join(lines.toArray(), delimiter: "\n")
+        }
+        if (requested == "preview") {
+            lines.add("Session preview: ${this.telegramJsonString(root, "sessionKey", "")}")
+            let preview = this.telegramJsonString(root, "preview", "")
+            lines.add(if (preview.isEmpty()) { "(no transcript found)" } else { preview })
+            return String.join(lines.toArray(), delimiter: "\n")
+        }
+        lines.add("Gateway sessions (${this.telegramJsonInt(root, "count", 0)})")
+        match (root.get("sessions")) {
+            case Some(v) =>
+                try {
+                    let rows = v.asArray()
+                    if (rows.size() == 0) {
+                        lines.add("(none)")
+                    }
+                    for (i in 0..rows.size()) {
+                        let row = rows[i].asObject()
+                        lines.add("- ${this.telegramJsonString(row, "sessionKey", "")} messages=${this.telegramJsonInt(row, "messageCount", 0)}")
+                    }
+                } catch (_e: Exception) { () }
+            case None => ()
+        }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramTasksText(root: JsonObject): String {
+        let lines = ArrayList<String>()
+        lines.add("Telegram tasks")
+        lines.add("Session: ${this.telegramJsonString(root, "sessionKey", "")}")
+        lines.add("Gateway sessions: ${this.telegramJsonInt(root, "sessionCount", 0)}")
+        let message = this.telegramJsonString(root, "message", "")
+        if (!message.isEmpty()) { lines.add(message) }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramContextText(root: JsonObject): String {
+        let lines = ArrayList<String>()
+        lines.add("Telegram context")
+        this.appendTelegramJsonTextField(lines, root, "Account", "accountId")
+        this.appendTelegramJsonTextField(lines, root, "Sender", "senderId")
+        this.appendTelegramJsonTextField(lines, root, "Peer", "peerId")
+        this.appendTelegramJsonTextField(lines, root, "Chat type", "chatType")
+        this.appendTelegramJsonTextField(lines, root, "Session", "sessionKey")
+        let message = this.telegramJsonString(root, "message", "")
+        if (!message.isEmpty()) { lines.add(message) }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramAllowlistText(root: JsonObject): String {
+        let lines = ArrayList<String>()
+        lines.add("Telegram allowlist")
+        this.appendTelegramJsonTextField(lines, root, "Status", "status")
+        this.appendTelegramJsonTextField(lines, root, "Requested", "requested")
+        this.appendTelegramJsonTextField(lines, root, "Scope", "scope")
+        match (root.get("allowFrom")) {
+            case Some(v) => lines.add("DM allowFrom: ${v.toJsonString()}")
+            case None => ()
+        }
+        match (root.get("pairingApproved")) {
+            case Some(v) => lines.add("Pairing approved: ${v.toJsonString()}")
+            case None => ()
+        }
+        match (root.get("groupAllowFrom")) {
+            case Some(v) => lines.add("Group allowFrom: ${v.toJsonString()}")
+            case None => ()
+        }
+        let pendingCount = this.telegramJsonInt(root, "pairingPendingCount", -1)
+        if (pendingCount >= 0) { lines.add("Pairing pending: ${pendingCount}") }
+        this.appendTelegramJsonTextField(lines, root, "Approval", "approvalId")
+        this.appendTelegramJsonTextField(lines, root, "Pending action", "pendingAction")
+        this.appendTelegramJsonTextField(lines, root, "Entry", "entry")
+        this.appendTelegramJsonTextField(lines, root, "Message", "message")
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramPluginsText(root: JsonObject): String {
+        let lines = ArrayList<String>()
+        lines.add("Telegram plugins")
+        lines.add("Requested: ${this.telegramJsonString(root, "requested", "list")}")
+        match (root.get("health")) {
+            case Some(v) =>
+                try {
+                    let health = v.asObject()
+                    lines.add("OpenClaw sidecar: ${this.telegramJsonString(health, "status", "unknown")}")
+                } catch (_e: Exception) { () }
+            case None => ()
+        }
+        match (root.get("commands")) {
+            case Some(v) =>
+                try {
+                    let rows = v.asArray()
+                    if (rows.size() == 0) {
+                        lines.add("Plugin commands: none")
+                    } else {
+                        lines.add("Plugin commands:")
+                        for (i in 0..rows.size()) {
+                            let row = rows[i].asObject()
+                            lines.add("- /${this.telegramJsonString(row, "command", "")}: ${this.telegramJsonString(row, "description", "")}")
+                        }
+                    }
+                } catch (_e: Exception) { () }
+            case None => ()
+        }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramMcpText(root: JsonObject): String {
+        let lines = ArrayList<String>()
+        lines.add("Telegram MCP")
+        lines.add("Requested: ${this.telegramJsonString(root, "requested", "show")}")
+        match (root.get("mcpServers")) {
+            case Some(v) => lines.add("Configured servers: ${v.toJsonString()}")
+            case None => this.appendTelegramJsonTextField(lines, root, "Message", "message")
+        }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramConfigText(root: JsonObject): String {
+        let lines = ArrayList<String>()
+        lines.add("Telegram config")
+        lines.add("Requested: ${this.telegramJsonString(root, "requested", "show")}")
+        this.appendTelegramJsonTextField(lines, root, "Config path", "path")
+        this.appendTelegramJsonTextField(lines, root, "Key path", "configPath")
+        this.appendTelegramJsonTextField(lines, root, "Keys", "keys")
+        this.appendTelegramJsonTextField(lines, root, "Value", "value")
+        this.appendTelegramJsonTextField(lines, root, "Message", "message")
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramExportSessionText(root: JsonObject): String {
+        let lines = ArrayList<String>()
+        lines.add("Telegram session export")
+        this.appendTelegramJsonTextField(lines, root, "Status", "status")
+        this.appendTelegramJsonTextField(lines, root, "Session", "sessionKey")
+        this.appendTelegramJsonTextField(lines, root, "Path", "path")
+        this.appendTelegramJsonTextField(lines, root, "Message", "message")
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramSessionLifecycleText(root: JsonObject): String {
+        let action = this.telegramJsonString(root, "action", "session")
+        let lines = ArrayList<String>()
+        lines.add("Telegram session ${action}")
+        this.appendTelegramJsonTextField(lines, root, "Status", "status")
+        this.appendTelegramJsonTextField(lines, root, "Session", "sessionKey")
+        this.appendTelegramJsonTextField(lines, root, "Archived", "archived")
+        this.appendTelegramJsonTextField(lines, root, "Message", "message")
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramCompactText(root: JsonObject): String {
+        let lines = ArrayList<String>()
+        lines.add("Telegram compact")
+        this.appendTelegramJsonTextField(lines, root, "Status", "status")
+        this.appendTelegramJsonTextField(lines, root, "Session", "sessionKey")
+        lines.add("Compacted: ${this.telegramJsonBool(root, "compacted", false)}")
+        let kept = this.telegramJsonInt(root, "kept", -1)
+        if (kept >= 0) { lines.add("Kept lines: ${kept}") }
+        this.appendTelegramJsonTextField(lines, root, "Reason", "reason")
+        this.appendTelegramJsonTextField(lines, root, "Archived", "archived")
+        this.appendTelegramJsonTextField(lines, root, "Message", "message")
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramThreadBindingText(root: JsonObject): String {
+        let action = this.telegramJsonString(root, "action", "thread_binding")
+        let lines = ArrayList<String>()
+        lines.add("Telegram thread binding: ${action}")
+        this.appendTelegramJsonTextField(lines, root, "Status", "status")
+        this.appendTelegramJsonTextField(lines, root, "Conversation", "conversationId")
+        this.appendTelegramJsonTextField(lines, root, "Session", "sessionKey")
+        this.appendTelegramJsonTextField(lines, root, "Error", "error")
+        match (root.get("bindings")) {
+            case Some(v) => lines.add("Bindings: ${v.toJsonString()}")
+            case None => ()
+        }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramSessionOptionText(root: JsonObject): String {
+        let action = this.telegramJsonString(root, "action", "option")
+        let lines = ArrayList<String>()
+        lines.add("Telegram option: /${action}")
+        this.appendTelegramJsonTextField(lines, root, "Status", "status")
+        this.appendTelegramJsonTextField(lines, root, "Session", "sessionKey")
+        this.appendTelegramJsonTextField(lines, root, "Field", "field")
+        this.appendTelegramJsonTextField(lines, root, "Mode", "mode")
+        this.appendTelegramJsonTextField(lines, root, "Value", "value")
+        this.appendTelegramJsonTextField(lines, root, "Message", "message")
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramTtsText(root: JsonObject): String {
+        let lines = ArrayList<String>()
+        lines.add("Telegram TTS")
+        this.appendTelegramJsonTextField(lines, root, "Status", "status")
+        this.appendTelegramJsonTextField(lines, root, "Provider", "provider")
+        this.appendTelegramJsonTextField(lines, root, "Provider kind", "providerKind")
+        lines.add("Enabled: ${this.telegramJsonBool(root, "enabled", false)}")
+        let limit = this.telegramJsonInt(root, "limit", -1)
+        if (limit >= 0) { lines.add("Limit: ${limit}") }
+        lines.add("Audio as voice: ${this.telegramJsonBool(root, "audioAsVoice", false)}")
+        this.appendTelegramJsonTextField(lines, root, "Usage", "usage")
+        this.appendTelegramJsonTextField(lines, root, "Message", "message")
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramApprovalsText(root: JsonObject): String {
+        let lines = ArrayList<String>()
+        lines.add("Pending approvals: ${this.telegramJsonInt(root, "pendingCount", 0)}")
+        match (root.get("approvals")) {
+            case Some(v) =>
+                try {
+                    let rows = v.asArray()
+                    for (i in 0..rows.size()) {
+                        let row = rows[i].asObject()
+                        lines.add("- ${this.telegramJsonString(row, "approvalId", this.telegramJsonString(row, "id", ""))}: ${this.telegramJsonString(row, "action", "")}")
+                    }
+                } catch (_e: Exception) { () }
+            case None => ()
+        }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func renderTelegramGenericCommandText(root: JsonObject): String {
+        let action = this.telegramJsonString(root, "action", "command")
+        let lines = ArrayList<String>()
+        lines.add("Telegram command: /${action}")
+        this.appendTelegramJsonTextField(lines, root, "Status", "status")
+        this.appendTelegramJsonTextField(lines, root, "Message", "message")
+        this.appendTelegramJsonTextField(lines, root, "Session", "sessionKey")
+        this.appendTelegramJsonTextField(lines, root, "Sender", "senderId")
+        this.appendTelegramJsonTextField(lines, root, "Auth", "auth")
+        this.appendTelegramJsonTextField(lines, root, "Approval", "approvalId")
+        this.appendTelegramJsonTextField(lines, root, "Pending action", "pendingAction")
+        this.appendTelegramJsonTextField(lines, root, "Skill", "skill")
+        this.appendTelegramJsonTextField(lines, root, "Command", "command")
+        this.appendTelegramJsonTextField(lines, root, "Requested", "requested")
+        this.appendTelegramJsonTextField(lines, root, "Path", "path")
+        this.appendTelegramJsonTextField(lines, root, "Field", "field")
+        this.appendTelegramJsonTextField(lines, root, "Mode", "mode")
+        this.appendTelegramJsonTextField(lines, root, "Value", "value")
+        this.appendTelegramJsonTextField(lines, root, "Provider", "provider")
+        this.appendTelegramJsonTextField(lines, root, "Provider kind", "providerKind")
+        this.appendTelegramJsonTextField(lines, root, "Run", "runId")
+        this.appendTelegramJsonTextField(lines, root, "Run status", "runStatus")
+        this.appendTelegramJsonTextField(lines, root, "Previous status", "previousStatus")
+        this.appendTelegramJsonTextField(lines, root, "Scope", "scope")
+        this.appendTelegramJsonTextField(lines, root, "Entry", "entry")
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
+    private func appendTelegramJsonTextField(lines: ArrayList<String>, root: JsonObject, label: String, key: String): Unit {
+        let value = this.telegramJsonString(root, key, "")
+        if (!value.isEmpty()) {
+            lines.add("${label}: ${value}")
+        }
+    }
+
+    private func renderTelegramSubagentsText(root: JsonObject): String {
+        let action = this.telegramJsonString(root, "action", "subagents")
+        if (action == "help") {
+            let lines = ArrayList<String>()
+            lines.add("Subagents commands")
+            lines.add(this.telegramJsonString(root, "usage", "/subagents list|status|logs|kill|spawn|steer"))
+            match (root.get("examples")) {
+                case Some(v) =>
+                    try {
+                        let examples = v.asArray()
+                        for (i in 0..examples.size()) {
+                            lines.add("- ${examples[i].asString().getValue()}")
+                        }
+                    } catch (_e: Exception) { () }
+                case None => ()
+            }
+            return String.join(lines.toArray(), delimiter: "\n")
+        }
+        let lines = ArrayList<String>()
+        lines.add("Subagents: ${action} (${this.telegramJsonString(root, "status", "ok")})")
+        if (action == "list") {
+            lines.add("total=${this.telegramJsonInt(root, "total", 0)} active=${this.telegramJsonInt(root, "activeCount", 0)} terminal=${this.telegramJsonInt(root, "terminalCount", 0)} stale=${this.telegramJsonInt(root, "staleCount", 0)} recorded=${this.telegramJsonInt(root, "recordedCount", 0)}")
+            match (root.get("sessions")) {
+                case Some(v) =>
+                    try {
+                        let rows = v.asArray()
+                        if (rows.size() == 0) { lines.add("(none)") }
+                        for (i in 0..rows.size()) {
+                            let row = rows[i].asObject()
+                            let runId = this.telegramJsonString(row, "runId", "")
+                            let sessionKey = this.telegramJsonString(row, "sessionKey", "")
+                            let state = this.telegramJsonString(row, "status", this.telegramJsonString(row, "state", ""))
+                            lines.add("- ${if (runId.isEmpty()) { sessionKey } else { runId }} ${state}")
+                        }
+                    } catch (_e: Exception) { () }
+                case None => ()
+            }
+        } else {
+            let msg = this.telegramJsonString(root, "message", this.telegramJsonString(root, "error", ""))
+            if (!msg.isEmpty()) { lines.add(msg) }
+            let runId = this.telegramJsonString(root, "runId", "")
+            if (!runId.isEmpty()) { lines.add("runId=${runId}") }
+        }
+        String.join(lines.toArray(), delimiter: "\n")
     }
 
     private func telegramCallbackJsonEscape(raw: String): String {
@@ -750,7 +1197,8 @@ public class GatewayService {
             return this.renderTelegramArgsMenu(spec)
         }
         match (spec.command) {
-            case "help" | "status" | "activation" | "pair" => gatewayHandleNativeCommandLine("/${spec.command} ${this.telegramCommandArgText(text)}").getOrThrow()
+            case "help" | "activation" | "pair" => gatewayHandleNativeCommandLine("/${spec.command} ${this.telegramCommandArgText(text)}").getOrThrow()
+            case "status" => this.renderTelegramStatusCommand(user, sessionKey)
             case "commands" => this.renderTelegramCommandsCommand(user)
             case "tools" => this.renderTelegramToolsCommand(user)
             case "whoami" => this.renderTelegramWhoamiCommand(message, accountId, sessionKey)
@@ -763,13 +1211,13 @@ public class GatewayService {
                 }
             case "models" => this.renderTelegramModelsEntry(user, sessionKey, commandText: text)
             case "allowlist" => gatewayTelegramRenderAllowlistCommand(text, user, accountId, message.senderId)
-            case "session" => this.renderTelegramCurrentSessionCommand(sessionKey)
+            case "session" => this.renderTelegramCurrentSessionCommand(text, sessionKey)
             case "sessions" => gatewayTelegramRenderSessionsCommand(text, user)
             case "approvals" => gatewayTelegramRenderApprovalsCommand()
             case "focus" | "unfocus" | "agents" => this.renderTelegramThreadBindingCommand(text, message, accountId, user, sessionKey)
             case "subagents" => gatewayHandleSubagentsCommandLine(text) ?? this.renderTelegramSubagentsFallback(text)
             case "new" | "reset" => this.renderTelegramSessionLifecycleCommand(text, user, sessionKey)
-            case "compact" => this.renderTelegramCompactCommand(user, sessionKey)
+            case "compact" => this.renderTelegramCompactCommand(text, user, sessionKey)
             case "think" | "reasoning" | "fast" | "verbose" | "send" | "usage" | "queue" | "elevated" | "exec" => this.renderTelegramSessionOptionCommand(spec.command, text, user, sessionKey)
             case "tasks" => this.renderTelegramTasksCommand(user, sessionKey)
             case "context" => this.renderTelegramContextCommand(message, accountId, sessionKey)
@@ -841,7 +1289,7 @@ public class GatewayService {
                 let denied = this.telegramCommandJson(normalized, "rejected", ok: false, message: "sender is not authorized for /${normalized}")
                 denied.put("auth", JsonString("operator"))
                 denied.put("senderId", JsonString(message.senderId))
-                this.sendTelegramNativeCommandReply(message, accountId, denied.toJsonString())
+                this.sendTelegramNativeCommandReply(message, accountId, this.renderTelegramNativeHumanReply(denied.toJsonString()))
                 return Some(true)
             }
             let args = gatewayTelegramNativeCommandArgsFromText(text)
@@ -865,7 +1313,7 @@ public class GatewayService {
             }
             let out = this.telegramCommandJson(normalized, "handler_missing", ok: false, message: "Telegram custom command '/${normalized}' has no execution definition.")
             out.put("command", JsonString(normalized))
-            this.sendTelegramNativeCommandReply(message, accountId, out.toJsonString())
+            this.sendTelegramNativeCommandReply(message, accountId, this.renderTelegramNativeHumanReply(out.toJsonString()))
             return Some(true)
         }
         None<Bool>
@@ -977,10 +1425,18 @@ public class GatewayService {
     }
 
     private func renderTelegramWhoamiCommand(message: InboundMessage, accountId: String, sessionKey: String): String {
-        "{\"ok\":true,\"status\":\"ok\",\"action\":\"whoami\",\"accountId\":\"${this.telegramCallbackJsonEscape(accountId)}\",\"senderId\":\"${this.telegramCallbackJsonEscape(message.senderId)}\",\"peerId\":\"${this.telegramCallbackJsonEscape(message.peerId)}\",\"sessionKey\":\"${this.telegramCallbackJsonEscape(sessionKey)}\"}"
+        "Telegram identity\n" +
+        "Account: ${accountId}\n" +
+        "Sender: ${message.senderId}\n" +
+        "Peer: ${message.peerId}\n" +
+        "Session: ${sessionKey}"
     }
 
-    private func renderTelegramCurrentSessionCommand(sessionKey: String): String {
+    private func renderTelegramCurrentSessionCommand(text: String, sessionKey: String): String {
+        let argText = this.telegramCommandArgText(text)
+        if (!argText.isEmpty()) {
+            return this.telegramCommandJson("session", "not_applicable", ok: false, message: "/session ${argText} is not implemented in Telegram native commands. Use /session to show the current session key.").toJsonString()
+        }
         "{\"ok\":true,\"status\":\"ok\",\"action\":\"session\",\"sessionKey\":\"${this.telegramCallbackJsonEscape(sessionKey)}\",\"message\":\"Current Telegram conversation is bound to this Gateway session key.\"}"
     }
 
@@ -1056,7 +1512,11 @@ public class GatewayService {
         out.toJsonString()
     }
 
-    private func renderTelegramCompactCommand(user: GatewayUserSettings, sessionKey: String): String {
+    private func renderTelegramCompactCommand(text: String, user: GatewayUserSettings, sessionKey: String): String {
+        let instructions = this.telegramCommandArgText(text)
+        if (!instructions.isEmpty()) {
+            return this.telegramCommandJson("compact", "not_applicable", ok: false, message: "/compact instructions are not supported by the Telegram native retention compactor. Use /compact without arguments.").toJsonString()
+        }
         let store = gatewaySessionStoreForUser(user)
         let transcript = store.transcriptPath(sessionKey)
         let out = this.telegramCommandJson("compact", "ok")
@@ -1141,6 +1601,34 @@ public class GatewayService {
             case None => out.put("value", JsonString(""))
         }
         out.toJsonString()
+    }
+
+    private func renderTelegramStatusCommand(user: GatewayUserSettings, sessionKey: String): String {
+        let store = gatewaySessionStoreForUser(user)
+        let indexRoot = store.readSessionsIndexRoot()
+        let entry = match (indexRoot.get(sessionKey)) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let totalTokens = this.telegramJsonInt(entry, "totalTokens", 0)
+        let totalTokensFresh = this.telegramJsonBool(entry, "totalTokensFresh", false)
+        let responseUsage = this.telegramJsonString(entry, "responseUsage", "")
+        let lines = ArrayList<String>()
+        lines.add("Telegram status")
+        lines.add("Scope: current Telegram Gateway session usage")
+        lines.add("Session: ${sessionKey}")
+        lines.add("Token Status")
+        if (totalTokens > 0 || totalTokensFresh) {
+            lines.add(" - Total: ${totalTokens}")
+            lines.add(" - Fresh: ${totalTokensFresh}")
+        } else {
+            lines.add(" - Total: unavailable")
+            lines.add(" - Detail: no token usage has been recorded for this Telegram session yet")
+        }
+        if (!responseUsage.isEmpty()) {
+            lines.add(" - Response usage mode: ${responseUsage}")
+        }
+        String.join(lines.toArray(), delimiter: "\n")
     }
 
     private func patchTelegramSessionIndex(user: GatewayUserSettings, sessionKey: String, field: String, value: String): Unit {
@@ -1980,11 +2468,26 @@ public class GatewayService {
         let parts = text.trimAscii().split(" ")
         if (parts.size >= 2) {
             let candidate = parts[1].trimAscii()
+            let normalized = candidate.toAsciiLower()
+            if (normalized == "help" || normalized == "-h" || normalized == "--help" || normalized == "status") {
+                return ""
+            }
             try {
                 let _ = Int64.parse(candidate)
                 return ""
             } catch (_e: Exception) {
-                return candidate.toAsciiLower()
+                return normalized
+            }
+        }
+        ""
+    }
+
+    private func telegramModelsSubcommandFromCommand(text: String): String {
+        let parts = text.trimAscii().split(" ")
+        if (parts.size >= 2) {
+            let candidate = parts[1].trimAscii().toAsciiLower()
+            if (candidate == "help" || candidate == "-h" || candidate == "--help" || candidate == "status") {
+                return candidate
             }
         }
         ""
@@ -2015,6 +2518,19 @@ public class GatewayService {
             callbackProvider.trimAscii().toAsciiLower()
         } else {
             this.telegramModelsProviderFromCommand(commandText)
+        }
+        let subcommand = this.telegramModelsSubcommandFromCommand(commandText)
+        if (subcommand == "help" || subcommand == "-h" || subcommand == "--help") {
+            return "Usage: /models [status|help|<provider>|<page>]\n" +
+                "  /models              Show Telegram model providers and the current session model.\n" +
+                "  /models status       Print read-only Telegram session model status.\n" +
+                "  /models help         Show this help.\n" +
+                "  /models <provider>   Show models for a provider.\n" +
+                "  /models <page>       Show a provider page.\n" +
+                "  /model <provider/model>  Switch current Telegram session model."
+        }
+        if (subcommand == "status") {
+            return "Telegram models status\nCurrent: ${currentText}\nScope: current Telegram Gateway session model override\nConfigure: use /models to choose from providers, or /model <provider/model> to switch directly"
         }
         if (!provider.isEmpty()) {
             return this.renderTelegramProviderModels(user, sessionKey, provider, if (callbackProvider.trimAscii().isEmpty()) { this.telegramModelsPageFromCommand(commandText) } else { callbackPage })

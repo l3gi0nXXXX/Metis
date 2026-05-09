@@ -40,6 +40,18 @@ describe("parseSlashCommand", () => {
     });
   });
 
+  it("executes /commands locally as the Control UI help alias", () => {
+    expect(SLASH_COMMANDS.find((entry) => entry.key === "commands")).toMatchObject({
+      name: "commands",
+      executeLocal: true,
+      description: "Show the same Control UI slash command help as /help.",
+    });
+    expect(parseSlashCommand("/commands")).toMatchObject({
+      command: { key: "commands", executeLocal: true },
+      args: "",
+    });
+  });
+
   it("includes shared /tools with shared arg hints", () => {
     const tools = SLASH_COMMANDS.find((entry) => entry.name === "tools");
     expect(tools).toMatchObject({
@@ -87,9 +99,23 @@ describe("parseSlashCommand", () => {
     expect(steerEntries).toHaveLength(1);
     expect(steerEntries[0]).toMatchObject({
       key: "steer",
-      description: "Inject a message into the active run",
+      description:
+        "Soft-inject a message into the current active run or one named subagent; does not restart the run.",
       args: "[id] <message>",
       aliases: expect.arrayContaining(["tell"]),
+      executeLocal: true,
+    });
+  });
+
+  it("documents /stop and /kill with Control UI-specific semantics", () => {
+    expect(SLASH_COMMANDS.find((entry) => entry.key === "stop")).toMatchObject({
+      description: "Abort the current Control UI chat turn only; does not kill subagents.",
+      executeLocal: true,
+    });
+    expect(SLASH_COMMANDS.find((entry) => entry.key === "kill")).toMatchObject({
+      args: "<id|all>",
+      description:
+        "Abort matching sub-agent sessions in the current Control UI session subtree; use all for every active subagent.",
       executeLocal: true,
     });
   });

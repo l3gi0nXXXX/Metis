@@ -294,28 +294,15 @@ protected class CustomCommandManager {
     }
 
     static public func printBuiltinCommands() {
-        let message = wrapBox(
-            "Available Builtin Commands".withColor(Theme.PRIMARY),
-            lines: BUILTIN_COMMANDS |>
-                map { commandInfo: (String, String, Array<String>) =>
-                    let cmd = "/${commandInfo[0]}".padEnd(15).withColor(AnsiColor.YELLOW)
-                    let separator = " ║ ".withColor(Theme.MUTED)
-                    let message = "- ${commandInfo[1]}".withColor(Theme.MUTED)
-                    return " ${cmd}${separator}${message}"
-                } |>
-                collectArray,
-            width: 60,
-            align: Align.Center
-        )
-        PrintUtils.printLine(message)
+        PrintUtils.printLine(renderBuiltinCommandsHelp())
     }
 
     /**
      * Check if input is a built-in command
      */
     protected static func isBuiltinCommand(name: String): Bool {
-        for (builtin in BUILTIN_COMMANDS |> map { info => info[0] }) {
-            if (name == builtin) {
+        for (builtin in BUILTIN_COMMANDS) {
+            if (name == builtin.name) {
                 return true
             }
         }

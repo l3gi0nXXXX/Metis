@@ -1,11 +1,12 @@
 package metis.cliapp
 
-import metis.core.config.CliConfig
+import metis.core.config.{CliConfig, cliFindModelAuthChoicesForProvider, cliSetupVisibleModelProviders}
 import metis.core.config.MetisConfigManager
 import metis.core.model.CliModelManager
 import metis.io.{InputUtils, PrintUtils, WithColor, Theme, AnsiColor}
 
-import std.collection.{map, collectArray}
+import std.collection.{ArrayList, filter, map, collectArray}
+import std.convert.Parsable
 
 protected struct ModelProviderPreset {
     ModelProviderPreset(
@@ -213,6 +214,202 @@ protected func handleModelsCommand(app: CliApp): Unit {
         PrintUtils.printLine("Model updated, but failed to persist provider credentials to metis.json.")
     } else {
         PrintUtils.printLine("Model switched for current session, but failed to save settings.")
+    }
+}
+
+protected func isModelsCommandLine(raw: String): Bool {
+    let t = raw.trimAscii().toAsciiLower()
+    t == "/models" || t == "models" || t.startsWith("/models ") || t.startsWith("models ")
+}
+
+protected func handleModelsCommandLine(app: CliApp, raw: String): Unit {
+    let tokens = raw.trimAscii().split(" ") |>
+        filter { x => !x.trimAscii().isEmpty() } |>
+        map { x => x.trimAscii() } |>
+        collectArray
+    if (tokens.size <= 1) {
+        handleModelsCommand(app)
+        return
+    }
+    let sub = tokens[1].toAsciiLower()
+    if (sub == "help" || sub == "-h" || sub == "--help") {
+        PrintUtils.printLine(renderModelsHelp())
+        return
+    }
+    if (sub == "status") {
+        PrintUtils.printLine(renderModelsStatus())
+        return
+    }
+    if (isModelsPageToken(sub)) {
+        PrintUtils.printLine(renderModelsProviderIndex(parseModelsPage(sub)))
+        return
+    }
+    let page = if (tokens.size >= 3) { parseModelsPage(tokens[2]) } else { 1 }
+    PrintUtils.printLine(renderModelsProviderModels(tokens[1], page))
+}
+
+protected func renderModelsHelp(): String {
+    "Usage: /models [status|help|<provider>|<page>]\n" +
+    "  /models              Open the interactive provider/model configuration flow and may write metis.json.\n" +
+    "  /models status       Print read-only CLI chat model status.\n" +
+    "  /models help         Show this help.\n" +
+    "  /models <provider>   Show read-only model candidates for a provider.\n" +
+    "  /models <page>       Show a provider page.\n" +
+    "  metis models set <provider:model>  Switch the persisted CLI model outside chat.\n"
+}
+
+protected func renderModelsStatus(): String {
+    let current = CliConfig.modelOrEmpty().trimAscii()
+    let model = if (current.isEmpty()) { "not set in current runtime" } else { current }
+    "Models status (CLI chat)\n" +
+    "  Current model: ${model}\n" +
+    "  Scope: read-only runtime/config summary for CLI chat; this is not a provider catalog.\n" +
+    "  Configure: use `/models` for the interactive writer or `metis config set model <provider:model>` outside chat.\n"
+}
+
+protected func renderModelsProviderIndex(page: Int64): String {
+    let providers = cliSetupVisibleModelProviders()
+    let pageSize: Int64 = 8
+    let total = Int64(providers.size)
+    let totalPages = if (total <= 0) { 1 } else { (total + pageSize - 1) / pageSize }
+    var effectivePage = page
+    if (effectivePage < 1) {
+        effectivePage = 1
+    }
+    if (effectivePage > totalPages) {
+        effectivePage = totalPages
+    }
+
+    let sb = StringBuilder()
+    sb.append("CLI models providers\n")
+    sb.append("Current: ${renderModelsCurrentText()}\n")
+    sb.append("Page: ${effectivePage}/${totalPages}\n")
+    let start = (effectivePage - 1) * pageSize
+    let end = if (start + pageSize > total) { total } else { start + pageSize }
+    for (idx in start..end) {
+        let provider = providers[idx]
+        let count = modelsCandidatesForProvider(provider.providerId).size
+        let currentMark = if (modelsProviderFromRef(CliConfig.modelOrEmpty()) == provider.providerId) { " current" } else { "" }
+        sb.append("- ${provider.providerId} (${count}) default=${provider.defaultModelRef}${currentMark}\n")
+    }
+    sb.append("Use: /models <provider>\n")
+    if (effectivePage < totalPages) {
+        sb.append("More: /models ${effectivePage + 1}\n")
+    }
+    sb.append("Switch: metis models set <provider:model>\n")
+    sb.toString()
+}
+
+protected func renderModelsProviderModels(provider: String, page: Int64): String {
+    let normalizedProvider = provider.trimAscii().toAsciiLower()
+    let models = modelsCandidatesForProvider(normalizedProvider)
+    if (models.isEmpty()) {
+        let sb = StringBuilder()
+        sb.append("Unknown provider or no models: ${normalizedProvider}\n")
+        sb.append("Available providers:\n")
+        for (descriptor in cliSetupVisibleModelProviders()) {
+            sb.append("- ${descriptor.providerId}\n")
+        }
+        sb.append("Use: /models <provider>\n")
+        return sb.toString()
+    }
+
+    let pageSize: Int64 = 8
+    let total = Int64(models.size)
+    let totalPages = if (total <= 0) { 1 } else { (total + pageSize - 1) / pageSize }
+    var effectivePage = page
+    if (effectivePage < 1) {
+        effectivePage = 1
+    }
+    if (effectivePage > totalPages) {
+        effectivePage = totalPages
+    }
+
+    let sb = StringBuilder()
+    sb.append("Models (${normalizedProvider}) - ${total} available\n")
+    sb.append("Current: ${renderModelsCurrentText()}\n")
+    sb.append("Page: ${effectivePage}/${totalPages}\n")
+    let start = (effectivePage - 1) * pageSize
+    let end = if (start + pageSize > total) { total } else { start + pageSize }
+    for (idx in start..end) {
+        let model = models[idx]
+        let ref = "${normalizedProvider}:${model}"
+        let mark = if (ref == CliConfig.modelOrEmpty().trimAscii()) { " *current*" } else { "" }
+        sb.append("- ${normalizedProvider}/${model}${mark}\n")
+    }
+    sb.append("Back: /models\n")
+    sb.append("Switch: metis models set <provider:model>\n")
+    sb.toString()
+}
+
+private func renderModelsCurrentText(): String {
+    let current = CliConfig.modelOrEmpty().trimAscii()
+    if (current.isEmpty()) {
+        return "not set in current runtime"
+    }
+    current
+}
+
+private func modelsCandidatesForProvider(provider: String): Array<String> {
+    let normalizedProvider = provider.trimAscii().toAsciiLower()
+    let out = ArrayList<String>()
+    for (descriptor in cliSetupVisibleModelProviders()) {
+        if (descriptor.providerId == normalizedProvider) {
+            addModelsCandidate(out, normalizedProvider, descriptor.defaultModelRef)
+        }
+    }
+    for (choice in cliFindModelAuthChoicesForProvider(normalizedProvider)) {
+        addModelsCandidate(out, normalizedProvider, choice.defaultModelRef)
+    }
+    addModelsCandidate(out, normalizedProvider, CliConfig.modelOrEmpty())
+    out.toArray()
+}
+
+private func addModelsCandidate(out: ArrayList<String>, provider: String, modelRef: String): Unit {
+    let modelProvider = modelsProviderFromRef(modelRef)
+    if (modelProvider != provider.trimAscii().toAsciiLower()) {
+        return
+    }
+    let modelId = modelsModelIdFromRef(modelRef)
+    if (!modelId.isEmpty() && !out.contains(modelId)) {
+        out.add(modelId)
+    }
+}
+
+private func modelsProviderFromRef(modelRef: String): String {
+    let value = modelRef.trimAscii()
+    if (let Some(index) <- value.indexOf(b':')) {
+        return value[..index].trimAscii().toAsciiLower()
+    }
+    ""
+}
+
+private func modelsModelIdFromRef(modelRef: String): String {
+    let value = modelRef.trimAscii()
+    if (let Some(index) <- value.indexOf(b':')) {
+        return value[index + 1..].trimAscii()
+    }
+    value
+}
+
+private func isModelsPageToken(value: String): Bool {
+    try {
+        let _ = Int64.parse(value.trimAscii())
+        return true
+    } catch (_: Exception) {
+        return false
+    }
+}
+
+private func parseModelsPage(value: String): Int64 {
+    try {
+        let parsed = Int64.parse(value.trimAscii())
+        if (parsed < 1) {
+            return 1
+        }
+        return parsed
+    } catch (_: Exception) {
+        return 1
     }
 }
 

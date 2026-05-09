@@ -259,6 +259,37 @@ public class GatewayServiceTelegramNativeTest {
     }
 
     @TestCase
+    public func modelsHelpAndStatusRenderTelegramTextInsteadOfUnknownProvider(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["8734062810"]
+            user.telegram.actions.inlineKeyboard = true
+            user.telegram.actions.callbackQuery = true
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/models help")
+            adapter.queue("/models status")
+            service.processOnce()
+
+            @Expect(adapter.sentText(0).contains("Usage: /models [status|help|<provider>|<page>]"), true)
+            @Expect(adapter.sentText(0).contains("  /models status"), true)
+            @Expect(adapter.sentText(0).contains("  /models help"), true)
+            @Expect(adapter.sentText(0).contains("  /models <provider>"), true)
+            @Expect(adapter.sentText(0).contains("  /model <provider/model>"), true)
+            @Expect(adapter.sentText(0).contains("Unknown provider"), false)
+            @Expect(adapter.sentText(0).startsWith("{"), false)
+            @Expect(adapter.sentText(1).contains("Telegram models status"), true)
+            @Expect(adapter.sentText(1).contains("Current:"), true)
+            @Expect(adapter.sentText(1).contains("Unknown provider"), false)
+            @Expect(adapter.sentText(1).startsWith("{"), false)
+        }
+    }
+
+    @TestCase
     public func modelsPageCallbackReturnsModelPageWithoutMutatingConfig(): Unit {
         withGatewayTelegramNativeTestHome {
             var user = GatewayUserSettings()
@@ -1040,11 +1071,159 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queue("/approvals")
             service.processOnce()
 
-            @Expect(JsonValue.fromStr(adapter.sentText(0)).asObject().get("action").getOrThrow().asString().getValue(), "help")
-            @Expect(JsonValue.fromStr(adapter.sentText(1)).asObject().get("action").getOrThrow().asString().getValue(), "help")
+            @Expect(adapter.sentText(0).contains("Metis Telegram commands"), true)
+            @Expect(adapter.sentText(0).startsWith("{"), false)
+            @Expect(adapter.sentText(1).contains("Subagents commands"), true)
             @Expect(adapter.sentText(1).contains("/subagents spawn"), true)
-            @Expect(JsonValue.fromStr(adapter.sentText(2)).asObject().get("action").getOrThrow().asString().getValue(), "sessions")
-            @Expect(JsonValue.fromStr(adapter.sentText(3)).asObject().get("action").getOrThrow().asString().getValue(), "approvals")
+            @Expect(adapter.sentText(2).contains("Gateway sessions"), true)
+            @Expect(adapter.sentText(3).contains("Pending approvals"), true)
+            @Expect(adapter.sentText(3).startsWith("{"), false)
+        }
+    }
+
+    @TestCase
+    public func telegramNativeHelpWithSupplementalEntityContextStillRendersText(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/help@metis_fake_bot\n[entities]\n- bot_command: /help@metis_fake_bot")
+            service.processOnce()
+
+            @Expect(adapter.sentText(0).contains("Metis Telegram commands"), true)
+            @Expect(adapter.sentText(0).startsWith("{"), false)
+            @Expect(adapter.sentText(0).contains("\"commands\""), false)
+        }
+    }
+
+    @TestCase
+    public func telegramNativeCommandsRenderHumanReadableStatusAndCatalogMeanings(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/commands")
+            adapter.queue("/status")
+            adapter.queue("/acp")
+            adapter.queue("/session idle")
+            adapter.queue("/compact summarize older turns")
+            adapter.queue("/btw quick side question")
+            adapter.queue("/whoami")
+            service.processOnce()
+
+            @Expect(adapter.sentText(0).contains("Metis Telegram command catalog"), true)
+            @Expect(adapter.sentText(0).contains("/acp [not_applicable"), true)
+            @Expect(adapter.sentText(0).startsWith("{"), false)
+            @Expect(adapter.sentText(1).contains("Telegram status"), true)
+            @Expect(adapter.sentText(1).contains("Scope: current Telegram Gateway session usage"), true)
+            @Expect(adapter.sentText(1).contains("Token Status"), true)
+            @Expect(adapter.sentText(1).contains("Session:"), true)
+            @Expect(adapter.sentText(1).contains("local CLI process token manager"), false)
+            @Expect(adapter.sentText(1).startsWith("{"), false)
+            @Expect(adapter.sentText(2).contains("Not applicable: /acp"), true)
+            @Expect(adapter.sentText(2).contains("OpenClaw"), false)
+            @Expect(adapter.sentText(3).contains("Not applicable: /session"), true)
+            @Expect(adapter.sentText(4).contains("Not applicable: /compact"), true)
+            @Expect(adapter.sentText(5).contains("Not applicable: /btw"), true)
+            @Expect(adapter.sentText(6).contains("Telegram identity"), true)
+            @Expect(adapter.sentText(6).contains("Sender: 8734062810"), true)
+            @Expect(adapter.sentText(6).contains("Session: telegram:direct:"), true)
+            @Expect(adapter.sentText(6).startsWith("{"), false)
+        }
+    }
+
+    @TestCase
+    public func telegramNativeCatalogCommandsDoNotReturnRawJsonByDefault(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            user.telegram.configWrites = false
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+
+            let catalog = gatewayTelegramNativeCommandCatalog()
+            for (entry in catalog) {
+                adapter.queue(this.safeTelegramNativeCommandInput(entry.command))
+            }
+            service.processOnce()
+
+            @Expect(adapter.sentCount(), Int64(catalog.size))
+            for (i in 0..catalog.size) {
+                let reply = adapter.sentText(i)
+                @Expect(reply.trimAscii().isEmpty(), false)
+                @Expect(reply.trimAscii().startsWith("{"), false)
+            }
+        }
+    }
+
+    @TestCase
+    public func telegramToolsCommandRendersHumanReadableToolSummary(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/tools")
+            service.processOnce()
+
+            @Expect(adapter.sentText(0).contains("Telegram tools"), true)
+            @Expect(adapter.sentText(0).contains("gateway_sessions"), true)
+            @Expect(adapter.sentText(0).contains("telegram_media"), true)
+            @Expect(adapter.sentText(0).contains("subagents"), true)
+            @Expect(adapter.sentText(0).contains("OpenClaw plugin sidecar:"), true)
+            @Expect(adapter.sentText(0).startsWith("{"), false)
+        }
+    }
+
+    private func safeTelegramNativeCommandInput(command: String): String {
+        match (command) {
+            case "allowlist" => "/allowlist list"
+            case "approve" => "/approve"
+            case "btw" => "/btw test side question"
+            case "export-session" => "/export-session catalog-smoke.html"
+            case "kill" => "/kill missing-run"
+            case "steer" => "/steer missing-run continue"
+            case "config" => "/config show"
+            case "mcp" => "/mcp show"
+            case "plugins" => "/plugins list"
+            case "debug" => "/debug show"
+            case "usage" => "/usage status"
+            case "restart" => "/restart"
+            case "send" => "/send status"
+            case "think" => "/think status"
+            case "verbose" => "/verbose status"
+            case "fast" => "/fast status"
+            case "reasoning" => "/reasoning status"
+            case "elevated" => "/elevated status"
+            case "exec" => "/exec status"
+            case "queue" => "/queue status"
+            case "model" => "/model"
+            case "models" => "/models help"
+            case "bash" => "/bash echo test"
+            case "skill" => "/skill"
+            case "tts" => "/tts status"
+            case "subagents" => "/subagents help"
+            case "sessions" => "/sessions list"
+            case "compact" => "/compact"
+            case _ => "/${command}"
         }
     }
 
@@ -1062,7 +1241,7 @@ public class GatewayServiceTelegramNativeTest {
             service.start()
             adapter.queue("/focus agent:main:explicit:review")
             service.processOnce()
-            @Expect(adapter.sentText(0).contains("\"action\":\"focus\""), true)
+            @Expect(adapter.sentText(0).contains("Telegram thread binding: focus"), true)
             @Expect(adapter.sentText(0).contains("agent:main:explicit:review"), true)
 
             let resolved = gatewayTelegramThreadBindingResolve("telegram", "default", "8734062810")
@@ -1070,12 +1249,12 @@ public class GatewayServiceTelegramNativeTest {
 
             adapter.queue("/agents")
             service.processOnce()
-            @Expect(adapter.sentText(1).contains("\"action\":\"agents\""), true)
+            @Expect(adapter.sentText(1).contains("Telegram thread binding: agents"), true)
             @Expect(adapter.sentText(1).contains("agent:main:explicit:review"), true)
 
             adapter.queue("/unfocus")
             service.processOnce()
-            @Expect(adapter.sentText(2).contains("\"action\":\"unfocus\""), true)
+            @Expect(adapter.sentText(2).contains("Telegram thread binding: unfocus"), true)
             @Expect(gatewayTelegramThreadBindingResolve("telegram", "default", "8734062810").size(), 0)
         }
     }
@@ -1111,13 +1290,11 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queue("/commands")
             service.processOnce()
 
-            let root = JsonValue.fromStr(adapter.sentText(0)).asObject()
-            let native = root.get("native").getOrThrow().asArray()
-            @Expect(adapter.sentText(0).contains("\"/bash\""), true)
-            @Expect(adapter.sentText(0).contains("\"status\": \"stub\""), false)
-            @Expect(adapter.sentText(0).contains("\"/allowlist\""), true)
-            @Expect(adapter.sentText(0).contains("\"status\": \"not_applicable\""), true)
-            @Expect(native.size() >= 43, true)
+            @Expect(adapter.sentText(0).contains("Metis Telegram command catalog"), true)
+            @Expect(adapter.sentText(0).contains("/bash"), true)
+            @Expect(adapter.sentText(0).contains("stub"), false)
+            @Expect(adapter.sentText(0).contains("/allowlist"), true)
+            @Expect(adapter.sentText(0).contains("not_applicable"), true)
         }
     }
 
@@ -1142,9 +1319,13 @@ public class GatewayServiceTelegramNativeTest {
             service.sendTextToPeerDetailed("telegram", "8734062810", "[subagent-notice]\nrunId=test-run\nstatus=done", accountId: "default")
             service.processOnce()
 
-            @Expect(JsonValue.fromStr(adapter.sentText(1)).asObject().get("action").getOrThrow().asString().getValue(), "status")
-            @Expect(JsonValue.fromStr(adapter.sentText(2)).asObject().get("status").getOrThrow().asString().getValue(), "ok")
-            @Expect(JsonValue.fromStr(adapter.sentText(3)).asObject().get("action").getOrThrow().asString().getValue(), "think")
+            @Expect(adapter.sentText(1).contains("Telegram status"), true)
+            @Expect(adapter.sentText(1).contains("Token Status"), true)
+            @Expect(adapter.sentText(1).startsWith("{"), false)
+            @Expect(adapter.sentText(2).contains("Telegram allowlist"), true)
+            @Expect(adapter.sentText(2).contains("Status: ok"), true)
+            @Expect(adapter.sentText(3).contains("Telegram option: /think"), true)
+            @Expect(adapter.sentText(3).contains("Mode: high"), true)
             @Expect(adapter.sentText(0).contains("[subagent-notice]"), true)
             @Expect(adapter.sentCount(), 4)
         }
@@ -1166,15 +1347,19 @@ public class GatewayServiceTelegramNativeTest {
             }
             service.processOnce()
 
-            @Expect(JsonValue.fromStr(adapter.sentText(0)).asObject().get("action").getOrThrow().asString().getValue(), "tasks")
-            @Expect(JsonValue.fromStr(adapter.sentText(1)).asObject().get("sessionKey").isSome(), true)
-            @Expect(JsonValue.fromStr(adapter.sentText(2)).asObject().get("field").getOrThrow().asString().getValue(), "responseUsage")
-            @Expect(JsonValue.fromStr(adapter.sentText(3)).asObject().get("commands").isSome(), true)
-            @Expect(JsonValue.fromStr(adapter.sentText(4)).asObject().get("mcpServers").isSome(), true)
-            @Expect(JsonValue.fromStr(adapter.sentText(5)).asObject().get("keys").isSome(), true)
-            @Expect(JsonValue.fromStr(adapter.sentText(6)).asObject().get("status").getOrThrow().asString().getValue(), "ok")
-            let exported = JsonValue.fromStr(adapter.sentText(7)).asObject()
-            @Expect(exported.get("path").getOrThrow().asString().getValue().contains("/tmp/metis-gateway-telegram-native-test-home"), true)
+            @Expect(adapter.sentText(0).contains("Telegram tasks"), true)
+            @Expect(adapter.sentText(1).contains("Telegram context"), true)
+            @Expect(adapter.sentText(1).contains("Session: telegram:direct:8734062810"), true)
+            @Expect(adapter.sentText(2).contains("Telegram option: /usage"), true)
+            @Expect(adapter.sentText(2).contains("Field: responseUsage"), true)
+            @Expect(adapter.sentText(3).contains("Telegram plugins"), true)
+            @Expect(adapter.sentText(4).contains("Telegram MCP"), true)
+            @Expect(adapter.sentText(5).contains("Telegram config"), true)
+            @Expect(adapter.sentText(5).contains("Keys:"), true)
+            @Expect(adapter.sentText(6).contains("Telegram command: /debug"), true)
+            @Expect(adapter.sentText(6).contains("Status: ok"), true)
+            @Expect(adapter.sentText(7).contains("Telegram session export"), true)
+            @Expect(adapter.sentText(7).contains("/tmp/metis-gateway-telegram-native-test-home"), true)
         }
     }
 
@@ -1197,8 +1382,8 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queue("/compact")
             service.processOnce()
 
-            @Expect(adapter.sentText(0).contains("\"status\": \"ok\""), true)
-            @Expect(adapter.sentText(4).contains("\"status\": \"ok\""), true)
+            @Expect(adapter.sentText(0).contains("Status: ok"), true)
+            @Expect(adapter.sentText(4).contains("Status: ok"), true)
             @Expect(adapter.sentText(4).contains("accepted"), false)
             let store = gatewaySessionStoreForUser(CliSettingManager.readGatewaySettings())
             let indexRoot = store.readSessionsIndexRoot()
@@ -1225,8 +1410,8 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queue("/config set gateway.telegram.defaultTo user:1", sender: "123")
             service.processOnce()
 
-            @Expect(adapter.sentText(0).contains("\"status\": \"rejected\""), true)
-            @Expect(adapter.sentText(1).contains("\"status\": \"rejected\""), true)
+            @Expect(adapter.sentText(0).contains("Status: rejected"), true)
+            @Expect(adapter.sentText(1).contains("Status: rejected"), true)
         }
     }
 
@@ -1249,8 +1434,8 @@ public class GatewayServiceTelegramNativeTest {
 
             @Expect(adapter.sentText(0).contains("[inline-keyboard]"), true)
             @Expect(adapter.sentText(0).contains("callback:cmd:think:high"), true)
-            @Expect(adapter.sentText(1).contains("\"action\": \"think\""), true)
-            @Expect(adapter.sentText(1).contains("\"mode\": \"high\""), true)
+            @Expect(adapter.sentText(1).contains("Telegram option: /think"), true)
+            @Expect(adapter.sentText(1).contains("Mode: high"), true)
         }
     }
 
@@ -1273,12 +1458,11 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queue("/allowlist add dm 12345")
             service.processOnce()
 
-            let listed = JsonValue.fromStr(adapter.sentText(0)).asObject()
-            @Expect(listed.get("allowFrom").getOrThrow().asArray()[0].asString().getValue(), "tg:8734062810")
+            @Expect(adapter.sentText(0).contains("Telegram allowlist"), true)
+            @Expect(adapter.sentText(0).contains("tg:8734062810"), true)
             @Expect(adapter.sentText(0).contains("555"), true)
-            let add = JsonValue.fromStr(adapter.sentText(1)).asObject()
-            @Expect(add.get("status").getOrThrow().asString().getValue(), "approval_required")
-            @Expect(add.get("pendingAction").getOrThrow().asString().getValue(), "telegram.allowlist.add")
+            @Expect(adapter.sentText(1).contains("Status: approval_required"), true)
+            @Expect(adapter.sentText(1).contains("Pending action: telegram.allowlist.add"), true)
             let updated = CliSettingManager.readGatewaySettings()
             @Expect(updated.telegram.allowFrom.contains("12345"), false)
         }
@@ -1304,13 +1488,11 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queue("/approvals")
             service.processOnce()
 
-            let sessions = JsonValue.fromStr(adapter.sentText(0)).asObject()
-            @Expect(sessions.get("count").getOrThrow().asInt().getValue() >= 1, true)
+            @Expect(adapter.sentText(0).contains("Gateway sessions"), true)
             @Expect(adapter.sentText(0).contains("telegram:direct:8734062810"), true)
-            let preview = JsonValue.fromStr(adapter.sentText(1)).asObject()
-            @Expect(preview.get("preview").getOrThrow().asString().getValue().contains("[user] hello"), true)
-            let approvals = JsonValue.fromStr(adapter.sentText(3)).asObject()
-            @Expect(approvals.get("pendingCount").getOrThrow().asInt().getValue(), 1)
+            @Expect(adapter.sentText(1).contains("Session preview: telegram:direct:8734062810"), true)
+            @Expect(adapter.sentText(1).contains("[user] hello"), true)
+            @Expect(adapter.sentText(3).contains("Pending approvals: 1"), true)
             @Expect(adapter.sentText(3).contains("telegram.bash.exec"), true)
         }
     }
@@ -1338,9 +1520,8 @@ public class GatewayServiceTelegramNativeTest {
             service.processOnce()
 
             for (i in 0..4) {
-                let out = JsonValue.fromStr(adapter.sentText(i)).asObject()
-                @Expect(out.get("status").getOrThrow().asString().getValue(), "approval_required")
-                @Expect(out.get("approvalId").isSome(), true)
+                @Expect(adapter.sentText(i).contains("Status: approval_required"), true)
+                @Expect(adapter.sentText(i).contains("Approval:"), true)
             }
             @Expect(MetisConfigManager.configPath().toString(), before)
             @Expect(adapter.sentText(0).contains("telegram.config.mutation"), true)
@@ -1371,9 +1552,8 @@ public class GatewayServiceTelegramNativeTest {
 
             @Expect(adapter.sentText(0).contains("telegram.bash.exec"), true)
             @Expect(adapter.sentText(1).contains("telegram.gateway.restart"), true)
-            let stopped = JsonValue.fromStr(adapter.sentText(2)).asObject()
-            @Expect(stopped.get("status").getOrThrow().asString().getValue(), "cancelled")
-            @Expect(stopped.get("runId").getOrThrow().asString().getValue(), runId)
+            @Expect(adapter.sentText(2).contains("Status: cancelled"), true)
+            @Expect(adapter.sentText(2).contains("Run: ${runId}"), true)
         }
     }
 
@@ -1398,19 +1578,16 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queueGroup("/bash echo denied", sender: "333")
             service.processOnce()
 
-            let allowed = JsonValue.fromStr(adapter.sentText(0)).asObject()
-            @Expect(allowed.get("status").getOrThrow().asString().getValue(), "approval_required")
-            @Expect(allowed.get("pendingAction").getOrThrow().asString().getValue(), "telegram.bash.exec")
-            let denied = JsonValue.fromStr(adapter.sentText(1)).asObject()
-            @Expect(denied.get("status").getOrThrow().asString().getValue(), "rejected")
+            @Expect(adapter.sentText(0).contains("Status: approval_required"), true)
+            @Expect(adapter.sentText(0).contains("Pending action: telegram.bash.exec"), true)
+            @Expect(adapter.sentText(1).contains("Status: rejected"), true)
 
             var disabled = CliSettingManager.readGatewaySettings()
             disabled.telegram.commands.useAccessGroups = false
             CliSettingManager.writeGatewaySettings(disabled)
             adapter.queueGroup("/bash echo old-auth", sender: "222")
             service.processOnce()
-            let oldAuth = JsonValue.fromStr(adapter.sentText(2)).asObject()
-            @Expect(oldAuth.get("status").getOrThrow().asString().getValue(), "rejected")
+            @Expect(adapter.sentText(2).contains("Status: rejected"), true)
         }
     }
 
@@ -1434,10 +1611,9 @@ public class GatewayServiceTelegramNativeTest {
             service.processOnce()
 
             @Expect(adapter.sentText(0), "deploying prod")
-            let missing = JsonValue.fromStr(adapter.sentText(1)).asObject()
-            @Expect(missing.get("action").getOrThrow().asString().getValue(), "noop")
-            @Expect(missing.get("status").getOrThrow().asString().getValue(), "handler_missing")
-            @Expect(missing.get("ok").getOrThrow().asBool().getValue(), false)
+            @Expect(adapter.sentText(1).contains("Telegram command: /noop"), true)
+            @Expect(adapter.sentText(1).contains("Status: handler_missing"), true)
+            @Expect(adapter.sentText(1).startsWith("{"), false)
         }
     }
 
@@ -1487,9 +1663,9 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queue("/btw what is the side answer?")
             service.processOnce()
 
-            @Expect(JsonValue.fromStr(adapter.sentText(0)).asObject().get("skills").isSome(), true)
-            let btw = JsonValue.fromStr(adapter.sentText(1)).asObject()
-            @Expect(btw.get("persistent").getOrThrow().asBool().getValue(), false)
+            @Expect(adapter.sentText(0).contains("Telegram command: /skill"), true)
+            @Expect(adapter.sentText(0).startsWith("{"), false)
+            @Expect(adapter.sentText(1).contains("Not applicable: /btw"), true)
             let raw = store.readTranscriptRaw("telegram:direct:8734062810").getOrThrow()
             @Expect(raw.contains("what is the side answer"), false)
         }
@@ -1514,12 +1690,13 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queue("/tts audio hello")
             service.processOnce()
 
-            @Expect(JsonValue.fromStr(adapter.sentText(0)).asObject().get("status").getOrThrow().asString().getValue(), "not_configured")
-            @Expect(JsonValue.fromStr(adapter.sentText(1)).asObject().get("provider").getOrThrow().asString().getValue(), "fake")
+            @Expect(adapter.sentText(0).contains("Telegram TTS"), true)
+            @Expect(adapter.sentText(0).contains("Status: not_configured"), true)
+            @Expect(adapter.sentText(1).contains("Provider: fake"), true)
             @Expect(adapter.sentText(2).startsWith("[voice]"), true)
             @Expect(adapter.sentText(2).contains("/tmp/metis-gateway-telegram-native-test-home"), true)
-            @Expect(JsonValue.fromStr(adapter.sentText(3)).asObject().get("status").getOrThrow().asString().getValue(), "not_found")
-            @Expect(JsonValue.fromStr(adapter.sentText(4)).asObject().get("status").getOrThrow().asString().getValue(), "not_found")
+            @Expect(adapter.sentText(3).contains("Status: not_found"), true)
+            @Expect(adapter.sentText(4).contains("Status: not_found"), true)
         }
     }
 
@@ -1548,11 +1725,10 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queue("/tts audio hello-command-provider")
             service.processOnce()
 
-            let status = JsonValue.fromStr(adapter.sentText(0)).asObject()
-            @Expect(status.get("status").getOrThrow().asString().getValue(), "ok")
-            @Expect(status.get("provider").getOrThrow().asString().getValue(), "command")
-            @Expect(status.get("providerKind").getOrThrow().asString().getValue(), "command")
-            @Expect(status.get("audioAsVoice").getOrThrow().asBool().getValue(), false)
+            @Expect(adapter.sentText(0).contains("Status: ok"), true)
+            @Expect(adapter.sentText(0).contains("Provider: command"), true)
+            @Expect(adapter.sentText(0).contains("Provider kind: command"), true)
+            @Expect(adapter.sentText(0).contains("Audio as voice: false"), true)
             @Expect(adapter.sentText(1).startsWith("[audio]"), true)
             @Expect(adapter.sentText(1).contains("/tmp/metis-gateway-telegram-native-test-home"), true)
             @Expect(adapter.sentText(1).contains("caption=TTS (command)"), true)

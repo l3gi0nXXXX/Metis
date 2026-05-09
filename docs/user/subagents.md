@@ -126,6 +126,16 @@ Available actions:
 - `Logs`: fetch transcript-backed logs.
 - `Kill`: cancel a non-terminal run.
 
+The chat input also exposes local Control UI slash commands derived from the same UI command manifest as the `/help` output:
+
+```text
+/kill <id|all>
+/steer [id] <message>
+/redirect [id] <message>
+```
+
+`/kill` aborts matching sub-agent sessions under the current Control UI session. `all` means all active subagents in that session subtree, not every Telegram or Gateway session. `/steer` soft-injects guidance into an already active current run or named subagent and does not restart it. `/redirect` aborts and restarts the current run or named subagent with the new message.
+
 The panel uses the Gateway API routes:
 
 ```text

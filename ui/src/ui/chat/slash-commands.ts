@@ -4,6 +4,11 @@ import type {
   CommandArgChoice,
 } from "../../metis-runtime/auto-reply/commands-registry.types.js";
 import type { IconName } from "../icons.ts";
+import {
+  CONTROL_UI_ONLY_SLASH_COMMANDS,
+  CONTROL_UI_SLASH_MANIFEST_BY_KEY,
+  LOCAL_SLASH_COMMAND_KEYS,
+} from "./slash-command-manifest.ts";
 
 export type SlashCommandCategory = "session" | "model" | "agents" | "tools";
 
@@ -23,115 +28,17 @@ export type SlashCommandDef = {
   shortcut?: string;
 };
 
-const COMMAND_ICON_OVERRIDES: Partial<Record<string, IconName>> = {
-  help: "book",
-  status: "barChart",
-  usage: "barChart",
-  export: "download",
-  export_session: "download",
-  tools: "terminal",
-  skill: "zap",
-  commands: "book",
-  new: "plus",
-  reset: "refresh",
-  compact: "loader",
-  stop: "stop",
-  clear: "trash",
-  focus: "eye",
-  unfocus: "eye",
-  model: "brain",
-  models: "brain",
-  think: "brain",
-  verbose: "terminal",
-  fast: "zap",
-  agents: "monitor",
-  subagents: "folder",
-  kill: "x",
-  steer: "send",
-  tts: "volume2",
-};
-
-const LOCAL_COMMANDS = new Set([
-  "help",
-  "new",
-  "reset",
-  "stop",
-  "compact",
-  "focus",
-  "model",
-  "think",
-  "fast",
-  "verbose",
-  "export-session",
-  "usage",
-  "agents",
-  "kill",
-  "steer",
-  "redirect",
-]);
-
 const UI_ONLY_COMMANDS: SlashCommandDef[] = [
-  {
-    key: "clear",
-    name: "clear",
-    description: "Clear chat history",
-    icon: "trash",
-    category: "session",
-    executeLocal: true,
-  },
-  {
-    key: "redirect",
-    name: "redirect",
-    description: "Abort and restart with a new message",
-    args: "[id] <message>",
-    icon: "refresh",
-    category: "agents",
-    executeLocal: true,
-  },
+  ...CONTROL_UI_ONLY_SLASH_COMMANDS.map((entry) => ({
+    key: entry.key,
+    name: entry.key,
+    description: entry.description ?? "",
+    args: entry.args,
+    icon: entry.icon,
+    category: entry.category,
+    executeLocal: entry.executeLocal,
+  })),
 ];
-
-const CATEGORY_OVERRIDES: Partial<Record<string, SlashCommandCategory>> = {
-  help: "tools",
-  commands: "tools",
-  tools: "tools",
-  skill: "tools",
-  status: "tools",
-  export_session: "tools",
-  usage: "tools",
-  tts: "tools",
-  agents: "agents",
-  subagents: "agents",
-  kill: "agents",
-  steer: "agents",
-  redirect: "agents",
-  session: "session",
-  stop: "session",
-  reset: "session",
-  new: "session",
-  compact: "session",
-  focus: "session",
-  unfocus: "session",
-  model: "model",
-  models: "model",
-  think: "model",
-  verbose: "model",
-  fast: "model",
-  reasoning: "model",
-  elevated: "model",
-  queue: "model",
-};
-
-const COMMAND_DESCRIPTION_OVERRIDES: Partial<Record<string, string>> = {
-  steer: "Inject a message into the active run",
-};
-
-const COMMAND_ARGS_OVERRIDES: Partial<Record<string, string>> = {
-  steer: "[id] <message>",
-};
-
-function normalizeUiKey(command: ChatCommandDefinition): string {
-  return command.key.replace(/[:.-]/g, "_");
-}
 
 function getSlashAliases(command: ChatCommandDefinition): string[] {
   return command.textAliases
@@ -174,11 +81,11 @@ function getArgOptions(command: ChatCommandDefinition): string[] | undefined {
 }
 
 function mapCategory(command: ChatCommandDefinition): SlashCommandCategory {
-  return CATEGORY_OVERRIDES[normalizeUiKey(command)] ?? "tools";
+  return CONTROL_UI_SLASH_MANIFEST_BY_KEY.get(command.key)?.category ?? "tools";
 }
 
 function mapIcon(command: ChatCommandDefinition): IconName | undefined {
-  return COMMAND_ICON_OVERRIDES[normalizeUiKey(command)] ?? "terminal";
+  return CONTROL_UI_SLASH_MANIFEST_BY_KEY.get(command.key)?.icon ?? "terminal";
 }
 
 function toSlashCommand(command: ChatCommandDefinition): SlashCommandDef | null {
@@ -190,11 +97,12 @@ function toSlashCommand(command: ChatCommandDefinition): SlashCommandDef | null 
     key: command.key,
     name,
     aliases: getSlashAliases(command).filter((alias) => alias !== name),
-    description: COMMAND_DESCRIPTION_OVERRIDES[command.key] ?? command.description,
-    args: COMMAND_ARGS_OVERRIDES[command.key] ?? formatArgs(command),
+    description:
+      CONTROL_UI_SLASH_MANIFEST_BY_KEY.get(command.key)?.description ?? command.description,
+    args: CONTROL_UI_SLASH_MANIFEST_BY_KEY.get(command.key)?.args ?? formatArgs(command),
     icon: mapIcon(command),
     category: mapCategory(command),
-    executeLocal: LOCAL_COMMANDS.has(command.key),
+    executeLocal: LOCAL_SLASH_COMMAND_KEYS.has(command.key),
     argOptions: getArgOptions(command),
   };
 }
