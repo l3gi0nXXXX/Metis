@@ -794,7 +794,7 @@ Telegram 收到 voice/audio 输入时，`autoReplyToVoice=true` 且 `audioAsVoic
 
 #### 推荐配置：共享默认 + Telegram 覆盖
 
-下面示例同时展示 DashScope `qwen3-tts-flash`、OpenAI-compatible ASR、Tencent Flash ASR 和 command fallback。示例里的 `${ENV_NAME}` 是环境变量占位符，不要把真实 key、secret 或 token 写进聊天、日志或版本库。
+下面示例同时展示 DashScope `qwen3-tts-flash` 原生 TTS、真正 `/audio/speech` 兼容的 OpenAI-compatible TTS、OpenAI-compatible ASR、OpenRouter ASR、Tencent Flash ASR 和 command fallback。示例里的 `${ENV_NAME}` 是环境变量占位符，不要把真实 key、secret 或 token 写进聊天、日志或版本库。
 
 ```json
 {
@@ -808,11 +808,20 @@ Telegram 收到 voice/audio 输入时，`autoReplyToVoice=true` 且 `audioAsVoic
         "degradeMessage": "语音暂时发送失败，我先打字陪你。",
         "providers": {
           "dashscope": {
-            "kind": "openai-compatible",
+            "kind": "dashscope-qwen-tts",
             "baseUrl": "https://dashscope.aliyuncs.com/api/v1",
             "apiKey": "${DASHSCOPE_API_KEY}",
             "model": "qwen3-tts-flash",
             "voice": "Chelsie",
+            "languageType": "Chinese",
+            "timeoutMs": 60000
+          },
+          "openai-tts-compatible": {
+            "kind": "openai-compatible",
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "${OPENAI_TTS_API_KEY}",
+            "model": "gpt-4o-mini-tts",
+            "voice": "coral",
             "responseFormat": "opus",
             "timeoutMs": 60000
           },
@@ -836,6 +845,15 @@ Telegram 收到 voice/audio 输入时，`autoReplyToVoice=true` 且 `audioAsVoic
             "apiKey": "${OPENAI_ASR_API_KEY}",
             "model": "whisper-1",
             "timeoutMs": 60000
+          },
+          "openrouter-whisper": {
+            "kind": "openai-compatible",
+            "baseUrl": "https://openrouter.ai/api/v1",
+            "apiKey": "${OPENROUTER_API_KEY}",
+            "model": "openai/whisper-large-v3-turbo",
+            "requestFormat": "openrouter-input-audio-json",
+            "timeoutMs": 60000,
+            "maxBytes": 26214400
           },
           "tencent-flash": {
             "kind": "tencent-flash",
@@ -880,12 +898,22 @@ Telegram 收到 voice/audio 输入时，`autoReplyToVoice=true` 且 `audioAsVoic
 
 配置要点：
 
-- `gateway.speech.tts.providers.dashscope.kind=openai-compatible` 使用 OpenAI-compatible TTS 形态，Metis 向 `${baseUrl}/audio/speech` 发送请求；DashScope 示例使用 `qwen3-tts-flash` 和 `${DASHSCOPE_API_KEY}`。
+- `gateway.speech.tts.providers.dashscope.kind=dashscope-qwen-tts` 用于 DashScope Qwen TTS。`baseUrl` 保持为 `https://dashscope.aliyuncs.com/api/v1`，运行时按 provider kind 拼接 `/services/aigc/multimodal-generation/generation`；示例使用 `qwen3-tts-flash`、`Chelsie`、`languageType=Chinese` 和 `${DASHSCOPE_API_KEY}`。
+- 不要把 `qwen3-tts-flash` 配成 `kind=openai-compatible`。`openai-compatible` 会向 `${baseUrl}/audio/speech` 发送 OpenAI audio speech 形态请求，而 `qwen3-tts-flash` 使用 DashScope multimodal-generation endpoint。
+- `gateway.speech.tts.providers.openai-tts-compatible.kind=openai-compatible` 保留给真正兼容 `/audio/speech` 的 TTS provider；可以按实际服务替换 `baseUrl`、`model`、`voice` 和 `${OPENAI_TTS_API_KEY}`。
 - `gateway.speech.asr.providers.openai-whisper.kind=openai-compatible` 用于 Whisper-compatible `/audio/transcriptions` 类接口；示例用 `${OPENAI_ASR_API_KEY}`，也可以替换为兼容服务的 base URL 和模型。
+- `gateway.speech.asr.providers.openrouter-whisper.kind=openai-compatible` 使用 OpenRouter ASR 的 JSON base64 `input_audio` 请求形态；必须配置 `requestFormat=openrouter-input-audio-json`，示例使用 `${OPENROUTER_API_KEY}` 和 `openai/whisper-large-v3-turbo`。
 - `gateway.speech.asr.providers.tencent-flash.kind=tencent-flash` 对齐 OpenClaw-China QQBot 的腾讯录音文件识别极速版配置，需要 `${TENCENT_ASR_APP_ID}`、`${TENCENT_ASR_SECRET_ID}`、`${TENCENT_ASR_SECRET_KEY}`。
 - `command` provider 是本地 fallback，不需要云 key；只把文件路径和文本作为数组参数传给命令，不通过 shell 拼接。
 - `gateway.telegram.speech.tts/asr` 可以只覆盖 `provider`，继续复用共享 `providers`；如果 Telegram 需要不同 voice、输出格式、ASR engine 或 fallback，再在 Telegram 覆盖块内补充同名 provider 字段。
 - 显式配置本地/免费 ASR provider 后，Metis 不应静默回退到付费云 provider。不同 IM 通道自己的 `speech` 配置优先于 `gateway.speech`，共享配置只是默认值。
+
+ASR 请求格式不要混用：
+
+- OpenRouter ASR 需要 JSON body，音频放在 `input_audio.data` 的 base64 字符串里，格式名放在 `input_audio.format`。这对应 OpenRouter `POST /api/v1/audio/transcriptions` 的 `input_audio` 形态。
+- OpenAI/Groq/Hermes 参考实现是文件上传形态，不是 OpenRouter 的 `input_audio` JSON。源码依据：Hermes Groq STT 在 `/Users/l3gi0n/work/workspace_cangjie/hermes-agent/tools/transcription_tools.py:448-471` 通过 OpenAI SDK 传入 `file`，Hermes OpenAI STT 在 `/Users/l3gi0n/work/workspace_cangjie/hermes-agent/tools/transcription_tools.py:500-528` 也打开本地音频文件传给 `audio.transcriptions.create`，Hermes xAI STT 在 `/Users/l3gi0n/work/workspace_cangjie/hermes-agent/tools/transcription_tools.py:596-625` 明确走 REST `multipart/form-data`。
+- Tencent Flash 是 provider 专用 `application/octet-stream` 形态，不是 multipart，也不是 OpenRouter JSON。源码依据：OpenClaw-China Tencent Flash ASR 在 `/Users/l3gi0n/work/workspace_cangjie/openclaw-china/packages/shared/src/asr/tencent-flash.ts:73-104` 以原始音频 bytes 作为 body，并按腾讯规则签名。
+- provider 级 `insecureSkipTlsVerify` 只影响该 ASR/TTS provider 的 HTTPS 调用；`gateway.telegram.network.insecureSkipTlsVerify` 是 Telegram Bot API transport 的网络开关。两者不是同一个开关，也不会互相替代。
 
 #### 迁移建议
 
@@ -897,7 +925,7 @@ Telegram 收到 voice/audio 输入时，`autoReplyToVoice=true` 且 `audioAsVoic
 
 | 状态 | 常见原因 | 处理方式 |
 |---|---|---|
-| `not_configured` | 没有设置 provider，或 OpenAI-compatible provider 缺少 `${ENV_NAME}` 对应环境变量。 | 运行 `/tts status`，检查 `gateway.speech.tts/asr` 与 `gateway.telegram.speech.tts/asr`，确认环境变量已在 Gateway 进程环境中设置。 |
+| `not_configured` | 没有设置 provider，DashScope Qwen TTS 缺少 `${DASHSCOPE_API_KEY}` 或 `voice`，或 OpenAI-compatible provider 缺少 `${ENV_NAME}` 对应环境变量。 | 运行 `/tts status`，检查 `gateway.speech.tts/asr` 与 `gateway.telegram.speech.tts/asr`，确认环境变量已在 Gateway 进程环境中设置。 |
 | `auth_error` | API key、secretId、secretKey 无效，或 provider 返回 401/403。 | 轮换密钥，确认没有把真实 key 写进配置仓库；检查 provider 控制台权限和额度。 |
 | `timeout` | provider 网络慢、本地 command 卡住、代理或 DNS 问题。 | 增大 `timeoutMs`，先用 command fallback 或 fake server 验证 Metis 链路，再排查外部网络。 |
 | `provider_error` | provider 返回 4xx/5xx、command 非零退出、输出文件缺失、格式不被目标通道接受。 | 查看脱敏后的 provider status、HTTP status、exitCode 和 attempts；不要把 authorization header 或 secret 打进日志。 |

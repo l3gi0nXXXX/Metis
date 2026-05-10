@@ -37,6 +37,33 @@ private func asrTestOpenAICompatibleProvider(): JsonObject {
     provider
 }
 
+private func asrTestOpenRouterProvider(): JsonObject {
+    let provider = JsonObject()
+    provider.put("kind", JsonString("openai-compatible"))
+    provider.put("baseUrl", JsonString("https://openrouter.ai/api/v1"))
+    provider.put("apiKey", JsonString("test-openrouter-key"))
+    provider.put("model", JsonString("openai/whisper-large-v3-turbo"))
+    provider.put("requestFormat", JsonString("openrouter-input-audio-json"))
+    provider.put("language", JsonString("zh"))
+    provider.put("timeoutMs", JsonInt(12000))
+    provider.put("maxBytes", JsonInt(8192))
+    provider.put("insecureSkipTlsVerify", JsonBool(true))
+    provider
+}
+
+private func asrTestOpenRouterProviderWithoutRequestFormat(): JsonObject {
+    let provider = JsonObject()
+    provider.put("kind", JsonString("openai-compatible"))
+    provider.put("baseUrl", JsonString("https://openrouter.ai/api/v1"))
+    provider.put("apiKey", JsonString("test-openrouter-key"))
+    provider.put("model", JsonString("openai/whisper-large-v3-turbo"))
+    provider.put("language", JsonString(""))
+    provider.put("timeoutMs", JsonInt(12000))
+    provider.put("maxBytes", JsonInt(8192))
+    provider.put("insecureSkipTlsVerify", JsonBool(true))
+    provider
+}
+
 private func asrTestConfig(providerId: String, provider: JsonObject): JsonObject {
     let config = JsonObject()
     let providers = JsonObject()
@@ -173,6 +200,139 @@ public class GatewaySpeechAsrRuntimeTest {
             @Expect(asrTestString(result, "providerKind"), "openai-compatible")
             @Expect(asrTestString(result, "transcript"), "plain transcript")
             @Expect(result.toJsonString().contains("test-asr-api-key"), false)
+        } finally {
+            setGatewaySpeechAsrOpenAICompatibleRunnerForTest(None<(JsonObject) -> GatewaySpeechAsrOpenAICompatibleHttpResult>)
+        }
+    }
+
+    @TestCase
+    public func openRouterAsrProviderBuildsInputAudioJsonRequest(): Unit {
+        let root = asrTestTempRoot("openrouter-json")
+        let audio = root.join("voice.ogg")
+        File.writeTo(audio, "fake-openrouter-audio".toArray())
+        let sawRequests = ArrayList<String>()
+        setGatewaySpeechAsrOpenAICompatibleRunnerForTest(Some({ request: JsonObject =>
+            sawRequests.add("yes")
+            let body = asrTestObject(request, "body")
+            let inputAudio = asrTestObject(body, "input_audio")
+            let data = asrTestString(inputAudio, "data")
+            @Expect(asrTestString(request, "url"), "https://openrouter.ai/api/v1/audio/transcriptions")
+            @Expect(asrTestString(request, "authorization"), "Bearer test-openrouter-key")
+            @Expect(asrTestString(request, "requestFormat"), "openrouter-input-audio-json")
+            @Expect(asrTestString(request, "contentType"), "application/json")
+            @Expect(asrTestString(body, "model"), "openai/whisper-large-v3-turbo")
+            @Expect(asrTestString(body, "language"), "zh")
+            @Expect(asrTestString(inputAudio, "format"), "ogg")
+            @Expect(data.isEmpty(), false)
+            @Expect(data == audio.toString(), false)
+            @Expect(request.toJsonString().contains(audio.toString()), false)
+            GatewaySpeechAsrOpenAICompatibleHttpResult(200, bodyBytes: "{\"text\":\"openrouter transcript\"}".toArray(), contentType: "application/json")
+        }))
+        try {
+            let result = gatewaySpeechAsrTranscribeAudioPath(asrTestConfig("openrouter", asrTestOpenRouterProvider()), audio.toString(), "audio/ogg", outputRoot: root, maxBytes: 0)
+
+            @Expect(sawRequests.size, 1)
+            @Expect(asrTestBool(result, "ok"), true)
+            @Expect(asrTestString(result, "transcript"), "openrouter transcript")
+            @Expect(result.toJsonString().contains("test-openrouter-key"), false)
+        } finally {
+            setGatewaySpeechAsrOpenAICompatibleRunnerForTest(None<(JsonObject) -> GatewaySpeechAsrOpenAICompatibleHttpResult>)
+        }
+    }
+
+    @TestCase
+    public func openRouterAsrProviderInfersRequestFormatFromBaseUrl(): Unit {
+        let root = asrTestTempRoot("openrouter-infer")
+        let audio = root.join("voice.wav")
+        File.writeTo(audio, "fake-openrouter-wav".toArray())
+        let provider = asrTestOpenRouterProviderWithoutRequestFormat()
+        setGatewaySpeechAsrOpenAICompatibleRunnerForTest(Some({ request: JsonObject =>
+            let body = asrTestObject(request, "body")
+            let inputAudio = asrTestObject(body, "input_audio")
+            @Expect(asrTestString(request, "requestFormat"), "openrouter-input-audio-json")
+            @Expect(asrTestString(body, "language"), "")
+            @Expect(asrTestString(inputAudio, "format"), "wav")
+            @Expect(request.toJsonString().contains(audio.toString()), false)
+            GatewaySpeechAsrOpenAICompatibleHttpResult(200, bodyBytes: "inferred transcript".toArray(), contentType: "text/plain")
+        }))
+        try {
+            let result = gatewaySpeechAsrTranscribeAudioPath(asrTestConfig("openrouter", provider), audio.toString(), "audio/wav", outputRoot: root, maxBytes: 0)
+
+            @Expect(asrTestBool(result, "ok"), true)
+            @Expect(asrTestString(result, "transcript"), "inferred transcript")
+        } finally {
+            setGatewaySpeechAsrOpenAICompatibleRunnerForTest(None<(JsonObject) -> GatewaySpeechAsrOpenAICompatibleHttpResult>)
+        }
+    }
+
+    @TestCase
+    public func openRouterAsrParsesJsonText(): Unit {
+        let root = asrTestTempRoot("openrouter-success")
+        let audio = root.join("voice.ogg")
+        File.writeTo(audio, "fake-openrouter-success".toArray())
+        setGatewaySpeechAsrOpenAICompatibleRunnerForTest(Some({ _request: JsonObject =>
+            GatewaySpeechAsrOpenAICompatibleHttpResult(200, bodyBytes: "{\"text\":\"语音测试喽\"}".toArray(), contentType: "application/json")
+        }))
+        try {
+            let result = gatewaySpeechAsrTranscribeAudioPath(asrTestConfig("openrouter", asrTestOpenRouterProvider()), audio.toString(), "audio/ogg", outputRoot: root, maxBytes: 0)
+
+            @Expect(asrTestBool(result, "ok"), true)
+            @Expect(asrTestString(result, "transcript"), "语音测试喽")
+        } finally {
+            setGatewaySpeechAsrOpenAICompatibleRunnerForTest(None<(JsonObject) -> GatewaySpeechAsrOpenAICompatibleHttpResult>)
+        }
+    }
+
+    @TestCase
+    public func openRouterAsrMapsInputAudioValidationErrorToProviderError(): Unit {
+        let root = asrTestTempRoot("openrouter-400")
+        let audio = root.join("voice.ogg")
+        File.writeTo(audio, "fake-openrouter-validation".toArray())
+        let encodedData = ArrayList<String>()
+        setGatewaySpeechAsrOpenAICompatibleRunnerForTest(Some({ request: JsonObject =>
+            let body = asrTestObject(request, "body")
+            encodedData.add(asrTestString(asrTestObject(body, "input_audio"), "data"))
+            GatewaySpeechAsrOpenAICompatibleHttpResult(
+                400,
+                bodyBytes: "{\"success\":false,\"error\":{\"name\":\"ZodError\",\"message\":\"path input_audio Invalid input: expected object\"}}".toArray(),
+                contentType: "application/json"
+            )
+        }))
+        try {
+            let result = gatewaySpeechAsrTranscribeAudioPath(asrTestConfig("openrouter", asrTestOpenRouterProvider()), audio.toString(), "audio/ogg", outputRoot: root, maxBytes: 0)
+            let resultJson = result.toJsonString()
+
+            @Expect(asrTestBool(result, "ok"), false)
+            @Expect(asrTestString(result, "status"), "provider_error")
+            @Expect(asrTestString(result, "message").contains("input_audio"), true)
+            @Expect(resultJson.contains("test-openrouter-key"), false)
+            @Expect(resultJson.contains("Authorization"), false)
+            @Expect(resultJson.contains(audio.toString()), false)
+            @Expect(encodedData.size, 1)
+            @Expect(resultJson.contains(encodedData[0]), false)
+        } finally {
+            setGatewaySpeechAsrOpenAICompatibleRunnerForTest(None<(JsonObject) -> GatewaySpeechAsrOpenAICompatibleHttpResult>)
+        }
+    }
+
+    @TestCase
+    public func openRouterAsrMaxBytesRejectsBeforeBase64RequestBuild(): Unit {
+        let root = asrTestTempRoot("openrouter-too-large")
+        let audio = root.join("voice.ogg")
+        File.writeTo(audio, "fake-openrouter-too-large".toArray())
+        let sawRequests = ArrayList<String>()
+        let provider = asrTestOpenRouterProvider()
+        provider.put("maxBytes", JsonInt(1))
+        setGatewaySpeechAsrOpenAICompatibleRunnerForTest(Some({ _request: JsonObject =>
+            sawRequests.add("unexpected")
+            GatewaySpeechAsrOpenAICompatibleHttpResult(200, bodyBytes: "should not run".toArray())
+        }))
+        try {
+            let result = gatewaySpeechAsrTranscribeAudioPath(asrTestConfig("openrouter", provider), audio.toString(), "audio/ogg", outputRoot: root, maxBytes: 0)
+
+            @Expect(sawRequests.size, 0)
+            @Expect(asrTestBool(result, "ok"), false)
+            @Expect(asrTestString(result, "status"), "too_large")
         } finally {
             setGatewaySpeechAsrOpenAICompatibleRunnerForTest(None<(JsonObject) -> GatewaySpeechAsrOpenAICompatibleHttpResult>)
         }

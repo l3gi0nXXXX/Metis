@@ -9,6 +9,7 @@ import std.convert.*
 import std.env.getVariable
 import std.fs.{Directory, File, Path, exists}
 import std.time.*
+import stdx.encoding.base64.toBase64String
 import stdx.encoding.json.{JsonBool, JsonInt, JsonObject, JsonString, JsonValue}
 import stdx.encoding.url.URL
 import stdx.net.http.*
@@ -177,7 +178,77 @@ private func speechAsrOpenAICompatibleBaseUrl(providerConfig: JsonObject): Strin
     baseUrl
 }
 
-private func speechAsrOpenAICompatibleRequest(providerConfig: JsonObject, inputPath: String, mime: String, fileBytes: Int64, timeoutMs: Int64): JsonObject {
+private func speechAsrOpenAICompatibleRequestFormat(providerConfig: JsonObject, baseUrl: String): String {
+    let explicit = speechAsrString(providerConfig, "requestFormat")
+    if (!explicit.isEmpty()) {
+        return explicit
+    }
+    let legacyExplicit = speechAsrString(providerConfig, "request_format")
+    if (!legacyExplicit.isEmpty()) {
+        return legacyExplicit
+    }
+    try {
+        if (URL.parse(baseUrl).hostName.toAsciiLower() == "openrouter.ai") {
+            return "openrouter-input-audio-json"
+        }
+    } catch (_: Exception) {
+        ()
+    }
+    "generic-json"
+}
+
+private func speechAsrOpenRouterAudioFormat(inputPath: String, mime: String, providerConfig: JsonObject): String {
+    let explicit = speechAsrString(providerConfig, "audioFormat").toAsciiLower()
+    if (!explicit.isEmpty()) {
+        return explicit
+    }
+    let lowerMime = mime.toAsciiLower()
+    let lowerPath = inputPath.toAsciiLower()
+    if (lowerMime.contains("ogg") || lowerPath.endsWith(".oga") || lowerPath.endsWith(".ogg") || lowerPath.endsWith(".opus")) {
+        return "ogg"
+    }
+    if (lowerMime.contains("wav") || lowerPath.endsWith(".wav")) {
+        return "wav"
+    }
+    if (lowerMime.contains("mpeg") || lowerMime.contains("mp3") || lowerPath.endsWith(".mp3")) {
+        return "mp3"
+    }
+    if (lowerMime.contains("mp4") || lowerMime.contains("m4a") || lowerPath.endsWith(".mp4") || lowerPath.endsWith(".m4a")) {
+        return "mp4"
+    }
+    "ogg"
+}
+
+private func speechAsrOpenAICompatibleGenericBody(inputPath: String, mime: String, fileBytes: Int64, fields: JsonObject): JsonObject {
+    let body = JsonObject()
+    body.put("model", JsonString(speechAsrString(fields, "model")))
+    let language = speechAsrString(fields, "language")
+    if (!language.isEmpty()) {
+        body.put("language", JsonString(language))
+    }
+    body.put("filePath", JsonString(inputPath))
+    body.put("fileBytes", JsonInt(fileBytes))
+    body.put("mime", JsonString(mime))
+    body
+}
+
+private func speechAsrOpenRouterInputAudioBody(providerConfig: JsonObject, inputPath: String, mime: String, inputBytes: Array<Byte>, fields: JsonObject): JsonObject {
+    let body = JsonObject()
+    body.put("model", JsonString(speechAsrString(fields, "model")))
+    let language = speechAsrString(fields, "language")
+    if (!language.isEmpty()) {
+        body.put("language", JsonString(language))
+    }
+    let inputAudio = JsonObject()
+    inputAudio.put("data", JsonString(toBase64String(inputBytes)))
+    inputAudio.put("format", JsonString(speechAsrOpenRouterAudioFormat(inputPath, mime, providerConfig)))
+    body.put("input_audio", inputAudio)
+    body
+}
+
+private func speechAsrOpenAICompatibleRequest(providerConfig: JsonObject, inputPath: String, mime: String, fileBytes: Int64, inputBytes: Array<Byte>, timeoutMs: Int64): JsonObject {
+    let baseUrl = speechAsrOpenAICompatibleBaseUrl(providerConfig)
+    let requestFormat = speechAsrOpenAICompatibleRequestFormat(providerConfig, baseUrl)
     let fields = JsonObject()
     let model = speechAsrString(providerConfig, "model")
     fields.put("model", JsonString(if (model.isEmpty()) { "whisper-1" } else { model }))
@@ -187,13 +258,20 @@ private func speechAsrOpenAICompatibleRequest(providerConfig: JsonObject, inputP
     }
 
     let req = JsonObject()
-    req.put("url", JsonString("${speechAsrOpenAICompatibleBaseUrl(providerConfig)}/audio/transcriptions"))
+    req.put("url", JsonString("${baseUrl}/audio/transcriptions"))
     req.put("authorization", JsonString("Bearer ${speechAsrSecretString(providerConfig, "apiKey")}"))
     req.put("timeoutMs", JsonInt(timeoutMs))
-    req.put("filePath", JsonString(inputPath))
-    req.put("fileBytes", JsonInt(fileBytes))
-    req.put("mime", JsonString(mime))
+    req.put("requestFormat", JsonString(requestFormat))
+    req.put("contentType", JsonString("application/json"))
     req.put("fields", fields)
+    if (requestFormat == "openrouter-input-audio-json") {
+        req.put("body", speechAsrOpenRouterInputAudioBody(providerConfig, inputPath, mime, inputBytes, fields))
+    } else {
+        req.put("filePath", JsonString(inputPath))
+        req.put("fileBytes", JsonInt(fileBytes))
+        req.put("mime", JsonString(mime))
+        req.put("body", speechAsrOpenAICompatibleGenericBody(inputPath, mime, fileBytes, fields))
+    }
     req
 }
 
@@ -215,18 +293,10 @@ private func speechAsrOpenAICompatibleNativePost(request: JsonObject, providerCo
     let timeoutMs = max(1, speechAsrInt(request, "timeoutMs", speechAsrInt(providerConfig, "timeoutMs", 30000)))
     let headers = HashMap<String, String>()
     headers["Authorization"] = speechAsrString(request, "authorization")
-    headers["Content-Type"] = "application/json"
+    let contentType = speechAsrString(request, "contentType")
+    headers["Content-Type"] = if (contentType.isEmpty()) { "application/json" } else { contentType }
     headers["Accept"] = "application/json, text/plain"
-
-    let body = JsonObject()
-    body.put("model", speechAsrString(speechAsrObject(request, "fields"), "model").toJsonValue())
-    let language = speechAsrString(speechAsrObject(request, "fields"), "language")
-    if (!language.isEmpty()) {
-        body.put("language", JsonString(language))
-    }
-    body.put("filePath", JsonString(speechAsrString(request, "filePath")))
-    body.put("fileBytes", JsonInt(speechAsrInt(request, "fileBytes", 0)))
-    body.put("mime", JsonString(speechAsrString(request, "mime")))
+    let body = speechAsrObject(request, "body")
 
     let builder = ClientBuilder()
     builder.readTimeout(Duration.millisecond * timeoutMs)
@@ -252,14 +322,23 @@ private func speechAsrOpenAICompatibleNativePost(request: JsonObject, providerCo
     }
 }
 
-private func speechAsrOpenAICompatibleErrorDetail(result: GatewaySpeechAsrOpenAICompatibleHttpResult, apiKey: String): String {
+private func speechAsrOpenAICompatibleRedactValue(detail: String, value: String): String {
+    if (value.trimAscii().isEmpty()) {
+        return detail
+    }
+    detail.replace(value, "[redacted]")
+}
+
+private func speechAsrOpenAICompatibleErrorDetail(result: GatewaySpeechAsrOpenAICompatibleHttpResult, apiKey: String, request: JsonObject): String {
     var detail = result.error.trimAscii()
     if (detail.isEmpty()) {
         try { detail = String.fromUtf8(result.bodyBytes).trimAscii() } catch (_: Exception) { detail = "" }
     }
-    if (!apiKey.isEmpty()) {
-        detail = detail.replace(apiKey, "[redacted]")
-    }
+    detail = speechAsrOpenAICompatibleRedactValue(detail, apiKey)
+    detail = speechAsrOpenAICompatibleRedactValue(detail, speechAsrString(request, "authorization"))
+    detail = speechAsrOpenAICompatibleRedactValue(detail, speechAsrString(request, "filePath"))
+    detail = speechAsrOpenAICompatibleRedactValue(detail, speechAsrString(speechAsrObject(speechAsrObject(request, "body"), "input_audio"), "data"))
+    detail = detail.replace("Authorization", "[redacted-header]").replace("authorization", "[redacted-header]")
     if (detail.size > 300) {
         detail = detail[..300]
     }
@@ -275,10 +354,10 @@ private func speechAsrOpenAICompatibleTextFromJson(raw: String): String {
     }
 }
 
-private func speechAsrOpenAICompatibleTranscript(result: GatewaySpeechAsrOpenAICompatibleHttpResult, apiKey: String): String {
+private func speechAsrOpenAICompatibleTranscript(result: GatewaySpeechAsrOpenAICompatibleHttpResult, apiKey: String, request: JsonObject): String {
     let status = result.statusCode
     if (status < 200 || status >= 300) {
-        let detail = speechAsrOpenAICompatibleErrorDetail(result, apiKey)
+        let detail = speechAsrOpenAICompatibleErrorDetail(result, apiKey, request)
         let message = if (detail.isEmpty()) { "OpenAI-compatible ASR API error (${status})" } else { "OpenAI-compatible ASR API error (${status}): ${detail}" }
         if (status == 401 || status == 403) {
             throw SpeechAsrOpenAICompatibleException("auth_error", message)
@@ -309,7 +388,7 @@ private func speechAsrOpenAICompatiblePost(request: JsonObject, providerConfig: 
         case Some(runner) => runner(request)
         case None => speechAsrOpenAICompatibleNativePost(request, providerConfig)
     }
-    speechAsrOpenAICompatibleTranscript(result, speechAsrSecretString(providerConfig, "apiKey"))
+    speechAsrOpenAICompatibleTranscript(result, speechAsrSecretString(providerConfig, "apiKey"), request)
 }
 
 public func gatewaySpeechAsrTranscribeAudioPath(config: JsonObject, path: String, mime: String, outputRoot!: Path, maxBytes!: Int64 = 0): JsonObject {
@@ -347,7 +426,7 @@ public func gatewaySpeechAsrTranscribeAudioPath(config: JsonObject, path: String
             return out
         }
         let timeoutMs = max(1, speechAsrInt(providerConfig, "timeoutMs", speechAsrInt(config, "timeoutMs", 30000)))
-        let request = speechAsrOpenAICompatibleRequest(providerConfig, inputPath, mime.trimAscii().toAsciiLower(), inputByteCount, timeoutMs)
+        let request = speechAsrOpenAICompatibleRequest(providerConfig, inputPath, mime.trimAscii().toAsciiLower(), inputByteCount, inputBytes, timeoutMs)
         try {
             let transcript = speechAsrOpenAICompatiblePost(request, providerConfig).trimAscii()
             if (transcript.isEmpty()) {

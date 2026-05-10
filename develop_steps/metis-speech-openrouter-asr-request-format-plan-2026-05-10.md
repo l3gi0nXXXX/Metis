@@ -338,6 +338,89 @@ cjpm clean && cjpm build -i && cjpm test
 | 全量 clean/build/test 已执行 | `cjpm clean && cjpm build -i && cjpm test` | clean/build 成功；test 结果记录到本文档 |
 | 不访问真实外部服务 | 检查测试 runner override | 所有新增测试不使用真实 OpenRouter、Telegram 或真实 `~/.metis` |
 
+### Phase 5 追加验收检查建议（独立复核，2026-05-10）
+
+**baseline 结果**
+
+- 复核 worktree：`/Users/l3gi0n/.config/superpowers/worktrees/Metis/openrouter-asr-verify-20260510`
+- 已执行 baseline 命令：
+
+```bash
+source /Users/l3gi0n/cangjie100/envsetup.sh && export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH" && cjpm test src/core --no-color --no-progress --show-all-output
+```
+
+- 结果：未进入 `src/core` 单测断言阶段。pre-build 尝试拉取 `https://gitcode.com/gh_mirrors/tr/tree-sitter.git/` 时发生 `LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to gitcode.com:443`，随后 `cjpm test` 报 `please execute 'cjpm build -i' successfully first`。
+- 结论：该 worktree baseline 被依赖下载/构建脚本阻塞，不能据此判断 ASR 改动通过或失败。合并验收前必须在依赖已就绪或网络可用环境中复跑 core 单包测试。
+
+**合并后必须运行的验证命令**
+
+```bash
+source /Users/l3gi0n/cangjie100/envsetup.sh
+export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
+cjpm build -i
+cjpm test src/core --no-color --no-progress --show-all-output
+cjpm test src/gateway/tools --no-color --no-progress --show-all-output
+cjpm test
+```
+
+如全量 `cjpm test` 出现包级 `exit code = 9` 聚合漂移，必须从输出中定位失败包并单包复跑，例如：
+
+```bash
+cjpm test <failed/package/path> --no-color --no-progress --show-all-output
+```
+
+验收记录应区分三类结果：真实业务断言失败、包级聚合漂移、依赖下载/构建脚本失败。
+
+**重点风险复核项**
+
+- generic-json 兼容：未显式配置 `requestFormat` 且非 OpenRouter baseUrl 时，现有 OpenAI-compatible runner request 仍应保留 `filePath`、`fileBytes`、`mime`、`fields`，既有 `openAICompatibleProviderPostsTranscriptionRequestAndParsesPlainText` 等测试必须继续通过。
+- OpenRouter request body：`openrouter-input-audio-json` 的 native HTTP body 只能包含远端可消费字段，如 `model`、可选 `language`、`input_audio.data`、`input_audio.format`；不得包含本机 `filePath`、`fileBytes`、API key、`Authorization` 或其他密钥字段。
+- runner request 泄露面：测试 runner 可接收 `authorization` 以验证 header 组装，但 result、error message、日志和 OpenRouter body 断言不得包含 API key、完整 base64 音频或真实 Telegram fileId。
+- maxBytes 顺序：必须先读取原始音频字节并用 shared/provider `maxBytes` 拦截，再执行 base64 编码；超限测试应断言 runner 未被调用，并尽量断言不会生成 `input_audio.data`。
+- provider 级 TLS：`provider.insecureSkipTlsVerify=true` 仍必须只影响 ASR provider native HTTP client TLS 配置，不能依赖或传播 `gateway.telegram.network.insecureSkipTlsVerify`。
+- 自动推断边界：`baseUrl` 为 `https://openrouter.ai/api/v1` 时可推断 OpenRouter 格式；其他 OpenAI/Groq/Mistral 类 provider 不应被误判为 OpenRouter，避免破坏 generic-json 向后兼容。
+- 错误映射：OpenRouter 400/ZodError 仍应映射为 `provider_error`，401/403 为 `auth_error`，408 为 `timeout`，空 text 为 `empty_result`；错误 detail 保持 300 字符截断并做 secret/base64 redaction。
+- 文档和 smoke：`docs/user/telegram.md` 与 `develop_steps/metis-speech-shared-tts-asr-smoke-checklist-2026-05-09.md` 必须覆盖 OpenRouter ASR 配置、Telegram voice 手动 smoke、`understandingStatus=ok` 或等价成功信号、以及不把 OpenAI multipart/generic-json 与 OpenRouter `input_audio` JSON 混用。
+- 外部服务隔离：自动测试只能使用 runner override、临时文件和假 token；不得访问真实 OpenRouter、真实 Telegram、真实 `~/.metis` 或真实 API key。
+
+## Phase 1-3 执行记录（2026-05-10）
+
+- Phase 1-3 已在 `src/core/gateway_speech_asr_runtime.cj` 和 `src/core/gateway_speech_asr_runtime_test.cj` 落地。
+- TDD RED：新增 OpenRouter ASR 测试后，`openRouterAsrProviderBuildsInputAudioJsonRequest`、`openRouterAsrProviderInfersRequestFormatFromBaseUrl`、`openRouterAsrMapsInputAudioValidationErrorToProviderError` 按预期失败，原因是 request 缺少 `requestFormat`、`body.input_audio`，且旧 request 仍包含本地 `filePath`。
+- GREEN：实现 `requestFormat="openrouter-input-audio-json"`、OpenRouter host 自动推断、base64 `input_audio` body、格式推断、native post body 复用和错误 redaction 后，`src/core` 测试通过。
+- 验证命令：
+
+```bash
+source /Users/l3gi0n/cangjie100/envsetup.sh && export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH" && cjpm test src/core --no-color --no-progress --show-all-output
+```
+
+- 验证结果：`TOTAL: 125, PASSED: 125, SKIPPED: 0, ERROR: 0, FAILED: 0`。
+- 测试边界：新增测试全部使用 ASR runner override 和临时音频文件；未访问真实 OpenRouter、Telegram、真实 `~/.metis` 或真实 API key。
+
+## Phase 4 执行记录
+
+执行日期：2026-05-10
+
+修改范围：
+
+- `docs/user/telegram.md`
+- `develop_steps/metis-speech-shared-tts-asr-smoke-checklist-2026-05-09.md`
+- 本计划文件仅追加 Phase 4 执行记录
+
+执行内容：
+
+1. 在 Telegram speech 配置示例中新增 OpenRouter ASR provider：`kind=openai-compatible`、`baseUrl=https://openrouter.ai/api/v1`、`apiKey=${OPENROUTER_API_KEY}`、`model=openai/whisper-large-v3-turbo`、`requestFormat=openrouter-input-audio-json`、`timeoutMs`、`maxBytes`。
+2. 文档明确 OpenRouter ASR 使用 JSON base64 `input_audio` 形态；OpenAI/Groq/Hermes 参考实现为文件上传或 multipart 形态；Tencent Flash 为 provider 专用 `application/octet-stream` 形态。
+3. 文档明确 provider 级 `insecureSkipTlsVerify` 与 `gateway.telegram.network.insecureSkipTlsVerify` 是不同开关，分别作用于 provider HTTPS 调用和 Telegram Bot API transport。
+4. Smoke checklist 新增 Telegram voice OpenRouter ASR 手动测试：发送 voice 后预期 `understandingStatus=ok` 且不再出现 `input_audio` 错误；再问“我刚才说了什么”时预期可读取 transcript。
+
+验证命令：
+
+```bash
+rg -n "openrouter-input-audio-json|OPENROUTER_API_KEY|input_audio|OpenRouter ASR|understandingStatus=ok" docs/user/telegram.md develop_steps
+rg --pcre2 -n "sk-[A-Za-z0-9]{16,}|apiKey\"\s*:\s*\"(?!\$\{)[^\"]{12,}|secret(Key|Id)?\"\s*:\s*\"(?!\$\{)[^\"]{12,}" docs/user/telegram.md develop_steps/metis-speech-*.md || true
+```
+
 ## 风险和边界
 
 1. 本计划不实现 OpenAI/Groq 真 multipart 上传；Hermes 证明这些 provider 使用文件上传形态，但当前用户故障是 OpenRouter `input_audio` JSON 缺失，应先修复 OpenRouter。
@@ -352,3 +435,59 @@ cjpm clean && cjpm build -i && cjpm test
 2. 排查结果：最新日志证实 TLS 问题已消失，OpenRouter 返回 400，原因是 `input_audio` 缺失。
 3. 用户确认：同意新增 OpenRouter ASR 请求格式适配，并要求立即参考 OpenClaw、Hermes、OpenClaw-China 源码制定分阶段落地计划和验收项。
 4. 本文档即为该确认后的落地计划，不包含代码改动。
+
+## 主工作区合并验证记录（2026-05-10）
+
+合并范围：
+
+- `src/core/gateway_speech_asr_runtime.cj`
+- `src/core/gateway_speech_asr_runtime_test.cj`
+- `docs/user/telegram.md`
+- `develop_steps/metis-speech-shared-tts-asr-smoke-checklist-2026-05-09.md`
+- `develop_steps/metis-speech-openrouter-asr-request-format-plan-2026-05-10.md`
+
+主工作区验证命令和结果：
+
+```bash
+git diff --check
+```
+
+- 结果：通过，无 whitespace error。
+
+```bash
+rg -n "openrouter-input-audio-json|OPENROUTER_API_KEY|input_audio|OpenRouter ASR|understandingStatus=ok" docs/user/telegram.md develop_steps
+rg --pcre2 -n "sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|xox[baprs]-|apiKey\"\s*:\s*\"(?!\$\{)[^\"]{12,}|secret(Key|Id)?\"\s*:\s*\"(?!\$\{)[^\"]{12,}" docs/user/telegram.md develop_steps/metis-speech-*.md src/core/gateway_speech_asr_runtime_test.cj || true
+```
+
+- 结果：OpenRouter ASR 文档和 smoke 关键字均可检索；secret scan 仅命中 `${DASHSCOPE_API_KEY}`、`${OPENAI_ASR_API_KEY}`、`${OPENROUTER_API_KEY}`、`${TENCENT_ASR_SECRET_ID}`、`${TENCENT_ASR_SECRET_KEY}` 等占位符，未发现真实密钥。
+
+```bash
+source /Users/l3gi0n/cangjie100/envsetup.sh
+export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
+cjpm test src/core --no-color --no-progress --show-all-output
+cjpm test src/gateway/tools --no-color --no-progress --show-all-output
+```
+
+- `src/core` 结果：`TOTAL: 125, PASSED: 125, SKIPPED: 0, ERROR: 0, FAILED: 0`。
+- `src/gateway/tools` 结果：`TOTAL: 83, PASSED: 83, SKIPPED: 0, ERROR: 0, FAILED: 0`。
+
+```bash
+source /Users/l3gi0n/cangjie100/envsetup.sh
+export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
+cjpm clean && cjpm build -i && cjpm test
+```
+
+- `cjpm clean`：通过。
+- `cjpm build -i`：通过；仅出现 `ffi/libsignature_extractor.dylib` 和 `ffi/librawinput.dylib` 的 macOS target minimum warning。
+- 聚合 `cjpm test`：业务测试 `PASSED: 1066, FAILED: 0, SKIPPED: 0`；聚合结果中 `metis.program` 报 `ERROR: 1, REASON: failed to run package (exit code = 9)`，导致 `cjpm test` 总体退出码为 1。
+
+针对聚合错误的单包复核：
+
+```bash
+source /Users/l3gi0n/cangjie100/envsetup.sh
+export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
+cjpm test src/program --no-color --no-progress --show-all-output
+```
+
+- 结果：`metis.program` 单包 `TOTAL: 8, PASSED: 8, SKIPPED: 0, ERROR: 0, FAILED: 0`。
+- 结论：本轮新增 OpenRouter ASR 适配的直接测试和相关 gateway tool 测试均通过；全量聚合运行存在 `metis.program` 包级运行漂移，但单包复核没有业务断言失败。

@@ -26,7 +26,28 @@ public class GatewaySpeechTtsOpenAICompatibleHttpResult {
     }
 }
 
+public class GatewaySpeechTtsDashScopeQwenHttpResult {
+    public let statusCode: Int64
+    public let bodyBytes: Array<Byte>
+    public let error: String
+
+    public init(statusCode: Int64, bodyBytes!: Array<Byte> = [], error!: String = "") {
+        this.statusCode = statusCode
+        this.bodyBytes = bodyBytes
+        this.error = error
+    }
+}
+
 private class SpeechTtsOpenAICompatibleException <: Exception {
+    public let status: String
+
+    public init(status: String, message: String) {
+        super(message)
+        this.status = status
+    }
+}
+
+private class SpeechTtsDashScopeQwenException <: Exception {
     public let status: String
 
     public init(status: String, message: String) {
@@ -38,8 +59,22 @@ private class SpeechTtsOpenAICompatibleException <: Exception {
 private var speechTtsOpenAICompatibleRunnerOverride: Option<(JsonObject) -> GatewaySpeechTtsOpenAICompatibleHttpResult> =
     None<(JsonObject) -> GatewaySpeechTtsOpenAICompatibleHttpResult>
 
+private var speechTtsDashScopeQwenRunnerOverride: Option<(JsonObject) -> GatewaySpeechTtsDashScopeQwenHttpResult> =
+    None<(JsonObject) -> GatewaySpeechTtsDashScopeQwenHttpResult>
+
+private var speechTtsDashScopeQwenDownloaderOverride: Option<(String, Int64, Int64) -> GatewaySpeechTtsDashScopeQwenHttpResult> =
+    None<(String, Int64, Int64) -> GatewaySpeechTtsDashScopeQwenHttpResult>
+
 public func setGatewaySpeechTtsOpenAICompatibleRunnerForTest(runner: Option<(JsonObject) -> GatewaySpeechTtsOpenAICompatibleHttpResult>): Unit {
     speechTtsOpenAICompatibleRunnerOverride = runner
+}
+
+public func setGatewaySpeechTtsDashScopeQwenRunnerForTest(runner: Option<(JsonObject) -> GatewaySpeechTtsDashScopeQwenHttpResult>): Unit {
+    speechTtsDashScopeQwenRunnerOverride = runner
+}
+
+public func setGatewaySpeechTtsDashScopeQwenDownloaderForTest(downloader: Option<(String, Int64, Int64) -> GatewaySpeechTtsDashScopeQwenHttpResult>): Unit {
+    speechTtsDashScopeQwenDownloaderOverride = downloader
 }
 
 private func speechTtsNowMs(): Int64 {
@@ -146,12 +181,67 @@ private func speechTtsProviderKind(provider: String, providerConfig: JsonObject)
     }
     let explicit = speechTtsString(providerConfig, "kind").toAsciiLower()
     if (!explicit.isEmpty()) {
+        if (explicit == "dashscope" || explicit == "qwen-tts" || explicit == "dashscope-qwen-tts") {
+            return "dashscope-qwen-tts"
+        }
         return explicit
     }
     if (speechTtsStringArray(providerConfig, "command").size > 0) {
         return "command"
     }
     return "missing"
+}
+
+private func speechTtsDashScopeQwenBaseUrl(providerConfig: JsonObject): String {
+    var baseUrl = speechTtsString(providerConfig, "baseUrl")
+    if (baseUrl.isEmpty()) {
+        baseUrl = "https://dashscope.aliyuncs.com/api/v1"
+    }
+    while (baseUrl.endsWith("/") && baseUrl.size > 1) {
+        baseUrl = baseUrl[..baseUrl.size - 1]
+    }
+    baseUrl
+}
+
+private func speechTtsDashScopeQwenEndpoint(providerConfig: JsonObject): String {
+    let suffix = "/services/aigc/multimodal-generation/generation"
+    let baseUrl = speechTtsDashScopeQwenBaseUrl(providerConfig)
+    if (baseUrl.endsWith(suffix)) {
+        return baseUrl
+    }
+    "${baseUrl}${suffix}"
+}
+
+private func speechTtsDashScopeQwenLanguageType(providerConfig: JsonObject): String {
+    let camel = speechTtsString(providerConfig, "languageType")
+    if (!camel.isEmpty()) {
+        return camel
+    }
+    speechTtsString(providerConfig, "language_type")
+}
+
+private func speechTtsDashScopeQwenRequestBody(providerConfig: JsonObject, text: String): JsonObject {
+    let body = JsonObject()
+    let input = JsonObject()
+    let model = speechTtsString(providerConfig, "model")
+    body.put("model", JsonString(if (model.isEmpty()) { "qwen3-tts-flash" } else { model }))
+    input.put("text", JsonString(text))
+    input.put("voice", JsonString(speechTtsString(providerConfig, "voice")))
+    let languageType = speechTtsDashScopeQwenLanguageType(providerConfig)
+    if (!languageType.isEmpty()) {
+        input.put("language_type", JsonString(languageType))
+    }
+    body.put("input", input)
+    body
+}
+
+private func speechTtsDashScopeQwenHttpRequest(providerConfig: JsonObject, text: String, timeoutMs: Int64): JsonObject {
+    let req = JsonObject()
+    req.put("url", JsonString(speechTtsDashScopeQwenEndpoint(providerConfig)))
+    req.put("authorization", JsonString("Bearer ${speechTtsSecretString(providerConfig, "apiKey")}"))
+    req.put("timeoutMs", JsonInt(timeoutMs))
+    req.put("body", speechTtsDashScopeQwenRequestBody(providerConfig, text))
+    req
 }
 
 private func speechTtsOutputExtension(providerConfig: JsonObject): String {
@@ -327,6 +417,265 @@ private func speechTtsOpenAICompatiblePost(request: JsonObject, providerConfig: 
     speechTtsOpenAICompatibleResultBytes(result)
 }
 
+private func speechTtsDashScopeQwenSafeUrl(url: String): String {
+    let trimmed = url.trimAscii()
+    match (trimmed.indexOf("?")) {
+        case Some(query) => trimmed[..query]
+        case None => trimmed
+    }
+}
+
+private func speechTtsDashScopeQwenExtensionFromUrl(url: String): String {
+    let safe = speechTtsDashScopeQwenSafeUrl(url).toAsciiLower()
+    if (safe.endsWith(".ogg")) {
+        return "ogg"
+    }
+    if (safe.endsWith(".opus")) {
+        return "opus"
+    }
+    if (safe.endsWith(".wav")) {
+        return "wav"
+    }
+    if (safe.endsWith(".mp3")) {
+        return "mp3"
+    }
+    "mp3"
+}
+
+private func speechTtsDashScopeQwenRedact(detail: String, providerConfig: JsonObject): String {
+    var out = detail.trimAscii()
+    let secret = speechTtsSecretString(providerConfig, "apiKey")
+    if (!secret.isEmpty()) {
+        out = out.replace(secret, "[redacted]")
+    }
+    if (out.size > 300) {
+        out = out[..300]
+    }
+    out
+}
+
+private func speechTtsDashScopeQwenErrorDetail(bytes: Array<Byte>, fallback: String, providerConfig: JsonObject): String {
+    var detail = fallback.trimAscii()
+    if (detail.isEmpty()) {
+        try { detail = String.fromUtf8(bytes).trimAscii() } catch (_: Exception) { detail = "" }
+    }
+    speechTtsDashScopeQwenRedact(detail, providerConfig)
+}
+
+private func speechTtsDashScopeQwenEnsureSuccess(result: GatewaySpeechTtsDashScopeQwenHttpResult, providerConfig: JsonObject, context: String): Unit {
+    let status = result.statusCode
+    if (status >= 200 && status < 300) {
+        return
+    }
+    let detail = speechTtsDashScopeQwenErrorDetail(result.bodyBytes, result.error, providerConfig)
+    let message = if (detail.isEmpty()) { "${context} error (${status})" } else { "${context} error (${status}): ${detail}" }
+    if (status == 401 || status == 403) {
+        throw SpeechTtsDashScopeQwenException("auth_error", message)
+    }
+    if (status == 408) {
+        throw SpeechTtsDashScopeQwenException("timeout", message)
+    }
+    if (status == 413) {
+        throw SpeechTtsDashScopeQwenException("too_large", message)
+    }
+    throw SpeechTtsDashScopeQwenException("provider_error", message)
+}
+
+private func speechTtsDashScopeQwenNativePost(request: JsonObject, providerConfig: JsonObject): GatewaySpeechTtsDashScopeQwenHttpResult {
+    let url = speechTtsString(request, "url")
+    let body = speechTtsObject(request, "body")
+    let timeoutMs = max(1, speechTtsInt(request, "timeoutMs", speechTtsInt(providerConfig, "timeoutMs", 60000)))
+    let headers = HashMap<String, String>()
+    headers["Authorization"] = speechTtsString(request, "authorization")
+    headers["Content-Type"] = "application/json"
+    headers["Accept"] = "*/*"
+    let builder = ClientBuilder()
+    builder.readTimeout(Duration.millisecond * timeoutMs)
+    if (url.startsWith("https")) {
+        var tlsConfig = TlsClientConfig()
+        if (speechTtsBool(providerConfig, "insecureSkipTlsVerify", false)) {
+            tlsConfig.verifyMode = TrustAll
+        }
+        tlsConfig.domain = URL.parse(url).hostName
+        tlsConfig.alpnProtocolsList = ["http/1.1"]
+        builder.tlsConfig(tlsConfig)
+    }
+    let client = builder.build()
+    try {
+        let reqBuilder = HttpRequestBuilder().url(url).post().body(body.toJsonString())
+        for ((key, value) in headers) {
+            reqBuilder.header(key, value)
+        }
+        let response = client.send(reqBuilder.build())
+        let status = Int64(response.status)
+        let bytes = speechTtsOpenAICompatibleReadAllBytes(response)
+        GatewaySpeechTtsDashScopeQwenHttpResult(status, bodyBytes: bytes)
+    } finally {
+        client.close()
+    }
+}
+
+private func speechTtsDashScopeQwenPost(request: JsonObject, providerConfig: JsonObject): GatewaySpeechTtsDashScopeQwenHttpResult {
+    match (speechTtsDashScopeQwenRunnerOverride) {
+        case Some(runner) => runner(request)
+        case None => speechTtsDashScopeQwenNativePost(request, providerConfig)
+    }
+}
+
+private func speechTtsDashScopeQwenNativeDownload(url: String, timeoutMs: Int64, maxBytes: Int64): GatewaySpeechTtsDashScopeQwenHttpResult {
+    let builder = ClientBuilder()
+    builder.readTimeout(Duration.millisecond * timeoutMs)
+    if (url.startsWith("https")) {
+        var tlsConfig = TlsClientConfig()
+        tlsConfig.domain = URL.parse(url).hostName
+        tlsConfig.alpnProtocolsList = ["http/1.1"]
+        builder.tlsConfig(tlsConfig)
+    }
+    let client = builder.build()
+    try {
+        let reqBuilder = HttpRequestBuilder().url(url).get()
+        let response = client.send(reqBuilder.build())
+        let status = Int64(response.status)
+        let bytes = speechTtsOpenAICompatibleReadAllBytes(response)
+        if (status >= 200 && status < 300 && maxBytes > 0 && Int64(bytes.size) > maxBytes) {
+            return GatewaySpeechTtsDashScopeQwenHttpResult(413, error: "downloaded audio exceeds maxAudioBytes")
+        }
+        GatewaySpeechTtsDashScopeQwenHttpResult(status, bodyBytes: bytes)
+    } finally {
+        client.close()
+    }
+}
+
+private func speechTtsDashScopeQwenDownload(url: String, timeoutMs: Int64, maxBytes: Int64): GatewaySpeechTtsDashScopeQwenHttpResult {
+    let trimmed = url.trimAscii()
+    if (!(trimmed.startsWith("https://") || trimmed.startsWith("http://"))) {
+        throw SpeechTtsDashScopeQwenException("provider_error", "DashScope TTS audio URL is not http(s): ${speechTtsDashScopeQwenSafeUrl(trimmed)}")
+    }
+    let result = match (speechTtsDashScopeQwenDownloaderOverride) {
+        case Some(downloader) => downloader(trimmed, timeoutMs, maxBytes)
+        case None => speechTtsDashScopeQwenNativeDownload(trimmed, timeoutMs, maxBytes)
+    }
+    if (result.statusCode >= 200 && result.statusCode < 300 && maxBytes > 0 && Int64(result.bodyBytes.size) > maxBytes) {
+        return GatewaySpeechTtsDashScopeQwenHttpResult(413, error: "downloaded audio exceeds maxAudioBytes")
+    }
+    result
+}
+
+private func speechTtsDashScopeQwenJsonString(obj: JsonObject, keys: Array<String>): String {
+    for (key in keys) {
+        let value = speechTtsString(obj, key)
+        if (!value.isEmpty()) {
+            return value
+        }
+    }
+    ""
+}
+
+private func speechTtsDashScopeQwenFindString(value: JsonValue, keys: Array<String>): String {
+    try {
+        let obj = value.asObject()
+        let direct = speechTtsDashScopeQwenJsonString(obj, keys)
+        if (!direct.isEmpty()) {
+            return direct
+        }
+        for ((_, child) in obj.getFields()) {
+            let found = speechTtsDashScopeQwenFindString(child, keys)
+            if (!found.isEmpty()) {
+                return found
+            }
+        }
+    } catch (_: Exception) {
+        try {
+            let arr = value.asArray()
+            for (child in arr.getItems()) {
+                let found = speechTtsDashScopeQwenFindString(child, keys)
+                if (!found.isEmpty()) {
+                    return found
+                }
+            }
+        } catch (_inner: Exception) {
+            ()
+        }
+    }
+    ""
+}
+
+private func speechTtsDashScopeQwenBase64Value(ch: Byte): Int64 {
+    if (ch >= UInt8(65) && ch <= UInt8(90)) {
+        return Int64(ch - UInt8(65))
+    }
+    if (ch >= UInt8(97) && ch <= UInt8(122)) {
+        return Int64(ch - UInt8(97)) + 26
+    }
+    if (ch >= UInt8(48) && ch <= UInt8(57)) {
+        return Int64(ch - UInt8(48)) + 52
+    }
+    if (ch == UInt8(43)) {
+        return 62
+    }
+    if (ch == UInt8(47)) {
+        return 63
+    }
+    -1
+}
+
+private func speechTtsDashScopeQwenDecodeBase64(data: String): Array<Byte> {
+    let out = ArrayList<Byte>()
+    var buffer: Int64 = 0
+    var bits: Int64 = 0
+    for (ch in data.toArray()) {
+        if (ch == UInt8(61)) {
+            break
+        }
+        let value = speechTtsDashScopeQwenBase64Value(ch)
+        if (value < 0) {
+            continue
+        }
+        buffer = (buffer << 6) | value
+        bits += 6
+        if (bits >= 8) {
+            bits -= 8
+            out.add(UInt8((buffer >> bits) & 255))
+        }
+    }
+    out.toArray()
+}
+
+private func speechTtsDashScopeQwenAudioFromJson(bytes: Array<Byte>, providerConfig: JsonObject, timeoutMs: Int64, maxBytes: Int64): (Array<Byte>, String) {
+    let raw = String.fromUtf8(bytes).trimAscii()
+    let root = JsonValue.fromStr(raw)
+    let audioUrl = speechTtsDashScopeQwenFindString(root, ["url", "audio_url", "audioUrl"])
+    if (!audioUrl.isEmpty()) {
+        let download = speechTtsDashScopeQwenDownload(audioUrl, timeoutMs, maxBytes)
+        speechTtsDashScopeQwenEnsureSuccess(download, providerConfig, "DashScope TTS audio download")
+        if (download.bodyBytes.isEmpty()) {
+            throw SpeechTtsDashScopeQwenException("empty_result", "DashScope TTS audio download returned empty audio.")
+        }
+        return (download.bodyBytes, speechTtsDashScopeQwenExtensionFromUrl(audioUrl))
+    }
+    let audioBase64 = speechTtsDashScopeQwenFindString(root, ["data", "audio", "audio_data", "audioData", "base64"])
+    if (!audioBase64.isEmpty()) {
+        let decoded = speechTtsDashScopeQwenDecodeBase64(audioBase64)
+        if (decoded.isEmpty()) {
+            throw SpeechTtsDashScopeQwenException("empty_result", "DashScope TTS returned empty base64 audio.")
+        }
+        return (decoded, "mp3")
+    }
+    throw SpeechTtsDashScopeQwenException("empty_result", "DashScope TTS response did not contain audio.")
+}
+
+private func speechTtsDashScopeQwenResultAudio(result: GatewaySpeechTtsDashScopeQwenHttpResult, providerConfig: JsonObject, timeoutMs: Int64, maxBytes: Int64): (Array<Byte>, String) {
+    speechTtsDashScopeQwenEnsureSuccess(result, providerConfig, "DashScope TTS API")
+    if (result.bodyBytes.isEmpty()) {
+        throw SpeechTtsDashScopeQwenException("empty_result", "DashScope TTS API returned empty audio.")
+    }
+    let raw = try { String.fromUtf8(result.bodyBytes).trimAscii() } catch (_: Exception) { "" }
+    if (raw.startsWith("{") || raw.startsWith("[")) {
+        return speechTtsDashScopeQwenAudioFromJson(result.bodyBytes, providerConfig, timeoutMs, maxBytes)
+    }
+    (result.bodyBytes, "mp3")
+}
+
 private func speechTtsCommandArgs(providerConfig: JsonObject, text: String, outputPath: Path): Array<String> {
     let raw = speechTtsStringArray(providerConfig, "command")
     let out = ArrayList<String>()
@@ -417,6 +766,14 @@ private func gatewaySpeechTtsStatusForProvider(config: JsonObject, deliveryPrefs
         "ok"
     } else if (providerKind == "openai-compatible") {
         if (speechTtsSecretString(providerConfig, "apiKey").isEmpty()) { "not_configured" } else { "ok" }
+    } else if (providerKind == "dashscope-qwen-tts") {
+        if (speechTtsSecretString(providerConfig, "apiKey").isEmpty()) {
+            "not_configured"
+        } else if (speechTtsString(providerConfig, "voice").isEmpty()) {
+            "not_configured"
+        } else {
+            "ok"
+        }
     } else {
         "not_found"
     }
@@ -432,6 +789,12 @@ private func gatewaySpeechTtsStatusForProvider(config: JsonObject, deliveryPrefs
         out.put("message", JsonString("No Metis Gateway TTS provider is configured."))
     } else if (status == "not_configured" && providerKind == "openai-compatible") {
         out.put("message", JsonString("Configured OpenAI-compatible TTS provider '${provider}' is missing apiKey."))
+    } else if (status == "not_configured" && providerKind == "dashscope-qwen-tts") {
+        if (speechTtsSecretString(providerConfig, "apiKey").isEmpty()) {
+            out.put("message", JsonString("Configured DashScope Qwen TTS provider '${provider}' is missing apiKey."))
+        } else {
+            out.put("message", JsonString("Configured DashScope Qwen TTS provider '${provider}' is missing voice."))
+        }
     } else if (status == "not_found") {
         out.put("message", JsonString("Configured TTS provider '${provider}' is not available. Configure gateway.speech.tts.providers.${provider} or the channel speech override."))
     }
@@ -517,6 +880,53 @@ private func gatewaySpeechTtsSynthesizeWithProvider(config: JsonObject, delivery
             }
             let out = speechTtsStatusJson("provider_error", ok: false, message: e.message)
             out.put("provider", JsonString(provider))
+            return out
+        }
+    }
+
+    if (providerKind == "dashscope-qwen-tts") {
+        let timeoutMs = max(1, speechTtsInt(providerConfig, "timeoutMs", speechTtsInt(config, "timeoutMs", 60000)))
+        let maxBytes = max(1, speechTtsInt(providerConfig, "maxAudioBytes", speechTtsInt(config, "maxAudioBytes", 25000000)))
+        let request = speechTtsDashScopeQwenHttpRequest(providerConfig, text, timeoutMs)
+        try {
+            let result = speechTtsDashScopeQwenPost(request, providerConfig)
+            let (audioBytes, extension) = speechTtsDashScopeQwenResultAudio(result, providerConfig, timeoutMs, maxBytes)
+            if (audioBytes.isEmpty()) {
+                let out = speechTtsStatusJson("empty_result", ok: false, message: "Configured TTS provider returned empty audio.")
+                out.put("provider", JsonString(provider))
+                out.put("providerKind", JsonString(providerKind))
+                return out
+            }
+            if (Int64(audioBytes.size) > maxBytes) {
+                let out = speechTtsStatusJson("too_large", ok: false, message: "Configured TTS provider returned audio larger than maxAudioBytes.")
+                out.put("provider", JsonString(provider))
+                out.put("providerKind", JsonString(providerKind))
+                out.put("maxAudioBytes", JsonInt(maxBytes))
+                return out
+            }
+            let outputPath = outputDir.join("tts-${speechTtsNowMs()}.${extension}")
+            File.writeTo(outputPath, audioBytes)
+            status.put("audioPath", JsonString(outputPath.toString()))
+            status.put("payloadKind", JsonString(if (audioAsVoice) { "voice" } else { "audio" }))
+            status.put("payload", JsonString(speechTtsPayload(outputPath, provider, audioAsVoice)))
+            return status
+        } catch (e: SpeechTtsDashScopeQwenException) {
+            let out = speechTtsStatusJson(e.status, ok: false, message: e.message)
+            out.put("provider", JsonString(provider))
+            out.put("providerKind", JsonString(providerKind))
+            return out
+        } catch (e: Exception) {
+            let msg = e.message.toAsciiLower()
+            if (msg.contains("timeout") || msg.contains("timed out")) {
+                let out = speechTtsStatusJson("timeout", ok: false, message: "Configured TTS provider request timed out.")
+                out.put("provider", JsonString(provider))
+                out.put("providerKind", JsonString(providerKind))
+                out.put("timeoutMs", JsonInt(timeoutMs))
+                return out
+            }
+            let out = speechTtsStatusJson("provider_error", ok: false, message: speechTtsDashScopeQwenRedact(e.message, providerConfig))
+            out.put("provider", JsonString(provider))
+            out.put("providerKind", JsonString(providerKind))
             return out
         }
     }

@@ -39,8 +39,26 @@ private func ttsTestOpenAICompatibleProvider(): JsonObject {
     provider
 }
 
+private func ttsTestDashScopeQwenProvider(): JsonObject {
+    let provider = JsonObject()
+    provider.put("kind", JsonString("dashscope-qwen-tts"))
+    provider.put("apiKey", JsonString("dashscope-test-key"))
+    provider.put("baseUrl", JsonString("https://dashscope.aliyuncs.com/api/v1"))
+    provider.put("model", JsonString("qwen3-tts-flash"))
+    provider.put("voice", JsonString("Chelsie"))
+    provider.put("languageType", JsonString("Chinese"))
+    return provider
+}
+
 private func ttsTestOpenAICompatibleBody(request: JsonObject): JsonObject {
     match (request.get("body")) {
+        case Some(v) => try { v.asObject() } catch (_: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+}
+
+private func ttsTestDashScopeInput(body: JsonObject): JsonObject {
+    match (body.get("input")) {
         case Some(v) => try { v.asObject() } catch (_: Exception) { JsonObject() }
         case None => JsonObject()
     }
@@ -317,6 +335,220 @@ public class GatewaySpeechTtsRuntimeTest {
                 case Some(value) => setVariable(envKey, value)
                 case None => setVariable(envKey, "")
             }
+        }
+    }
+
+    @TestCase
+    public func dashScopeQwenTtsBuildsMultimodalGenerationRequest(): Unit {
+        let root = ttsTestTempRoot("dashscope-request")
+        let sawRequests = ArrayList<String>()
+        setGatewaySpeechTtsDashScopeQwenRunnerForTest(Some({ request: JsonObject =>
+            sawRequests.add(request.toJsonString())
+            let body = ttsTestOpenAICompatibleBody(request)
+            let input = ttsTestDashScopeInput(body)
+            @Expect(ttsTestString(request, "url"), "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")
+            @Expect(ttsTestString(request, "authorization"), "Bearer dashscope-test-key")
+            @Expect(ttsTestString(body, "model"), "qwen3-tts-flash")
+            @Expect(ttsTestString(input, "text"), "你好，Metis")
+            @Expect(ttsTestString(input, "voice"), "Chelsie")
+            @Expect(ttsTestString(input, "language_type"), "Chinese")
+            @Expect(request.toJsonString().contains("apiKey"), false)
+            @Expect(request.toJsonString().contains("Telegram"), false)
+            @Expect(request.toJsonString().contains(root.toString()), false)
+            GatewaySpeechTtsDashScopeQwenHttpResult(200, bodyBytes: "DASHSCOPE-BINARY-AUDIO".toArray())
+        }))
+        try {
+            let result = gatewaySpeechTtsSynthesize(ttsTestConfig("dashscope", ttsTestDashScopeQwenProvider()), ttsTestPrefs(true), ttsTestState(), "你好，Metis", outputRoot: root)
+
+            @Expect(sawRequests.size, 1)
+            @Expect(ttsTestBool(result, "ok"), true)
+            @Expect(ttsTestString(result, "providerKind"), "dashscope-qwen-tts")
+        } finally {
+            setGatewaySpeechTtsDashScopeQwenRunnerForTest(None<(JsonObject) -> GatewaySpeechTtsDashScopeQwenHttpResult>)
+        }
+    }
+
+    @TestCase
+    public func dashScopeQwenTtsStatusRequiresApiKeyAndVoiceAndAcceptsAliases(): Unit {
+        let okStatus = gatewaySpeechTtsStatus(ttsTestConfig("dashscope", ttsTestDashScopeQwenProvider()), ttsTestPrefs(true), ttsTestState())
+        @Expect(ttsTestString(okStatus, "status"), "ok")
+        @Expect(ttsTestString(okStatus, "providerKind"), "dashscope-qwen-tts")
+
+        let alias = ttsTestDashScopeQwenProvider()
+        alias.put("kind", JsonString("qwen-tts"))
+        let aliasStatus = gatewaySpeechTtsStatus(ttsTestConfig("dashscope", alias), ttsTestPrefs(true), ttsTestState())
+        @Expect(ttsTestString(aliasStatus, "status"), "ok")
+        @Expect(ttsTestString(aliasStatus, "providerKind"), "dashscope-qwen-tts")
+
+        let missingKey = ttsTestDashScopeQwenProvider()
+        missingKey.put("apiKey", JsonString(""))
+        let missingKeyStatus = gatewaySpeechTtsStatus(ttsTestConfig("dashscope", missingKey), ttsTestPrefs(true), ttsTestState())
+        @Expect(ttsTestString(missingKeyStatus, "status"), "not_configured")
+        @Expect(ttsTestString(missingKeyStatus, "message").contains("apiKey"), true)
+
+        let missingVoice = ttsTestDashScopeQwenProvider()
+        missingVoice.put("voice", JsonString(""))
+        let missingVoiceStatus = gatewaySpeechTtsStatus(ttsTestConfig("dashscope", missingVoice), ttsTestPrefs(true), ttsTestState())
+        @Expect(ttsTestString(missingVoiceStatus, "status"), "not_configured")
+        @Expect(ttsTestString(missingVoiceStatus, "message").contains("voice"), true)
+    }
+
+    @TestCase
+    public func dashScopeQwenTtsParsesAudioUrlResponse(): Unit {
+        let root = ttsTestTempRoot("dashscope-url")
+        setGatewaySpeechTtsDashScopeQwenRunnerForTest(Some({ _request: JsonObject =>
+            GatewaySpeechTtsDashScopeQwenHttpResult(200, bodyBytes: "{\"output\":{\"audio\":{\"url\":\"https://cdn.example.invalid/audio/result.ogg?Signature=secret\"}}}".toArray())
+        }))
+        setGatewaySpeechTtsDashScopeQwenDownloaderForTest(Some({ url: String, _timeoutMs: Int64, _maxBytes: Int64 =>
+            @Expect(url, "https://cdn.example.invalid/audio/result.ogg?Signature=secret")
+            GatewaySpeechTtsDashScopeQwenHttpResult(200, bodyBytes: "DOWNLOADED-OGG".toArray())
+        }))
+        try {
+            let result = gatewaySpeechTtsSynthesize(ttsTestConfig("dashscope", ttsTestDashScopeQwenProvider()), ttsTestPrefs(true), ttsTestState(), "hello url", outputRoot: root)
+            let audioPath = Path(ttsTestString(result, "audioPath"))
+
+            @Expect(ttsTestBool(result, "ok"), true)
+            @Expect(ttsTestString(result, "payloadKind"), "voice")
+            @Expect(ttsTestString(result, "payload").startsWith("[voice]"), true)
+            @Expect(ttsTestString(result, "payload").contains("caption=TTS (dashscope)"), true)
+            @Expect(ttsTestString(result, "audioPath").endsWith(".ogg"), true)
+            @Expect(String.fromUtf8(File.readFrom(audioPath)), "DOWNLOADED-OGG")
+        } finally {
+            setGatewaySpeechTtsDashScopeQwenRunnerForTest(None<(JsonObject) -> GatewaySpeechTtsDashScopeQwenHttpResult>)
+            setGatewaySpeechTtsDashScopeQwenDownloaderForTest(None<(String, Int64, Int64) -> GatewaySpeechTtsDashScopeQwenHttpResult>)
+        }
+    }
+
+    @TestCase
+    public func dashScopeQwenTtsParsesBase64AudioResponse(): Unit {
+        let root = ttsTestTempRoot("dashscope-base64")
+        setGatewaySpeechTtsDashScopeQwenRunnerForTest(Some({ _request: JsonObject =>
+            GatewaySpeechTtsDashScopeQwenHttpResult(200, bodyBytes: "{\"output\":{\"audio\":{\"data\":\"REFTSC1BVURJTw==\"}}}".toArray())
+        }))
+        try {
+            let result = gatewaySpeechTtsSynthesize(ttsTestConfig("dashscope", ttsTestDashScopeQwenProvider()), ttsTestPrefs(false), ttsTestState(), "hello base64", outputRoot: root)
+            let audioPath = Path(ttsTestString(result, "audioPath"))
+
+            @Expect(ttsTestBool(result, "ok"), true)
+            @Expect(ttsTestString(result, "payloadKind"), "audio")
+            @Expect(ttsTestString(result, "audioPath").endsWith(".mp3"), true)
+            @Expect(String.fromUtf8(File.readFrom(audioPath)), "DASH-AUDIO")
+        } finally {
+            setGatewaySpeechTtsDashScopeQwenRunnerForTest(None<(JsonObject) -> GatewaySpeechTtsDashScopeQwenHttpResult>)
+        }
+    }
+
+    @TestCase
+    public func dashScopeQwenTtsMapsErrorsAndDegrades(): Unit {
+        let root = ttsTestTempRoot("dashscope-degrade")
+        let config = ttsTestConfig("dashscope", ttsTestDashScopeQwenProvider())
+        config.put("degradeMessage", JsonString("语音暂时发送失败，我先打字陪你。"))
+        setGatewaySpeechTtsDashScopeQwenRunnerForTest(Some({ _request: JsonObject =>
+            GatewaySpeechTtsDashScopeQwenHttpResult(401, bodyBytes: "{\"message\":\"bad dashscope-test-key\"}".toArray())
+        }))
+        try {
+            let result = gatewaySpeechTtsSynthesize(config, ttsTestPrefs(true), ttsTestState(), "hello auth", outputRoot: root)
+            let first = ttsTestAttempt(result, 0)
+
+            @Expect(ttsTestBool(result, "ok"), true)
+            @Expect(ttsTestString(result, "status"), "degraded")
+            @Expect(ttsTestString(result, "payloadKind"), "text")
+            @Expect(ttsTestString(result, "payload"), "语音暂时发送失败，我先打字陪你。")
+            @Expect(ttsTestString(first, "providerKind"), "dashscope-qwen-tts")
+            @Expect(ttsTestString(first, "reasonCode"), "auth_error")
+            @Expect(result.toJsonString().contains("dashscope-test-key"), false)
+        } finally {
+            setGatewaySpeechTtsDashScopeQwenRunnerForTest(None<(JsonObject) -> GatewaySpeechTtsDashScopeQwenHttpResult>)
+        }
+    }
+
+    @TestCase
+    public func dashScopeQwenTtsMapsProviderAndTimeoutErrors(): Unit {
+        let root = ttsTestTempRoot("dashscope-errors")
+        setGatewaySpeechTtsDashScopeQwenRunnerForTest(Some({ _request: JsonObject =>
+            GatewaySpeechTtsDashScopeQwenHttpResult(500, bodyBytes: "server failed dashscope-test-key".toArray())
+        }))
+        try {
+            let providerError = gatewaySpeechTtsSynthesize(ttsTestConfig("dashscope", ttsTestDashScopeQwenProvider()), ttsTestPrefs(true), ttsTestState(), "hello 500", outputRoot: root)
+            @Expect(ttsTestBool(providerError, "ok"), false)
+            @Expect(ttsTestString(providerError, "status"), "provider_error")
+            @Expect(ttsTestString(providerError, "message").contains("dashscope-test-key"), false)
+        } finally {
+            setGatewaySpeechTtsDashScopeQwenRunnerForTest(None<(JsonObject) -> GatewaySpeechTtsDashScopeQwenHttpResult>)
+        }
+
+        setGatewaySpeechTtsDashScopeQwenRunnerForTest(Some({ _request: JsonObject =>
+            GatewaySpeechTtsDashScopeQwenHttpResult(408, error: "timeout")
+        }))
+        try {
+            let timeout = gatewaySpeechTtsSynthesize(ttsTestConfig("dashscope", ttsTestDashScopeQwenProvider()), ttsTestPrefs(true), ttsTestState(), "hello timeout", outputRoot: root)
+            @Expect(ttsTestBool(timeout, "ok"), false)
+            @Expect(ttsTestString(timeout, "status"), "timeout")
+        } finally {
+            setGatewaySpeechTtsDashScopeQwenRunnerForTest(None<(JsonObject) -> GatewaySpeechTtsDashScopeQwenHttpResult>)
+        }
+    }
+
+    @TestCase
+    public func dashScopeQwenTtsDownloaderRejectsUnsafeUrlsAndRedactsQuery(): Unit {
+        let root = ttsTestTempRoot("dashscope-safe-url")
+        setGatewaySpeechTtsDashScopeQwenRunnerForTest(Some({ _request: JsonObject =>
+            GatewaySpeechTtsDashScopeQwenHttpResult(200, bodyBytes: "{\"output\":{\"audio\":{\"url\":\"file:///tmp/secret.ogg?token=secret-query\"}}}".toArray())
+        }))
+        try {
+            let result = gatewaySpeechTtsSynthesize(ttsTestConfig("dashscope", ttsTestDashScopeQwenProvider()), ttsTestPrefs(true), ttsTestState(), "hello unsafe", outputRoot: root)
+
+            @Expect(ttsTestBool(result, "ok"), false)
+            @Expect(ttsTestString(result, "status"), "provider_error")
+            @Expect(ttsTestString(result, "message").contains("file:///tmp/secret.ogg"), true)
+            @Expect(ttsTestString(result, "message").contains("secret-query"), false)
+        } finally {
+            setGatewaySpeechTtsDashScopeQwenRunnerForTest(None<(JsonObject) -> GatewaySpeechTtsDashScopeQwenHttpResult>)
+        }
+    }
+
+    @TestCase
+    public func dashScopeQwenTtsDownloaderMapsHttpTimeoutAndTooLarge(): Unit {
+        let root = ttsTestTempRoot("dashscope-download-errors")
+        let provider = ttsTestDashScopeQwenProvider()
+        provider.put("maxAudioBytes", JsonInt(4))
+
+        setGatewaySpeechTtsDashScopeQwenRunnerForTest(Some({ _request: JsonObject =>
+            GatewaySpeechTtsDashScopeQwenHttpResult(200, bodyBytes: "{\"output\":{\"audio\":{\"url\":\"https://cdn.example.invalid/audio/result.mp3?token=secret-query\"}}}".toArray())
+        }))
+        setGatewaySpeechTtsDashScopeQwenDownloaderForTest(Some({ _url: String, _timeoutMs: Int64, _maxBytes: Int64 =>
+            GatewaySpeechTtsDashScopeQwenHttpResult(404, bodyBytes: "missing token=secret-query dashscope-test-key".toArray())
+        }))
+        try {
+            let missing = gatewaySpeechTtsSynthesize(ttsTestConfig("dashscope", provider), ttsTestPrefs(true), ttsTestState(), "hello missing", outputRoot: root)
+            @Expect(ttsTestBool(missing, "ok"), false)
+            @Expect(ttsTestString(missing, "status"), "provider_error")
+            @Expect(ttsTestString(missing, "message").contains("dashscope-test-key"), false)
+        } finally {
+            setGatewaySpeechTtsDashScopeQwenDownloaderForTest(None<(String, Int64, Int64) -> GatewaySpeechTtsDashScopeQwenHttpResult>)
+        }
+
+        setGatewaySpeechTtsDashScopeQwenDownloaderForTest(Some({ _url: String, _timeoutMs: Int64, _maxBytes: Int64 =>
+            GatewaySpeechTtsDashScopeQwenHttpResult(408, error: "download timeout")
+        }))
+        try {
+            let timeout = gatewaySpeechTtsSynthesize(ttsTestConfig("dashscope", provider), ttsTestPrefs(true), ttsTestState(), "hello download timeout", outputRoot: root)
+            @Expect(ttsTestBool(timeout, "ok"), false)
+            @Expect(ttsTestString(timeout, "status"), "timeout")
+        } finally {
+            setGatewaySpeechTtsDashScopeQwenDownloaderForTest(None<(String, Int64, Int64) -> GatewaySpeechTtsDashScopeQwenHttpResult>)
+        }
+
+        setGatewaySpeechTtsDashScopeQwenDownloaderForTest(Some({ _url: String, _timeoutMs: Int64, _maxBytes: Int64 =>
+            GatewaySpeechTtsDashScopeQwenHttpResult(200, bodyBytes: "TOO-LARGE".toArray())
+        }))
+        try {
+            let tooLarge = gatewaySpeechTtsSynthesize(ttsTestConfig("dashscope", provider), ttsTestPrefs(true), ttsTestState(), "hello too large", outputRoot: root)
+            @Expect(ttsTestBool(tooLarge, "ok"), false)
+            @Expect(ttsTestString(tooLarge, "status"), "too_large")
+        } finally {
+            setGatewaySpeechTtsDashScopeQwenRunnerForTest(None<(JsonObject) -> GatewaySpeechTtsDashScopeQwenHttpResult>)
+            setGatewaySpeechTtsDashScopeQwenDownloaderForTest(None<(String, Int64, Int64) -> GatewaySpeechTtsDashScopeQwenHttpResult>)
         }
     }
 

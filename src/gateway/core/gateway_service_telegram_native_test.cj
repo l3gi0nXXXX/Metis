@@ -1,7 +1,7 @@
 package metis.gateway.core
 
 import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager, TelegramCustomCommandUserSettings}
-import metis.core.gatewaySubagentCreateRunRecord
+import metis.core.{GatewaySpeechTtsDashScopeQwenHttpResult, gatewaySubagentCreateRunRecord, setGatewaySpeechTtsDashScopeQwenRunnerForTest}
 import metis.gateway.model.{ChannelPolicyConfig, ChannelType, ChatType, InboundMessage, OutboundMessage, SendResult}
 
 import magic.core.message.Message
@@ -15,7 +15,7 @@ import std.fs.{Directory, File, Path, remove}
 import std.sync.Mutex
 import std.time.DateTime
 import std.unittest.testmacro.*
-import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString, JsonValue}
 
 private class GatewayTelegramNativeTestAdapter <: ChannelAdapter {
     private let inbound = ArrayList<InboundMessage>()
@@ -237,6 +237,20 @@ private func gatewayTelegramNativeService(adapter: GatewayTelegramNativeTestAdap
     let service = GatewayService(GatewayRouter(policies))
     service.registerAdapter(adapter, channelId: "telegram", accountId: "default")
     service
+}
+
+private func gatewayTelegramNativeDashScopeQwenTtsProviders(): JsonObject {
+    let providers = JsonObject()
+    let provider = JsonObject()
+    provider.put("kind", JsonString("dashscope-qwen-tts"))
+    provider.put("baseUrl", JsonString("https://dashscope.aliyuncs.com/api/v1"))
+    provider.put("apiKey", JsonString("test-dashscope-key"))
+    provider.put("model", JsonString("qwen3-tts-flash"))
+    provider.put("voice", JsonString("Chelsie"))
+    provider.put("languageType", JsonString("Chinese"))
+    provider.put("timeoutMs", JsonInt(1000))
+    providers.put("dashscope", provider)
+    providers
 }
 
 @Test
@@ -1841,6 +1855,49 @@ public class GatewayServiceTelegramNativeTest {
     }
 
     @TestCase
+    public func t53TtsAudioUsesDashScopeQwenProviderAndEmitsVoicePayload(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            user.telegram.actions.audio = true
+            user.telegram.speech.audioAsVoice = Some<Bool>(true)
+            user.speech.tts.put("enabled", JsonBool(true))
+            user.speech.tts.put("provider", JsonString("dashscope"))
+            user.speech.tts.put("providers", gatewayTelegramNativeDashScopeQwenTtsProviders())
+            CliSettingManager.writeGatewaySettings(user)
+
+            setGatewaySpeechTtsDashScopeQwenRunnerForTest(Some({ request: JsonObject =>
+                @Expect(request.get("url").getOrThrow().asString().getValue().endsWith("/services/aigc/multimodal-generation/generation"), true)
+                let body = request.get("body").getOrThrow().asObject()
+                let input = body.get("input").getOrThrow().asObject()
+                @Expect(body.get("model").getOrThrow().asString().getValue(), "qwen3-tts-flash")
+                @Expect(input.get("text").getOrThrow().asString().getValue(), "你好，这是 Metis 的 Qwen TTS 测试")
+                @Expect(input.get("voice").getOrThrow().asString().getValue(), "Chelsie")
+                @Expect(input.get("language_type").getOrThrow().asString().getValue(), "Chinese")
+                GatewaySpeechTtsDashScopeQwenHttpResult(200, bodyBytes: "DASH-AUDIO".toArray())
+            }))
+            try {
+                let adapter = GatewayTelegramNativeTestAdapter()
+                let service = gatewayTelegramNativeService(adapter)
+                service.start()
+                adapter.queue("/tts status")
+                adapter.queue("/tts audio 你好，这是 Metis 的 Qwen TTS 测试")
+                service.processOnce()
+
+                @Expect(adapter.sentText(0).contains("Status: ok"), true)
+                @Expect(adapter.sentText(0).contains("Provider: dashscope"), true)
+                @Expect(adapter.sentText(0).contains("Provider kind: dashscope-qwen-tts"), true)
+                @Expect(adapter.sentText(1).startsWith("[voice]"), true)
+                @Expect(adapter.sentText(1).contains("caption=TTS (dashscope)"), true)
+                @Expect(adapter.sentText(1).contains("语音暂时发送失败"), false)
+            } finally {
+                setGatewaySpeechTtsDashScopeQwenRunnerForTest(None<(JsonObject) -> GatewaySpeechTtsDashScopeQwenHttpResult>)
+            }
+        }
+    }
+
+    @TestCase
     public func t53VoiceInboundAutoReplyUsesTtsPayloadWhenEnabled(): Unit {
         withGatewayTelegramNativeTestHome {
             let modelName = "metis-test-telegram-auto-tts-${DateTime.now().toUnixTimeStamp().toMilliseconds()}"
@@ -1879,6 +1936,64 @@ public class GatewayServiceTelegramNativeTest {
                 @Expect(foundPlainAnswer, false)
             } finally {
                 CliConfig.model = oldModel
+            }
+        }
+    }
+
+    @TestCase
+    public func t53VoiceInboundAutoReplyUsesDashScopeQwenTtsPayloadWhenEnabled(): Unit {
+        withGatewayTelegramNativeTestHome {
+            let modelName = "metis-test-telegram-auto-dashscope-tts-${DateTime.now().toUnixTimeStamp().toMilliseconds()}"
+            ModelManager.registerChatModel(modelName, { => GatewayTelegramNativeFakeModel() })
+            let oldModel = CliConfig.model
+            CliConfig.model = modelName
+            setGatewaySpeechTtsDashScopeQwenRunnerForTest(Some({ request: JsonObject =>
+                let body = request.get("body").getOrThrow().asObject()
+                let input = body.get("input").getOrThrow().asObject()
+                @Expect(input.get("text").getOrThrow().asString().getValue(), "fake telegram native session answer")
+                @Expect(input.get("voice").getOrThrow().asString().getValue(), "Chelsie")
+                GatewaySpeechTtsDashScopeQwenHttpResult(200, bodyBytes: "DASH-AUDIO".toArray())
+            }))
+            try {
+                var user = GatewayUserSettings()
+                user.telegram.enabled = true
+                user.telegram.allowFrom = ["*"]
+                user.channelModels["telegram"] = modelName
+                user.telegram.speech.autoReplyToVoice = Some<Bool>(true)
+                user.telegram.speech.audioAsVoice = Some<Bool>(true)
+                user.speech.tts.put("enabled", JsonBool(true))
+                user.speech.tts.put("provider", JsonString("dashscope"))
+                user.speech.tts.put("degradeMessage", JsonString("语音暂时发送失败，我先打字陪你。"))
+                user.speech.tts.put("providers", gatewayTelegramNativeDashScopeQwenTtsProviders())
+                CliSettingManager.writeGatewaySettings(user)
+
+                let adapter = GatewayTelegramNativeTestAdapter()
+                let service = gatewayTelegramNativeService(adapter)
+                service.start()
+                adapter.queue("[voice]\nfileId=file-1\nmimeType=audio/ogg\n[media-context]\nchannel=telegram\naccountId=default\npeerId=user:8734062810\nmessageId=903\nmediaKind=voice\ntranscript=语音测试\nunderstandingStatus=ok")
+                service.processOnce()
+
+                var foundVoice = false
+                var foundPlainAnswer = false
+                var foundDegrade = false
+                for (i in 0..adapter.sentCount()) {
+                    let sent = adapter.sentText(i)
+                    if (sent.startsWith("[voice]") && sent.contains("caption=TTS (dashscope)")) {
+                        foundVoice = true
+                    }
+                    if (sent == "fake telegram native session answer") {
+                        foundPlainAnswer = true
+                    }
+                    if (sent.contains("语音暂时发送失败")) {
+                        foundDegrade = true
+                    }
+                }
+                @Expect(foundVoice, true)
+                @Expect(foundPlainAnswer, false)
+                @Expect(foundDegrade, false)
+            } finally {
+                CliConfig.model = oldModel
+                setGatewaySpeechTtsDashScopeQwenRunnerForTest(None<(JsonObject) -> GatewaySpeechTtsDashScopeQwenHttpResult>)
             }
         }
     }
