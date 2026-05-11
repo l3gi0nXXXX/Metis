@@ -250,6 +250,13 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
+function shortModelName(model: string): string {
+  const slash = model.lastIndexOf("/");
+  const colon = model.lastIndexOf(":");
+  const idx = Math.max(slash, colon);
+  return idx >= 0 ? model.slice(idx + 1) : model;
+}
+
 function renderMessageMeta(meta: GroupMeta | null) {
   if (!meta) {
     return nothing;
@@ -292,9 +299,7 @@ function renderMessageMeta(meta: GroupMeta | null) {
 
   // Model
   if (meta.model) {
-    // Shorten model name: strip provider prefix if present (e.g. "anthropic/claude-3.5-sonnet" → "claude-3.5-sonnet")
-    const shortModel = meta.model.includes("/") ? meta.model.split("/").pop()! : meta.model;
-    parts.push(html`<span class="msg-meta__model">${shortModel}</span>`);
+    parts.push(html`<span class="msg-meta__model">${shortModelName(meta.model)}</span>`);
   }
 
   if (parts.length === 0) {
@@ -536,9 +541,8 @@ function renderAvatar(
     />`;
   }
 
-  /* Assistant with no custom avatar: use logo when basePath available */
-  if (normalized === "assistant" && basePath) {
-    const logoUrl = agentLogoUrl(basePath);
+  if (normalized === "assistant") {
+    const logoUrl = agentLogoUrl(basePath ?? "");
     return html`<img
       class="chat-avatar ${className} chat-avatar--logo"
       src="${logoUrl}"

@@ -98,8 +98,9 @@ export function renderTab(state: AppViewState, tab: Tab, opts?: { collapsed?: bo
 }
 
 function renderCronFilterIcon(hiddenCount: number) {
+  const badgeText = hiddenCount > 99 ? "99+" : String(hiddenCount);
   return html`
-    <span style="position: relative; display: inline-flex; align-items: center;">
+    <span class="chat-controls__cron-icon">
       <svg
         width="16"
         height="16"
@@ -115,21 +116,7 @@ function renderCronFilterIcon(hiddenCount: number) {
         <polyline points="12 6 12 12 16 14"></polyline>
       </svg>
       ${hiddenCount > 0
-        ? html`<span
-            style="
-              position: absolute;
-              top: -5px;
-              right: -6px;
-              background: var(--color-accent, #6366f1);
-              color: #fff;
-              border-radius: var(--radius-full);
-              font-size: 9px;
-              line-height: 1;
-              padding: 1px 3px;
-              pointer-events: none;
-            "
-            >${hiddenCount}</span
-          >`
+        ? html`<span class="chat-controls__cron-badge">${badgeText}</span>`
         : ""}
     </span>
   `;
@@ -1074,6 +1061,9 @@ function resolveSessionScopedOptionLabel(
   row?: SessionsListResult["sessions"][number],
   rest?: string,
 ) {
+  if (key === "main" || key === "agent:main:main") {
+    return t("chat.mainSession");
+  }
   const base = rest?.trim() || key;
   if (!row) {
     return base;

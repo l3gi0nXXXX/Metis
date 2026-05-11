@@ -628,8 +628,17 @@ const WELCOME_SUGGESTIONS = [
   "Check system health",
 ];
 
+function resolveChatAssistantDisplayName(name: string | null | undefined): string {
+  const trimmed = name?.trim() ?? "";
+  const normalized = trimmed.toLowerCase();
+  if (!trimmed || normalized === "main" || normalized === "agent:main:main") {
+    return "Metis";
+  }
+  return trimmed;
+}
+
 function renderWelcomeState(props: ChatProps): TemplateResult {
-  const name = props.assistantName || "Assistant";
+  const name = resolveChatAssistantDisplayName(props.assistantName);
   const avatar = resolveAgentAvatarUrl({
     identity: {
       avatar: props.assistantAvatar ?? undefined,
@@ -888,8 +897,9 @@ export function renderChat(props: ChatProps) {
   const activeSession = props.sessions?.sessions?.find((row) => row.key === props.sessionKey);
   const reasoningLevel = activeSession?.reasoningLevel ?? "off";
   const showReasoning = props.showThinking && reasoningLevel !== "off";
+  const assistantDisplayName = resolveChatAssistantDisplayName(props.assistantName);
   const assistantIdentity = {
-    name: props.assistantName,
+    name: assistantDisplayName,
     avatar:
       resolveAgentAvatarUrl({
         identity: {
@@ -907,7 +917,7 @@ export function renderChat(props: ChatProps) {
   const placeholder = props.connected
     ? hasAttachments
       ? "Add a message or paste more images..."
-      : `Message ${props.assistantName || "agent"} (Enter to send)`
+      : `Message ${assistantDisplayName} (Enter to send)`
     : "Connect to the gateway to start chatting...";
 
   const requestUpdate = props.onRequestUpdate ?? (() => {});
@@ -1019,7 +1029,7 @@ export function renderChat(props: ChatProps) {
                 onOpenSidebar: props.onOpenSidebar,
                 showReasoning,
                 showToolCalls: props.showToolCalls,
-                assistantName: props.assistantName,
+                assistantName: assistantDisplayName,
                 assistantAvatar: assistantIdentity.avatar,
                 basePath: props.basePath,
                 contextWindow:

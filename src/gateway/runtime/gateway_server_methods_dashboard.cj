@@ -128,6 +128,53 @@ private func rpcBool(params: JsonObject, key: String, fallback: Bool): Bool {
     }
 }
 
+private func dashboardJsonStringField(obj: JsonObject, key: String): String {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asString().getValue() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func dashboardMessageObject(obj: JsonObject): JsonObject {
+    match (obj.get("message")) {
+        case Some(v) =>
+            try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+}
+
+private func dashboardTranscriptMessageString(obj: JsonObject, key: String): String {
+    let message = dashboardMessageObject(obj)
+    let nested = dashboardJsonStringField(message, key).trimAscii()
+    if (!nested.isEmpty()) {
+        return nested
+    }
+    dashboardJsonStringField(obj, key)
+}
+
+private func dashboardTranscriptText(obj: JsonObject): String {
+    let topText = dashboardJsonStringField(obj, "text")
+    if (!topText.isEmpty()) {
+        return topText
+    }
+    let message = dashboardMessageObject(obj)
+    let nestedText = dashboardJsonStringField(message, "text")
+    if (!nestedText.isEmpty()) {
+        return nestedText
+    }
+    dashboardJsonStringField(message, "content")
+}
+
+private func dashboardTranscriptValue(obj: JsonObject, key: String): Option<JsonValue> {
+    let message = dashboardMessageObject(obj)
+    match (message.get(key)) {
+        case Some(v) => return Some(v)
+        case None => ()
+    }
+    obj.get(key)
+}
+
 private func gatewayDashboardSessionStoreForRequest(user: GatewayUserSettings, sessionKey: String, agentId: String): GatewaySessionStore {
     gatewayRuntimeSessionStoreForRequest(user, sessionKey, agentId)
 }
@@ -350,11 +397,13 @@ public func gatewayDashboardChatHistoryJsonFromRpc(params: JsonObject): String {
             let objs = dashboardParseJsonObjectsFromRaw(raw)
             var first = true
             for (o in objs) {
-                let kind = match (o.get("kind")) { case Some(v) => v.asString().getValue() case None => "" }
+                let kind = dashboardJsonStringField(o, "kind")
                 if (kind == "meta") { continue }
-                let role = match (o.get("role")) { case Some(v) => v.asString().getValue() case None => "" }
-                let text = match (o.get("text")) { case Some(v) => v.asString().getValue() case None => "" }
-                let ts = match (o.get("ts")) { case Some(v) => v.asString().getValue() case None => "" }
+                let role = dashboardTranscriptMessageString(o, "role")
+                let text = dashboardTranscriptText(o)
+                let ts = dashboardJsonStringField(o, "ts")
+                let provider = dashboardTranscriptMessageString(o, "provider")
+                let model = dashboardTranscriptMessageString(o, "model")
                 if (role.isEmpty() && text.isEmpty()) { continue }
                 if (!first) { sb.append(",") }
                 first = false
@@ -362,6 +411,20 @@ public func gatewayDashboardChatHistoryJsonFromRpc(params: JsonObject): String {
                 sb.append("\"role\":\"${dashboardJsonEscape(role)}\",")
                 sb.append("\"text\":\"${dashboardJsonEscape(text)}\",")
                 sb.append("\"ts\":\"${dashboardJsonEscape(ts)}\"")
+                if (!provider.isEmpty()) {
+                    sb.append(",\"provider\":\"${dashboardJsonEscape(provider)}\"")
+                }
+                if (!model.isEmpty()) {
+                    sb.append(",\"model\":\"${dashboardJsonEscape(model)}\"")
+                }
+                match (dashboardTranscriptValue(o, "usage")) {
+                    case Some(v) => sb.append(",\"usage\":${v.toJsonString()}")
+                    case None => ()
+                }
+                match (dashboardTranscriptValue(o, "cost")) {
+                    case Some(v) => sb.append(",\"cost\":${v.toJsonString()}")
+                    case None => ()
+                }
                 sb.append("}")
             }
         }

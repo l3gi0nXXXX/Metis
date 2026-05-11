@@ -776,6 +776,32 @@
   font-size: 13px;
 }
 
+.chat-controls__cron-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.chat-controls__cron-badge {
+  position: absolute;
+  top: -7px;
+  right: -10px;
+  min-width: 14px;
+  max-width: 24px;
+  padding: 1px 3px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent, #6366f1);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.1;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px var(--card, #161b22);
+}
+
 /* Controls separator */
 .chat-controls__separator {
   color: rgba(255, 255, 255, 0.4);

@@ -1747,6 +1747,17 @@ private func gatewayControlUiWsAgentDisplayName(agentId: String): String {
     }
 }
 
+private func gatewayControlUiWsAgentIdentityName(agentId: String, configuredName: String): String {
+    let explicitName = configuredName.trimAscii()
+    if (!explicitName.isEmpty()) {
+        return explicitName
+    }
+    if (agentId.trimAscii().toAsciiLower() == "main") {
+        return "Metis"
+    }
+    gatewayControlUiWsAgentDisplayName(agentId)
+}
+
 private func gatewayControlUiWsBuiltinAgentCapabilities(agentId: String): JsonArray {
     let out = JsonArray([])
     match (agentId.trimAscii().toAsciiLower()) {
@@ -2016,11 +2027,7 @@ private func gatewayControlUiWsAgentRow(
     let configuredName = gatewayControlUiWsString(cfgEntry, "name").trimAscii()
     let configuredWorkspace = gatewayControlUiWsString(cfgEntry, "workspace").trimAscii()
     let configuredModel = gatewayControlUiWsString(gatewayControlUiWsObject(cfgEntry, "model"), "primary").trimAscii()
-    let name = if (!configuredName.isEmpty()) {
-        configuredName
-    } else {
-        gatewayControlUiWsAgentDisplayName(agentId)
-    }
+    let name = gatewayControlUiWsAgentIdentityName(agentId, configuredName)
     let identity = JsonObject()
     identity.put("name", JsonString(name))
     identity.put("avatar", JsonString(""))
@@ -2165,13 +2172,7 @@ private func gatewayControlUiWsAgentIdentityResult(params: JsonObject): JsonValu
     let configuredName = gatewayControlUiWsString(cfgEntry, "name").trimAscii()
     let result = JsonObject()
     result.put("agentId", JsonString(agentId))
-    result.put("name", JsonString(
-        if (!configuredName.isEmpty()) {
-            configuredName
-        } else {
-            gatewayControlUiWsAgentDisplayName(agentId)
-        }
-    ))
+    result.put("name", JsonString(gatewayControlUiWsAgentIdentityName(agentId, configuredName)))
     result.put("avatar", JsonString(""))
     result.put("emoji", JsonString(gatewayControlUiWsAgentEmoji(agentId)))
     result

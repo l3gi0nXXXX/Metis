@@ -551,6 +551,7 @@ export const zh_CN: TranslationMap = {
     passwordPlaceholder: "可选",
   },
   chat: {
+    mainSession: "主会话",
     disconnected: "已断开与网关的连接。",
     refreshTitle: "刷新聊天数据",
     thinkingToggle: "切换助手思考/工作输出",

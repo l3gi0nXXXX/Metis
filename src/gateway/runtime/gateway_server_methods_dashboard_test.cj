@@ -117,6 +117,40 @@ public class GatewayServerMethodsDashboardTest {
     }
 
     @TestCase
+    public func chatHistoryPreservesAssistantUsageAndModelMetadata(): Unit {
+        withGatewayDashboardTestHome("/tmp/metis-dashboard-history-meta-test-home") {
+            let store = gatewaySessionStoreForUserWithAgentId(GatewayUserSettings(), "main")
+            let sessionKey = "agent:main:history-meta-test"
+            store.deleteSession(sessionKey)
+            store.appendUser(sessionKey, "hello")
+            store.appendAssistant(
+                sessionKey,
+                "world",
+                modelName: "qwen:qwen3.5-plus",
+                promptTokens: 29100,
+                completionTokens: 236
+            )
+            store.listSessionKeys()
+
+            let params = JsonObject()
+            params.put("session", JsonString(sessionKey))
+            params.put("agentId", JsonString("main"))
+            let result = JsonValue.fromStr(gatewayDashboardChatHistoryJsonFromRpc(params)).asObject()
+            let messages = result.get("messages").getOrThrow().asArray()
+            @Expect(messages.size() >= 2, true)
+            let assistant = messages[messages.size() - 1].asObject()
+            @Expect(dashboardStringField(assistant, "role"), "assistant")
+            @Expect(dashboardStringField(assistant, "model"), "qwen:qwen3.5-plus")
+            @Expect(dashboardStringField(assistant, "provider"), "qwen")
+            let usage = assistant.get("usage").getOrThrow().asObject()
+            @Expect(usage.get("input").getOrThrow().toJsonString(), "29100")
+            @Expect(usage.get("output").getOrThrow().toJsonString(), "236")
+
+            store.deleteSession(sessionKey)
+        }
+    }
+
+    @TestCase
     public func sessionsDeleteUsesResolvedSessionKey(): Unit {
         let store = gatewaySessionStoreForUserWithAgentId(GatewayUserSettings(), "general")
         let sessionKey = "agent:general:main"

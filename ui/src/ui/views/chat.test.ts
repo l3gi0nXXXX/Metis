@@ -4,7 +4,7 @@ import { render } from "lit";
 import { describe, expect, it, vi } from "vitest";
 import { i18n } from "../../i18n/index.ts";
 import { getSafeLocalStorage } from "../../local-storage.ts";
-import { renderChatSessionSelect } from "../app-render.helpers.ts";
+import { renderChatControls, renderChatSessionSelect } from "../app-render.helpers.ts";
 import type { AppViewState } from "../app-view-state.ts";
 import {
   createModelCatalog,
@@ -470,6 +470,27 @@ describe("chat view", () => {
     expect(logoImage?.getAttribute("src")).toBe("/metis/favicon.svg");
   });
 
+  it("does not expose reserved main identity names in chat identity surfaces", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          connected: true,
+          assistantName: "Main",
+          assistantAvatar: "A",
+          assistantAvatarUrl: null,
+        }),
+      ),
+      container,
+    );
+
+    const input = container.querySelector<HTMLTextAreaElement>(".agent-chat__input textarea");
+    const heading = container.querySelector<HTMLHeadingElement>(".agent-chat__welcome h2");
+    expect(input?.placeholder).toBe("Message Metis (Enter to send)");
+    expect(heading?.textContent?.trim()).toBe("Metis");
+    expect(container.textContent).not.toContain("Main");
+  });
+
   it("keeps grouped assistant avatar fallbacks under the mounted base path", () => {
     const container = document.createElement("div");
     render(
@@ -496,6 +517,72 @@ describe("chat view", () => {
     );
     expect(groupedLogo).not.toBeNull();
     expect(groupedLogo?.getAttribute("src")).toBe("/metis/favicon.svg");
+  });
+
+  it("uses the bundled logo for grouped assistant messages without a custom avatar", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          assistantName: "Assistant",
+          assistantAvatar: null,
+          assistantAvatarUrl: null,
+          messages: [
+            {
+              role: "assistant",
+              content: "hello",
+              timestamp: 1000,
+            },
+          ],
+        }),
+      ),
+      container,
+    );
+
+    const groupedLogo = container.querySelector<HTMLImageElement>(
+      ".chat-group.assistant .chat-avatar--logo",
+    );
+    const inlineAvatar = container.querySelector(".chat-group.assistant div.chat-avatar");
+    expect(inlineAvatar).toBeNull();
+    expect(groupedLogo).not.toBeNull();
+    expect(groupedLogo?.getAttribute("src")).toBe("favicon.svg");
+  });
+
+  it("renders assistant message usage, context, and short model metadata", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          sessions: {
+            sessions: [],
+            defaults: { modelProvider: "qwen", model: "qwen3.5-plus", contextTokens: 200_000 },
+          },
+          messages: [
+            {
+              role: "assistant",
+              content: "hello",
+              timestamp: 1000,
+              model: "qwen:qwen3.5-plus",
+              usage: {
+                input: 29100,
+                output: 236,
+                cacheRead: 5800,
+                cacheWrite: 0,
+              },
+            },
+          ],
+        }),
+      ),
+      container,
+    );
+
+    const footer = container.querySelector(".chat-group-footer");
+    expect(footer?.textContent).toContain("↑29.1k");
+    expect(footer?.textContent).toContain("↓236");
+    expect(footer?.textContent).toContain("R5.8k");
+    expect(footer?.textContent).toContain("15% ctx");
+    expect(footer?.textContent).toContain("qwen3.5-plus");
+    expect(footer?.textContent).not.toContain("qwen:qwen3.5-plus");
   });
 
   it("keeps the persisted overview locale selected before i18n hydration finishes", async () => {
@@ -1350,6 +1437,104 @@ describe("chat view", () => {
     expect(labels).toContain("Deep Chat (alpha) / main");
     expect(labels).toContain("Coding (beta) / main");
     expect(labels).not.toContain("main");
+  });
+
+  it("renders agent main session as Main Session instead of a bare main scope", () => {
+    const { state } = createChatHeaderState({ omitSessionFromList: true });
+    state.sessionKey = "agent:main:main";
+    state.settings.sessionKey = state.sessionKey;
+    state.sessionsResult = {
+      ...state.sessionsResult!,
+      sessions: [
+        {
+          kind: "direct",
+          key: state.sessionKey,
+          sessionId: "main",
+          sessionFile: "main.jsonl",
+          root: "/tmp",
+          label: null,
+          displayName: null,
+          updatedAt: null,
+        },
+      ],
+    };
+    const container = document.createElement("div");
+    render(renderChatSessionSelect(state), container);
+
+    const labels = Array.from(container.querySelectorAll("option")).map((option) =>
+      option.textContent?.trim(),
+    );
+    expect(labels).toContain("Main Session");
+    expect(labels).not.toContain("main");
+  });
+
+  it("localizes the agent main session label in zh-CN", async () => {
+    await i18n.setLocale("zh-CN");
+    try {
+      const { state } = createChatHeaderState({ omitSessionFromList: true });
+      state.sessionKey = "agent:main:main";
+      state.settings.sessionKey = state.sessionKey;
+      state.sessionsResult = {
+        ...state.sessionsResult!,
+        sessions: [
+          {
+            kind: "direct",
+            key: state.sessionKey,
+            sessionId: "main",
+            sessionFile: "main.jsonl",
+            root: "/tmp",
+            label: null,
+            displayName: null,
+            updatedAt: null,
+          },
+        ],
+      };
+      const container = document.createElement("div");
+      render(renderChatSessionSelect(state), container);
+
+      const labels = Array.from(container.querySelectorAll("option")).map((option) =>
+        option.textContent?.trim(),
+      );
+      expect(labels).toContain("主会话");
+      expect(labels).not.toContain("main");
+    } finally {
+      await i18n.setLocale("en");
+    }
+  });
+
+  it("caps large hidden cron session badges while keeping the exact count in the tooltip", () => {
+    const { state } = createChatHeaderState();
+    state.sessionsResult = {
+      ...state.sessionsResult!,
+      sessions: [
+        {
+          kind: "direct",
+          key: state.sessionKey,
+          sessionId: "main",
+          sessionFile: "main.jsonl",
+          root: "/tmp",
+          updatedAt: null,
+        },
+        ...Array.from({ length: 109 }, (_, index) => ({
+          kind: "direct" as const,
+          key: `agent:main:cron:job-${index}`,
+          sessionId: `cron-${index}`,
+          sessionFile: `cron-${index}.jsonl`,
+          root: "/tmp",
+          updatedAt: null,
+        })),
+      ],
+    };
+    const container = document.createElement("div");
+    render(renderChatControls(state), container);
+
+    const cronButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.title.includes("cron sessions"),
+    );
+    expect(cronButton?.title).toBe("Show cron sessions (109 hidden)");
+    expect(cronButton?.querySelector(".chat-controls__cron-badge")?.textContent?.trim()).toBe(
+      "99+",
+    );
   });
 
   it("keeps agent-prefixed labels unique when a custom label already matches the prefix", () => {

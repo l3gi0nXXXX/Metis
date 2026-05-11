@@ -553,6 +553,7 @@ export const en: TranslationMap = {
     passwordPlaceholder: "optional",
   },
   chat: {
+    mainSession: "Main Session",
     disconnected: "Disconnected from gateway.",
     refreshTitle: "Refresh chat data",
     thinkingToggle: "Toggle assistant thinking/working output",

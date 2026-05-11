@@ -19,6 +19,20 @@ private func gatewayEmptySessionStringArray(): Array<String> {
     out.toArray()
 }
 
+private func gatewaySessionProviderFromModelName(modelName: String): String {
+    let normalized = modelName.trimAscii()
+    if (normalized.isEmpty()) {
+        return ""
+    }
+    if (normalized.contains(":")) {
+        return normalized.split(":")[0].trimAscii()
+    }
+    if (normalized.contains("/")) {
+        return normalized.split("/")[0].trimAscii()
+    }
+    ""
+}
+
 /**
  * 网关会话持久化。
  *
@@ -104,8 +118,27 @@ public class GatewaySessionStore {
         this.appendRole(sessionKey, "user", text)
     }
 
-    public func appendAssistant(sessionKey: String, text: String): Unit {
-        this.appendRole(sessionKey, "assistant", text)
+    public func appendAssistant(
+        sessionKey: String,
+        text: String,
+        modelName!: String = "",
+        promptTokens!: Int64 = -1,
+        completionTokens!: Int64 = -1,
+        cacheReadTokens!: Int64 = 0,
+        cacheWriteTokens!: Int64 = 0,
+        costUsd!: Float64 = 0.0
+    ): Unit {
+        this.appendRole(
+            sessionKey,
+            "assistant",
+            text,
+            modelName: modelName,
+            promptTokens: promptTokens,
+            completionTokens: completionTokens,
+            cacheReadTokens: cacheReadTokens,
+            cacheWriteTokens: cacheWriteTokens,
+            costUsd: costUsd
+        )
     }
 
     /**
@@ -225,7 +258,17 @@ public class GatewaySessionStore {
         }
     }
 
-    private func appendRole(sessionKey: String, role: String, text: String): Unit {
+    private func appendRole(
+        sessionKey: String,
+        role: String,
+        text: String,
+        modelName!: String = "",
+        promptTokens!: Int64 = -1,
+        completionTokens!: Int64 = -1,
+        cacheReadTokens!: Int64 = 0,
+        cacheWriteTokens!: Int64 = 0,
+        costUsd!: Float64 = 0.0
+    ): Unit {
         if (!this.enabled) {
             return
         }
@@ -241,6 +284,31 @@ public class GatewaySessionStore {
             jo.put("role", JsonString(role))
             jo.put("text", JsonString(text))
             jo.put("ts", JsonString("${ts}"))
+            if (role == "assistant") {
+                let normalizedModel = modelName.trimAscii()
+                let hasUsage = promptTokens >= 0 || completionTokens >= 0 || cacheReadTokens > 0 || cacheWriteTokens > 0 || costUsd > 0.0
+                if (!normalizedModel.isEmpty() || hasUsage) {
+                    let provider = gatewaySessionProviderFromModelName(normalizedModel)
+                    if (!provider.isEmpty()) {
+                        jo.put("provider", JsonString(provider))
+                    }
+                    if (!normalizedModel.isEmpty()) {
+                        jo.put("model", JsonString(normalizedModel))
+                    }
+                    let usage = JsonObject()
+                    usage.put("input", (if (promptTokens >= 0) { promptTokens } else { 0 }).toJsonValue())
+                    usage.put("output", (if (completionTokens >= 0) { completionTokens } else { 0 }).toJsonValue())
+                    usage.put("cacheRead", cacheReadTokens.toJsonValue())
+                    usage.put("cacheWrite", cacheWriteTokens.toJsonValue())
+                    if (costUsd > 0.0) {
+                        let cost = JsonObject()
+                        cost.put("total", costUsd.toJsonValue())
+                        usage.put("cost", cost)
+                        jo.put("cost", cost)
+                    }
+                    jo.put("usage", usage)
+                }
+            }
             appendUtf8Line(p, jo.toJsonString() + "\n")
         } catch (e: Exception) {
             LogUtils.error("GatewaySessionStore.appendRole failed (sessionKey=${sessionKey}, role=${role}): ${e.message}")

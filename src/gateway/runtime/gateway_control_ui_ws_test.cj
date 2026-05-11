@@ -203,6 +203,20 @@ public class GatewayControlUiWsTest {
     }
 
     @TestCase
+    public func agentIdentityGetKeepsMainInternalIdButReturnsMetisDisplayName(): Unit {
+        let cfg = buildGatewayConfigFromUserSettings(CliSettingManager.readGatewaySettings())
+        let params = JsonObject()
+        params.put("sessionKey", JsonString("agent:main:main"))
+
+        let response = gatewayControlUiWsCompatResponse("agent.identity.get", params, cfg)
+
+        @Expect(response.isSome(), true)
+        let result = response.getOrThrow().result.asObject()
+        @Expect(gatewayControlUiWsTestString(result, "agentId"), "main")
+        @Expect(gatewayControlUiWsTestString(result, "name"), "Metis")
+    }
+
+    @TestCase
     public func agentsRuntimeAuditCompatResponseReusesUnifiedClosureSurface(): Unit {
         let cfg = buildGatewayConfigFromUserSettings(CliSettingManager.readGatewaySettings())
         let response = gatewayControlUiWsCompatResponse("agents.runtime.audit", JsonObject(), cfg)

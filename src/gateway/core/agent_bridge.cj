@@ -3,6 +3,7 @@ package metis.gateway.core
 import magic.dsl.*
 import magic.core.agent.*
 import magic.core.tool.*
+import magic.interaction.*
 import magic.jsonable.TypeSchema
 import magic.prelude.*
 import magic.log.LogUtils
@@ -130,6 +131,54 @@ private func gatewayToolAuthorized(
 
 private var gatewayAgentBridgeReplyRunnerForTest: Option<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String> =
     None<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String>
+
+private let gatewayUsageCaptureMutex = Mutex()
+private var gatewayUsageCaptureRegistered = false
+private var gatewayUsageCaptureActive = false
+private var gatewayUsageCaptureAgentName = ""
+private var gatewayUsageCapturePromptTokens: Int64 = -1
+private var gatewayUsageCaptureCompletionTokens: Int64 = -1
+
+private func gatewayEnsureUsageCaptureRegistered(): Unit {
+    synchronized(gatewayUsageCaptureMutex) {
+        if (gatewayUsageCaptureRegistered) {
+            return
+        }
+        gatewayUsageCaptureRegistered = true
+    }
+    EventHandlerManager.global.addHandler { evt: ChatModelEndEvent =>
+        synchronized(gatewayUsageCaptureMutex) {
+            if (!gatewayUsageCaptureActive) {
+                return
+            }
+            if (!gatewayUsageCaptureAgentName.isEmpty() && evt.agent.name != gatewayUsageCaptureAgentName) {
+                return
+            }
+            if (let Some(usage) <- evt.chatResponse.usage) {
+                gatewayUsageCapturePromptTokens = usage.promptTokens
+                gatewayUsageCaptureCompletionTokens = usage.completionTokens
+            }
+        }
+    }
+}
+
+private func gatewayBeginUsageCapture(agentName: String): Unit {
+    gatewayEnsureUsageCaptureRegistered()
+    synchronized(gatewayUsageCaptureMutex) {
+        gatewayUsageCaptureActive = true
+        gatewayUsageCaptureAgentName = agentName.trimAscii()
+        gatewayUsageCapturePromptTokens = -1
+        gatewayUsageCaptureCompletionTokens = -1
+    }
+}
+
+private func gatewayFinishUsageCapture(): (Int64, Int64) {
+    synchronized(gatewayUsageCaptureMutex) {
+        gatewayUsageCaptureActive = false
+        gatewayUsageCaptureAgentName = ""
+        (gatewayUsageCapturePromptTokens, gatewayUsageCaptureCompletionTokens)
+    }
+}
 
 public func setGatewayAgentBridgeReplyRunnerForTest(
     runner: Option<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String>
@@ -492,6 +541,9 @@ public class AgentBridge {
 
             var answer: String = ""
             var lastEx: Option<Exception> = None
+            var successfulModelName = ""
+            var successfulPromptTokens: Int64 = -1
+            var successfulCompletionTokens: Int64 = -1
             let availableSkillsMeta = if (skillsEnabled) {
                 SkillsPrompt.buildAvailableSkillsMetadataForPrompt(agentId: agentId)
             } else {
@@ -573,6 +625,7 @@ public class AgentBridge {
                         note: "attempt=${idx + 1}, promptChars=${builtPrompt.size}"
                     )
                     var firstTokenMs: Int64 = -1
+                    gatewayBeginUsageCapture(agent.name)
                     if (streamingEnabled) {
                         let response = agent.asyncChat(modelInput)
                         var lastChunkContent = ""
@@ -605,6 +658,10 @@ public class AgentBridge {
                     } else {
                         answer = agent.chat(modelInput)
                     }
+                    let usagePair = gatewayFinishUsageCapture()
+                    successfulPromptTokens = usagePair[0]
+                    successfulCompletionTokens = usagePair[1]
+                    successfulModelName = currModel.fullName
                     let modelCallFinishedAtMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
                     gatewayLogReplyMemory(
                         "after-agent-chat",
@@ -624,7 +681,10 @@ public class AgentBridge {
                             modelCallFinishedAtMs - modelCallStartedAtMs,
                             "success",
                             localPreCallMs: localPreCallMs,
-                            firstTokenMs: firstTokenMs
+                            firstTokenMs: firstTokenMs,
+                            promptTokens: successfulPromptTokens,
+                            completionTokens: successfulCompletionTokens,
+                            totalTokens: if (successfulPromptTokens >= 0 && successfulCompletionTokens >= 0) { successfulPromptTokens + successfulCompletionTokens } else { -1 }
                         )
                     )
                     lastEx = None
@@ -633,6 +693,7 @@ public class AgentBridge {
                         revertSkillEnv()
                     }
                 } catch (e: Exception) {
+                    gatewayFinishUsageCapture()
                     let modelCallFailedAtMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
                     gatewayLogReplyMemory(
                         "agent-chat-exception",
@@ -692,7 +753,13 @@ public class AgentBridge {
                 answer
             }
             history.add("assistant: ${reply}")
-            this.sessionStore.appendAssistant(conversationKey, reply)
+            this.sessionStore.appendAssistant(
+                conversationKey,
+                reply,
+                modelName: successfulModelName,
+                promptTokens: successfulPromptTokens,
+                completionTokens: successfulCompletionTokens
+            )
             gatewayLogReplyMemory(
                 "reply-finished",
                 conversationKey,
