@@ -1,8 +1,9 @@
 package metis.gateway.runtime
 
-import metis.core.config.CliSettingManager
+import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager}
 
 import std.collection.ArrayList
+import std.env.{getVariable, setVariable}
 import std.fs.{Directory, File, Path, exists, remove}
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
@@ -46,6 +47,37 @@ private func agentsTestClean(path: Path): Unit {
         }
     } catch (_: Exception) {
         ()
+    }
+}
+
+private func withAgentsTempHome<T>(label: String, block: (Path) -> T): T {
+    let home = Path("/tmp/${label}")
+    try {
+        remove(home, recursive: true)
+    } catch (_: Exception) {
+        ()
+    }
+    Directory.create(home, recursive: true)
+    let oldHome = getVariable("METIS_HOME")
+    setVariable("METIS_HOME", home.toString())
+    CliConfig.invalidatePathCache()
+    MetisConfigManager.invalidate()
+    CliSettingManager.invalidate()
+    try {
+        return block(home)
+    } finally {
+        match (oldHome) {
+            case Some(value) => setVariable("METIS_HOME", value)
+            case None => setVariable("METIS_HOME", "")
+        }
+        CliConfig.invalidatePathCache()
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+        try {
+            remove(home, recursive: true)
+        } catch (_: Exception) {
+            ()
+        }
     }
 }
 
@@ -492,5 +524,66 @@ public class GatewayServerMethodsAgentsTest {
         let runtime = audit.get("runtime").getOrThrow().asObject()
         @Expect(runtime.get("effectiveTools").isSome(), true)
         @Expect(runtime.get("authorizationProfile").isSome(), true)
+    }
+
+    @TestCase
+    public func agentsAddBootstrapsWorkspaceAgentDirAndSessionsWithoutAuthCopy(): Unit {
+        withAgentsTempHome("metis-agents-add-phase5-home", { home =>
+            let params = JsonObject()
+            params.put("id", JsonString("pm"))
+            params.put("name", JsonString("Project Manager"))
+            let response = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: params))).getOrThrow()
+            @Expect(response.ok, true)
+            let result = response.result.asObject()
+            let workspaceDir = home.join("workspaces").join("pm")
+            let agentDir = home.join("agents").join("pm").join("agent")
+            let sessionsDir = home.join("agents").join("pm").join("sessions")
+
+            @Expect(agentsTestString(result, "workspaceDir"), workspaceDir.toString())
+            @Expect(agentsTestString(result, "agentDir"), agentDir.toString())
+            @Expect(agentsTestString(result, "sessionsDir"), sessionsDir.toString())
+            @Expect(exists(agentDir.join("AGENT.md")), true)
+            @Expect(exists(agentDir.join("models.json")), false)
+            @Expect(exists(agentDir.join("auth-profiles.json")), false)
+            @Expect(exists(sessionsDir), true)
+            for (name in ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md", "MEMORY.md"]) {
+                @Expect(exists(workspaceDir.join(name)), true)
+            }
+
+            let bootstrap = result.get("bootstrap").getOrThrow().asObject()
+            @Expect(agentsTestBool(bootstrap, "authProfilesCopied"), false)
+            @Expect(agentsTestBool(bootstrap, "authProfilesCopyRequiresExplicitRequest"), true)
+            @Expect(bootstrap.get("files").getOrThrow().asArray().size() >= 7, true)
+
+            let root = MetisConfigManager.rawConfig().getOrThrow()
+            let entries = root.get("agents").getOrThrow().asObject().get("list").getOrThrow().asArray()
+            var configuredAgentDir = ""
+            for (i in 0..entries.size()) {
+                let row = entries[i].asObject()
+                if (agentsTestString(row, "id") == "pm") {
+                    configuredAgentDir = agentsTestString(row, "agentDir")
+                }
+            }
+            @Expect(configuredAgentDir, agentDir.toString())
+        })
+    }
+
+    @TestCase
+    public func agentsAddDoesNotOverwriteExistingWorkspaceIdentityFile(): Unit {
+        withAgentsTempHome("metis-agents-add-phase5-existing-home", { home =>
+            let workspaceDir = home.join("custom-workspace")
+            Directory.create(workspaceDir, recursive: true)
+            File.writeTo(workspaceDir.join("IDENTITY.md"), "Name: Existing\n".toArray())
+
+            let params = JsonObject()
+            params.put("id", JsonString("writer"))
+            params.put("workspace", JsonString(workspaceDir.toString()))
+            let response = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: params))).getOrThrow()
+            @Expect(response.ok, true)
+
+            @Expect(String.fromUtf8(File.readFrom(workspaceDir.join("IDENTITY.md"))), "Name: Existing\n")
+            @Expect(exists(workspaceDir.join("AGENTS.md")), true)
+            @Expect(exists(workspaceDir.join("MEMORY.md")), true)
+        })
     }
 }

@@ -5,6 +5,7 @@ import magic.jsonable.*
 import metis.core.{gatewayMainRuntimeExtendedToolNames, gatewayMainRuntimeRequiredToolNames, missingRuntimeToolNames}
 import metis.core.config.{CliConfig, CliSettingManager, MetisAgentScope, MetisConfigManager, MetisPaths, GatewayUserSettings}
 import metis.core.memory.MemoryRuntimeRegistry
+import metis.core.prompting.{MetisAgentWorkspaceBootstrapResult, ensureMetisAgentWorkspace}
 import metis.core.skills.resolveAgentSkillVisibility
 import metis.gateway.config.buildGatewayConfigFromUserSettings
 import metis.gateway.core.{gatewayAuthorizedChatToolNames, gatewayCorePromptRuntimeCapabilities, gatewayDefaultChatRuntimeHasUnifiedCoreTools, gatewayDefaultChatToolNames, gatewayMainRuntimePromptTemplateId, gatewayMainRuntimePromptVarianceFields, gatewaySanitizeAgentId}
@@ -533,7 +534,11 @@ private func gatewayAgentExists(root: JsonObject, agentId: String): Bool {
 }
 
 private func gatewayAgentDefaultAgentDir(agentId: String): Path {
-    MetisPaths.homeRoot().join("agents").join(gatewaySanitizeAgentId(agentId))
+    MetisPaths.homeRoot().join("agents").join(gatewaySanitizeAgentId(agentId)).join("agent")
+}
+
+private func gatewayAgentDefaultSessionsDir(agentId: String): Path {
+    MetisPaths.homeRoot().join("agents").join(gatewaySanitizeAgentId(agentId)).join("sessions")
 }
 
 private func gatewayAgentDefaultWorkspaceDir(agentId: String): Path {
@@ -549,6 +554,19 @@ private func gatewayAgentBuildDefaultManifest(agentId: String, name: String, wor
     "# ${title}\n\n" +
     "This custom agent is managed by Metis.\n\n" +
     "Workspace: ${workspace}\n"
+}
+
+private func gatewayAgentBootstrapFilesJson(bootstrap: MetisAgentWorkspaceBootstrapResult): JsonArray {
+    let files = JsonArray([])
+    for (file in bootstrap.files) {
+        let row = JsonObject()
+        row.put("name", JsonString(file.name))
+        row.put("path", JsonString(file.path))
+        row.put("created", file.created.toJsonValue())
+        row.put("existed", file.existed.toJsonValue())
+        files.add(row)
+    }
+    files
 }
 
 private func gatewayAgentBindingAccountId(matchObj: JsonObject): String {
@@ -841,14 +859,20 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
     let workspace = gatewayAgentRpcStringParam(request, ["workspace"], gatewayAgentDefaultWorkspaceDir(agentId).toString())
     let model = gatewayAgentRpcStringParam(request, ["model"], "")
     let agentDir = gatewayAgentRpcStringParam(request, ["agentDir"], gatewayAgentDefaultAgentDir(agentId).toString())
+    let sessionsDir = gatewayAgentRpcStringParam(request, ["sessionsDir"], gatewayAgentDefaultSessionsDir(agentId).toString())
+    if (gatewayAgentJsonBool(request.params, "copyAuthProfiles", false) || gatewayAgentJsonBool(request.params, "importAuthProfiles", false)) {
+        return GatewayRpcResponse(false, "agents.add", error: "Auth profile copy/import requires an explicit source and is not performed by default.")
+    }
     let agentDirPath = Path(agentDir)
     let workspacePath = Path(workspace)
+    let sessionsDirPath = Path(sessionsDir)
     if (!exists(agentDirPath)) {
         Directory.create(agentDirPath, recursive: true)
     }
-    if (!exists(workspacePath)) {
-        Directory.create(workspacePath, recursive: true)
+    if (!exists(sessionsDirPath)) {
+        Directory.create(sessionsDirPath, recursive: true)
     }
+    let bootstrap = ensureMetisAgentWorkspace(workspacePath)
     let manifestPath = agentDirPath.join("AGENT.md")
     if (!exists(manifestPath)) {
         File.writeTo(manifestPath, gatewayAgentBuildDefaultManifest(agentId, name, workspace).toArray())
@@ -858,6 +882,7 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
     entry.put("name", JsonString(name))
     entry.put("workspace", JsonString(workspace))
     entry.put("agentDir", JsonString(agentDir))
+    entry.put("sessionsDir", JsonString(sessionsDir))
     if (!model.trimAscii().isEmpty()) {
         entry.put("model", JsonString(model.trimAscii()))
     }
@@ -872,8 +897,19 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
     result.put("agentId", JsonString(agentId))
     result.put("name", JsonString(name))
     result.put("workspace", JsonString(workspace))
+    result.put("workspaceDir", JsonString(workspace))
     result.put("agentDir", JsonString(agentDir))
+    result.put("sessionsDir", JsonString(sessionsDir))
     result.put("createdManifest", JsonString(manifestPath.toString()))
+    let bootstrapJson = JsonObject()
+    bootstrapJson.put("workspaceDir", JsonString(bootstrap.workspaceDir))
+    bootstrapJson.put("createdCount", bootstrap.createdCount.toJsonValue())
+    bootstrapJson.put("files", gatewayAgentBootstrapFilesJson(bootstrap))
+    bootstrapJson.put("authProfilesCopied", false.toJsonValue())
+    bootstrapJson.put("authProfilesCopyRequiresExplicitRequest", true.toJsonValue())
+    bootstrapJson.put("authProfilesPath", JsonString(agentDirPath.join("auth-profiles.json").toString()))
+    bootstrapJson.put("modelsJsonPath", JsonString(agentDirPath.join("models.json").toString()))
+    result.put("bootstrap", bootstrapJson)
     GatewayRpcResponse(true, "agents.add", result: result)
 }
 

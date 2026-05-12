@@ -1,5 +1,7 @@
 package metis.core.prompting
 
+import metis.utils.ShellUtils
+
 import std.fs.{Directory, File, OpenMode, Path, exists, remove}
 import std.unittest.testmacro.*
 
@@ -137,6 +139,93 @@ public class MetisWorkspaceBootstrapTest {
             @Expect(bootstrapHasFileWithSuffix(bootstrap.files, "USER.md"), false)
             @Expect(bootstrapHasFileWithSuffix(bootstrap.files, "HEARTBEAT.md"), false)
             @Expect(bootstrapHasFileWithSuffix(bootstrap.files, "BOOTSTRAP.md"), false)
+        } finally {
+            cleanupWorkspaceBootstrapTestDir(root)
+        }
+    }
+
+    @TestCase
+    public func ensureAgentWorkspaceCreatesMissingBootstrapFilesWithoutOverwriting(): Unit {
+        let root = Path("/tmp/metis-agent-workspace-bootstrap-ensure")
+        try {
+            cleanupWorkspaceBootstrapTestDir(root)
+            Directory.create(root, recursive: true)
+            File.writeTo(root.join("SOUL.md"), "# Custom Soul\n".toArray())
+
+            let bootstrap = ensureMetisAgentWorkspace(root)
+
+            @Expect(bootstrap.workspaceDir.endsWith("metis-agent-workspace-bootstrap-ensure"), true)
+            @Expect(bootstrap.createdCount >= 6, true)
+            @Expect(String.fromUtf8(File.readFrom(root.join("SOUL.md"))), "# Custom Soul\n")
+            for (name in metisWorkspaceBootstrapFilenames()) {
+                @Expect(exists(root.join(name)), true)
+            }
+        } finally {
+            cleanupWorkspaceBootstrapTestDir(root)
+        }
+    }
+
+    @TestCase
+    public func safeWorkspaceReadWriteRejectsEscapesAndAllowsRelativeFiles(): Unit {
+        let root = Path("/tmp/metis-agent-workspace-safe-io")
+        let outside = Path("/tmp/metis-agent-workspace-safe-io-outside")
+        try {
+            cleanupWorkspaceBootstrapTestDir(root)
+            cleanupWorkspaceBootstrapTestDir(outside)
+            Directory.create(root, recursive: true)
+            Directory.create(outside, recursive: true)
+            File.writeTo(outside.join("secret.txt"), "secret".toArray())
+
+            let writeResult = metisWorkspaceSafeWrite(root, "notes/today.md", "hello")
+            @Expect(writeResult.ok, true)
+            let readResult = metisWorkspaceSafeRead(root, "notes/today.md")
+            @Expect(readResult.ok, true)
+            @Expect(readResult.content, "hello")
+
+            @Expect(metisWorkspaceSafeRead(root, "../secret.txt").ok, false)
+            @Expect(metisWorkspaceSafeWrite(root, "/tmp/escape.txt", "bad").ok, false)
+
+            let (code, _, _) = ShellUtils.execute(
+                ["ln", "-s", outside.toString(), root.join("escape").toString()],
+                withWrap: false
+            )
+            @Expect(code, 0)
+            @Expect(metisWorkspaceSafeRead(root, "escape/secret.txt").ok, false)
+        } finally {
+            cleanupWorkspaceBootstrapTestDir(root)
+            cleanupWorkspaceBootstrapTestDir(outside)
+        }
+    }
+
+    @TestCase
+    public func identityMarkdownParsesFieldsAndValidatesAvatarBoundary(): Unit {
+        let root = Path("/tmp/metis-agent-workspace-identity")
+        try {
+            cleanupWorkspaceBootstrapTestDir(root)
+            Directory.create(root.join("assets"), recursive: true)
+            File.writeTo(root.join("assets").join("avatar.png"), "png".toArray())
+
+            let identity = parseMetisIdentityMarkdown(
+                "# Identity\n\n" +
+                "Name: Planner\n" +
+                "Emoji: P\n" +
+                "Theme: slate\n" +
+                "Creature: \n" +
+                "Vibe: calm\n" +
+                "Avatar: assets/avatar.png\n"
+            )
+            @Expect(identity.name, "Planner")
+            @Expect(identity.emoji, "P")
+            @Expect(identity.theme, "slate")
+            @Expect(identity.vibe, "calm")
+            @Expect(identity.avatar, "assets/avatar.png")
+
+            @Expect(validateMetisIdentityAvatar(root, "assets/avatar.png").ok, true)
+            @Expect(validateMetisIdentityAvatar(root, "https://example.test/avatar.png").ok, true)
+            @Expect(validateMetisIdentityAvatar(root, "data:image/png;base64,AAAA").ok, true)
+            @Expect(validateMetisIdentityAvatar(root, "~/avatar.png").ok, false)
+            @Expect(validateMetisIdentityAvatar(root, "file:///tmp/avatar.png").ok, false)
+            @Expect(validateMetisIdentityAvatar(root, "../avatar.png").ok, false)
         } finally {
             cleanupWorkspaceBootstrapTestDir(root)
         }
