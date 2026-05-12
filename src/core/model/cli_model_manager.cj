@@ -6,6 +6,7 @@ import magic.model.ModelManager
 import metis.core.config.{CliConfig, CliModelRuntimeStateManager, MetisConfigManager}
 
 import std.collection.ArrayList
+import stdx.encoding.json.{JsonArray, JsonObject}
 
 /**
  * Manage model fallback logic and selection
@@ -26,7 +27,7 @@ protected class CliModelManager {
     }
 
     private static func runtimePrimaryModelRef(): String {
-        normalizedRuntimeModelRef(CliConfig.model)
+        normalizedRuntimeModelRef(CliConfig.modelOrEmpty())
     }
 
     private static func requireConfiguredPrimaryModelRef(): String {
@@ -53,6 +54,82 @@ protected class CliModelManager {
         out.toArray()
     }
 
+    private static func scopeObject(root: JsonObject, key: String): JsonObject {
+        match (root.get(key)) {
+            case Some(value) => try { value.asObject() } catch (_: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+    }
+
+    private static func scopeString(root: JsonObject, key: String): String {
+        match (root.get(key)) {
+            case Some(value) => try { value.asString().getValue().trimAscii() } catch (_: Exception) { "" }
+            case None => ""
+        }
+    }
+
+    private static func scopeStringArray(root: JsonObject, key: String): Array<String> {
+        let arr = match (root.get(key)) {
+            case Some(value) => try { value.asArray() } catch (_: Exception) { JsonArray([]) }
+            case None => JsonArray([])
+        }
+        let out = ArrayList<String>()
+        for (item in arr.getItems()) {
+            try {
+                let text = item.asString().getValue().trimAscii()
+                if (!text.isEmpty()) {
+                    out.add(text)
+                }
+            } catch (_: Exception) {
+                ()
+            }
+        }
+        out.toArray()
+    }
+
+    private static func scopeModel(scope: JsonObject): JsonObject {
+        scopeObject(scope, "model")
+    }
+
+    private static func scopePrimaryModelRef(scope: JsonObject): String {
+        let scoped = scopeString(scope, "modelRef")
+        if (!scoped.isEmpty()) {
+            return normalizedRuntimeModelRef(scoped)
+        }
+        let model = scopeModel(scope)
+        let modelRef = scopeString(model, "modelRef")
+        if (!modelRef.isEmpty()) {
+            return normalizedRuntimeModelRef(modelRef)
+        }
+        normalizedRuntimeModelRef(scopeString(model, "primary"))
+    }
+
+    private static func scopeFallbacksConfigured(scope: JsonObject): Bool {
+        match (scopeModel(scope).get("fallbacks")) {
+            case Some(_) => true
+            case None => false
+        }
+    }
+
+    private static func runtimeFallbackModelRefsForAgentScope(scope: JsonObject): Array<String> {
+        if (!scopeFallbacksConfigured(scope)) {
+            return runtimeFallbackModelRefs()
+        }
+        let out = ArrayList<String>()
+        let seen = ArrayList<String>()
+        let primaryCanonical = canonicalModelRef(scopePrimaryModelRef(scope))
+        for (raw in scopeStringArray(scopeModel(scope), "fallbacks")) {
+            let normalized = normalizedRuntimeModelRef(raw)
+            let canonical = canonicalModelRef(normalized)
+            if (normalized.isEmpty() || canonical.isEmpty() || canonical == primaryCanonical || seen.contains(canonical)) {
+                continue
+            }
+            seen.add(canonical)
+            out.add(normalized)
+        }
+        out.toArray()
+    }
+
     public static func modelSelectionSummary(): Array<String> {
         syncRuntimeConfig()
         let out = ArrayList<String>()
@@ -61,6 +138,20 @@ protected class CliModelManager {
             out.add(primary)
         }
         for (fallback in runtimeFallbackModelRefs()) {
+            out.add(fallback)
+        }
+        out.toArray()
+    }
+
+    public static func modelSelectionSummaryForAgentScope(scope: JsonObject): Array<String> {
+        syncRuntimeConfig()
+        let primary = scopePrimaryModelRef(scope)
+        if (primary.isEmpty()) {
+            return modelSelectionSummary()
+        }
+        let out = ArrayList<String>()
+        out.add(primary)
+        for (fallback in runtimeFallbackModelRefsForAgentScope(scope)) {
             out.add(fallback)
         }
         out.toArray()
@@ -88,6 +179,10 @@ protected class CliModelManager {
         if (runtimeFallbackModelRefs().isEmpty()) {
             return false
         }
+        isFallbackError(ex)
+    }
+
+    private static func isFallbackError(ex: Exception): Bool {
         let message = ex.message.toAsciiLower()
 
         // HTTP and model errors that should trigger fallback
@@ -102,6 +197,18 @@ protected class CliModelManager {
                message.contains("api key") ||
                message.contains("unauthorized") ||
                message.contains("authentication")
+    }
+
+    public static func shouldFallbackForAgentScope(ex: Exception, scope: JsonObject): Bool {
+        syncRuntimeConfig()
+        let primary = scopePrimaryModelRef(scope)
+        if (primary.isEmpty()) {
+            return shouldFallback(ex)
+        }
+        if (runtimeFallbackModelRefsForAgentScope(scope).isEmpty()) {
+            return false
+        }
+        isFallbackError(ex)
     }
 
     private static func buildModel(model: String): ChatModel {
@@ -189,5 +296,20 @@ protected class CliModelManager {
             }
         }
         return models.toArray()
+    }
+
+    public static func getAllModelsForAgentScope(scope: JsonObject): Array<ChatModel> {
+        syncRuntimeConfig()
+        let primary = scopePrimaryModelRef(scope)
+        if (primary.isEmpty()) {
+            return getAllModels()
+        }
+        let models = ArrayList<ChatModel>()
+        let seen = ArrayList<String>()
+        appendModelCandidate(models, seen, buildModel(primary))
+        for (model in runtimeFallbackModelRefsForAgentScope(scope)) {
+            appendModelCandidate(models, seen, buildModel(model))
+        }
+        models.toArray()
     }
 }

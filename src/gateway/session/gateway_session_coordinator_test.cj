@@ -1,9 +1,64 @@
 package metis.gateway.session
 
+import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager, MetisProcessEnvironmentLock}
 import metis.gateway.model.{ChannelType, ChatType, InboundMessage}
+import std.env.{getVariable, setVariable}
+import std.fs.{Directory, File, Path, remove}
 import std.time.DateTime
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
+
+private func withGatewaySessionTempHome<T>(label: String, block: (Path) -> T): T {
+    synchronized(MetisProcessEnvironmentLock) {
+        let home = Path("/tmp/${label}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        try { remove(home, recursive: true) } catch (_: Exception) { () }
+        Directory.create(home, recursive: true)
+        let oldHome = getVariable("METIS_HOME")
+        setVariable("METIS_HOME", home.toString())
+        CliConfig.invalidatePathCache()
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+        try {
+            return block(home)
+        } finally {
+            match (oldHome) {
+                case Some(value) => setVariable("METIS_HOME", value)
+                case None => setVariable("METIS_HOME", "")
+            }
+            CliConfig.invalidatePathCache()
+            MetisConfigManager.invalidate()
+            CliSettingManager.invalidate()
+            try { remove(home, recursive: true) } catch (_: Exception) { () }
+        }
+    }
+}
+
+private func gatewaySessionAgentEntry(id: String, workspace: Path, agentDir: Path, modelRef: String): JsonObject {
+    let entry = JsonObject()
+    entry.put("id", JsonString(id))
+    entry.put("workspace", JsonString(workspace.toString()))
+    entry.put("agentDir", JsonString(agentDir.toString()))
+    let model = JsonObject()
+    model.put("primary", JsonString(modelRef))
+    entry.put("model", model)
+    entry
+}
+
+private func writeGatewaySessionAgentConfig(home: Path): Unit {
+    let root = JsonObject()
+    let agents = JsonObject()
+    let defaults = JsonObject()
+    defaults.put("workspace", JsonString(home.join("workspaces").toString()))
+    agents.put("defaults", defaults)
+    let list = JsonArray([])
+    list.add(gatewaySessionAgentEntry("writer", home.join("workspaces").join("writer"), home.join("agents").join("writer").join("agent"), "openai:gpt-4o-mini"))
+    agents.put("list", list)
+    root.put("agents", agents)
+    File.writeTo(MetisConfigManager.configPath(), root.toJsonString().toArray())
+    CliConfig.invalidatePathCache()
+    MetisConfigManager.invalidate()
+    CliSettingManager.invalidate()
+}
 
 @Test
 public class GatewaySessionCoordinatorTest {
@@ -425,4 +480,27 @@ public class GatewaySessionCoordinatorTest {
         @Expect(resolved.agentId, "topic-agent")
     }
 
+    @TestCase
+    public func resolvedSessionContextCarriesAgentTurnRuntimeScope(): Unit {
+        withGatewaySessionTempHome("metis-phase4-session-context", { home: Path =>
+            writeGatewaySessionAgentConfig(home)
+            let context = gatewayResolveSessionContext(
+                GatewaySessionRequest(
+                    GatewayIngressSource.DashboardRpc,
+                    sessionHint: "main",
+                    agentId: "writer"
+                )
+            )
+            @Expect(context.agentId, "writer")
+            @Expect(context.turnContext.agentId, "writer")
+            @Expect(context.turnContext.workspaceDir, home.join("workspaces").join("writer").toString())
+            @Expect(context.turnContext.agentDir, home.join("agents").join("writer").join("agent").toString())
+            @Expect(context.turnContext.modelsJsonPath, home.join("agents").join("writer").join("agent").join("models.json").toString())
+            @Expect(context.turnContext.authProfilesPath, home.join("agents").join("writer").join("agent").join("auth-profiles.json").toString())
+            @Expect(context.turnContext.sessionKey, "agent:writer:main")
+            @Expect(context.turnContext.mainSessionKey, "agent:writer:main")
+            @Expect(context.turnContext.matchedBy, "request.agentId")
+            @Expect(context.turnContext.modelRef, "openai:gpt-4o-mini")
+        })
+    }
 }

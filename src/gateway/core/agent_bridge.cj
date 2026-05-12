@@ -11,15 +11,17 @@ import magic.log.LogUtils
 import metis.core.{RuntimeToolInvocationPolicyContext, gatewayMainRuntimeRequiredToolNames, gatewayNotifyCurrentToolRuntimeStatus, resolveRuntimeToolPolicyFromRoot, runtimePopToolInvocationPolicyContext, runtimePushToolInvocationPolicyContext, runtimeToolInvocationAllowedFromRoot, runtimeToolNamesContain, runtimeToolNamesContainAll}
 import metis.core.model.CliModelManager
 import metis.core.model.ModelTokenLimits
-import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager}
+import metis.core.config.{CliConfig, CliModelRuntimeStateManager, CliSettingManager, GatewayUserSettings, MetisConfigManager}
 import metis.core.prompting.{MetisBootstrapBudgetResult, MetisSystemPromptParams, MetisSystemPromptBuilder, MetisWorkspaceBootstrap}
 import metis.core.skills.SkillsPrompt
 import metis.core.skills.tryHandleSkillsCommand
 import metis.cron.{executeGatewayCronCommand, parseSlashCronLine}
+import metis.gateway.session.GatewayTurnContext
 import metis.gateway.tools.{GatewayCronToolset, GatewayFSToolset, GatewayGatewayToolset, GatewayImageGenerationToolset, GatewayManagedSessionsToolset, GatewayMemoryToolset, GatewayMessageToolset, GatewayPlanToolset, GatewaySessionTranscriptToolset, GatewayShellToolset, GatewayTelegramMediaToolset, GatewayTtsToolset, GatewayVideoGenerationToolset, GatewayWeatherToolset, gatewayHandleNativeCommandLine, gatewayHandleSubagentsCommandLine}
 import metis.io.{PrintUtils, AnsiColor, WithColor}
 
 import std.collection.{HashMap, ArrayList, enumerate}
+import std.fs.Path
 import std.sync.Mutex
 import std.time.*
 import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
@@ -368,18 +370,58 @@ public func gatewayMainRuntimePromptVarianceFields(): Array<String> {
     ["channel-label", "delivery-capabilities"]
 }
 
+private func gatewayTurnEffectiveAgentId(agentId: String, turnContext: Option<GatewayTurnContext>): String {
+    match (turnContext) {
+        case Some(ctx) =>
+            let scoped = ctx.agentId.trimAscii()
+            if (!scoped.isEmpty()) {
+                return scoped
+            }
+        case None => ()
+    }
+    agentId.trimAscii()
+}
+
+private func gatewayTurnWorkspacePath(turnContext: Option<GatewayTurnContext>): Path {
+    match (turnContext) {
+        case Some(ctx) =>
+            let workspaceDir = ctx.workspaceDir.trimAscii()
+            if (!workspaceDir.isEmpty()) {
+                return Path(workspaceDir)
+            }
+        case None => ()
+    }
+    CliConfig.cwd
+}
+
+private func gatewayEnsureTurnRuntimeState(turnContext: GatewayTurnContext): Unit {
+    let agentDir = turnContext.agentDir.trimAscii()
+    if (agentDir.isEmpty()) {
+        return
+    }
+    CliModelRuntimeStateManager.ensureAgentRuntimeStateForScope(Path(agentDir), turnContext.agentScope)
+}
+
+private func gatewayModelOrderForTurnContext(turnContext: GatewayTurnContext): Array<String> {
+    gatewayEnsureTurnRuntimeState(turnContext)
+    CliModelManager.modelSelectionSummaryForAgentScope(turnContext.agentScope)
+}
+
 private func buildGatewaySystemPrompt(
     agent: GatewayP1ChatAgent,
     channelName: String,
     modelName: String,
     agentId!: String = "",
-    extraPrompt!: String = ""
+    extraPrompt!: String = "",
+    turnContext!: Option<GatewayTurnContext> = None<GatewayTurnContext>
 ): (String, MetisBootstrapBudgetResult) {
     let gatewayUser = CliSettingManager.readGatewaySettings()
+    let effectiveAgentId = gatewayTurnEffectiveAgentId(agentId, turnContext)
+    let workspacePath = gatewayTurnWorkspacePath(turnContext)
     let params = MetisSystemPromptParams()
-    params.workspaceDir = CliConfig.cwd.toString()
+    params.workspaceDir = workspacePath.toString()
     params.toolNames = MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
-    params.runtimeInfo.agentId = agentId.trimAscii()
+    params.runtimeInfo.agentId = effectiveAgentId
     params.runtimeInfo.model = modelName.trimAscii()
     params.runtimeInfo.channel = channelName.trimAscii().toAsciiLower()
     params.runtimeInfo.capabilities = gatewayCorePromptRuntimeCapabilities(gatewayUser, channelName)
@@ -394,9 +436,9 @@ private func buildGatewaySystemPrompt(
         }
     }
     params.runtimeInfo.nativeApprovalUiAvailable = nativeApprovalUiAvailable
-    params.skillsPrompt = SkillsPrompt.buildAvailableSkillsMetadataForPrompt(agentId: agentId)
+    params.skillsPrompt = SkillsPrompt.buildAvailableSkillsMetadataForPrompt(agentId: effectiveAgentId)
     let bootstrap = MetisWorkspaceBootstrap.resolveContextFilesDetailed(
-        CliConfig.cwd,
+        workspacePath,
         runtimeChannel: channelName
     )
     params.contextFiles = bootstrap.files
@@ -421,6 +463,30 @@ public func gatewayPolicyFilteredSystemPrompt(
         agentId: agentId,
         extraPrompt: extraPrompt
     )[0]
+}
+
+public func gatewayPolicyFilteredSystemPromptForTurnContext(
+    turnContext: GatewayTurnContext,
+    channelName!: String = "cli",
+    modelName!: String = "test-model",
+    extraPrompt!: String = ""
+): String {
+    gatewayEnsureTurnRuntimeState(turnContext)
+    let gatewayUser = CliSettingManager.readGatewaySettings()
+    let agent = GatewayP1ChatAgent()
+    gatewayApplyToolPolicy(agent, gatewayUser, agentId: turnContext.agentId, provider: modelName)
+    buildGatewaySystemPrompt(
+        agent,
+        channelName,
+        modelName,
+        agentId: turnContext.agentId,
+        extraPrompt: extraPrompt,
+        turnContext: Some(turnContext)
+    )[0]
+}
+
+public func gatewayDebugModelOrderForTurnContext(turnContext: GatewayTurnContext): Array<String> {
+    gatewayModelOrderForTurnContext(turnContext)
 }
 
 private func gatewayLogReplyMemory(
@@ -532,14 +598,16 @@ public class AgentBridge {
         agentId!: String = "",
         extraSystemPrompt!: String = "",
         streamingEnabled!: Bool = false,
-        streamChunkHook!: Option<(String) -> Unit> = None<(String) -> Unit>
+        streamChunkHook!: Option<(String) -> Unit> = None<(String) -> Unit>,
+        turnContext!: Option<GatewayTurnContext> = None<GatewayTurnContext>
     ): String {
         synchronized(this.replyLock) {
+            let effectiveAgentId = gatewayTurnEffectiveAgentId(agentId, turnContext)
             LogUtils.info(
-                "Gateway.reply: channel=${channelName.trimAscii().toAsciiLower()}, agentId=${agentId.trimAscii()}, conversationKey=${conversationKey}, rawPrompt='${prompt}'"
+                "Gateway.reply: channel=${channelName.trimAscii().toAsciiLower()}, agentId=${effectiveAgentId}, conversationKey=${conversationKey}, rawPrompt='${prompt}'"
             )
             match (gatewayAgentBridgeReplyRunnerForTest) {
-                case Some(runner) => return runner(conversationKey, prompt, channelName, agentId, streamingEnabled, streamChunkHook)
+                case Some(runner) => return runner(conversationKey, prompt, channelName, effectiveAgentId, streamingEnabled, streamChunkHook)
                 case None => ()
             }
             // Unknown slash command should be handled deterministically and must not pollute session history.
@@ -566,7 +634,7 @@ public class AgentBridge {
                         return out
                     }
                 }
-                let forcedSkillCheck = parseForcedSkillFromSlash(trimmedPrompt)
+                let forcedSkillCheck = parseForcedSkillFromSlash(trimmedPrompt, agentId: effectiveAgentId)
                 if (forcedSkillCheck.isNone()) {
                     LogUtils.info("Gateway.reply: unknown slash command, bypass LLM and history")
                     return "这不是一个有效的命令。可用 /cron 管理定时任务，/subagents 管理后台 subagent，或使用 /skills list 查看可用技能，或使用 /<skillName> 参数（例如 /weather 上海）。"
@@ -584,12 +652,17 @@ public class AgentBridge {
             // Skill-driven model selection:
             // - if a skill configured `model` + api key, try it first
             // - if apikey invalid/auth error occurs, fall back to global model config
-            var allModels = CliModelManager.getAllModels()
+            var allModels = match (turnContext) {
+                case Some(ctx) =>
+                    gatewayEnsureTurnRuntimeState(ctx)
+                    CliModelManager.getAllModelsForAgentScope(ctx.agentScope)
+                case None => CliModelManager.getAllModels()
+            }
             let channelBoundModelOpt = resolveChannelBoundModelName(channelName, sessionKey: conversationKey)
             allModels = applyChannelModelBinding(channelBoundModelOpt, allModels)
             let skillsEnabled = CliSettingManager.readSkillsEnabled()
-            let forcedSkillName: Option<String> = parseForcedSkillFromSlash(prompt, agentId: agentId)
-            let decision = SkillsPrompt.decideForInput(prompt, forcedSkillName, agentId: agentId)
+            let forcedSkillName: Option<String> = parseForcedSkillFromSlash(prompt, agentId: effectiveAgentId)
+            let decision = SkillsPrompt.decideForInput(prompt, forcedSkillName, agentId: effectiveAgentId)
             let selectedSkillNameOpt = decision.selectedSkillName
             let enabledSelectedSkillNameOpt: Option<String> = match (selectedSkillNameOpt) {
                 case Some(skillName) => if (decision.selectedSkillEnabled) { Some(skillName) } else { None }
@@ -631,7 +704,7 @@ public class AgentBridge {
             var successfulPromptTokens: Int64 = -1
             var successfulCompletionTokens: Int64 = -1
             let availableSkillsMeta = if (skillsEnabled) {
-                SkillsPrompt.buildAvailableSkillsMetadataForPrompt(agentId: agentId)
+                SkillsPrompt.buildAvailableSkillsMetadataForPrompt(agentId: effectiveAgentId)
             } else {
                 ""
             }
@@ -668,7 +741,7 @@ public class AgentBridge {
                 "before-model-loop",
                 conversationKey,
                 channelName,
-                agentId: agentId,
+                agentId: effectiveAgentId,
                 note: "history=${history.size}, modelInputChars=${modelInput.size}, models=${allModels.size}"
             )
             for ((idx, currModel) in enumerate(allModels)) {
@@ -682,14 +755,15 @@ public class AgentBridge {
                     let agent = GatewayP1ChatAgent()
                     let invocationPolicyRoot = gatewayRuntimePolicyRoot(gatewayUser)
                     let invocationPolicyInventory = MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
-                    let restrictedTools = gatewayApplyToolPolicy(agent, gatewayUser, agentId: agentId, provider: currModel.fullName)
+                    let restrictedTools = gatewayApplyToolPolicy(agent, gatewayUser, agentId: effectiveAgentId, provider: currModel.fullName)
                     agent.model = currModel
                     let promptBuild = buildGatewaySystemPrompt(
                         agent,
                         channelName,
                         currModel.fullName,
-                        agentId: agentId,
-                        extraPrompt: extraSystemPrompt
+                        agentId: effectiveAgentId,
+                        extraPrompt: extraSystemPrompt,
+                        turnContext: turnContext
                     )
                     let builtPrompt = promptBuild[0]
                     attemptPromptChars = Int64(builtPrompt.size)
@@ -708,7 +782,7 @@ public class AgentBridge {
                         "before-agent-chat",
                         conversationKey,
                         channelName,
-                        agentId: agentId,
+                        agentId: effectiveAgentId,
                         modelName: currModel.fullName,
                         note: "attempt=${idx + 1}, promptChars=${builtPrompt.size}"
                     )
@@ -717,7 +791,7 @@ public class AgentBridge {
                     runtimePushToolInvocationPolicyContext(RuntimeToolInvocationPolicyContext(
                         invocationPolicyRoot,
                         invocationPolicyInventory,
-                        agentId: agentId,
+                        agentId: effectiveAgentId,
                         provider: currModel.fullName
                     ))
                     try {
@@ -765,7 +839,7 @@ public class AgentBridge {
                         "after-agent-chat",
                         conversationKey,
                         channelName,
-                        agentId: agentId,
+                        agentId: effectiveAgentId,
                         modelName: currModel.fullName,
                         note: "attempt=${idx + 1}, answerChars=${answer.size}"
                     )
@@ -797,7 +871,7 @@ public class AgentBridge {
                         "agent-chat-exception",
                         conversationKey,
                         channelName,
-                        agentId: agentId,
+                        agentId: effectiveAgentId,
                         modelName: currModel.fullName,
                         note: "attempt=${idx + 1}, error=${e.message}"
                     )
@@ -829,7 +903,7 @@ public class AgentBridge {
                         LogUtils.info(
                             "Gateway channel-bound model ${currModel.fullName} failed, force fallback to global models: ${e.message}"
                         )
-                    } else if (CliModelManager.shouldFallback(e)) {
+                    } else if (match (turnContext) { case Some(ctx) => CliModelManager.shouldFallbackForAgentScope(e, ctx.agentScope) case None => CliModelManager.shouldFallback(e) }) {
                         LogUtils.info("Gateway model ${currModel.fullName} failed, trying fallback: ${e.message}")
                     } else {
                         throw e
@@ -862,7 +936,7 @@ public class AgentBridge {
                 "reply-finished",
                 conversationKey,
                 channelName,
-                agentId: agentId,
+                agentId: effectiveAgentId,
                 note: "history=${history.size}, replyChars=${reply.size}"
             )
             return reply

@@ -19,6 +19,18 @@ private func runtimeStateGetString(root: JsonObject, key: String): Option<String
     }
 }
 
+private func runtimeStateGetObject(root: JsonObject, key: String): Option<JsonObject> {
+    match (root.get(key)) {
+        case Some(value) =>
+            try {
+                Some(value.asObject())
+            } catch (_: Exception) {
+                None
+            }
+        case None => None
+    }
+}
+
 private func runtimeStateGetArray(root: JsonObject, key: String): JsonArray {
     match (root.get(key)) {
         case Some(value) =>
@@ -29,6 +41,54 @@ private func runtimeStateGetArray(root: JsonObject, key: String): JsonArray {
             }
         case None => JsonArray(Array<JsonValue>())
     }
+}
+
+private func runtimeStateStringArray(items: JsonArray): Array<String> {
+    let out = ArrayList<String>()
+    for (item in items.getItems()) {
+        try {
+            let text = item.asString().getValue().trimAscii()
+            if (!text.isEmpty()) {
+                out.add(text)
+            }
+        } catch (_: Exception) {
+            ()
+        }
+    }
+    out.toArray()
+}
+
+private func runtimeStateScopeModel(scope: JsonObject): JsonObject {
+    match (runtimeStateGetObject(scope, "model")) {
+        case Some(model) => model
+        case None => JsonObject()
+    }
+}
+
+private func runtimeStateScopePrimary(scope: JsonObject): String {
+    let scoped = runtimeStateGetString(scope, "modelRef").getOrDefault { "" }.trimAscii()
+    if (!scoped.isEmpty()) {
+        return scoped
+    }
+    let model = runtimeStateScopeModel(scope)
+    let modelRef = runtimeStateGetString(model, "modelRef").getOrDefault { "" }.trimAscii()
+    if (!modelRef.isEmpty()) {
+        return modelRef
+    }
+    runtimeStateGetString(model, "primary").getOrDefault { "" }.trimAscii()
+}
+
+private func runtimeStateScopeFallbacksConfigured(scope: JsonObject): Bool {
+    let model = runtimeStateScopeModel(scope)
+    match (model.get("fallbacks")) {
+        case Some(_) => true
+        case None => false
+    }
+}
+
+private func runtimeStateScopeFallbacks(scope: JsonObject): Array<String> {
+    let model = runtimeStateScopeModel(scope)
+    runtimeStateStringArray(runtimeStateGetArray(model, "fallbacks"))
 }
 
 private func currentCliPrimaryModel(): String {
@@ -130,12 +190,31 @@ public class CliModelRuntimeStateManager {
         root
     }
 
-    private static func writeMaterializedRuntimeStateTo(path: Path): Unit {
+    private static func buildMaterializedRuntimeStateForScope(scope: JsonObject): JsonObject {
+        let root = buildMaterializedRuntimeState()
+        let scopedPrimary = MetisConfigManager.normalizeModelRef(runtimeStateScopePrimary(scope)).trimAscii()
+        if (!scopedPrimary.isEmpty()) {
+            root.put("primaryModelRef", JsonString(MetisConfigManager.canonicalModelRef(scopedPrimary).trimAscii()))
+            root.put("runtimePrimaryModelRef", JsonString(scopedPrimary))
+        }
+        if (runtimeStateScopeFallbacksConfigured(scope)) {
+            let scopedFallbacks = normalizeModelArray(runtimeStateScopeFallbacks(scope))
+            root.put("fallbackModelRefs", jsonArrayFromStrings(canonicalModelArray(scopedFallbacks)))
+            root.put("runtimeFallbackModelRefs", jsonArrayFromStrings(scopedFallbacks))
+        }
+        root
+    }
+
+    private static func writeRuntimeStateTo(path: Path, root: JsonObject): Unit {
         let parent = path.parent
         if (!exists(parent)) {
             Directory.create(parent, recursive: true)
         }
-        File.writeTo(path, buildMaterializedRuntimeState().toJsonString().toArray())
+        File.writeTo(path, root.toJsonString().toArray())
+    }
+
+    private static func writeMaterializedRuntimeStateTo(path: Path): Unit {
+        writeRuntimeStateTo(path, buildMaterializedRuntimeState())
     }
 
     public static func writeMaterializedRuntimeState(): Unit {
@@ -154,8 +233,19 @@ public class CliModelRuntimeStateManager {
         path
     }
 
+    public static func ensureAgentRuntimeStateForScope(agentDir: Path, scope: JsonObject): Path {
+        let path = agentRuntimePath(agentDir)
+        if (!exists(path)) {
+            writeRuntimeStateTo(path, buildMaterializedRuntimeStateForScope(scope))
+        }
+        path
+    }
+
     public static func readRuntimeState(): Option<JsonObject> {
-        let path = runtimePath()
+        readRuntimeStateFrom(runtimePath())
+    }
+
+    public static func readRuntimeStateFrom(path: Path): Option<JsonObject> {
         if (!exists(path)) {
             return None
         }

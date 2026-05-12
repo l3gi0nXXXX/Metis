@@ -2172,6 +2172,15 @@ GatewayAgentRoute:
 | 4.5 Session history 与 last-route 写入 | 使用 route 的 sessionKey/mainSessionKey/lastRoutePolicy 管理 history 与 reply target。 | `openclaw/src/routing/resolve-route.ts:71-76`；`openclaw/docs/channels/channel-routing.md:45-56` | `src/gateway/session/coordinator.cj` | group/topic 写当前 session；main DM owner pin mismatch 不覆盖 main lastRoute；history 不跨 agent。 |
 | 4.6 并发隔离测试 | 并发两个 agent turn，验证上下文、模型、workspace、session 都不串。 | OpenClaw 通过 route/sessionKey 和 agentDir 分离状态 | `gateway_chat_turn_runtime_test.cj`、prompt/model/tool runtime tests | fake 并发 turn 中 A/B 的 prompt、model、tool cwd、session key 均不同。 |
 
+Phase 4 实现补充约束：
+
+- Metis 当前已有 `GatewaySessionContext`、`GatewayToolRuntimeContext`、`MetisAgentScope.resolve` 和 `AgentBridge.reply`，因此 Phase 4 不另造绕过现有架构的 IM-specific context。应在 session coordinator 中把上游给出的 effective `agentId` 解析成 `GatewayTurnContext`，并挂到 `GatewaySessionContext`；该 context 必须包含 `agentId/workspaceDir/agentDir/modelsJsonPath/authProfilesPath/legacyAuthPath/sessionsDir/sessionKey/mainSessionKey/matchedBy/lastRoutePolicy/modelRef`。
+- `GatewayTurnContext` 是 runtime 唯一入口。`AgentBridge`、prompt builder、model chain、tool runtime context 只能读取这个对象或其字段；不允许通过临时修改 `CliConfig.cwd`、全局 model runtime path、Telegram route 配置或 Feishu adapter 状态来切换 agent。
+- Prompt 构建必须以 `turnContext.workspaceDir` 调用 workspace bootstrap 读取逻辑。OpenClaw 的 `loadWorkspaceBootstrapFiles(dir)` 只读取传入 workspace，并通过 workspace root boundary guard 读取文件；Metis 对应测试必须证明 agent A 的 `SOUL.md` 不会进入 agent B prompt。
+- 模型运行时分两层：`agents.list[].model` / `agents.defaults.model` 决定本轮 primary/fallback 顺序，`turnContext.agentDir/models.json` 是该 agent 的 materialized runtime view；auth 路径固定为 `turnContext.agentDir/auth-profiles.json` 和 legacy `auth.json`。没有 agent 级模型配置时才回退到现有全局模型选择，且回退信息仍应暴露当前 agent 的 models/auth path 便于诊断。
+- `GatewayToolRuntimeContext` 必须带上同一个 `agentId/workspaceDir/agentDir/modelsJsonPath/authProfilesPath`。文件搜索、media staging、sandbox/subagent 等后续工具只能从该 context 收窄到当前 agent workspace；Phase 4 至少要确保核心 turn 创建的 tool context 不为空、不串 agent。
+- 测试用 fake/model seam 不得完全绕过 Phase 4 runtime 构建。若为了避免真实模型调用使用 fake reply runner，仍需要提供直接验证 prompt snapshot / model order / tool runtime context 的测试入口，并使用临时 `METIS_HOME` 与临时 workspace，不读取真实 `~/.metis`。
+
 具体任务：
 
 1. 定义 `GatewayTurnContext`：

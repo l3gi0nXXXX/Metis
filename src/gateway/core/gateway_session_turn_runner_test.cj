@@ -2,7 +2,7 @@ package metis.gateway.core
 
 import metis.core.{GatewayToolRuntimeContext, gatewayCurrentToolRuntimeContext, gatewayMarkCurrentToolRuntimeVisibleReplyDelivered, gatewayNotifyCurrentToolRuntimeStatus}
 import metis.core.{gatewayMediaUnderstandingFirstText, gatewayMediaUnderstandingForRecord, gatewayMediaUnderstandingForRecordWithSettings, setGatewayMediaAsrRunnerForTest, setGatewayMediaDocumentExtractorForTest, setGatewayMediaVideoRunnerForTest, setGatewayMediaVisionRunnerForTest}
-import metis.core.config.{CliConfig, GatewayUserSettings, CliSettingManager, MetisConfigManager}
+import metis.core.config.{CliConfig, GatewayUserSettings, CliSettingManager, MetisConfigManager, MetisProcessEnvironmentLock}
 import metis.gateway.tools.{GatewayTtsToolset, debugSetGatewayTtsToolCallRunnerForTest}
 import metis.gateway.session.{GatewayDeliveryTarget, GatewayIngressSource, GatewaySessionContext, GatewaySessionRequest}
 
@@ -62,6 +62,29 @@ private func gatewaySessionTurnResetEnv(oldHome: Option<String>, home: String): 
     try { remove(Path(home), recursive: true) } catch (_e: Exception) { () }
 }
 
+private func gatewaySessionTurnWriteAgentRuntimeConfig(home: Path): Unit {
+    let root = JsonObject()
+    let agents = JsonObject()
+    let defaults = JsonObject()
+    defaults.put("workspace", JsonString(home.join("workspaces").toString()))
+    agents.put("defaults", defaults)
+    let list = JsonArray([])
+    let writer = JsonObject()
+    writer.put("id", JsonString("writer"))
+    writer.put("workspace", JsonString(home.join("workspaces").join("writer").toString()))
+    writer.put("agentDir", JsonString(home.join("agents").join("writer").join("agent").toString()))
+    let model = JsonObject()
+    model.put("primary", JsonString("openai:gpt-4o-mini"))
+    writer.put("model", model)
+    list.add(writer)
+    agents.put("list", list)
+    root.put("agents", agents)
+    File.writeTo(MetisConfigManager.configPath(), root.toJsonString().toArray())
+    CliConfig.invalidatePathCache()
+    MetisConfigManager.invalidate()
+    CliSettingManager.invalidate()
+}
+
 @Test
 public class GatewaySessionTurnRunnerTest {
     @TestCase
@@ -71,6 +94,73 @@ public class GatewaySessionTurnRunnerTest {
         @Expect(prompt.contains("Call the `tts` tool"), true)
         @Expect(prompt.contains("<silent_reply>"), true)
         @Expect(prompt.contains("Write the exact text that should be spoken as the final answer; the Telegram Gateway will synthesize and deliver"), false)
+    }
+
+    @TestCase
+    public func sessionRequestTurnPushesEffectiveAgentRuntimeIntoToolContext(): Unit {
+        synchronized(MetisProcessEnvironmentLock) {
+            let home = Path(gatewaySessionTurnTtsTestHome("phase4-tool-context"))
+            let oldHome = getVariable("METIS_HOME")
+            try { remove(home, recursive: true) } catch (_e: Exception) { () }
+            Directory.create(home, recursive: true)
+            setVariable("METIS_HOME", home.toString())
+            CliConfig.invalidatePathCache()
+            MetisConfigManager.invalidate()
+            CliSettingManager.invalidate()
+            gatewaySessionTurnWriteAgentRuntimeConfig(home)
+
+            let captured = ArrayList<String>()
+            setGatewayAgentBridgeReplyRunnerForTest(Some({
+                _conversationKey: String,
+                _prompt: String,
+                _channelName: String,
+                _agentId: String,
+                _streamingEnabled: Bool,
+                _streamChunkHook: Option<(String) -> Unit> =>
+                    match (gatewayCurrentToolRuntimeContext()) {
+                        case Some(ctx) =>
+                            captured.add(ctx.agentId)
+                            captured.add(ctx.workspaceDir)
+                            captured.add(ctx.agentDir)
+                            captured.add(ctx.modelsJsonPath)
+                            captured.add(ctx.authProfilesPath)
+                        case None => captured.add("missing-context")
+                    }
+                    "tool context ok"
+            }))
+            try {
+                let user = CliSettingManager.readGatewaySettings()
+                let request = GatewaySessionRequest(
+                    GatewayIngressSource.DashboardRpc,
+                    sessionHint: "main",
+                    agentId: "writer",
+                    text: "hello"
+                )
+                let result = gatewayExecuteSessionRequestTurnForUser(
+                    user,
+                    request,
+                    "hello"
+                )
+                @Expect(result.context.turnContext.agentId, "writer")
+                @Expect(result.context.turnContext.workspaceDir, home.join("workspaces").join("writer").toString())
+                @Expect(captured.size, 5)
+                @Expect(captured[0], "writer")
+                @Expect(captured[1], home.join("workspaces").join("writer").toString())
+                @Expect(captured[2], home.join("agents").join("writer").join("agent").toString())
+                @Expect(captured[3], home.join("agents").join("writer").join("agent").join("models.json").toString())
+                @Expect(captured[4], home.join("agents").join("writer").join("agent").join("auth-profiles.json").toString())
+            } finally {
+                setGatewayAgentBridgeReplyRunnerForTest(None<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String>)
+                match (oldHome) {
+                    case Some(value) => setVariable("METIS_HOME", value)
+                    case None => setVariable("METIS_HOME", "")
+                }
+                CliConfig.invalidatePathCache()
+                MetisConfigManager.invalidate()
+                CliSettingManager.invalidate()
+                try { remove(home, recursive: true) } catch (_e: Exception) { () }
+            }
+        }
     }
 
     @TestCase

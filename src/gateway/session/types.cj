@@ -144,6 +144,67 @@ public class GatewaySessionRequest {
     }
 }
 
+public class GatewayTurnContext {
+    public let agentId: String
+    public let workspaceDir: String
+    public let agentDir: String
+    public let modelsJsonPath: String
+    public let authProfilesPath: String
+    public let legacyAuthPath: String
+    public let sessionsDir: String
+    public let sessionKey: String
+    public let mainSessionKey: String
+    public let matchedBy: String
+    public let lastRoutePolicy: String
+    public let modelRef: String
+    public let channelName: String
+    public let accountId: String
+    public let peerId: String
+    public let threadId: String
+    public let route: JsonObject
+    public let agentScope: JsonObject
+
+    public init(
+        agentId: String,
+        workspaceDir!: String = "",
+        agentDir!: String = "",
+        modelsJsonPath!: String = "",
+        authProfilesPath!: String = "",
+        legacyAuthPath!: String = "",
+        sessionsDir!: String = "",
+        sessionKey!: String = "",
+        mainSessionKey!: String = "",
+        matchedBy!: String = "",
+        lastRoutePolicy!: String = "",
+        modelRef!: String = "",
+        channelName!: String = "",
+        accountId!: String = "",
+        peerId!: String = "",
+        threadId!: String = "",
+        route!: JsonObject = JsonObject(),
+        agentScope!: JsonObject = JsonObject()
+    ) {
+        this.agentId = agentId.trimAscii()
+        this.workspaceDir = workspaceDir.trimAscii()
+        this.agentDir = agentDir.trimAscii()
+        this.modelsJsonPath = modelsJsonPath.trimAscii()
+        this.authProfilesPath = authProfilesPath.trimAscii()
+        this.legacyAuthPath = legacyAuthPath.trimAscii()
+        this.sessionsDir = sessionsDir.trimAscii()
+        this.sessionKey = sessionKey.trimAscii()
+        this.mainSessionKey = mainSessionKey.trimAscii()
+        this.matchedBy = matchedBy.trimAscii()
+        this.lastRoutePolicy = lastRoutePolicy.trimAscii()
+        this.modelRef = modelRef.trimAscii()
+        this.channelName = channelName.trimAscii().toAsciiLower()
+        this.accountId = accountId.trimAscii()
+        this.peerId = peerId.trimAscii()
+        this.threadId = threadId.trimAscii()
+        this.route = route
+        this.agentScope = agentScope
+    }
+}
+
 public class GatewaySessionContext {
     public let sourceLabel: String
     public let channelName: String
@@ -157,6 +218,7 @@ public class GatewaySessionContext {
     public let lane: String
     public let deliveryTarget: Option<GatewayDeliveryTarget>
     public let source: GatewayIngressSource
+    public let turnContext: GatewayTurnContext
 
     public init(
         source: GatewayIngressSource,
@@ -170,7 +232,8 @@ public class GatewaySessionContext {
         lastRoutePolicy!: String = "",
         routeDiagnostics!: Array<String> = [],
         lane!: String = "",
-        deliveryTarget!: Option<GatewayDeliveryTarget> = None
+        deliveryTarget!: Option<GatewayDeliveryTarget> = None,
+        turnContext!: Option<GatewayTurnContext> = None<GatewayTurnContext>
     ) {
         this.source = source
         this.sourceLabel = sourceLabel.trimAscii()
@@ -184,6 +247,16 @@ public class GatewaySessionContext {
         this.routeDiagnostics = routeDiagnostics
         this.lane = lane.trimAscii()
         this.deliveryTarget = deliveryTarget
+        this.turnContext = match (turnContext) {
+            case Some(value) => value
+            case None => GatewayTurnContext(
+                this.agentId,
+                sessionKey: this.sessionKey,
+                mainSessionKey: "agent:${this.agentId}:main",
+                channelName: this.channelName,
+                accountId: this.accountId
+            )
+        }
     }
 }
 

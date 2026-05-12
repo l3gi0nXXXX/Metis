@@ -1,9 +1,67 @@
 package metis.gateway.core
 
-import metis.core.config.CliSettingManager
+import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager, MetisProcessEnvironmentLock}
+import metis.gateway.session.{GatewayIngressSource, GatewaySessionRequest, gatewayResolveSessionContext}
 
 import std.collection.ArrayList
+import std.env.{getVariable, setVariable}
+import std.fs.{Directory, File, Path, exists, remove}
+import std.time.DateTime
 import std.unittest.testmacro.*
+import stdx.encoding.json.{JsonArray, JsonObject, JsonString}
+
+private func withAgentBridgeTempHome<T>(label: String, block: (Path) -> T): T {
+    synchronized(MetisProcessEnvironmentLock) {
+        let home = Path("/tmp/${label}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        try { remove(home, recursive: true) } catch (_: Exception) { () }
+        Directory.create(home, recursive: true)
+        let oldHome = getVariable("METIS_HOME")
+        setVariable("METIS_HOME", home.toString())
+        CliConfig.invalidatePathCache()
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+        try {
+            return block(home)
+        } finally {
+            match (oldHome) {
+                case Some(value) => setVariable("METIS_HOME", value)
+                case None => setVariable("METIS_HOME", "")
+            }
+            CliConfig.invalidatePathCache()
+            MetisConfigManager.invalidate()
+            CliSettingManager.invalidate()
+            try { remove(home, recursive: true) } catch (_: Exception) { () }
+        }
+    }
+}
+
+private func agentBridgeAgentEntry(id: String, workspace: Path, agentDir: Path, modelRef: String): JsonObject {
+    let entry = JsonObject()
+    entry.put("id", JsonString(id))
+    entry.put("workspace", JsonString(workspace.toString()))
+    entry.put("agentDir", JsonString(agentDir.toString()))
+    let model = JsonObject()
+    model.put("primary", JsonString(modelRef))
+    entry.put("model", model)
+    entry
+}
+
+private func writeAgentBridgeAgentConfig(home: Path): Unit {
+    let root = JsonObject()
+    let agents = JsonObject()
+    let defaults = JsonObject()
+    defaults.put("workspace", JsonString(home.join("workspaces").toString()))
+    agents.put("defaults", defaults)
+    let list = JsonArray([])
+    list.add(agentBridgeAgentEntry("writer", home.join("workspaces").join("writer"), home.join("agents").join("writer").join("agent"), "openai:gpt-4o-mini"))
+    list.add(agentBridgeAgentEntry("ops", home.join("workspaces").join("ops"), home.join("agents").join("ops").join("agent"), "dashscope:qwen-plus"))
+    agents.put("list", list)
+    root.put("agents", agents)
+    File.writeTo(MetisConfigManager.configPath(), root.toJsonString().toArray())
+    CliConfig.invalidatePathCache()
+    MetisConfigManager.invalidate()
+    CliSettingManager.invalidate()
+}
 
 @Test
 public class AgentBridgeRuntimeTest {
@@ -205,6 +263,82 @@ public class AgentBridgeRuntimeTest {
         } finally {
             CliSettingManager.setting.gateway = original
         }
+    }
+
+    @TestCase
+    public func gatewaySystemPromptUsesTurnWorkspaceBootstrap(): Unit {
+        withAgentBridgeTempHome("metis-phase4-agent-bridge-prompt", { home: Path =>
+            writeAgentBridgeAgentConfig(home)
+            let writerWorkspace = home.join("workspaces").join("writer")
+            let opsWorkspace = home.join("workspaces").join("ops")
+            Directory.create(writerWorkspace, recursive: true)
+            Directory.create(opsWorkspace, recursive: true)
+            File.writeTo(writerWorkspace.join("SOUL.md"), "# Soul\n\nwriter-only-soul\n".toArray())
+            File.writeTo(opsWorkspace.join("SOUL.md"), "# Soul\n\nops-only-soul\n".toArray())
+
+            let writerContext = gatewayResolveSessionContext(
+                GatewaySessionRequest(
+                    GatewayIngressSource.DashboardRpc,
+                    sessionHint: "main",
+                    agentId: "writer"
+                )
+            )
+            let opsContext = gatewayResolveSessionContext(
+                GatewaySessionRequest(
+                    GatewayIngressSource.DashboardRpc,
+                    sessionHint: "main",
+                    agentId: "ops"
+                )
+            )
+
+            let writerPrompt = gatewayPolicyFilteredSystemPromptForTurnContext(
+                writerContext.turnContext,
+                channelName: "dashboard",
+                modelName: "openai:gpt-4o-mini"
+            )
+            let opsPrompt = gatewayPolicyFilteredSystemPromptForTurnContext(
+                opsContext.turnContext,
+                channelName: "dashboard",
+                modelName: "dashscope:qwen-plus"
+            )
+
+            @Expect(writerPrompt.contains("writer-only-soul"), true)
+            @Expect(writerPrompt.contains("ops-only-soul"), false)
+            @Expect(opsPrompt.contains("ops-only-soul"), true)
+            @Expect(opsPrompt.contains("writer-only-soul"), false)
+        })
+    }
+
+    @TestCase
+    public func gatewayModelOrderAndRuntimeFilesUseTurnAgentDir(): Unit {
+        withAgentBridgeTempHome("metis-phase4-agent-bridge-models", { home: Path =>
+            writeAgentBridgeAgentConfig(home)
+            let writerContext = gatewayResolveSessionContext(
+                GatewaySessionRequest(
+                    GatewayIngressSource.DashboardRpc,
+                    sessionHint: "main",
+                    agentId: "writer"
+                )
+            )
+            let opsContext = gatewayResolveSessionContext(
+                GatewaySessionRequest(
+                    GatewayIngressSource.DashboardRpc,
+                    sessionHint: "main",
+                    agentId: "ops"
+                )
+            )
+
+            let writerModels = gatewayDebugModelOrderForTurnContext(writerContext.turnContext)
+            let opsModels = gatewayDebugModelOrderForTurnContext(opsContext.turnContext)
+
+            @Expect(writerModels.size > 0, true)
+            @Expect(opsModels.size > 0, true)
+            @Expect(writerModels[0], "openai:gpt-4o-mini")
+            @Expect(opsModels[0], "dashscope:qwen-plus")
+            @Expect(exists(home.join("agents").join("writer").join("agent").join("models.json")), true)
+            @Expect(exists(home.join("agents").join("ops").join("agent").join("models.json")), true)
+            @Expect(exists(home.join("models.json")), false)
+        })
     }
 
     // @TestCase
