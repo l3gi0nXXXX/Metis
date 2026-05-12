@@ -166,8 +166,60 @@ public class GatewayAgentRouteResolverTest {
             GatewayAgentRouteInput(root, "telegram", accountId: "bot-b", peerKind: "group", peerId: "-100_a"))
         @Expect(nonDefaultAccount.agentId, "assistant-b")
         @Expect(nonDefaultAccount.accountId, "bot-b")
-        @Expect(nonDefaultAccount.preferredAccountId, "bot-b")
+        @Expect(nonDefaultAccount.preferredAccountId, "bot-a")
         @Expect(nonDefaultAccount.matchedBy, "binding.channel")
+    }
+
+    @TestCase
+    public func explicitDefaultAccountMatchesResolvedChannelDefault(): Unit {
+        let root = routeTestConfig()
+        putBindings(
+            root,
+            [
+                routeBinding("assistant-a", "telegram", accountId: "default"),
+                routeBinding("assistant-b", "telegram", accountId: "*")
+            ]
+        )
+
+        let omittedInputAccount = gatewayResolveAgentRoute(
+            GatewayAgentRouteInput(root, "telegram", peerKind: "group", peerId: "-100_a"))
+        @Expect(omittedInputAccount.agentId, "assistant-a")
+        @Expect(omittedInputAccount.accountId, "bot-a")
+        @Expect(omittedInputAccount.preferredAccountId, "bot-a")
+        @Expect(omittedInputAccount.matchedBy, "binding.account")
+
+        let explicitDefaultInputAccount = gatewayResolveAgentRoute(
+            GatewayAgentRouteInput(root, "telegram", accountId: "default", peerKind: "group", peerId: "-100_a"))
+        @Expect(explicitDefaultInputAccount.agentId, "assistant-a")
+        @Expect(explicitDefaultInputAccount.accountId, "bot-a")
+        @Expect(explicitDefaultInputAccount.preferredAccountId, "bot-a")
+        @Expect(explicitDefaultInputAccount.matchedBy, "binding.account")
+    }
+
+    @TestCase
+    public func accountIdsAreCanonicalizedAcrossInputBindingAndChannelDefault(): Unit {
+        let root = routeTestConfig()
+        let channels = root.get("channels").getOrThrow().asObject()
+        channels.put("telegram", routeTestChannel("Bot A!!", ["Bot A!!", "Ops/Bot"]))
+        putBindings(
+            root,
+            [
+                routeBinding("assistant-a", "telegram", accountId: "BOT A"),
+                routeBinding("assistant-b", "telegram", accountId: "ops bot")
+            ]
+        )
+
+        let defaultAccount = gatewayResolveAgentRoute(
+            GatewayAgentRouteInput(root, "telegram", accountId: " default ", peerKind: "group", peerId: "-100_a"))
+        @Expect(defaultAccount.agentId, "assistant-a")
+        @Expect(defaultAccount.accountId, "bot-a")
+        @Expect(defaultAccount.preferredAccountId, "bot-a")
+
+        let explicitAccount = gatewayResolveAgentRoute(
+            GatewayAgentRouteInput(root, "telegram", accountId: "Ops/Bot", peerKind: "group", peerId: "-100_a"))
+        @Expect(explicitAccount.agentId, "assistant-b")
+        @Expect(explicitAccount.accountId, "ops-bot")
+        @Expect(explicitAccount.preferredAccountId, "ops-bot")
     }
 
     @TestCase
@@ -388,6 +440,29 @@ public class GatewayAgentRouteResolverTest {
         @Expect(result.added.size, 1)
         @Expect(result.updated[0].get("match").getOrThrow().asObject().get("accountId").getOrThrow().asString().getValue(), "bot-a")
         @Expect(result.conflicts[0].existingAgentId, "ops")
+    }
+
+    @TestCase
+    public func bindingApplyPreservesCommentAndEnabledMetadata(): Unit {
+        let root = routeTestConfig()
+        let disabled = routeBinding("assistant-a", "telegram")
+        disabled.put("enabled", JsonBool(false))
+        disabled.put("comment", JsonString("kept disabled route"))
+        putBindings(root, [disabled])
+
+        let incoming = peerBinding("ops", "telegram", "group", "-100_a", accountId: "*")
+        incoming.put("enabled", JsonBool(true))
+        incoming.put("comment", JsonString("new peer route"))
+        let result = applyBindings(root, [incoming])
+
+        @Expect(result.added.size, 1)
+        @Expect(result.added[0].get("enabled").getOrThrow().asBool().getValue(), true)
+        @Expect(result.added[0].get("comment").getOrThrow().asString().getValue(), "new peer route")
+
+        let rows = result.config.get("bindings").getOrThrow().asArray()
+        let kept = rows[0].asObject()
+        @Expect(kept.get("enabled").getOrThrow().asBool().getValue(), false)
+        @Expect(kept.get("comment").getOrThrow().asString().getValue(), "kept disabled route")
     }
 
     @TestCase

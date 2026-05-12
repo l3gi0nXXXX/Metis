@@ -1,6 +1,7 @@
 package metis.gateway.core
 
 import std.collection.ArrayList
+import std.regex.Regex
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 
 public class GatewayAgentRouteInput {
@@ -37,8 +38,8 @@ public class GatewayAgentRouteInput {
     ) {
         this.root = root
         this.channel = gatewayRouteToken(channel)
-        this.accountId = accountId.trimAscii()
-        this.defaultAccountId = defaultAccountId.trimAscii()
+        this.accountId = gatewayRouteNormalizeAccountId(accountId)
+        this.defaultAccountId = gatewayRouteNormalizeOptionalAccountId(defaultAccountId)
         this.peerKind = gatewayRouteToken(peerKind)
         this.peerId = peerId.trimAscii()
         this.parentPeerKind = gatewayRouteToken(parentPeerKind)
@@ -155,12 +156,41 @@ private func gatewayRouteSanitizeAgentId(raw: String): String {
     value
 }
 
-private func gatewayRouteNormalizeAccount(raw: String): String {
-    let value = raw.trimAscii()
-    if (value.isEmpty()) {
+private func gatewayRouteBlockedAccountKey(value: String): Bool {
+    value == "__proto__" || value == "prototype" || value == "constructor"
+}
+
+private func gatewayRouteNormalizeAccountId(raw: String): String {
+    let trimmed = raw.trimAscii()
+    if (trimmed.isEmpty()) {
+        return "default"
+    }
+    var value = Regex("[^a-z0-9_-]+").replaceAll(trimmed.toAsciiLower(), "-")
+    value = Regex("^-+").replaceAll(value, "")
+    value = Regex("-+$").replaceAll(value, "")
+    if (value.size > 64) {
+        value = value[..64]
+    }
+    if (value.isEmpty() || gatewayRouteBlockedAccountKey(value)) {
         return "default"
     }
     value
+}
+
+private func gatewayRouteNormalizeOptionalAccountId(raw: String): String {
+    let trimmed = raw.trimAscii()
+    if (trimmed.isEmpty()) {
+        return ""
+    }
+    gatewayRouteNormalizeAccountId(trimmed)
+}
+
+private func gatewayRouteNormalizeAccountPattern(raw: String): String {
+    let trimmed = raw.trimAscii()
+    if (trimmed == "*") {
+        return "*"
+    }
+    gatewayRouteNormalizeAccountId(trimmed)
 }
 
 private func gatewayRouteJsonString(obj: JsonObject, key: String, fallback!: String = ""): String {
@@ -282,20 +312,20 @@ private func gatewayRouteAgentExists(root: JsonObject, agentId: String): Bool {
 
 private func gatewayRouteChannelDefaultAccount(root: JsonObject, channel: String, explicitDefault: String): String {
     if (!explicitDefault.trimAscii().isEmpty()) {
-        return explicitDefault.trimAscii()
+        return gatewayRouteNormalizeAccountId(explicitDefault)
     }
     let channels = gatewayRouteJsonObject(root, "channels")
     let channelObj = gatewayRouteJsonObject(channels, channel)
     let configuredDefault = gatewayRouteJsonString(channelObj, "defaultAccountId")
     if (!configuredDefault.isEmpty()) {
-        return configuredDefault
+        return gatewayRouteNormalizeAccountId(configuredDefault)
     }
     let accounts = gatewayRouteJsonArray(channelObj, "accountIds")
     if (accounts.size() > 0) {
         try {
             let first = accounts[0].asString().getValue().trimAscii()
             if (!first.isEmpty()) {
-                return first
+                return gatewayRouteNormalizeAccountId(first)
             }
         } catch (_e: Exception) {
             ()
@@ -338,10 +368,14 @@ private func gatewayRouteBindingAccountPattern(routeMatch: JsonObject, defaultAc
     if (raw.isEmpty()) {
         return (defaultAccountId, false)
     }
-    if (raw == "*") {
+    let normalized = gatewayRouteNormalizeAccountPattern(raw)
+    if (normalized == "*") {
         return ("*", true)
     }
-    (raw.trimAscii(), true)
+    if (normalized == "default") {
+        return (defaultAccountId, true)
+    }
+    (normalized, true)
 }
 
 private func gatewayRouteAccountMatches(pattern: String, accountId: String): Bool {
@@ -498,17 +532,18 @@ private func gatewayRouteSessionKey(agentId: String, channel: String, accountId:
 
 public func gatewayResolveAgentRoute(input: GatewayAgentRouteInput): GatewayAgentRoute {
     let defaultAccountId = gatewayRouteChannelDefaultAccount(input.root, input.channel, input.defaultAccountId)
-    let accountId = if (input.accountId.trimAscii().isEmpty()) {
+    let normalizedInputAccount = gatewayRouteNormalizeAccountId(input.accountId)
+    let accountId = if (normalizedInputAccount == "default") {
         defaultAccountId
     } else {
-        input.accountId.trimAscii()
+        normalizedInputAccount
     }
     let fallbackAgentId = gatewayRouteDefaultAgentId(input.root)
     let diagnostics = ArrayList<String>()
 
     var agentId = fallbackAgentId
     var matchedBy = "default"
-    var preferredAccountId = accountId
+    var preferredAccountId = defaultAccountId
     match (gatewayRoutePickCandidate(input, accountId, defaultAccountId)) {
         case Some(candidate) =>
             agentId = candidate.agentId
@@ -573,7 +608,7 @@ public func gatewayBuildLegacyAgentRouteBinding(agentId: String, spec: String): 
         ""
     }
     let accountId = if (parts.size > 1) {
-        parts[1].trimAscii()
+        gatewayRouteNormalizeAccountPattern(parts[1])
     } else {
         ""
     }
@@ -597,7 +632,7 @@ private func gatewayRouteCopyBinding(binding: JsonObject): JsonObject {
     gatewayRoutePutString(routeMatch, "channel", gatewayRouteToken(gatewayRouteJsonString(sourceMatch, "channel")))
     let accountId = gatewayRouteJsonString(sourceMatch, "accountId")
     if (!accountId.isEmpty()) {
-        routeMatch.put("accountId", JsonString(accountId))
+        routeMatch.put("accountId", JsonString(gatewayRouteNormalizeAccountPattern(accountId)))
     }
     let peer = gatewayRouteJsonObject(sourceMatch, "peer")
     if (peer.size() > 0) {
@@ -617,6 +652,14 @@ private func gatewayRouteCopyBinding(binding: JsonObject): JsonObject {
         routeMatch.put("roles", arr)
     }
     out.put("match", routeMatch)
+    match (binding.get("enabled")) {
+        case Some(v) => out.put("enabled", v)
+        case None => ()
+    }
+    match (binding.get("comment")) {
+        case Some(v) => out.put("comment", v)
+        case None => ()
+    }
     out
 }
 
@@ -655,8 +698,8 @@ private func gatewayRouteJoinKey(parts: Array<String>): String {
 }
 
 private func gatewayRouteApplyAccountKey(binding: JsonObject): String {
-    let account = gatewayRouteJsonString(gatewayRouteBindingMatch(binding), "accountId")
-    if (account.isEmpty()) {
+    let account = gatewayRouteNormalizeAccountPattern(gatewayRouteJsonString(gatewayRouteBindingMatch(binding), "accountId"))
+    if (account == "default") {
         return "default"
     }
     account
@@ -677,9 +720,9 @@ private func gatewayRouteApplyFindExistingByKey(bindings: ArrayList<JsonObject>,
 
 private func gatewayRouteApplyFindScopeUpgrade(bindings: ArrayList<JsonObject>, incoming: JsonObject): Option<Int64> {
     let incomingIdentity = gatewayRouteApplyIdentityKey(incoming)
-    let incomingAccount = gatewayRouteJsonString(gatewayRouteBindingMatch(incoming), "accountId")
+    let incomingAccount = gatewayRouteNormalizeAccountPattern(gatewayRouteJsonString(gatewayRouteBindingMatch(incoming), "accountId"))
     let incomingAgent = gatewayRouteSanitizeAgentId(gatewayRouteJsonString(incoming, "agentId"))
-    if (incomingAccount.isEmpty() || incomingAccount == "*") {
+    if (incomingAccount == "default" || incomingAccount == "*") {
         return None<Int64>
     }
     for (i in 0..bindings.size) {
@@ -687,7 +730,7 @@ private func gatewayRouteApplyFindScopeUpgrade(bindings: ArrayList<JsonObject>, 
         if (gatewayRouteApplyIdentityKey(existing) != incomingIdentity) {
             continue
         }
-        if (!gatewayRouteJsonString(gatewayRouteBindingMatch(existing), "accountId").isEmpty()) {
+        if (gatewayRouteNormalizeAccountPattern(gatewayRouteJsonString(gatewayRouteBindingMatch(existing), "accountId")) != "default") {
             continue
         }
         if (gatewayRouteSanitizeAgentId(gatewayRouteJsonString(existing, "agentId")) == incomingAgent) {
