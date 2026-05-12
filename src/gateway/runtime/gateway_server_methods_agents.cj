@@ -5,7 +5,7 @@ import magic.jsonable.*
 import metis.core.{gatewayMainRuntimeExtendedToolNames, gatewayMainRuntimeRequiredToolNames, missingRuntimeToolNames}
 import metis.core.config.{CliConfig, CliSettingManager, MetisAgentScope, MetisConfigManager, MetisPaths, GatewayUserSettings}
 import metis.core.memory.MemoryRuntimeRegistry
-import metis.core.prompting.{MetisAgentWorkspaceBootstrapResult, ensureMetisAgentWorkspace}
+import metis.core.prompting.{MetisAgentWorkspaceBootstrapResult, ensureMetisAgentWorkspace, validateMetisIdentityAvatar}
 import metis.core.skills.resolveAgentSkillVisibility
 import metis.gateway.config.buildGatewayConfigFromUserSettings
 import metis.gateway.core.{gatewayAuthorizedChatToolNames, gatewayCorePromptRuntimeCapabilities, gatewayDefaultChatRuntimeHasUnifiedCoreTools, gatewayDefaultChatToolNames, gatewayMainRuntimePromptTemplateId, gatewayMainRuntimePromptVarianceFields, gatewaySanitizeAgentId}
@@ -13,7 +13,7 @@ import metis.gateway.session.{GatewayIngressSource, GatewaySessionRequest, gatew
 
 import std.collection.{ArrayList, HashMap}
 import std.convert.Parsable
-import std.fs.{Directory, File, Path, exists, remove}
+import std.fs.{Directory, File, Path, copy, exists, remove}
 import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
 
 private func gatewayAgentRpcStringParam(request: GatewayRpcRequest, keys: Array<String>, defaultValue: String): String {
@@ -174,6 +174,15 @@ private func gatewayAgentSummaryModelJson(model: String): JsonObject {
         out.put("primary", JsonString(primary))
     }
     out
+}
+
+private func gatewayAgentArrayContains(items: ArrayList<String>, value: String): Bool {
+    for (item in items) {
+        if (item == value) {
+            return true
+        }
+    }
+    false
 }
 
 private func gatewayAgentSkillsJson(agentId: String): JsonObject {
@@ -485,6 +494,15 @@ private func gatewayAgentSummaryRow(agentId: String, kind: String, entry!: JsonO
     row
 }
 
+private func gatewayAgentAppendCustomSummaryRow(rows: JsonArray, seen: ArrayList<String>, agentId: String, entry: JsonObject): Unit {
+    let normalized = gatewaySanitizeAgentId(agentId)
+    if (normalized.isEmpty() || gatewayAgentArrayContains(seen, normalized)) {
+        return
+    }
+    rows.add(gatewayAgentSummaryRow(normalized, "custom", entry: entry))
+    seen.add(normalized)
+}
+
 private func gatewayAgentsContractJson(): JsonObject {
     let root = gatewayAgentConfigRootCloneReadOnly()
     let scopeSummary = MetisAgentScope.summary(root, homeRoot: MetisPaths.homeRootReadOnly(), defaultWorkspace: MetisPaths.workspaceRootReadOnly())
@@ -501,12 +519,42 @@ private func gatewayAgentsContractJson(): JsonObject {
     ]) {
         agents.add(gatewayAgentSummaryRow(agentId, "builtin"))
     }
+    let seenCustom = ArrayList<String>()
+    let entries = gatewayAgentConfigEntries(root)
+    for (i in 0..entries.size()) {
+        let entry = try { entries[i].asObject() } catch (_e: Exception) { JsonObject() }
+        let agentId = gatewayAgentJsonString(entry, "id", "")
+        let agentDirText = gatewayAgentJsonString(entry, "agentDir", "")
+        if (agentId.trimAscii().isEmpty() || agentDirText.trimAscii().isEmpty()) {
+            continue
+        }
+        if (exists(Path(agentDirText).join("AGENT.md"))) {
+            gatewayAgentAppendCustomSummaryRow(agents, seenCustom, agentId, entry)
+        }
+    }
     for (agentDir in CliConfig.subagentDirs) {
         if (!exists(agentDir)) {
             continue
         }
+        let directManifest = agentDir.join("AGENT.md")
+        if (exists(directManifest)) {
+            let agentId = agentDir.fileName
+            let configuredEntry = gatewayAgentConfigEntry(root, agentId)
+            gatewayAgentAppendCustomSummaryRow(agents, seenCustom, agentId, configuredEntry)
+            continue
+        }
+        let nestedManifest = agentDir.join("agent").join("AGENT.md")
+        if (exists(nestedManifest)) {
+            let agentId = agentDir.fileName
+            let configuredEntry = gatewayAgentConfigEntry(root, agentId)
+            gatewayAgentAppendCustomSummaryRow(agents, seenCustom, agentId, configuredEntry)
+            continue
+        }
         for (entry in Directory.readFrom(agentDir)) {
             if (!entry.isDirectory()) {
+                continue
+            }
+            if (entry.name == "agent") {
                 continue
             }
             let manifest = agentDir.join(entry.name).join("AGENT.md")
@@ -514,7 +562,7 @@ private func gatewayAgentsContractJson(): JsonObject {
                 continue
             }
             let configuredEntry = gatewayAgentConfigEntry(root, entry.name)
-            agents.add(gatewayAgentSummaryRow(entry.name, "custom", entry: configuredEntry))
+            gatewayAgentAppendCustomSummaryRow(agents, seenCustom, entry.name, configuredEntry)
         }
     }
     let result = JsonObject()
@@ -545,6 +593,15 @@ private func gatewayAgentDefaultWorkspaceDir(agentId: String): Path {
     MetisPaths.homeRoot().join("workspaces").join(gatewaySanitizeAgentId(agentId))
 }
 
+private class GatewayAgentAuthProfileCopyPlan {
+    public var requested: Bool = false
+    public var ok: Bool = true
+    public var error: String = ""
+    public var sourcePath: String = ""
+    public var targetPath: String = ""
+    public init() {}
+}
+
 private func gatewayAgentBuildDefaultManifest(agentId: String, name: String, workspace: String): String {
     let title = if (name.trimAscii().isEmpty()) { agentId } else { name.trimAscii() }
     "name: ${title}\n" +
@@ -554,6 +611,57 @@ private func gatewayAgentBuildDefaultManifest(agentId: String, name: String, wor
     "# ${title}\n\n" +
     "This custom agent is managed by Metis.\n\n" +
     "Workspace: ${workspace}\n"
+}
+
+private func gatewayAgentResolveAuthProfileSource(source: String): String {
+    let normalized = source.trimAscii()
+    if (normalized.isEmpty()) {
+        return ""
+    }
+    let low = normalized.toAsciiLower()
+    if (low == "default-agent") {
+        return MetisPaths.homeRoot().join("auth-profiles.json").toString()
+    }
+    ""
+}
+
+private func gatewayAgentAuthProfileCopyPlan(request: GatewayRpcRequest, targetAgentDir: Path): GatewayAgentAuthProfileCopyPlan {
+    let plan = GatewayAgentAuthProfileCopyPlan()
+    plan.requested = gatewayAgentJsonBool(request.params, "copyAuthProfiles", false) ||
+        gatewayAgentJsonBool(request.params, "importAuthProfiles", false)
+    plan.targetPath = targetAgentDir.join("auth-profiles.json").toString()
+    if (!plan.requested) {
+        return plan
+    }
+    let confirmed = gatewayAgentJsonBool(request.params, "confirm", false) || gatewayAgentJsonBool(request.params, "force", false)
+    if (!confirmed) {
+        plan.ok = false
+        plan.error = "Auth profile copy/import requires confirm=true or force=true."
+        return plan
+    }
+    let source = gatewayAgentRpcStringParam(
+        request,
+        ["source", "authProfilesSource"],
+        ""
+    )
+    if (source.trimAscii().isEmpty() || source.trimAscii().toAsciiLower() != "default-agent") {
+        plan.ok = false
+        plan.error = "Auth profile copy/import requires source=default-agent."
+        return plan
+    }
+    let sourcePath = gatewayAgentResolveAuthProfileSource(source)
+    if (sourcePath.trimAscii().isEmpty() || !exists(Path(sourcePath))) {
+        plan.ok = false
+        plan.error = "Auth profile source not found."
+        return plan
+    }
+    if (exists(Path(plan.targetPath))) {
+        plan.ok = false
+        plan.error = "Target auth-profiles.json already exists; refusing to overwrite."
+        return plan
+    }
+    plan.sourcePath = sourcePath
+    plan
 }
 
 private func gatewayAgentBootstrapFilesJson(bootstrap: MetisAgentWorkspaceBootstrapResult): JsonArray {
@@ -860,12 +968,13 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
     let model = gatewayAgentRpcStringParam(request, ["model"], "")
     let agentDir = gatewayAgentRpcStringParam(request, ["agentDir"], gatewayAgentDefaultAgentDir(agentId).toString())
     let sessionsDir = gatewayAgentRpcStringParam(request, ["sessionsDir"], gatewayAgentDefaultSessionsDir(agentId).toString())
-    if (gatewayAgentJsonBool(request.params, "copyAuthProfiles", false) || gatewayAgentJsonBool(request.params, "importAuthProfiles", false)) {
-        return GatewayRpcResponse(false, "agents.add", error: "Auth profile copy/import requires an explicit source and is not performed by default.")
-    }
     let agentDirPath = Path(agentDir)
     let workspacePath = Path(workspace)
     let sessionsDirPath = Path(sessionsDir)
+    let authCopy = gatewayAgentAuthProfileCopyPlan(request, agentDirPath)
+    if (!authCopy.ok) {
+        return GatewayRpcResponse(false, "agents.add", error: authCopy.error)
+    }
     if (!exists(agentDirPath)) {
         Directory.create(agentDirPath, recursive: true)
     }
@@ -873,6 +982,11 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
         Directory.create(sessionsDirPath, recursive: true)
     }
     let bootstrap = ensureMetisAgentWorkspace(workspacePath)
+    var authProfilesCopied = false
+    if (authCopy.requested) {
+        copy(Path(authCopy.sourcePath), to: Path(authCopy.targetPath), overwrite: false)
+        authProfilesCopied = true
+    }
     let manifestPath = agentDirPath.join("AGENT.md")
     if (!exists(manifestPath)) {
         File.writeTo(manifestPath, gatewayAgentBuildDefaultManifest(agentId, name, workspace).toArray())
@@ -905,7 +1019,7 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
     bootstrapJson.put("workspaceDir", JsonString(bootstrap.workspaceDir))
     bootstrapJson.put("createdCount", bootstrap.createdCount.toJsonValue())
     bootstrapJson.put("files", gatewayAgentBootstrapFilesJson(bootstrap))
-    bootstrapJson.put("authProfilesCopied", false.toJsonValue())
+    bootstrapJson.put("authProfilesCopied", authProfilesCopied.toJsonValue())
     bootstrapJson.put("authProfilesCopyRequiresExplicitRequest", true.toJsonValue())
     bootstrapJson.put("authProfilesPath", JsonString(agentDirPath.join("auth-profiles.json").toString()))
     bootstrapJson.put("modelsJsonPath", JsonString(agentDirPath.join("models.json").toString()))
@@ -923,6 +1037,15 @@ private func gatewayAgentSetIdentityJson(request: GatewayRpcRequest): GatewayRpc
     let index = gatewayAgentConfigFindEntryIndex(entries, agentId)
     if (index < 0) {
         return GatewayRpcResponse(false, "agents.set-identity", error: "Agent \"${agentId}\" not found.")
+    }
+    let existingEntry = try { entries[index].asObject() } catch (_e: Exception) { JsonObject() }
+    let avatar = gatewayAgentRpcStringParam(request, ["avatar"], "").trimAscii()
+    if (!avatar.isEmpty()) {
+        let workspace = gatewayAgentJsonString(existingEntry, "workspace", gatewayAgentDefaultWorkspaceDir(agentId).toString())
+        let validation = validateMetisIdentityAvatar(Path(workspace), avatar)
+        if (!validation.ok) {
+            return GatewayRpcResponse(false, "agents.set-identity", error: "Invalid avatar: ${validation.reason}")
+        }
     }
     let nextEntries = JsonArray([])
     for (i in 0..entries.size()) {
@@ -1187,29 +1310,61 @@ private func gatewayBuiltinAgentCapabilities(agentId: String): JsonArray {
     out
 }
 
+private func gatewayAppendCustomAgentJsonRow(out: JsonArray, seen: ArrayList<String>, agentId: String, path: Path): Unit {
+    let normalized = gatewaySanitizeAgentId(agentId)
+    if (normalized.isEmpty() || gatewayAgentArrayContains(seen, normalized)) {
+        return
+    }
+    let row = JsonObject()
+    row.put("id", JsonString(normalized))
+    row.put("kind", JsonString("custom"))
+    row.put("path", JsonString(path.toString()))
+    row.put("available", true.toJsonValue())
+    row.put("configured", true.toJsonValue())
+    row.put("health", JsonString("ok"))
+    row.put("memory", gatewayAgentMemoryJson(normalized))
+    out.add(row)
+    seen.add(normalized)
+}
+
 private func gatewayCustomAgentsJson(): JsonArray {
+    let root = gatewayAgentConfigRootClone()
     let out = JsonArray([])
+    let seen = ArrayList<String>()
+    let entries = gatewayAgentConfigEntries(root)
+    for (i in 0..entries.size()) {
+        let cfg = try { entries[i].asObject() } catch (_e: Exception) { JsonObject() }
+        let agentId = gatewayAgentJsonString(cfg, "id", "")
+        let agentDir = gatewayAgentJsonString(cfg, "agentDir", "")
+        if (!agentId.trimAscii().isEmpty() && !agentDir.trimAscii().isEmpty() && exists(Path(agentDir).join("AGENT.md"))) {
+            gatewayAppendCustomAgentJsonRow(out, seen, agentId, Path(agentDir))
+        }
+    }
     for (agentDir in CliConfig.subagentDirs) {
         if (!exists(agentDir)) {
+            continue
+        }
+        if (exists(agentDir.join("AGENT.md"))) {
+            gatewayAppendCustomAgentJsonRow(out, seen, agentDir.fileName, agentDir)
+            continue
+        }
+        let managedAgentDir = agentDir.join("agent")
+        if (exists(managedAgentDir.join("AGENT.md"))) {
+            gatewayAppendCustomAgentJsonRow(out, seen, agentDir.fileName, managedAgentDir)
             continue
         }
         for (entry in Directory.readFrom(agentDir)) {
             if (!entry.isDirectory()) {
                 continue
             }
+            if (entry.name == "agent") {
+                continue
+            }
             let manifest = agentDir.join(entry.name).join("AGENT.md")
             if (!exists(manifest)) {
                 continue
             }
-            let row = JsonObject()
-            row.put("id", JsonString(entry.name))
-            row.put("kind", JsonString("custom"))
-            row.put("path", JsonString(agentDir.join(entry.name).toString()))
-            row.put("available", true.toJsonValue())
-            row.put("configured", true.toJsonValue())
-            row.put("health", JsonString("ok"))
-            row.put("memory", gatewayAgentMemoryJson(entry.name))
-            out.add(row)
+            gatewayAppendCustomAgentJsonRow(out, seen, entry.name, agentDir.join(entry.name))
         }
     }
     out

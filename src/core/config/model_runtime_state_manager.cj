@@ -4,7 +4,7 @@ import magic.jsonable.*
 import magic.log.LogUtils
 
 import std.collection.ArrayList
-import std.fs.{File, exists, Path}
+import std.fs.{Directory, File, exists, Path}
 import stdx.encoding.json.{JsonArray, JsonInt, JsonObject, JsonString, JsonValue}
 
 private func runtimeStateGetString(root: JsonObject, key: String): Option<String> {
@@ -85,7 +85,7 @@ public class CliModelRuntimeStateManager {
         MetisPaths.modelsRuntimePath()
     }
 
-    public static func writeMaterializedRuntimeState(): Unit {
+    private static func buildMaterializedRuntimeState(): JsonObject {
         let primaryRuntime = MetisConfigManager.normalizeModelRef(
             MetisConfigManager.readPrimaryModel() ?? currentCliPrimaryModel()
         ).trimAscii()
@@ -127,8 +127,31 @@ public class CliModelRuntimeStateManager {
             providers.add(row)
         }
         root.put("providers", JsonArray(providers))
+        root
+    }
 
-        File.writeTo(runtimePath(), root.toJsonString().toArray())
+    private static func writeMaterializedRuntimeStateTo(path: Path): Unit {
+        let parent = path.parent
+        if (!exists(parent)) {
+            Directory.create(parent, recursive: true)
+        }
+        File.writeTo(path, buildMaterializedRuntimeState().toJsonString().toArray())
+    }
+
+    public static func writeMaterializedRuntimeState(): Unit {
+        writeMaterializedRuntimeStateTo(runtimePath())
+    }
+
+    public static func agentRuntimePath(agentDir: Path): Path {
+        agentDir.join("models.json")
+    }
+
+    public static func ensureAgentRuntimeState(agentDir: Path): Path {
+        let path = agentRuntimePath(agentDir)
+        if (!exists(path)) {
+            writeMaterializedRuntimeStateTo(path)
+        }
+        path
     }
 
     public static func readRuntimeState(): Option<JsonObject> {

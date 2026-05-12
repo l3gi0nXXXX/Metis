@@ -1,7 +1,9 @@
 package metis.core.prompting
 
 import std.collection.ArrayList
-import std.fs.{Path, File, Directory, exists, canonicalize}
+import std.fs.{Path, File, Directory, FileInfo, exists, canonicalize, remove, rename}
+import std.io.*
+import std.time.DateTime
 
 private const AGENTS_FILENAME = "AGENTS.md"
 private const SOUL_FILENAME = "SOUL.md"
@@ -67,6 +69,14 @@ private func readTextFile(path: Path): String {
 private func metisEnsureDirectory(path: Path): Unit {
     if (!exists(path)) {
         Directory.create(path, recursive: true)
+    }
+}
+
+private func metisPathIsSymlink(path: Path): Bool {
+    try {
+        FileInfo(path).isSymbolicLink()
+    } catch (_e: Exception) {
+        false
     }
 }
 
@@ -187,9 +197,15 @@ public func ensureMetisAgentWorkspace(workspaceDir: Path): MetisAgentWorkspaceBo
         if (exists(path)) {
             state.existed = true
         } else {
-            File.writeTo(path, metisWorkspaceTemplate(name).toArray())
-            state.created = true
-            createdCount += 1
+            if (metisPathIsSymlink(path)) {
+                state.existed = true
+            } else {
+                try (file = File.create(path)) {
+                    file.write(metisWorkspaceTemplate(name).toArray())
+                }
+                state.created = true
+                createdCount += 1
+            }
         }
         states.add(state)
     }
@@ -228,10 +244,31 @@ public func metisWorkspaceSafeWrite(workspaceDir: Path, relativePath: String, co
     if (!metisCanonicalInside(workspaceDir, parent)) {
         return metisWorkspaceSafeFailure("path escapes workspace", path: target.toString())
     }
+    if (metisPathIsSymlink(target)) {
+        return metisWorkspaceSafeFailure("path escapes workspace", path: target.toString())
+    }
     if (exists(target) && !metisCanonicalInside(workspaceDir, target)) {
         return metisWorkspaceSafeFailure("path escapes workspace", path: target.toString())
     }
-    File.writeTo(target, content.toArray())
+    let stamp = DateTime.now().toUnixTimeStamp().toMilliseconds()
+    let tmp = parent.join(".${target.fileName}.metis-${stamp}.tmp")
+    try {
+        try (file = File.create(tmp)) {
+            file.write(content.toArray())
+        }
+        if (metisPathIsSymlink(target)) {
+            try { remove(tmp) } catch (_: Exception) { () }
+            return metisWorkspaceSafeFailure("path escapes workspace", path: target.toString())
+        }
+        if (exists(target) && !metisCanonicalInside(workspaceDir, target)) {
+            try { remove(tmp) } catch (_: Exception) { () }
+            return metisWorkspaceSafeFailure("path escapes workspace", path: target.toString())
+        }
+        rename(tmp, to: target, overwrite: true)
+    } catch (e: Exception) {
+        try { remove(tmp) } catch (_: Exception) { () }
+        return metisWorkspaceSafeFailure("write failed: ${e.message}", path: target.toString())
+    }
     metisWorkspaceSafeSuccess(canonicalPathString(target), content: content)
 }
 
@@ -274,7 +311,8 @@ public func parseMetisIdentityMarkdown(content: String): MetisAgentIdentity {
 public func validateMetisIdentityAvatar(workspaceDir: Path, avatar: String): MetisIdentityAvatarValidation {
     let result = MetisIdentityAvatarValidation()
     let trimmed = avatar.trimAscii()
-    if (trimmed.isEmpty() || trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("data:")) {
+    let low = trimmed.toAsciiLower()
+    if (trimmed.isEmpty() || low.startsWith("http://") || low.startsWith("https://") || low.startsWith("data:")) {
         result.ok = true
         return result
     }

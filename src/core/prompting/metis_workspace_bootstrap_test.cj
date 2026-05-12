@@ -191,6 +191,16 @@ public class MetisWorkspaceBootstrapTest {
             )
             @Expect(code, 0)
             @Expect(metisWorkspaceSafeRead(root, "escape/secret.txt").ok, false)
+
+            File.writeTo(outside.join("target.txt"), "keep".toArray())
+            let (linkCode, _, _) = ShellUtils.execute(
+                ["ln", "-s", outside.join("target.txt").toString(), root.join("link.txt").toString()],
+                withWrap: false
+            )
+            @Expect(linkCode, 0)
+            let symlinkWrite = metisWorkspaceSafeWrite(root, "link.txt", "bad")
+            @Expect(symlinkWrite.ok, false)
+            @Expect(String.fromUtf8(File.readFrom(outside.join("target.txt"))), "keep")
         } finally {
             cleanupWorkspaceBootstrapTestDir(root)
             cleanupWorkspaceBootstrapTestDir(outside)
@@ -222,7 +232,9 @@ public class MetisWorkspaceBootstrapTest {
 
             @Expect(validateMetisIdentityAvatar(root, "assets/avatar.png").ok, true)
             @Expect(validateMetisIdentityAvatar(root, "https://example.test/avatar.png").ok, true)
+            @Expect(validateMetisIdentityAvatar(root, "HTTPS://example.test/avatar.png").ok, true)
             @Expect(validateMetisIdentityAvatar(root, "data:image/png;base64,AAAA").ok, true)
+            @Expect(validateMetisIdentityAvatar(root, "DATA:image/png;base64,AAAA").ok, true)
             @Expect(validateMetisIdentityAvatar(root, "~/avatar.png").ok, false)
             @Expect(validateMetisIdentityAvatar(root, "file:///tmp/avatar.png").ok, false)
             @Expect(validateMetisIdentityAvatar(root, "../avatar.png").ok, false)
