@@ -123,6 +123,8 @@ public class SkillsRuntimeParityTest {
         @Expect(cangjieSkills.size, 0)
 
         @Expect(MetisConfigManager.resolveAgentSkillsScopeFromRoot(root, "planner"), "default")
+        @Expect(MetisConfigManager.resolveAgentSkillsScopeFromRoot(root, "unknown-agent"), "default")
+        @Expect(MetisConfigManager.resolveAgentSkillsFromRoot(root, "unknown-agent").getOrThrow().size, 2)
         @Expect(MetisConfigManager.resolveAgentSkillsScopeFromRoot(root, "general"), "explicit")
         @Expect(MetisConfigManager.resolveAgentSkillsScopeFromRoot(root, "cangjie"), "explicit")
     }

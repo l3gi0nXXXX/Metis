@@ -2,7 +2,7 @@ package metis.gateway.runtime
 
 import magic.jsonable.*
 
-import metis.core.{gatewayMainRuntimeExtendedToolNames, gatewayMainRuntimeRequiredToolNames, missingRuntimeToolNames}
+import metis.core.{gatewayMainRuntimeExtendedToolNames, gatewayMainRuntimeRequiredToolNames, missingRuntimeToolNames, resolveRuntimeToolPolicyFromRoot, runtimeToolPolicyReportToJson}
 import metis.core.config.{CliConfig, CliSettingManager, MetisAgentScope, MetisConfigManager, MetisPaths, GatewayUserSettings}
 import metis.core.memory.MemoryRuntimeRegistry
 import metis.core.prompting.{MetisAgentWorkspaceBootstrapResult, ensureMetisAgentWorkspace, validateMetisIdentityAvatar}
@@ -201,6 +201,45 @@ private func gatewayAgentSkillsJson(agentId: String): JsonObject {
     out
 }
 
+private func gatewayAgentStringArrayJson(values: Array<String>): JsonArray {
+    let arr = JsonArray([])
+    for (value in values) {
+        arr.add(JsonString(value))
+    }
+    arr
+}
+
+private func gatewayAgentRuntimePolicyRoot(user: GatewayUserSettings): JsonObject {
+    let root = gatewayAgentConfigRootClone()
+    let gatewayObj = match (root.get("gateway")) {
+        case Some(v) =>
+            try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    let toolsObj = JsonObject()
+    if (user.tools.allow.size > 0) {
+        toolsObj.put("allow", gatewayAgentStringArrayJson(user.tools.allow))
+    }
+    if (user.tools.deny.size > 0) {
+        toolsObj.put("deny", gatewayAgentStringArrayJson(user.tools.deny))
+    }
+    if (toolsObj.size() > 0) {
+        gatewayObj.put("tools", toolsObj)
+        root.put("gateway", gatewayObj)
+    }
+    root
+}
+
+private func gatewayAgentToolsJson(agentId: String, currentNames: Array<String>): JsonObject {
+    runtimeToolPolicyReportToJson(
+        resolveRuntimeToolPolicyFromRoot(
+            gatewayAgentRuntimePolicyRoot(CliSettingManager.readGatewaySettings()),
+            currentNames,
+            agentId: agentId
+        )
+    )
+}
+
 private func gatewayMainRuntimeProfileJson(): JsonObject {
     let result = JsonObject()
     let gatewayUser = CliSettingManager.readGatewaySettings()
@@ -211,6 +250,10 @@ private func gatewayMainRuntimeProfileJson(): JsonObject {
     let currentNames = gatewayDefaultChatToolNames()
     let effectiveNames = gatewayAuthorizedChatToolNames()
     let authorizationProfile = gatewayMainRuntimeAuthorizationProfileJson(gatewayUser, currentNames, effectiveNames)
+    authorizationProfile.put(
+        "effectivePolicy",
+        runtimeToolPolicyReportToJson(resolveRuntimeToolPolicyFromRoot(gatewayAgentRuntimePolicyRoot(gatewayUser), currentNames))
+    )
     let current = JsonArray([])
     for (name in currentNames) {
         current.add(JsonString(name))
@@ -490,6 +533,7 @@ private func gatewayAgentSummaryRow(agentId: String, kind: String, entry!: JsonO
         row.put("model", modelJson)
     }
     row.put("skills", gatewayAgentSkillsJson(normalized))
+    row.put("tools", gatewayAgentToolsJson(normalized, gatewayDefaultChatToolNames()))
     row.put("kind", JsonString(kind))
     row
 }

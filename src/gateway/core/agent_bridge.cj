@@ -8,10 +8,10 @@ import magic.jsonable.TypeSchema
 import magic.prelude.*
 import magic.log.LogUtils
 
-import metis.core.{gatewayMainRuntimeRequiredToolNames, gatewayNotifyCurrentToolRuntimeStatus, runtimeToolNamesContainAll}
+import metis.core.{gatewayMainRuntimeRequiredToolNames, gatewayNotifyCurrentToolRuntimeStatus, resolveRuntimeToolPolicyFromRoot, runtimeToolInvocationAllowedFromRoot, runtimeToolNamesContain, runtimeToolNamesContainAll}
 import metis.core.model.CliModelManager
 import metis.core.model.ModelTokenLimits
-import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings}
+import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager}
 import metis.core.prompting.{MetisBootstrapBudgetResult, MetisSystemPromptParams, MetisSystemPromptBuilder, MetisWorkspaceBootstrap}
 import metis.core.skills.SkillsPrompt
 import metis.core.skills.tryHandleSkillsCommand
@@ -22,7 +22,7 @@ import metis.io.{PrintUtils, AnsiColor, WithColor}
 import std.collection.{HashMap, ArrayList, enumerate}
 import std.sync.Mutex
 import std.time.*
-import stdx.encoding.json.JsonValue
+import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
 import magic.model.ModelManager
 import magic.core.model.ChatModel
 
@@ -88,6 +88,39 @@ func gatewaySkillSelectionUserNotice(skillsEnabled: Bool, selectedSkillNameOpt: 
 public func gatewayDefaultChatToolNames(): Array<String> {
     let agent = GatewayP1ChatAgent()
     MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
+}
+
+private func gatewayStringArrayJson(values: Array<String>): JsonArray {
+    let arr = JsonArray([])
+    for (value in values) {
+        arr.add(JsonString(value))
+    }
+    arr
+}
+
+private func gatewayRuntimePolicyRoot(user: GatewayUserSettings): JsonObject {
+    let root = match (MetisConfigManager.rawConfig()) {
+        case Some(raw) =>
+            try { JsonValue.fromStr(raw.toJsonString()).asObject() } catch (_: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    let gatewayObj = match (root.get("gateway")) {
+        case Some(value) =>
+            try { value.asObject() } catch (_: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    let toolsObj = JsonObject()
+    if (user.tools.allow.size > 0) {
+        toolsObj.put("allow", gatewayStringArrayJson(user.tools.allow))
+    }
+    if (user.tools.deny.size > 0) {
+        toolsObj.put("deny", gatewayStringArrayJson(user.tools.deny))
+    }
+    if (toolsObj.size() > 0) {
+        gatewayObj.put("tools", toolsObj)
+        root.put("gateway", gatewayObj)
+    }
+    root
 }
 
 private func gatewayToolPolicyState(user: GatewayUserSettings): (HashMap<String, Bool>, HashMap<String, Bool>, Bool) {
@@ -188,9 +221,23 @@ public func setGatewayAgentBridgeReplyRunnerForTest(
 
 private class GatewayLifecycleToolWrapper <: Tool {
     private let inner: Tool
+    private let policyRoot: JsonObject
+    private let inventory: Array<String>
+    private let agentId: String
+    private let provider: String
 
-    public init(inner: Tool) {
+    public init(
+        inner: Tool,
+        policyRoot!: JsonObject = JsonObject(),
+        inventory!: Array<String> = [],
+        agentId!: String = "",
+        provider!: String = ""
+    ) {
         this.inner = inner
+        this.policyRoot = policyRoot
+        this.inventory = inventory
+        this.agentId = agentId.trimAscii()
+        this.provider = provider.trimAscii()
     }
 
     public prop name: String {
@@ -219,6 +266,19 @@ private class GatewayLifecycleToolWrapper <: Tool {
 
     override public func invoke(args: HashMap<String, JsonValue>): ToolResponse {
         gatewayNotifyCurrentToolRuntimeStatus("tool")
+        let decision = runtimeToolInvocationAllowedFromRoot(
+            this.policyRoot,
+            this.inner.name,
+            this.inventory,
+            agentId: this.agentId,
+            provider: this.provider
+        )
+        if (!decision.allowed) {
+            return ToolResponse(
+                "tool policy rejected `${this.inner.name}`: ${decision.reason}; source=${decision.policySource}",
+                isError: true
+            )
+        }
         this.inner.invoke(args)
     }
 
@@ -227,47 +287,73 @@ private class GatewayLifecycleToolWrapper <: Tool {
     }
 }
 
-private func gatewayLifecycleWrappedTools(tools: ArrayList<Tool>): ArrayList<Tool> {
+private func gatewayLifecycleWrappedTools(
+    tools: ArrayList<Tool>,
+    policyRoot!: JsonObject = JsonObject(),
+    inventory!: Array<String> = [],
+    agentId!: String = "",
+    provider!: String = ""
+): ArrayList<Tool> {
     let wrapped = ArrayList<Tool>()
     for (tool in tools) {
-        wrapped.add(GatewayLifecycleToolWrapper(tool))
+        wrapped.add(GatewayLifecycleToolWrapper(
+            tool,
+            policyRoot: policyRoot,
+            inventory: inventory,
+            agentId: agentId,
+            provider: provider
+        ))
     }
     wrapped
 }
 
-public func gatewayAuthorizedChatToolNames(): Array<String> {
+public func gatewayAuthorizedChatToolNames(agentId!: String = "", provider!: String = ""): Array<String> {
     let user = CliSettingManager.readGatewaySettings()
-    let (allow, deny, denyAll) = gatewayToolPolicyState(user)
-    let authorized = ArrayList<String>()
-    for (toolName in gatewayDefaultChatToolNames()) {
-        if (gatewayToolAuthorized(toolName, allow, deny, denyAll)) {
-            authorized.add(toolName)
-        }
-    }
-    authorized.toArray()
+    let inventory = gatewayDefaultChatToolNames()
+    resolveRuntimeToolPolicyFromRoot(
+        gatewayRuntimePolicyRoot(user),
+        inventory,
+        agentId: agentId,
+        provider: provider
+    ).visibleTools
 }
 
-public func gatewayPolicyFilteredChatToolNames(): Array<String> {
+public func gatewayPolicyFilteredChatToolNames(agentId!: String = "", provider!: String = ""): Array<String> {
     let user = CliSettingManager.readGatewaySettings()
     let agent = GatewayP1ChatAgent()
-    gatewayApplyToolPolicy(agent, user)
+    gatewayApplyToolPolicy(agent, user, agentId: agentId, provider: provider)
     MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
 }
 
-private func gatewayApplyToolPolicy(agent: GatewayP1ChatAgent, user: GatewayUserSettings): Array<String> {
-    let (allow, deny, denyAll) = gatewayToolPolicyState(user)
+private func gatewayApplyToolPolicy(
+    agent: GatewayP1ChatAgent,
+    user: GatewayUserSettings,
+    agentId!: String = "",
+    provider!: String = ""
+): Array<String> {
+    let inventory = MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
+    let policyRoot = gatewayRuntimePolicyRoot(user)
+    let report = resolveRuntimeToolPolicyFromRoot(
+        policyRoot,
+        inventory,
+        agentId: agentId,
+        provider: provider
+    )
     let keep = ArrayList<Tool>()
-    let restricted = ArrayList<String>()
     for (tool in agent.toolManager.tools) {
-        if (gatewayToolAuthorized(tool.name, allow, deny, denyAll)) {
+        if (runtimeToolNamesContain(report.visibleTools, tool.name)) {
             keep.add(tool)
-        } else {
-            restricted.add(tool.name)
         }
     }
     agent.toolManager.clear()
-    agent.toolManager.addTools(gatewayLifecycleWrappedTools(keep))
-    restricted.toArray()
+    agent.toolManager.addTools(gatewayLifecycleWrappedTools(
+        keep,
+        policyRoot: policyRoot,
+        inventory: inventory,
+        agentId: agentId,
+        provider: provider
+    ))
+    report.deniedTools
 }
 
 public func gatewayDefaultChatRuntimeHasUnifiedCoreTools(): Bool {
@@ -327,7 +413,7 @@ public func gatewayPolicyFilteredSystemPrompt(
 ): String {
     let gatewayUser = CliSettingManager.readGatewaySettings()
     let agent = GatewayP1ChatAgent()
-    gatewayApplyToolPolicy(agent, gatewayUser)
+    gatewayApplyToolPolicy(agent, gatewayUser, agentId: agentId, provider: modelName)
     buildGatewaySystemPrompt(
         agent,
         channelName,
@@ -594,7 +680,7 @@ public class AgentBridge {
                     }
                     try {
                     let agent = GatewayP1ChatAgent()
-                    let restrictedTools = gatewayApplyToolPolicy(agent, gatewayUser)
+                    let restrictedTools = gatewayApplyToolPolicy(agent, gatewayUser, agentId: agentId, provider: currModel.fullName)
                     agent.model = currModel
                     let promptBuild = buildGatewaySystemPrompt(
                         agent,
