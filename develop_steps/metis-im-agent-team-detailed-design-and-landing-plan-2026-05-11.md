@@ -2576,6 +2576,39 @@ Phase 4 实现补充约束：
    - 创建团队向导。
    - effective skill/tool 简要查看。
 
+后端管理契约补充：
+
+Phase 7 的第一落地点是配置/RPC 管理面，不直接改 IM adapter、turn runtime、doctor 或 channel 发送路径。产品面所有修改必须通过 Gateway agents family RPC 写入 `metis.json` 或 agent workspace/agentDir，再由既有 config、resolver、session、runtime 层消费。
+
+新增或补齐的后端方法分为四组：
+
+1. Agent 配置 CRUD：
+   - `agents.add` 保持创建 agentDir/workspace/sessions 和 bootstrap 文件的职责。
+   - `agents.update` 更新 `agents.list[]` 中的 name、workspace、model、identity、groupChat、skills/tools 等可编辑字段；更新 workspace 时只补齐 bootstrap 文件，不删除旧 workspace。
+   - `agent.get` / `agents.list` 必须展示 workspace、agentDir、sessionsDir、model、identity、groupChat、aliases、team membership、models/auth path 等管理面需要的信息。
+2. Workspace 文件编辑：
+   - `agents.files.list/get/set` 只允许 workspace-relative bootstrap 文件名或安全的 workspace 文件名。
+   - 读写必须使用 workspace 边界校验，拒绝 `..`、绝对路径、URI scheme、越界 symlink。
+   - `models.json`、`auth-profiles.json`、legacy `auth.json` 不属于 workspace 文件编辑接口。
+3. Per-agent model runtime 管理：
+   - `agents.models.status/get/set` 以 agent scope 解析 `agentDir/models.json`。
+   - `status/get` 可 lazy ensure `models.json`，但不能写真实 token 或读取真实用户 `~/.metis`。
+   - `set` 只接受有效 JSON object，并返回 path、present、provider/model 摘要和 diagnostics。
+4. AgentTeam 配置 CRUD：
+   - `agentTeams` 使用对象容器 `{ "list": [...] }`，保持与 `agents.list` 风格一致。
+   - team entry 至少包含 `id`、`displayName`、`defaultAgentId`、`members[]`、`aliases[]`、`bindings[]`、`broadcast`。
+   - 成员必须能解析到 agent；需要创建模板成员时也必须通过同一套 agent config helper 创建 agent entry、workspace、agentDir、sessions。
+   - alias/mention 的展示和后续路由来源必须写入或映射到 `agents.list[].groupChat.mentionPatterns`，不能只保存在 team 私有字段。
+   - team binding 在本阶段仅作为产品层配置或编译输入；真正入站路由仍以 Phase 2 binding resolver 能理解的 binding 为准。
+
+OpenClaw 对齐证据：
+
+- `openclaw/src/gateway/server-methods/agents.ts:646-688`：`agents.update` 通过 Gateway server method 更新 agent config，并按需补齐 workspace/identity。
+- `openclaw/src/gateway/server-methods/agents.ts:760-868`：`agents.files.list/get/set` 只在 resolved agent workspace 内读写，并通过 safe fs helper 防越界。
+- `openclaw/src/agents/models-config.ts:135-183`：`ensureOpenClawModelsJson` 以 `agentDir/models.json` 为目标，创建 `agentDir` 并设置文件模式。
+- `openclaw/src/config/types.agents.ts:28-59`、`:65-89`：binding、workspace、agentDir、model、groupChat、subagents 都是 agent/team 管理面需要 round-trip 的配置字段。
+- `openclaw/docs/channels/groups.md:258-273`、`openclaw/docs/concepts/multi-agent.md:245-247`、`:605`：alias/mention 应进入 `groupChat.mentionPatterns`；`accountId` 缺省只代表默认账号，`"*"` 才是 channel-wide fallback。
+
 测试要求：
 
 - 配置层测试：team create/update/delete。
