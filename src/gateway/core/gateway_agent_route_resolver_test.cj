@@ -466,6 +466,34 @@ public class GatewayAgentRouteResolverTest {
     }
 
     @TestCase
+    public func bindingApplyDoesNotScopeUpgradeDisabledDefaultBinding(): Unit {
+        let root = routeTestConfig()
+        let disabled = routeBinding("assistant-a", "telegram")
+        disabled.put("enabled", JsonBool(false))
+        disabled.put("comment", JsonString("disabled default route"))
+        putBindings(root, [disabled])
+
+        let incoming = routeBinding("assistant-a", "telegram", accountId: "bot-a")
+        incoming.put("enabled", JsonBool(true))
+        incoming.put("comment", JsonString("new explicit route"))
+        let result = applyBindings(root, [incoming])
+
+        @Expect(result.updated.size, 0)
+        @Expect(result.added.size, 1)
+
+        let rows = result.config.get("bindings").getOrThrow().asArray()
+        @Expect(rows.size(), 2)
+        let kept = rows[0].asObject()
+        @Expect(kept.get("enabled").getOrThrow().asBool().getValue(), false)
+        @Expect(kept.get("comment").getOrThrow().asString().getValue(), "disabled default route")
+
+        let added = rows[1].asObject()
+        @Expect(added.get("enabled").getOrThrow().asBool().getValue(), true)
+        @Expect(added.get("comment").getOrThrow().asString().getValue(), "new explicit route")
+        @Expect(added.get("match").getOrThrow().asObject().get("accountId").getOrThrow().asString().getValue(), "bot-a")
+    }
+
+    @TestCase
     public func unknownAgentFallsBackToDefaultWithDiagnostic(): Unit {
         let root = routeTestConfig()
         putBindings(root, [peerBinding("missing-agent", "telegram", "group", "-100_a", accountId: "*")])

@@ -727,6 +727,9 @@ private func gatewayRouteApplyFindScopeUpgrade(bindings: ArrayList<JsonObject>, 
     }
     for (i in 0..bindings.size) {
         let existing = bindings[i]
+        if (!gatewayRouteBindingEnabled(existing)) {
+            continue
+        }
         if (gatewayRouteApplyIdentityKey(existing) != incomingIdentity) {
             continue
         }
@@ -738,6 +741,19 @@ private func gatewayRouteApplyFindScopeUpgrade(bindings: ArrayList<JsonObject>, 
         }
     }
     None<Int64>
+}
+
+private func gatewayRouteApplyScopeUpgradeBinding(existing: JsonObject, incoming: JsonObject): JsonObject {
+    let out = gatewayRouteCopyBinding(incoming)
+    match (existing.get("enabled")) {
+        case Some(v) => out.put("enabled", v)
+        case None => ()
+    }
+    match (existing.get("comment")) {
+        case Some(v) => out.put("comment", v)
+        case None => ()
+    }
+    out
 }
 
 public func gatewayApplyAgentRouteBindings(root: JsonObject, bindings: JsonArray): GatewayAgentBindingApplyResult {
@@ -789,8 +805,9 @@ public func gatewayApplyAgentRouteBindings(root: JsonObject, bindings: JsonArray
         }
         match (gatewayRouteApplyFindScopeUpgrade(existingBindings, incoming)) {
             case Some(idx) =>
-                existingBindings[idx] = incoming
-                updated.add(incoming)
+                let updatedBinding = gatewayRouteApplyScopeUpgradeBinding(existingBindings[idx], incoming)
+                existingBindings[idx] = updatedBinding
+                updated.add(updatedBinding)
                 continue
             case None => ()
         }
