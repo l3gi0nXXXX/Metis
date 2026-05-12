@@ -2686,6 +2686,15 @@ OpenClaw 对齐证据：
 | 8.5 全链路回归矩阵 | 覆盖单 agent、多 agent、Telegram、Feishu、workspace、model/auth、skills/tools、team、UI。 | OpenClaw 将 routing/workspace/tool/channel 分层测试，证据分散在前述源码 | 全量测试套件 | `cjpm clean && cjpm build -i && cjpm test` 通过；Control UI 如修改则浏览器 smoke test 通过。 |
 | 8.6 上线文档与排障 | 将配置示例、迁移示例、常见误解、回滚步骤写入 develop_steps 或用户文档。 | OpenClaw docs 对 Telegram/Feishu/group/broadcast 都给出配置语义，见 `openclaw/docs/channels/telegram.md`、`feishu.md`、`broadcast-groups.md` | `develop_steps` 和后续正式 docs | 文档能解释 agents 目录、binding apply、accountId、pairing/auth 区别、broadcast 与 team 区别。 |
 
+Phase 8 源码对齐补充：
+
+- OpenClaw-Lark 的多账号诊断不是只判断“多个账号存在”。`openclaw-lark/src/core/security-check.ts:38-67` 将状态分为 `not-applicable`、`shared-implicit`、`shared-explicit`、`isolated`，并把未显式绑定的账号列为隐式共享风险；Metis doctor 必须同样区分“缺少 per-account binding 的隐式共享”和“用户已显式把多个账号绑定到同一 agent 的共享”，后者只能作为 notice/manual-confirm，不能误报为已隔离。
+- OpenClaw-Lark 在 `openclaw-lark/src/core/security-check.ts:89-107` 明确要求多租户/多账号私聊使用 `session.dmScope="per-account-channel-peer"`。即使 bindings 已配置，如果私聊 session key 没有包含 accountId，同一用户对不同 bot 的 direct message 仍可能串到同一段会话。Metis doctor 必须输出独立 warning code，例如 `agent-team-dm-scope-shared`。
+- OpenClaw 的 agent 目录目标默认值是 `<state>/agents/<agentId>/agent`，见 `openclaw/src/agents/agent-scope.ts:350-361`；workspace fallback 对非默认 agent 使用 default workspace 子目录，见 `openclaw/src/agents/agent-scope.ts:271-291`。Metis doctor 必须把旧 `~/.metis/agents/<agentId>` 作为 legacy layout 兼容项，只给迁移建议，不把它作为新写入目标。
+- OpenClaw 对 identity avatar 做 workspace containment 校验，见 `openclaw/src/config/validation.ts:367-420`；Metis doctor 必须把来自 `agents.list[].identity.avatar` 或 `IDENTITY.md` 的 workspace escape 作为 AgentTeam 验收风险。
+- OpenClaw session path 校验会识别 per-agent sessions 和 legacy/absolute fallback，见 `openclaw/src/config/sessions/paths.ts:60-185`；Phase 8 只读扫描只报告旧 session/agentDir 迁移建议，不自动迁移或删除历史数据。
+- OpenClaw binding apply 语义见 `openclaw/src/commands/agents.bindings.ts:75-159`：route bindings 参与 added/updated/skipped/conflicts，非 route bindings 保留，same match/different agent 是 conflict，same match/same agent 是 skipped，default account route 可升级为 explicit account route。Metis migration dry-run 必须 clone config 后调用 apply 逻辑，输出 `bindingApply.added/updated/skipped/conflicts/configPreview`，并保证原始 config 未变更。
+
 具体任务：
 
 1. 风险检测：
@@ -2702,6 +2711,8 @@ OpenClaw 对齐证据：
    - `agentDir/auth.json` 作为 legacy 文件存在但未迁移。
    - binding 省略 accountId 但用户期望所有账号；提示应使用 `accountId="*"`。
    - binding 冲突、重复、可升级但未升级。
+   - 多账号同一 agent 显式共享和缺少 binding 的隐式共享要分开报告；显式共享不是隔离成功，只是用户可人工确认的共享状态。
+   - 多账号 direct message 未设置 `session.dmScope="per-account-channel-peer"`，即使 binding 存在也要提示 session 可能串用。
    - identity avatar 指向 workspace 外。
    - cross-agent memorySearch 共享未被用户明确标记。
    - subagent allowAgents 缺失导致可委派范围过宽。
@@ -2715,6 +2726,8 @@ OpenClaw 对齐证据：
    - 输出建议的 agentDir 目标路径。
    - 输出 per-agent models/auth 迁移建议。
    - 输出人工确认步骤。
+   - dry-run 的 action object 必须包含稳定 `code`、`path`、`agentId`、`reason`、`impact`、`suggestion`、`manual`、`writeTarget` 字段；只读 doctor 的 `writeTarget` 必须为空，dry-run 的 `writeTarget` 只能指向计划中的临时预览文件，不能指向真实用户配置、workspace 或 secret 文件。
+   - binding dry-run 必须保留非 route binding；disabled 或非 route 输入进入 skipped；同 match/different agent 进入 conflicts；同 agent 的 default-account binding 升级为 explicit account binding 进入 updated；省略 `accountId` 与 `accountId="*"` 必须作为不同语义解释。
 3. 安全保护：
    - doctor 默认只读。
    - `--fix` 或等价修复命令必须要求明确参数。
@@ -2753,11 +2766,14 @@ OpenClaw 对齐证据：
 - 缺失或异常的 `auth-profiles.json` 能被检测出来。
 - legacy `auth.json` 能被识别为兼容文件，不作为新写入目标。
 - accountId 缺省/通配风险能被解释清楚。
+- 多账号隐式共享、显式共享和已隔离状态能被 doctor 区分；显式共享只给人工确认建议，不当作隔离通过。
+- 多账号 direct message 未使用 `per-account-channel-peer` 能输出 `agent-team-dm-scope-shared`。
 - identity avatar workspace escape 能被检测出来。
 - cross-agent memorySearch、subagent allowAgents 过宽能被检测出来。
 - binding 指向未知 agent 能被检测出来。
 - team 指向未知 agent 能被检测出来。
 - dry-run 可以输出将要生成的 agents/bindings。
+- binding dry-run 报告 added、updated、skipped、conflicts，并证明非 route binding 没有被删除或改写。
 - 默认 doctor 不修改文件。
 - 修复命令不写真实环境，测试中只写 temp dir。
 - 所有单 agent 旧行为回归通过。
