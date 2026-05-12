@@ -442,7 +442,14 @@ public class TelegramAdapter <: ChannelAdapter {
         match (mediaContext.get("context")) {
             case Some(v) =>
                 let context = try { v.asObject() } catch (_e: Exception) { JsonObject() }
-                return context.size() == 1 && context.get("forwarded").isSome()
+                var allowedFields = 0
+                if (context.get("forwarded").isSome()) {
+                    allowedFields = allowedFields + 1
+                }
+                if (context.get("imRoute").isSome()) {
+                    allowedFields = allowedFields + 1
+                }
+                return context.size() == allowedFields
             case None => ()
         }
         true
@@ -505,7 +512,45 @@ public class TelegramAdapter <: ChannelAdapter {
             }
         }
         merged.put("messageId", JsonString(messageId))
+        this.attachTelegramMergedImRouteContext(merged, first, next, messageId)
         merged
+    }
+
+    private func attachTelegramMergedImRouteContext(merged: JsonObject, first: JsonObject, next: JsonObject, messageId: String): Unit {
+        var route = JsonObject()
+        var found = false
+        match (this.telegramMergedContextField(next, "imRoute")) {
+            case Some(v) =>
+                route = try { v.asObject() } catch (_e: Exception) { JsonObject() }
+                found = route.size() > 0
+            case None => ()
+        }
+        if (!found) {
+            match (this.telegramMergedContextField(first, "imRoute")) {
+                case Some(v) =>
+                    route = try { v.asObject() } catch (_e: Exception) { JsonObject() }
+                    found = route.size() > 0
+                case None => ()
+            }
+        }
+        if (!found) {
+            return
+        }
+        route.put("messageId", JsonString(messageId))
+        let context = JsonObject()
+        context.put("imRoute", route)
+        merged.put("context", context)
+    }
+
+    private func telegramMergedContextField(mediaContext: JsonObject, key: String): Option<JsonValue> {
+        let context = match (mediaContext.get("context")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        match (context.get(key)) {
+            case Some(v) => Some(v)
+            case None => None<JsonValue>
+        }
     }
 
     private func mergeTelegramTextBurstMessage(first: InboundMessage, next: InboundMessage): InboundMessage {
@@ -633,6 +678,7 @@ public class TelegramAdapter <: ChannelAdapter {
             }
         }
         merged.put("messageId", JsonString(messageId))
+        this.attachTelegramMergedImRouteContext(merged, first, next, messageId)
         let records = JsonArray([])
         for (item in this.mediaContextRecords(first).getItems()) {
             records.add(item)
@@ -834,6 +880,8 @@ public class TelegramAdapter <: ChannelAdapter {
         mentioned!: Bool = true,
         threadId!: Option<String> = None
     ): Unit {
+        let mediaContext = JsonObject()
+        this.attachTelegramImRouteContextFromPeer(mediaContext, peerId, senderId, messageId, chatType, threadId)
         let msg = InboundMessage(
             ChannelType.Telegram,
             messageId,
@@ -846,7 +894,8 @@ public class TelegramAdapter <: ChannelAdapter {
             threadId: threadId,
             replyInThread: threadId != None,
             raw: Some(text),
-            accountId: this.effectiveAccountId()
+            accountId: this.effectiveAccountId(),
+            mediaContext: mediaContext
         )
         synchronized(this.queueMutex) {
             this.inboundQueue.add(msg)
@@ -1864,6 +1913,7 @@ public class TelegramAdapter <: ChannelAdapter {
                 mediaContext.put("context", context)
             }
         }
+        this.attachTelegramImRouteContext(mediaContext, chat, threadIdRaw, senderId, messageId)
         this.attachTelegramRouteConfigContext(mediaContext, peerId, senderId, chatType)
         let mentioned = this.detectMentionInMessage(msg, text)
         match (chatType) {
@@ -8139,6 +8189,120 @@ public class TelegramAdapter <: ChannelAdapter {
         mediaContext.put("accountId", JsonString(this.effectiveAccountId()))
         mediaContext.put("peerId", JsonString(peerId.trimAscii()))
         mediaContext.put("context", context)
+    }
+
+    private func attachTelegramImRouteContextFields(
+        mediaContext: JsonObject,
+        peerKind: String,
+        peerId: String,
+        senderId: String,
+        messageId: String,
+        parentPeerKind!: String = "",
+        parentPeerId!: String = "",
+        threadId!: String = ""
+    ): Unit {
+        let context = match (mediaContext.get("context")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let route = JsonObject()
+        route.put("channel", JsonString("telegram"))
+        route.put("accountId", JsonString(this.effectiveAccountId()))
+        route.put("defaultAccountId", JsonString(this.config.defaultAccount))
+        route.put("peerKind", JsonString(peerKind.trimAscii().toAsciiLower()))
+        route.put("peerId", JsonString(peerId.trimAscii()))
+        if (!parentPeerKind.trimAscii().isEmpty()) {
+            route.put("parentPeerKind", JsonString(parentPeerKind.trimAscii().toAsciiLower()))
+        }
+        if (!parentPeerId.trimAscii().isEmpty()) {
+            route.put("parentPeerId", JsonString(parentPeerId.trimAscii()))
+        }
+        if (!threadId.trimAscii().isEmpty()) {
+            route.put("threadId", JsonString(threadId.trimAscii()))
+        }
+        route.put("senderId", JsonString(senderId.trimAscii()))
+        route.put("messageId", JsonString(messageId.trimAscii()))
+        context.put("imRoute", route)
+        mediaContext.put("channel", JsonString("telegram"))
+        mediaContext.put("accountId", JsonString(this.effectiveAccountId()))
+        mediaContext.put("context", context)
+    }
+
+    private func attachTelegramImRouteContext(
+        mediaContext: JsonObject,
+        chat: JsonObject,
+        threadId: String,
+        senderId: String,
+        messageId: String
+    ): Unit {
+        let chatId = this.readIntStringField(chat, "id")
+        if (this.readStringField(chat, "type") == "private") {
+            this.attachTelegramImRouteContextFields(
+                mediaContext,
+                "direct",
+                if (!senderId.trimAscii().isEmpty()) { senderId } else { chatId },
+                senderId,
+                messageId
+            )
+            return
+        }
+        if (!threadId.trimAscii().isEmpty()) {
+            this.attachTelegramImRouteContextFields(
+                mediaContext,
+                "topic",
+                threadId,
+                senderId,
+                messageId,
+                parentPeerKind: "group",
+                parentPeerId: chatId,
+                threadId: threadId
+            )
+            return
+        }
+        this.attachTelegramImRouteContextFields(mediaContext, "group", chatId, senderId, messageId)
+    }
+
+    private func attachTelegramImRouteContextFromPeer(
+        mediaContext: JsonObject,
+        peerId: String,
+        senderId: String,
+        messageId: String,
+        chatType: ChatType,
+        threadId: Option<String>
+    ): Unit {
+        match (chatType) {
+            case ChatType.Direct =>
+                let directId = if (peerId.startsWith("user:")) { peerId["user:".size..] } else { peerId }
+                this.attachTelegramImRouteContextFields(mediaContext, "direct", directId, senderId, messageId)
+            case ChatType.Group =>
+                let topicId = match (threadId) {
+                    case Some(v) => v.trimAscii()
+                    case None => this.extractThreadId(peerId)
+                }
+                let parent = if (peerId.startsWith("group:")) {
+                    let rest = peerId["group:".size..]
+                    match (rest.indexOf(":topic:")) {
+                        case Some(idx) => rest[..idx]
+                        case None => rest
+                    }
+                } else {
+                    peerId
+                }
+                if (!topicId.isEmpty()) {
+                    this.attachTelegramImRouteContextFields(
+                        mediaContext,
+                        "topic",
+                        topicId,
+                        senderId,
+                        messageId,
+                        parentPeerKind: "group",
+                        parentPeerId: parent,
+                        threadId: topicId
+                    )
+                } else {
+                    this.attachTelegramImRouteContextFields(mediaContext, "group", parent, senderId, messageId)
+                }
+        }
     }
 
     private func telegramPeerId(chat: JsonObject, threadId!: String = ""): String {

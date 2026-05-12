@@ -169,7 +169,16 @@ public class GatewayService {
         if (channelToString(message.channel) == "telegram" && this.handleTelegramNativeCommand(message, effectiveAccountId, user, conversationKey)) {
             return
         }
-        let request = gatewaySessionRequestFromInbound(message, sessionHint: conversationKey, accountId: effectiveAccountId)
+        let routeRoot = match (MetisConfigManager.rawConfig()) {
+            case Some(root) => root
+            case None => JsonObject()
+        }
+        let request = gatewaySessionRequestFromInbound(
+            message,
+            sessionHint: conversationKey,
+            accountId: effectiveAccountId,
+            routeRoot: routeRoot
+        )
         if (channelToString(message.channel) == "telegram") {
             this.maybeSendTelegramLifecycleSignal(user, message, effectiveAccountId, "typing")
         }
@@ -226,6 +235,11 @@ public class GatewayService {
         let context = turn.context
         let execution = turn.execution
         LogUtils.info("Gateway.route: conversationKey=${conversationKey}, resolvedSession=${context.sessionKey}")
+        if (!context.matchedBy.isEmpty()) {
+            LogUtils.info(
+                "Gateway.route.resolve: channel=${context.channelName}, accountId=${context.accountId}, peer=${message.peerId}, matchedBy=${context.matchedBy}, agentId=${context.agentId}"
+            )
+        }
         LogUtils.info("Gateway.reply: answerChars=${execution.answer.size}")
         match (context.deliveryTarget) {
             case Some(target) =>

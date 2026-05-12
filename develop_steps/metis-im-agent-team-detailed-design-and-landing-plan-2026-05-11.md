@@ -2063,6 +2063,10 @@ GatewayAgentRoute:
 1. 统一入站上下文：
    - 定义或扩展 `IM Inbound Context`。
    - 字段包含 channel、accountId、defaultAccountId、peerKind、peerId、parentPeer、threadId、senderId、messageId。
+   - `accountId` 是 resolver/binding 使用的规范账号，例如 `default`、`work`、`bot-a`；它必须与 Gateway/ChannelManager 的运行态投递账号分开。Metis 现有内置 adapter 注册账号可能是 `telegram:default`、`feishu:default`，这些值只用于选择发送 adapter，不应直接进入 binding resolver，否则 OpenClaw 的“省略 `accountId` 只匹配 default account、`"*"` 才跨账号”语义会被破坏。
+   - adapter 应在入站 `mediaContext.context.imRoute` 中写入规范化前的 route context；`GatewaySessionRequest.accountId` 继续保留当前投递账号，session coordinator 读取 `imRoute.accountId/defaultAccountId/peer` 调用 resolver，并把 resolver 的 `preferredAccountId` 写入 delivery target。
+   - Telegram route peer 不应复用发送用 `peerId` 的 `user:` / `group:` / `:topic:` 包装串：direct 使用用户/发送者 id，group 使用原始 chat id，topic 使用 `message_thread_id` 且 `parentPeer=group:<chat id>` 的结构化字段表达父群。发送路径仍使用原有 `InboundMessage.peerId`，以保留 reply/thread 行为。
+   - Feishu route peer 对齐 openclaw-lark：direct 使用 sender id，group 使用 chat id，thread 使用 `thread_id` 或 `root_id`，并保留 parent group chat id。`accountId` 缺省为当前飞书账号的规范 id；单账号内置适配器使用 `default`。
 2. Telegram 映射：
    - private chat -> `peerKind=direct`。
    - group/supergroup -> `peerKind=group`。

@@ -2,7 +2,7 @@ package metis.gateway.core
 
 import metis.core.{GatewayToolRuntimeContext, gatewayMediaUnderstandingFirstText, gatewayMediaUnderstandingForRecordWithSettings}
 import metis.core.config.{CliSettingManager, GatewayUserSettings}
-import metis.gateway.session.{GatewaySessionContext, GatewaySessionRequest, gatewayResolveSessionContext}
+import metis.gateway.session.{GatewaySessionContext, GatewaySessionRequest}
 import std.collection.ArrayList
 import std.fs.{Path, exists}
 import stdx.encoding.json.{JsonArray, JsonObject}
@@ -249,7 +249,7 @@ public func gatewayExecuteSessionRequestTurn(
     streamingEnabled!: Bool = false,
     lifecycleHook!: Option<(String) -> Unit> = None<(String) -> Unit>
 ): GatewayResolvedSessionTurnResult {
-    let context = gatewayResolveSessionContext(request)
+    let context = gatewayResolveSessionContextWithAgentRoute(request)
     let toolRuntimeContext = GatewayToolRuntimeContext(
         context.sourceLabel,
         channelName: context.channelName,
@@ -312,7 +312,7 @@ public func gatewayExecuteSessionRequestTurnForUser(
     lifecycleHook!: Option<(String) -> Unit> = None<(String) -> Unit>
 ): GatewayResolvedSessionTurnResult {
     let bridge = gatewayBridgeForSessionRequest(user, request)
-    let context = gatewayResolveSessionContext(request)
+    let context = gatewayResolveSessionContextWithAgentRoute(request)
     gatewayExecuteSessionRequestTurn(
         bridge,
         request,

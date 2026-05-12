@@ -69,6 +69,13 @@ public class GatewaySessionRequest {
     public let replyInThread: Bool
     public let deliver: Bool
     public let mediaContext: JsonObject
+    public let routeRoot: JsonObject
+    public let routeAccountId: String
+    public let routeDefaultAccountId: String
+    public let routePeerKind: String
+    public let routePeerId: String
+    public let routeParentPeerKind: String
+    public let routeParentPeerId: String
 
     public init(
         source: GatewayIngressSource,
@@ -94,7 +101,14 @@ public class GatewaySessionRequest {
         replyToMessageId!: String = "",
         replyInThread!: Bool = false,
         deliver!: Bool = false,
-        mediaContext!: JsonObject = JsonObject()
+        mediaContext!: JsonObject = JsonObject(),
+        routeRoot!: JsonObject = JsonObject(),
+        routeAccountId!: String = "",
+        routeDefaultAccountId!: String = "",
+        routePeerKind!: String = "",
+        routePeerId!: String = "",
+        routeParentPeerKind!: String = "",
+        routeParentPeerId!: String = ""
     ) {
         this.source = source
         this.channelName = channelName.trimAscii().toAsciiLower()
@@ -120,6 +134,13 @@ public class GatewaySessionRequest {
         this.replyInThread = replyInThread
         this.deliver = deliver
         this.mediaContext = mediaContext
+        this.routeRoot = routeRoot
+        this.routeAccountId = routeAccountId.trimAscii()
+        this.routeDefaultAccountId = routeDefaultAccountId.trimAscii()
+        this.routePeerKind = routePeerKind.trimAscii().toAsciiLower()
+        this.routePeerId = routePeerId.trimAscii()
+        this.routeParentPeerKind = routeParentPeerKind.trimAscii().toAsciiLower()
+        this.routeParentPeerId = routeParentPeerId.trimAscii()
     }
 }
 
@@ -129,6 +150,10 @@ public class GatewaySessionContext {
     public let sessionKey: String
     public let agentId: String
     public let accountId: String
+    public let preferredAccountId: String
+    public let matchedBy: String
+    public let lastRoutePolicy: String
+    public let routeDiagnostics: Array<String>
     public let lane: String
     public let deliveryTarget: Option<GatewayDeliveryTarget>
     public let source: GatewayIngressSource
@@ -140,6 +165,10 @@ public class GatewaySessionContext {
         sessionKey: String,
         agentId: String,
         accountId!: String = "",
+        preferredAccountId!: String = "",
+        matchedBy!: String = "",
+        lastRoutePolicy!: String = "",
+        routeDiagnostics!: Array<String> = [],
         lane!: String = "",
         deliveryTarget!: Option<GatewayDeliveryTarget> = None
     ) {
@@ -149,6 +178,10 @@ public class GatewaySessionContext {
         this.sessionKey = sessionKey.trimAscii()
         this.agentId = agentId.trimAscii()
         this.accountId = accountId.trimAscii()
+        this.preferredAccountId = preferredAccountId.trimAscii()
+        this.matchedBy = matchedBy.trimAscii()
+        this.lastRoutePolicy = lastRoutePolicy.trimAscii()
+        this.routeDiagnostics = routeDiagnostics
         this.lane = lane.trimAscii()
         this.deliveryTarget = deliveryTarget
     }

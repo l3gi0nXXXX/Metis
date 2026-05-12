@@ -4,7 +4,7 @@ import magic.jsonable.*
 import magic.log.LogUtils
 
 import metis.core.config.{CliConfig, GatewayUserSettings}
-import metis.gateway.session.{GatewayDeliveryTarget, GatewayIngressSource, GatewaySessionRequest, gatewayResolveSessionContext, gatewaySessionRequestFromRpcParams}
+import metis.gateway.session.{GatewayDeliveryTarget, GatewayIngressSource, GatewaySessionRequest, gatewaySessionRequestFromRpcParams}
 
 import std.collection.ArrayList
 import std.convert.*
@@ -1390,7 +1390,7 @@ public func gatewaySessionStoreForUserWithAgentId(user: GatewayUserSettings, age
 }
 
 public func gatewaySessionStoreForResolvedRequest(user: GatewayUserSettings, request: GatewaySessionRequest): GatewaySessionStore {
-    let context = gatewayResolveSessionContext(request)
+    let context = gatewayResolveSessionContextWithAgentRoute(request)
     match (gatewayFindSessionLocationForUser(user, context.sessionKey)) {
         case Some(location) => gatewaySessionStoreForUserWithAgentId(user, location.agentId)
         case None => gatewaySessionStoreForUserWithAgentId(user, context.agentId)

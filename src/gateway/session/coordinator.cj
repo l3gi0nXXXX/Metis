@@ -121,6 +121,23 @@ private func gatewaySessionJsonObject(params: JsonObject, key: String): JsonObje
     }
 }
 
+private func gatewaySessionMediaContextObject(mediaContext: JsonObject): JsonObject {
+    match (mediaContext.get("context")) {
+        case Some(v) =>
+            try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+}
+
+private func gatewaySessionImRouteContext(mediaContext: JsonObject): JsonObject {
+    let context = gatewaySessionMediaContextObject(mediaContext)
+    match (context.get("imRoute")) {
+        case Some(v) =>
+            try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+}
+
 public func gatewayIngressSourceFromString(raw: String, fallback!: GatewayIngressSource = GatewayIngressSource.Unknown("")): GatewayIngressSource {
     let low = raw.trimAscii().toAsciiLower()
     if (low == "cli") {
@@ -249,13 +266,17 @@ private func gatewayInferDeliveryTargetFromSessionKey(sessionKey: String, accoun
     None
 }
 
-private func gatewayResolveDeliveryTarget(request: GatewaySessionRequest, sessionKey: String): Option<GatewayDeliveryTarget> {
+public func gatewayResolveDeliveryTarget(
+    request: GatewaySessionRequest,
+    sessionKey: String,
+    preferredAccountId!: String = ""
+): Option<GatewayDeliveryTarget> {
     if (!request.replyChannel.isEmpty() && !request.replyTo.isEmpty()) {
         return Some(
             GatewayDeliveryTarget(
                 request.replyChannel,
                 request.replyTo,
-                accountId: request.replyAccountId,
+                accountId: if (!request.replyAccountId.isEmpty()) { request.replyAccountId } else { preferredAccountId },
                 conversationId: request.conversationId,
                 threadId: request.threadId,
                 sourceMessageId: request.sourceMessageId,
@@ -268,7 +289,13 @@ private func gatewayResolveDeliveryTarget(request: GatewaySessionRequest, sessio
         case GatewayIngressSource.Channel(_channel) =>
             let channelName = gatewayNormalizeChannelName(request.channelName, request.source)
             if (!channelName.isEmpty() && !request.peerId.isEmpty()) {
-                let accountId = if (!request.replyAccountId.isEmpty()) { request.replyAccountId } else { request.accountId }
+                let accountId = if (!request.replyAccountId.isEmpty()) {
+                    request.replyAccountId
+                } else if (!preferredAccountId.isEmpty()) {
+                    preferredAccountId
+                } else {
+                    request.accountId
+                }
                 return Some(
                     GatewayDeliveryTarget(
                         channelName,
@@ -284,14 +311,23 @@ private func gatewayResolveDeliveryTarget(request: GatewaySessionRequest, sessio
             }
         case _ => ()
     }
-    gatewayInferDeliveryTargetFromSessionKey(sessionKey, request.accountId)
+    gatewayInferDeliveryTargetFromSessionKey(
+        sessionKey,
+        if (!preferredAccountId.isEmpty()) { preferredAccountId } else { request.accountId }
+    )
 }
 
-public func gatewaySessionRequestFromInbound(message: InboundMessage, dmScope!: String = "per-chat", accountId!: String = ""): GatewaySessionRequest {
+public func gatewaySessionRequestFromInbound(
+    message: InboundMessage,
+    dmScope!: String = "per-chat",
+    accountId!: String = "",
+    routeRoot!: JsonObject = JsonObject()
+): GatewaySessionRequest {
     let replyToMessageId = match (message.replyTargetMessageId) {
         case Some(msgId) => msgId
         case None => message.messageId
     }
+    let imRoute = gatewaySessionImRouteContext(message.mediaContext)
     GatewaySessionRequest(
         GatewayIngressSource.Channel(channelToString(message.channel)),
         channelName: channelToString(message.channel),
@@ -309,7 +345,14 @@ public func gatewaySessionRequestFromInbound(message: InboundMessage, dmScope!: 
         replyToMessageId: replyToMessageId,
         replyInThread: message.replyInThread,
         deliver: true,
-        mediaContext: message.mediaContext
+        mediaContext: message.mediaContext,
+        routeRoot: routeRoot,
+        routeAccountId: gatewaySessionJsonString(imRoute, "accountId"),
+        routeDefaultAccountId: gatewaySessionJsonString(imRoute, "defaultAccountId"),
+        routePeerKind: gatewaySessionJsonString(imRoute, "peerKind"),
+        routePeerId: gatewaySessionJsonString(imRoute, "peerId"),
+        routeParentPeerKind: gatewaySessionJsonString(imRoute, "parentPeerKind"),
+        routeParentPeerId: gatewaySessionJsonString(imRoute, "parentPeerId")
     )
 }
 
@@ -317,12 +360,14 @@ public func gatewaySessionRequestFromInbound(
     message: InboundMessage,
     sessionHint!: String,
     dmScope!: String = "per-chat",
-    accountId!: String = ""
+    accountId!: String = "",
+    routeRoot!: JsonObject = JsonObject()
 ): GatewaySessionRequest {
     let replyToMessageId = match (message.replyTargetMessageId) {
         case Some(msgId) => msgId
         case None => message.messageId
     }
+    let imRoute = gatewaySessionImRouteContext(message.mediaContext)
     GatewaySessionRequest(
         GatewayIngressSource.Channel(channelToString(message.channel)),
         channelName: channelToString(message.channel),
@@ -340,7 +385,14 @@ public func gatewaySessionRequestFromInbound(
         replyToMessageId: replyToMessageId,
         replyInThread: message.replyInThread,
         deliver: true,
-        mediaContext: message.mediaContext
+        mediaContext: message.mediaContext,
+        routeRoot: routeRoot,
+        routeAccountId: gatewaySessionJsonString(imRoute, "accountId"),
+        routeDefaultAccountId: gatewaySessionJsonString(imRoute, "defaultAccountId"),
+        routePeerKind: gatewaySessionJsonString(imRoute, "peerKind"),
+        routePeerId: gatewaySessionJsonString(imRoute, "peerId"),
+        routeParentPeerKind: gatewaySessionJsonString(imRoute, "parentPeerKind"),
+        routeParentPeerId: gatewaySessionJsonString(imRoute, "parentPeerId")
     )
 }
 
@@ -550,14 +602,14 @@ public func gatewayResolveSessionContext(request: GatewaySessionRequest): Gatewa
     let channelName = gatewayNormalizeChannelName(request.channelName, request.source)
     let explicitSessionHint = request.sessionHint.trimAscii().toAsciiLower()
     let hintedAgentId = gatewayHintedAgentId(explicitSessionHint)
-    let agentId = gatewaySessionSanitizeAgentId(
+    var agentId = gatewaySessionSanitizeAgentId(
         if (!request.agentId.trimAscii().isEmpty()) {
             request.agentId
         } else {
             hintedAgentId
         }
     )
-    let sessionKey = match (request.chatType) {
+    var sessionKey = match (request.chatType) {
         case Some(chatType) =>
             if (!explicitSessionHint.isEmpty()) {
                 explicitSessionHint

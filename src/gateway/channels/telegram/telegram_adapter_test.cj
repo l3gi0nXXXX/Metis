@@ -387,6 +387,14 @@ public class TelegramAdapterTest {
         @Expect(inbound[0].peerId, "group:-100123:topic:42")
         @Expect(inbound[0].threadId.getOrThrow(), "42")
         @Expect(inbound[0].replyInThread, true)
+        let imRoute = inbound[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("imRoute").getOrThrow().asObject()
+        @Expect(imRoute.get("channel").getOrThrow().asString().getValue(), "telegram")
+        @Expect(imRoute.get("accountId").getOrThrow().asString().getValue(), "default")
+        @Expect(imRoute.get("peerKind").getOrThrow().asString().getValue(), "topic")
+        @Expect(imRoute.get("peerId").getOrThrow().asString().getValue(), "42")
+        @Expect(imRoute.get("parentPeerKind").getOrThrow().asString().getValue(), "group")
+        @Expect(imRoute.get("parentPeerId").getOrThrow().asString().getValue(), "-100123")
     }
 
     @TestCase
@@ -2090,6 +2098,13 @@ public class TelegramAdapterTest {
         @Expect(route.get("systemPrompt").getOrThrow().asString().getValue(), "topic prompt")
         @Expect(route.get("skills").getOrThrow().asArray()[0].asString().getValue(), "review")
         @Expect(route.get("disableAudioPreflight").getOrThrow().asBool().getValue(), true)
+        let imRoute = inbound[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("imRoute").getOrThrow().asObject()
+        @Expect(imRoute.get("channel").getOrThrow().asString().getValue(), "telegram")
+        @Expect(imRoute.get("peerKind").getOrThrow().asString().getValue(), "topic")
+        @Expect(imRoute.get("peerId").getOrThrow().asString().getValue(), "42")
+        @Expect(imRoute.get("parentPeerKind").getOrThrow().asString().getValue(), "group")
+        @Expect(imRoute.get("parentPeerId").getOrThrow().asString().getValue(), "-1001234567890")
     }
 
     @TestCase

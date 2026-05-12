@@ -424,4 +424,5 @@ public class GatewaySessionCoordinatorTest {
         @Expect(request.agentId, "topic-agent")
         @Expect(resolved.agentId, "topic-agent")
     }
+
 }
