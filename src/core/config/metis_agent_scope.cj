@@ -2,8 +2,9 @@ package metis.core.config
 
 import magic.jsonable.*
 
+import std.env.getVariable
 import std.collection.{ArrayList, HashMap}
-import std.fs.Path
+import std.fs.{File, Path, exists}
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString, JsonValue}
 
 private func scopeJsonObject(root: JsonObject, key: String): Option<JsonObject> {
@@ -230,12 +231,232 @@ private func scopeRequestedAgentId(root: JsonObject, requested: String, defaultI
     (normalized, "request")
 }
 
-private func scopePath(raw: String, fallback: Path): Path {
+private func scopeHomeDir(): String {
+    match (getVariable("HOME")) {
+        case Some(value) =>
+            let trimmed = value.trimAscii()
+            if (!trimmed.isEmpty()) {
+                return trimmed
+            }
+        case None => ()
+    }
+    getVariable("USERPROFILE").getOrDefault { "." }.trimAscii()
+}
+
+private func scopeExpandUserPath(raw: String): String {
+    let trimmed = raw.trimAscii()
+    if (trimmed == "~") {
+        return scopeHomeDir()
+    }
+    if (trimmed.startsWith("~/")) {
+        return scopeHomeDir() + trimmed[1..]
+    }
+    trimmed
+}
+
+private func scopeNormalizePath(path: Path): Path {
+    try {
+        path.normalize()
+    } catch (_: Exception) {
+        path
+    }
+}
+
+private func scopePathText(path: Path): String {
+    scopeNormalizePath(path).toString()
+}
+
+private func scopeIsWithinRoot(candidate: Path, root: Path): Bool {
+    let rootText = scopePathText(root)
+    let candidateText = scopePathText(candidate)
+    candidateText == rootText || candidateText.startsWith("${rootText}/")
+}
+
+private func scopeResolvedUserPath(
+    raw: String,
+    fallback: Path,
+    baseRoot: Path,
+    label: String,
+    diagnostics: JsonArray,
+    agentId: String,
+    boundaryRoot!: Path = baseRoot
+): Path {
     let trimmed = raw.trimAscii()
     if (trimmed.isEmpty()) {
-        return fallback
+        return scopeNormalizePath(fallback)
     }
-    Path(trimmed)
+    if (trimmed.contains("\u{0}")) {
+        scopeAddDiagnostic(diagnostics, "dangerous-path", "${label} contains a null byte; using fallback.", agentId: agentId)
+        return scopeNormalizePath(fallback)
+    }
+    let expanded = scopeExpandUserPath(trimmed)
+    let path = Path(expanded)
+    let resolved = if (path.isAbsolute()) {
+        scopeNormalizePath(path)
+    } else {
+        scopeNormalizePath(baseRoot.join(expanded))
+    }
+    if (!path.isAbsolute() && !scopeIsWithinRoot(resolved, boundaryRoot)) {
+        scopeAddDiagnostic(diagnostics, "path-escape", "${label} escapes its boundary; using fallback.", agentId: agentId)
+        return scopeNormalizePath(fallback)
+    }
+    let text = scopePathText(resolved)
+    if (text == "/" || text == "." || text == "..") {
+        scopeAddDiagnostic(diagnostics, "dangerous-path", "${label} resolves to a dangerous root path; using fallback.", agentId: agentId)
+        return scopeNormalizePath(fallback)
+    }
+    resolved
+}
+
+private func scopePathsOverlap(left: Path, right: Path): Bool {
+    scopeIsWithinRoot(left, right) || scopeIsWithinRoot(right, left)
+}
+
+private func scopeIdentityFilePath(workspaceDir: Path): Path {
+    workspaceDir.join("IDENTITY.md")
+}
+
+private func scopeIsIdentityPlaceholder(value: String): Bool {
+    let normalized = value.trimAscii()
+        .replace("*", "")
+        .replace("_", "")
+        .replace("(", "")
+        .replace(")", "")
+        .toAsciiLower()
+    normalized == "pick something you like" ||
+        normalized == "ai? robot? familiar? ghost in the machine? something weirder?" ||
+        normalized == "how do you come across? sharp? warm? chaotic? calm?" ||
+        normalized == "your signature - pick one that feels right" ||
+        normalized == "workspace-relative path, http(s) url, or data uri"
+}
+
+private func scopeIdentityFileObject(workspaceDir: Path): JsonObject {
+    let out = JsonObject()
+    let path = scopeIdentityFilePath(workspaceDir)
+    if (!exists(path)) {
+        return out
+    }
+    let text = try {
+        String.fromUtf8(File.readFrom(path))
+    } catch (_: Exception) {
+        return out
+    }
+    for (line in text.split("\n")) {
+        let cleaned = line.trimAscii().replace("\r", "")
+        let withoutBullet = if (cleaned.startsWith("-")) { cleaned[1..].trimAscii() } else { cleaned }
+        let parts = withoutBullet.split(":")
+        if (parts.size < 2) {
+            continue
+        }
+        let label = parts[0].replace("*", "").replace("_", "").trimAscii().toAsciiLower()
+        let value = String.join(parts[1..parts.size], delimiter: ":").replace("*", "").replace("_", "").trimAscii()
+        if (value.isEmpty() || scopeIsIdentityPlaceholder(value)) {
+            continue
+        }
+        if (label == "name" || label == "emoji" || label == "theme" || label == "creature" || label == "vibe" || label == "avatar") {
+            out.put(label, JsonString(value))
+        }
+    }
+    out
+}
+
+private func scopeAvatarHasUriScheme(value: String): Bool {
+    let idx = match (value.indexOf(":")) {
+        case Some(v) => v
+        case None => return false
+    }
+    if (idx < 1) {
+        return false
+    }
+    let prefix = value[..idx].toAsciiLower()
+    if (prefix.size == 1) {
+        return false
+    }
+    for (ch in prefix.toRuneArray()) {
+        let ok = (ch >= r'a' && ch <= r'z') || (ch >= r'0' && ch <= r'9') || ch == r'+' || ch == r'.' || ch == r'-'
+        if (!ok) {
+            return false
+        }
+    }
+    true
+}
+
+private func scopeResolveAvatar(
+    raw: String,
+    workspaceDir: Path,
+    source: String,
+    diagnostics: JsonArray,
+    agentId: String
+): String {
+    let value = raw.trimAscii()
+    if (value.isEmpty()) {
+        return ""
+    }
+    let low = value.toAsciiLower()
+    if (low.startsWith("http://") || low.startsWith("https://") || low.startsWith("data:")) {
+        return value
+    }
+    if (value.startsWith("~") || (scopeAvatarHasUriScheme(value) && !value.contains(":\\"))) {
+        scopeAddDiagnostic(diagnostics, "identity-avatar-invalid", "${source}.avatar must be workspace-relative, http(s), or data URI.", agentId: agentId)
+        return ""
+    }
+    let candidate = scopeNormalizePath(workspaceDir.join(value))
+    if (!scopeIsWithinRoot(candidate, workspaceDir)) {
+        scopeAddDiagnostic(diagnostics, "identity-avatar-escape", "${source}.avatar must stay inside workspaceDir.", agentId: agentId)
+        return ""
+    }
+    candidate.toString()
+}
+
+private func scopeIdentity(entryOpt: Option<JsonObject>, workspaceDir: Path, diagnostics: JsonArray, agentId: String): JsonObject {
+    let out = JsonObject()
+    let fileIdentity = scopeIdentityFileObject(workspaceDir)
+    let configIdentity = match (entryOpt) {
+        case Some(entry) => scopeJsonObject(entry, "identity") ?? JsonObject()
+        case None => JsonObject()
+    }
+    let fields = ["name", "emoji", "theme", "creature", "vibe", "avatar"]
+    for (field in fields) {
+        var value = ""
+        var source = ""
+        match (scopeJsonString(configIdentity, field)) {
+            case Some(v) =>
+                let trimmed = v.trimAscii()
+                if (!trimmed.isEmpty()) {
+                    value = trimmed
+                    source = "agents.list[].identity.${field}"
+                }
+            case None => ()
+        }
+        if (value.isEmpty()) {
+            match (scopeJsonString(fileIdentity, field)) {
+                case Some(v) =>
+                    let trimmed = v.trimAscii()
+                    if (!trimmed.isEmpty()) {
+                        value = trimmed
+                        source = "workspace.IDENTITY.md"
+                    }
+                case None => ()
+            }
+        }
+        if (value.isEmpty()) {
+            continue
+        }
+        if (field == "avatar") {
+            let resolved = scopeResolveAvatar(value, workspaceDir, source, diagnostics, agentId)
+            if (resolved.isEmpty()) {
+                continue
+            }
+            out.put(field, JsonString(resolved))
+        } else {
+            out.put(field, JsonString(value))
+        }
+        out.put("${field}Source", JsonString(source))
+    }
+    let identityPath = scopeIdentityFilePath(workspaceDir)
+    out.put("identityFilePath", JsonString(identityPath.toString()))
+    out.put("identityFileExists", exists(identityPath).toJsonValue())
+    out
 }
 
 private func scopePolicyArray(value: JsonValue): JsonArray {
@@ -429,6 +650,8 @@ private func scopeModel(entryOpt: Option<JsonObject>, defaults: JsonObject): Jso
         case Some(primary) =>
             if (!primary.trimAscii().isEmpty()) {
                 out.put("primary", JsonString(primary.trimAscii()))
+                out.put("modelRef", JsonString(primary.trimAscii()))
+                out.put("modelRefSource", JsonString("${source}.primary"))
             }
         case None => ()
     }
@@ -465,12 +688,76 @@ private func scopeModel(entryOpt: Option<JsonObject>, defaults: JsonObject): Jso
     if (fallbacksSet) {
         out.put("fallbacks", fallbacks)
         out.put("fallbacksSource", JsonString(fallbacksSource))
+        out.put("fallbacksEffectiveSource", JsonString(fallbacksSource))
         out.put("fallbacksExplicitlyDisabled", (fallbacks.size() == 0).toJsonValue())
     } else {
         out.put("fallbacksSource", JsonString(fallbacksSource))
+        out.put("fallbacksEffectiveSource", JsonString(fallbacksSource))
         out.put("fallbacksExplicitlyDisabled", false.toJsonValue())
     }
     out.put("raw", scopeCloneObject(raw))
+    out
+}
+
+private func scopeProviderIdFromModelRef(modelRef: String): String {
+    let value = modelRef.trimAscii()
+    if (value.isEmpty()) {
+        return ""
+    }
+    match (value.indexOf(":")) {
+        case Some(index) =>
+            if (index > 0) {
+                return value[..index].trimAscii().toAsciiLower()
+            }
+        case None => ()
+    }
+    match (value.indexOf("/")) {
+        case Some(index) =>
+            if (index > 0) {
+                return value[..index].trimAscii().toAsciiLower()
+            }
+        case None => ()
+    }
+    ""
+}
+
+private func scopeProviderConfig(root: JsonObject, providerId: String): JsonObject {
+    let models = scopeJsonObject(root, "models") ?? JsonObject()
+    let providers = scopeJsonObject(models, "providers") ?? JsonObject()
+    scopeJsonObject(providers, providerId) ?? JsonObject()
+}
+
+private func scopeProviderSummary(root: JsonObject, modelRef: String): JsonObject {
+    let providerId = scopeProviderIdFromModelRef(modelRef)
+    let provider = scopeProviderConfig(root, providerId)
+    let out = JsonObject()
+    out.put("providerId", JsonString(providerId))
+    out.put("modelRef", JsonString(modelRef.trimAscii()))
+    out.put("configured", (provider.size() > 0).toJsonValue())
+    out.put("source", JsonString(if (providerId.isEmpty()) { "unconfigured" } else { "modelRef" }))
+    out
+}
+
+private func scopeAccountSummary(root: JsonObject, modelRef: String): JsonObject {
+    let providerId = scopeProviderIdFromModelRef(modelRef)
+    let provider = scopeProviderConfig(root, providerId)
+    let apiKey = scopeJsonString(provider, "apiKey").getOrDefault { "" }.trimAscii()
+    let baseUrl = scopeJsonString(provider, "baseUrl").getOrDefault { "" }.trimAscii()
+    let out = JsonObject()
+    out.put("providerId", JsonString(providerId))
+    out.put("source", JsonString(if (providerId.isEmpty()) { "unconfigured" } else { "models.providers.${providerId}" }))
+    out.put("apiKeyConfigured", (!apiKey.isEmpty()).toJsonValue())
+    out.put("baseUrlConfigured", (!baseUrl.isEmpty()).toJsonValue())
+    let status = if (providerId.isEmpty()) {
+        "unconfigured"
+    } else if (provider.size() == 0) {
+        "not-configured"
+    } else if (!apiKey.isEmpty()) {
+        "configured"
+    } else {
+        "missing-api-key"
+    }
+    out.put("status", JsonString(status))
     out
 }
 
@@ -504,8 +791,8 @@ public class MetisAgentScope {
     public static func resolve(
         root: JsonObject,
         agentId!: String = "",
-        homeRoot!: Path = MetisPaths.homeRoot(),
-        defaultWorkspace!: Path = MetisPaths.workspaceRoot()
+        homeRoot!: Path = MetisPaths.homeRootReadOnly(),
+        defaultWorkspace!: Path = MetisPaths.workspaceRootReadOnly()
     ): JsonObject {
         let diagnostics = JsonArray([])
         let defaultId = scopeDefaultAgentId(root, diagnostics)
@@ -518,24 +805,55 @@ public class MetisAgentScope {
         let defaults = scopeDefaults(root)
         let stateRoot = homeRoot.join("agents").join(id)
         let fallbackAgentDir = stateRoot.join("agent")
+        let agentDirBase = stateRoot
         let agentDir = match (entryOpt) {
             case Some(entry) =>
-                scopePath(scopeJsonString(entry, "agentDir") ?? "", fallbackAgentDir)
+                scopeResolvedUserPath(
+                    scopeJsonString(entry, "agentDir") ?? "",
+                    fallbackAgentDir,
+                    agentDirBase,
+                    "agents.list[].agentDir",
+                    diagnostics,
+                    id,
+                    boundaryRoot: agentDirBase
+                )
             case None => fallbackAgentDir
         }
         let defaultWorkspaceConfig = scopeJsonString(defaults, "workspace") ?? ""
+        let defaultWorkspaceRoot = scopeResolvedUserPath(
+            defaultWorkspaceConfig,
+            defaultWorkspace,
+            defaultWorkspace,
+            "agents.defaults.workspace",
+            diagnostics,
+            id,
+            boundaryRoot: defaultWorkspace
+        )
         let fallbackWorkspace = if (id == defaultId) {
-            scopePath(defaultWorkspaceConfig, defaultWorkspace)
+            defaultWorkspaceRoot
         } else if (!defaultWorkspaceConfig.trimAscii().isEmpty()) {
-            scopePath(defaultWorkspaceConfig, defaultWorkspace).join(id)
+            defaultWorkspaceRoot.join(id)
         } else {
             homeRoot.join("workspaces").join(id)
         }
         let workspaceDir = match (entryOpt) {
             case Some(entry) =>
-                scopePath(scopeJsonString(entry, "workspace") ?? "", fallbackWorkspace)
+                scopeResolvedUserPath(
+                    scopeJsonString(entry, "workspace") ?? "",
+                    fallbackWorkspace,
+                    defaultWorkspaceRoot,
+                    "agents.list[].workspace",
+                    diagnostics,
+                    id,
+                    boundaryRoot: defaultWorkspaceRoot
+                )
             case None => fallbackWorkspace
         }
+        if (scopePathsOverlap(workspaceDir, agentDir)) {
+            scopeAddDiagnostic(diagnostics, "workspace-agentdir-overlap", "workspaceDir and agentDir overlap; keep runtime state outside the workspace.", agentId: id)
+        }
+        let model = scopeModel(entryOpt, defaults)
+        let modelRef = scopeJsonString(model, "modelRef").getOrDefault { "" }.trimAscii()
 
         let out = JsonObject()
         out.put("agentId", JsonString(id))
@@ -543,17 +861,22 @@ public class MetisAgentScope {
         out.put("agentIdSource", JsonString(source))
         out.put("defaultAgentId", JsonString(defaultId))
         out.put("configured", configured.toJsonValue())
-        out.put("workspaceDir", JsonString(workspaceDir.toString()))
-        out.put("agentDir", JsonString(agentDir.toString()))
+        out.put("workspaceDir", JsonString(scopePathText(workspaceDir)))
+        out.put("agentDir", JsonString(scopePathText(agentDir)))
         out.put("modelsJsonPath", JsonString(agentDir.join("models.json").toString()))
         out.put("authProfilesPath", JsonString(agentDir.join("auth-profiles.json").toString()))
         out.put("legacyAuthPath", JsonString(agentDir.join("auth.json").toString()))
         out.put("sessionsDir", JsonString(stateRoot.join("sessions").toString()))
-        out.put("model", scopeModel(entryOpt, defaults))
+        out.put("model", model)
+        out.put("modelRef", JsonString(modelRef))
+        out.put("modelRefSource", JsonString(scopeJsonString(model, "modelRefSource").getOrDefault { "unconfigured" }))
+        out.put("providerSummary", scopeProviderSummary(root, modelRef))
+        out.put("accountSummary", scopeAccountSummary(root, modelRef))
         out.put("runtimeDefaults", scopeCopyRuntimeDefaults(entryOpt, defaults))
         out.put("skillsPolicy", scopeArrayPolicy(entryOpt, defaults, "skills", "skills"))
         out.put("toolsPolicy", scopeObjectPolicy(entryOpt, defaults, "tools", "tools"))
         out.put("identityPolicy", scopeObjectPolicy(entryOpt, defaults, "identity", "identity"))
+        out.put("identity", scopeIdentity(entryOpt, workspaceDir, diagnostics, id))
         out.put("groupChatPolicy", scopeObjectPolicy(entryOpt, defaults, "groupChat", "groupChat"))
         out.put("subagentsPolicy", scopeObjectPolicy(entryOpt, defaults, "subagents", "subagents"))
         out.put("memorySearchPolicy", scopeObjectPolicy(entryOpt, defaults, "memorySearch", "memorySearch"))
@@ -569,8 +892,8 @@ public class MetisAgentScope {
 
     public static func summary(
         root: JsonObject,
-        homeRoot!: Path = MetisPaths.homeRoot(),
-        defaultWorkspace!: Path = MetisPaths.workspaceRoot()
+        homeRoot!: Path = MetisPaths.homeRootReadOnly(),
+        defaultWorkspace!: Path = MetisPaths.workspaceRootReadOnly()
     ): JsonObject {
         let diagnostics = JsonArray([])
         let defaultId = scopeDefaultAgentId(root, diagnostics)

@@ -1,6 +1,6 @@
 package metis.core.config
 
-import std.fs.Path
+import std.fs.{Directory, File, Path, exists, remove}
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 
@@ -30,6 +30,25 @@ private func scopeTestArray(obj: JsonObject, key: String): JsonArray {
             try { value.asArray() } catch (_: Exception) { JsonArray([]) }
         case None => JsonArray([])
     }
+}
+
+private func scopeTestObject(obj: JsonObject, key: String): JsonObject {
+    match (obj.get(key)) {
+        case Some(value) =>
+            try { value.asObject() } catch (_: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+}
+
+private func scopePrepareDir(path: Path): Unit {
+    try {
+        if (exists(path)) {
+            remove(path, recursive: true)
+        }
+    } catch (_: Exception) {
+        ()
+    }
+    Directory.create(path, recursive: true)
 }
 
 private func scopeAgentConfigRoot(defaults!: JsonObject = JsonObject(), list!: JsonArray = JsonArray([])): JsonObject {
@@ -80,6 +99,7 @@ public class MetisAgentScopeTest {
         @Expect(scopeTestString(scope, "legacyAuthPath"), home.join("agents").join("main").join("agent").join("auth.json").toString())
         @Expect(scopeTestString(scope, "sessionsDir"), home.join("agents").join("main").join("sessions").toString())
         @Expect(scopeTestArray(scope, "diagnostics").toJsonString().contains("general-alias"), true)
+        @Expect(scopeTestString(scope, "modelRef"), "")
     }
 
     @TestCase
@@ -130,6 +150,13 @@ public class MetisAgentScopeTest {
         let model = scope.get("model").getOrThrow().asObject()
         @Expect(scopeTestString(model, "primary"), "local/cj")
         @Expect(scopeTestArray(model, "fallbacks").toJsonString().contains("openai/cj-fallback"), true)
+        @Expect(scopeTestString(model, "fallbacksEffectiveSource"), "agents.list[].model.fallbacks")
+        @Expect(scopeTestString(scope, "modelRef"), "local/cj")
+        @Expect(scopeTestString(scope, "modelRefSource"), "agents.list[].model.primary")
+        let providerSummary = scopeTestObject(scope, "providerSummary")
+        @Expect(scopeTestString(providerSummary, "providerId"), "local")
+        let accountSummary = scopeTestObject(scope, "accountSummary")
+        @Expect(scopeTestString(accountSummary, "status"), "not-configured")
         let runtimeDefaults = scope.get("runtimeDefaults").getOrThrow().asObject()
         @Expect(scopeTestString(runtimeDefaults, "thinkingDefault"), "medium")
         @Expect(scopeTestString(runtimeDefaults, "verboseDefault"), "on")
@@ -203,5 +230,160 @@ public class MetisAgentScopeTest {
         @Expect(scope.get("skillsPolicy").getOrThrow().asObject().toJsonString().contains("safe-skill"), true)
         @Expect(scope.get("toolsPolicy").getOrThrow().asObject().toJsonString().contains("safe-tool"), true)
         @Expect(scopeTestArray(scope, "diagnostics").toJsonString().contains("unknown-agent"), true)
+    }
+
+    @TestCase
+    public func workspaceIdentityFileFillsMissingConfigIdentityWithSources(): Unit {
+        let home = scopeTestHome("identity")
+        let workspace = home.join("workspace")
+        scopePrepareDir(workspace)
+        File.writeTo(
+            workspace.join("IDENTITY.md"),
+            "- name: File Name\n- emoji: F\n- theme: file-theme\n- avatar: images/avatar.png\n".toArray()
+        )
+        let defaults = JsonObject()
+        defaults.put("workspace", JsonString(workspace.toString()))
+        let entry = JsonObject()
+        entry.put("id", JsonString("writer"))
+        let identity = JsonObject()
+        identity.put("name", JsonString("Config Name"))
+        entry.put("identity", identity)
+        let list = JsonArray([])
+        list.add(entry)
+        let scope = MetisAgentScope.resolve(scopeAgentConfigRoot(defaults: defaults, list: list), agentId: "writer", homeRoot: home, defaultWorkspace: workspace)
+        let resolvedIdentity = scopeTestObject(scope, "identity")
+        @Expect(scopeTestString(resolvedIdentity, "name"), "Config Name")
+        @Expect(scopeTestString(resolvedIdentity, "nameSource"), "agents.list[].identity.name")
+        @Expect(scopeTestString(resolvedIdentity, "emoji"), "F")
+        @Expect(scopeTestString(resolvedIdentity, "emojiSource"), "workspace.IDENTITY.md")
+        @Expect(scopeTestString(resolvedIdentity, "avatar"), workspace.join("images/avatar.png").normalize().toString())
+        @Expect(scopeTestString(resolvedIdentity, "avatarSource"), "workspace.IDENTITY.md")
+    }
+
+    @TestCase
+    public func identityAvatarTraversalIsDiagnosedAndNotResolved(): Unit {
+        let home = scopeTestHome("avatar-escape")
+        let workspace = home.join("workspace")
+        let entry = JsonObject()
+        entry.put("id", JsonString("artist"))
+        let identity = JsonObject()
+        identity.put("avatar", JsonString("../outside.png"))
+        entry.put("identity", identity)
+        let list = JsonArray([])
+        list.add(entry)
+        let scope = MetisAgentScope.resolve(scopeAgentConfigRoot(list: list), agentId: "artist", homeRoot: home, defaultWorkspace: workspace)
+        let resolvedIdentity = scopeTestObject(scope, "identity")
+        @Expect(resolvedIdentity.get("avatar").isSome(), false)
+        let diagnostics = scopeTestArray(scope, "diagnostics").toJsonString()
+        @Expect(diagnostics.contains("identity-avatar-escape"), true)
+    }
+
+    @TestCase
+    public func identityAvatarUriSchemesAreCaseInsensitiveAndUnsupportedSchemesAreDiagnosed(): Unit {
+        let home = scopeTestHome("avatar-uri")
+        let dataWorkspace = home.join("data-workspace")
+        scopePrepareDir(dataWorkspace)
+        File.writeTo(dataWorkspace.join("IDENTITY.md"), "- avatar: DATA:image/png;base64,AAAA\n".toArray())
+
+        let web = JsonObject()
+        web.put("id", JsonString("web"))
+        let webIdentity = JsonObject()
+        webIdentity.put("avatar", JsonString("HTTPS://cdn.example.test/avatar.png"))
+        web.put("identity", webIdentity)
+
+        let dataAgent = JsonObject()
+        dataAgent.put("id", JsonString("data"))
+        dataAgent.put("workspace", JsonString(dataWorkspace.toString()))
+
+        let bad = JsonObject()
+        bad.put("id", JsonString("bad"))
+        let badIdentity = JsonObject()
+        badIdentity.put("avatar", JsonString("ftp://example.test/avatar.png"))
+        bad.put("identity", badIdentity)
+
+        let list = JsonArray([])
+        list.add(web)
+        list.add(dataAgent)
+        list.add(bad)
+        let root = scopeAgentConfigRoot(list: list)
+
+        let webScope = MetisAgentScope.resolve(root, agentId: "web", homeRoot: home, defaultWorkspace: home.join("workspace"))
+        @Expect(scopeTestString(scopeTestObject(webScope, "identity"), "avatar"), "HTTPS://cdn.example.test/avatar.png")
+
+        let dataScope = MetisAgentScope.resolve(root, agentId: "data", homeRoot: home, defaultWorkspace: home.join("workspace"))
+        @Expect(scopeTestString(scopeTestObject(dataScope, "identity"), "avatar"), "DATA:image/png;base64,AAAA")
+
+        let badScope = MetisAgentScope.resolve(root, agentId: "bad", homeRoot: home, defaultWorkspace: home.join("workspace"))
+        @Expect(scopeTestObject(badScope, "identity").get("avatar").isSome(), false)
+        @Expect(scopeTestArray(badScope, "diagnostics").toJsonString().contains("identity-avatar-invalid"), true)
+    }
+
+    @TestCase
+    public func relativePathTraversalFallsBackAndDiagnosticsMentionBoundary(): Unit {
+        let home = scopeTestHome("path-escape")
+        let workspace = home.join("workspace")
+        let entry = JsonObject()
+        entry.put("id", JsonString("runner"))
+        entry.put("workspace", JsonString("../outside-workspace"))
+        entry.put("agentDir", JsonString("../outside-agent"))
+        let list = JsonArray([])
+        let mainEntry = JsonObject()
+        mainEntry.put("id", JsonString("main"))
+        mainEntry.put("default", JsonBool(true))
+        list.add(mainEntry)
+        list.add(entry)
+        let scope = MetisAgentScope.resolve(scopeAgentConfigRoot(list: list), agentId: "runner", homeRoot: home, defaultWorkspace: workspace)
+        @Expect(scopeTestString(scope, "workspaceDir"), home.join("workspaces").join("runner").toString())
+        @Expect(scopeTestString(scope, "agentDir"), home.join("agents").join("runner").join("agent").toString())
+        let diagnostics = scopeTestArray(scope, "diagnostics").toJsonString()
+        @Expect(diagnostics.contains("path-escape"), true)
+        @Expect(diagnostics.contains("agents.list[].workspace"), true)
+        @Expect(diagnostics.contains("agents.list[].agentDir"), true)
+    }
+
+    @TestCase
+    public func tildePathsAreExpandedAndWorkspaceAgentDirOverlapIsDiagnosed(): Unit {
+        let home = scopeTestHome("tilde")
+        let entry = JsonObject()
+        entry.put("id", JsonString("ops"))
+        entry.put("workspace", JsonString("~/metis-ops"))
+        entry.put("agentDir", JsonString("~/metis-ops/../metis-ops/.agent"))
+        let list = JsonArray([])
+        list.add(entry)
+        let scope = MetisAgentScope.resolve(scopeAgentConfigRoot(list: list), agentId: "ops", homeRoot: home, defaultWorkspace: home.join("workspace"))
+        @Expect(scopeTestString(scope, "workspaceDir").contains("~"), false)
+        @Expect(scopeTestString(scope, "agentDir").contains("~"), false)
+        @Expect(scopeTestString(scope, "workspaceDir").endsWith("/metis-ops"), true)
+        @Expect(scopeTestString(scope, "agentDir").endsWith("/metis-ops/.agent"), true)
+        @Expect(scopeTestArray(scope, "diagnostics").toJsonString().contains("workspace-agentdir-overlap"), true)
+    }
+
+    @TestCase
+    public func providerAndAccountSummaryReflectConfiguredProviderCredentials(): Unit {
+        let home = scopeTestHome("provider-summary")
+        let root = JsonObject()
+        let agents = JsonObject()
+        let defaults = JsonObject()
+        defaults.put("model", scopeModel("qwen:qwen-plus", fallbacks: scopeStringArray(["qwen:qwen-turbo"])))
+        agents.put("defaults", defaults)
+        root.put("agents", agents)
+        let models = JsonObject()
+        let providers = JsonObject()
+        let qwen = JsonObject()
+        qwen.put("apiKey", JsonString("test-key"))
+        qwen.put("baseUrl", JsonString("https://example.test/v1"))
+        providers.put("qwen", qwen)
+        models.put("providers", providers)
+        root.put("models", models)
+        let scope = MetisAgentScope.resolve(root, homeRoot: home, defaultWorkspace: home.join("workspace"))
+        @Expect(scopeTestString(scope, "modelRef"), "qwen:qwen-plus")
+        let providerSummary = scopeTestObject(scope, "providerSummary")
+        @Expect(scopeTestString(providerSummary, "providerId"), "qwen")
+        @Expect(scopeTestBool(providerSummary, "configured"), true)
+        let accountSummary = scopeTestObject(scope, "accountSummary")
+        @Expect(scopeTestString(accountSummary, "status"), "configured")
+        @Expect(scopeTestString(accountSummary, "source"), "models.providers.qwen")
+        @Expect(scopeTestBool(accountSummary, "apiKeyConfigured"), true)
+        @Expect(scopeTestBool(accountSummary, "baseUrlConfigured"), true)
     }
 }

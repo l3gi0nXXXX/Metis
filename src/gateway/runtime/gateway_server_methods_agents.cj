@@ -62,6 +62,43 @@ private func gatewayAgentConfigRootClone(): JsonObject {
     }
 }
 
+private func gatewayAgentConfigRootCloneReadOnly(): JsonObject {
+    match (MetisConfigManager.rawConfig()) {
+        case Some(root) =>
+            try {
+                JsonValue.fromStr(root.toJsonString()).asObject()
+            } catch (_e: Exception) {
+                JsonObject()
+            }
+        case None => JsonObject()
+    }
+}
+
+private func gatewayAgentScopeRootFromRequest(request: GatewayRpcRequest): JsonObject {
+    match (request.params.get("configRoot")) {
+        case Some(v) =>
+            try { return scopeCloneObjectForGateway(v.asObject()) } catch (_e: Exception) { () }
+        case None => ()
+    }
+    gatewayAgentConfigRootCloneReadOnly()
+}
+
+private func scopeCloneObjectForGateway(root: JsonObject): JsonObject {
+    try {
+        JsonValue.fromStr(root.toJsonString()).asObject()
+    } catch (_e: Exception) {
+        JsonObject()
+    }
+}
+
+private func gatewayAgentScopePathParam(request: GatewayRpcRequest, key: String, fallback: Path): Path {
+    let raw = gatewayAgentRpcStringParam(request, [key], "")
+    if (raw.trimAscii().isEmpty()) {
+        return fallback
+    }
+    try { Path(raw.trimAscii()).normalize() } catch (_e: Exception) { Path(raw.trimAscii()) }
+}
+
 private func gatewayAgentConfigEntries(root: JsonObject): JsonArray {
     match (root.get("agents")) {
         case Some(v) =>
@@ -448,10 +485,11 @@ private func gatewayAgentSummaryRow(agentId: String, kind: String, entry!: JsonO
 }
 
 private func gatewayAgentsContractJson(): JsonObject {
-    let root = gatewayAgentConfigRootClone()
+    let root = gatewayAgentConfigRootCloneReadOnly()
+    let scopeSummary = MetisAgentScope.summary(root, homeRoot: MetisPaths.homeRootReadOnly(), defaultWorkspace: MetisPaths.workspaceRootReadOnly())
     let agents = JsonArray([])
     for (agentId in [
-        "general",
+        "main",
         "cangjie",
         "explorer",
         "editor",
@@ -479,7 +517,7 @@ private func gatewayAgentsContractJson(): JsonObject {
         }
     }
     let result = JsonObject()
-    result.put("defaultId", JsonString("general"))
+    result.put("defaultId", scopeSummary.get("defaultAgentId") ?? JsonString("main"))
     result.put("mainKey", JsonString("main"))
     result.put("scope", JsonString("global"))
     result.put("agents", agents)
@@ -1062,7 +1100,7 @@ public func gatewayAgentResolvedInvokeParams(agentId: String, request: GatewayRp
 
 private func gatewayBuiltinAgentsJson(): JsonArray {
     let names = [
-        "general",
+        "main",
         "cangjie",
         "explorer",
         "editor",
@@ -1088,7 +1126,7 @@ private func gatewayBuiltinAgentsJson(): JsonArray {
 private func gatewayBuiltinAgentCapabilities(agentId: String): JsonArray {
     let out = JsonArray([])
     match (agentId.trimAscii().toAsciiLower()) {
-        case "general" =>
+        case "main" | "general" =>
             out.add(JsonString("chat"))
             out.add(JsonString("tools"))
         case "cangjie" =>
@@ -1435,7 +1473,7 @@ private func gatewayAgentsSummaryJson(): JsonObject {
     summary.put("totalCount", Int64(builtins.size() + customs.size()).toJsonValue())
     summary.put("healthy", (builtins.size() > 0).toJsonValue())
     let contract = gatewayAgentsContractJson()
-    summary.put("defaultId", contract.get("defaultId") ?? JsonString("general"))
+    summary.put("defaultId", contract.get("defaultId") ?? JsonString("main"))
     summary.put("mainKey", contract.get("mainKey") ?? JsonString("main"))
     summary.put("scope", contract.get("scope") ?? JsonString("global"))
     summary.put("agents", contract.get("agents") ?? JsonArray([]))
@@ -1445,24 +1483,24 @@ private func gatewayAgentsSummaryJson(): JsonObject {
 public func gatewayResolveAgentScopeFromRoot(
     root: JsonObject,
     agentId!: String = "",
-    homeRoot!: Path = MetisPaths.homeRoot(),
-    defaultWorkspace!: Path = MetisPaths.workspaceRoot()
+    homeRoot!: Path = MetisPaths.homeRootReadOnly(),
+    defaultWorkspace!: Path = MetisPaths.workspaceRootReadOnly()
 ): JsonObject {
     MetisAgentScope.resolve(root, agentId: agentId, homeRoot: homeRoot, defaultWorkspace: defaultWorkspace)
 }
 
 public func gatewayResolveAgentsScopeSummaryFromRoot(
     root: JsonObject,
-    homeRoot!: Path = MetisPaths.homeRoot(),
-    defaultWorkspace!: Path = MetisPaths.workspaceRoot()
+    homeRoot!: Path = MetisPaths.homeRootReadOnly(),
+    defaultWorkspace!: Path = MetisPaths.workspaceRootReadOnly()
 ): JsonObject {
     MetisAgentScope.summary(root, homeRoot: homeRoot, defaultWorkspace: defaultWorkspace)
 }
 
 public func gatewayResolveDefaultAgentScopeFromRoot(
     root: JsonObject,
-    homeRoot!: Path = MetisPaths.homeRoot(),
-    defaultWorkspace!: Path = MetisPaths.workspaceRoot()
+    homeRoot!: Path = MetisPaths.homeRootReadOnly(),
+    defaultWorkspace!: Path = MetisPaths.workspaceRootReadOnly()
 ): JsonObject {
     let summary = gatewayResolveAgentsScopeSummaryFromRoot(root, homeRoot: homeRoot, defaultWorkspace: defaultWorkspace)
     let defaultId = gatewayAgentJsonString(summary, "defaultAgentId", "main")
@@ -1470,24 +1508,50 @@ public func gatewayResolveDefaultAgentScopeFromRoot(
 }
 
 private func gatewayAgentScopeJson(request: GatewayRpcRequest): JsonObject {
-    let root = gatewayAgentConfigRootClone()
+    let root = gatewayAgentScopeRootFromRequest(request)
     let agentId = gatewayAgentRpcStringParam(request, ["id", "agent", "agentId"], "")
-    gatewayResolveAgentScopeFromRoot(root, agentId: agentId)
+    let homeRoot = gatewayAgentScopePathParam(request, "homeRoot", MetisPaths.homeRootReadOnly())
+    let defaultWorkspace = gatewayAgentScopePathParam(request, "defaultWorkspace", MetisPaths.workspaceRootReadOnly())
+    gatewayResolveAgentScopeFromRoot(root, agentId: agentId, homeRoot: homeRoot, defaultWorkspace: defaultWorkspace)
 }
 
-private func gatewayAgentsScopeSummaryJson(): JsonObject {
-    gatewayResolveAgentsScopeSummaryFromRoot(gatewayAgentConfigRootClone())
+private func gatewayDefaultAgentIdReadOnly(): String {
+    let summary = MetisAgentScope.summary(
+        gatewayAgentConfigRootCloneReadOnly(),
+        homeRoot: MetisPaths.homeRootReadOnly(),
+        defaultWorkspace: MetisPaths.workspaceRootReadOnly()
+    )
+    gatewayAgentJsonString(summary, "defaultAgentId", "main")
 }
 
-private func gatewayAgentsDefaultScopeJson(): JsonObject {
-    gatewayResolveDefaultAgentScopeFromRoot(gatewayAgentConfigRootClone())
+private func gatewayResolveRequestAgentId(request: GatewayRpcRequest): String {
+    let requested = gatewayAgentRpcStringParam(request, ["id", "agent", "agentId"], "")
+    let scope = MetisAgentScope.resolve(
+        gatewayAgentConfigRootCloneReadOnly(),
+        agentId: requested,
+        homeRoot: MetisPaths.homeRootReadOnly(),
+        defaultWorkspace: MetisPaths.workspaceRootReadOnly()
+    )
+    gatewayAgentJsonString(scope, "agentId", if (requested.trimAscii().isEmpty()) { gatewayDefaultAgentIdReadOnly() } else { requested.trimAscii() })
+}
+
+private func gatewayAgentsScopeSummaryJson(request: GatewayRpcRequest): JsonObject {
+    let homeRoot = gatewayAgentScopePathParam(request, "homeRoot", MetisPaths.homeRootReadOnly())
+    let defaultWorkspace = gatewayAgentScopePathParam(request, "defaultWorkspace", MetisPaths.workspaceRootReadOnly())
+    gatewayResolveAgentsScopeSummaryFromRoot(gatewayAgentScopeRootFromRequest(request), homeRoot: homeRoot, defaultWorkspace: defaultWorkspace)
+}
+
+private func gatewayAgentsDefaultScopeJson(request: GatewayRpcRequest): JsonObject {
+    let homeRoot = gatewayAgentScopePathParam(request, "homeRoot", MetisPaths.homeRootReadOnly())
+    let defaultWorkspace = gatewayAgentScopePathParam(request, "defaultWorkspace", MetisPaths.workspaceRootReadOnly())
+    gatewayResolveDefaultAgentScopeFromRoot(gatewayAgentScopeRootFromRequest(request), homeRoot: homeRoot, defaultWorkspace: defaultWorkspace)
 }
 
 public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRpcRequest> = None): Option<GatewayRpcResponse> {
     if (method == "agents.list" || method == "agents.status") {
         let result = JsonObject()
         let contract = gatewayAgentsContractJson()
-        result.put("defaultId", contract.get("defaultId") ?? JsonString("general"))
+        result.put("defaultId", contract.get("defaultId") ?? JsonString("main"))
         result.put("mainKey", contract.get("mainKey") ?? JsonString("main"))
         result.put("scope", contract.get("scope") ?? JsonString("global"))
         result.put("agents", contract.get("agents") ?? JsonArray([]))
@@ -1508,19 +1572,27 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
         return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "agents.scope") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
         let result = JsonObject()
-        result.put("scope", gatewayAgentsScopeSummaryJson())
+        result.put("scope", gatewayAgentsScopeSummaryJson(requestValue))
         return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "agents.default") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
         let result = JsonObject()
-        result.put("scope", gatewayAgentsDefaultScopeJson())
+        result.put("scope", gatewayAgentsDefaultScopeJson(requestValue))
         return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "agents.capabilities") {
         let result = JsonObject()
         let rows = JsonArray([])
-        for (name in ["general", "cangjie", "explorer", "editor", "reviewer", "test_generator", "refactoring", "planner"]) {
+        for (name in ["main", "cangjie", "explorer", "editor", "reviewer", "test_generator", "refactoring", "planner"]) {
             let row = JsonObject()
             row.put("id", JsonString(name))
             row.put("capabilities", gatewayBuiltinAgentCapabilities(name))
@@ -1591,7 +1663,7 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
             case Some(v) => v
             case None => GatewayRpcRequest(method)
         }
-        let agentId = gatewayAgentRpcStringParam(requestValue, ["id", "agent", "agentId"], "general")
+        let agentId = gatewayResolveRequestAgentId(requestValue)
         let result = JsonObject()
         result.put("agent", gatewayAgentGetJson(agentId))
         return Some(GatewayRpcResponse(true, method, result: result))
@@ -1610,7 +1682,7 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
             case Some(v) => v
             case None => GatewayRpcRequest(method)
         }
-        let agentId = gatewayAgentRpcStringParam(requestValue, ["id", "agent", "agentId"], "general")
+        let agentId = gatewayResolveRequestAgentId(requestValue)
         let result = JsonObject()
         result.put("preview", gatewayAgentPreviewJson(agentId, requestValue))
         return Some(GatewayRpcResponse(true, method, result: result))
@@ -1620,7 +1692,7 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
             case Some(v) => v
             case None => GatewayRpcRequest(method)
         }
-        let agentId = gatewayAgentRpcStringParam(requestValue, ["id", "agent", "agentId"], "general")
+        let agentId = gatewayResolveRequestAgentId(requestValue)
         let result = JsonObject()
         result.put("health", gatewayAgentHealthJson(agentId))
         return Some(GatewayRpcResponse(true, method, result: result))
@@ -1630,7 +1702,7 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
             case Some(v) => v
             case None => GatewayRpcRequest(method)
         }
-        let agentId = gatewayAgentRpcStringParam(requestValue, ["id", "agent", "agentId"], "general")
+        let agentId = gatewayResolveRequestAgentId(requestValue)
         let result = JsonObject()
         result.put("routing", gatewayAgentRoutingJson(agentId, requestValue))
         return Some(GatewayRpcResponse(true, method, result: result))
@@ -1640,7 +1712,7 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
             case Some(v) => v
             case None => GatewayRpcRequest(method)
         }
-        let agentId = gatewayAgentRpcStringParam(requestValue, ["id", "agent", "agentId"], "general")
+        let agentId = gatewayResolveRequestAgentId(requestValue)
         let result = JsonObject()
         result.put("actions", gatewayAgentActionsJson(agentId, requestValue))
         return Some(GatewayRpcResponse(true, method, result: result))
@@ -1650,7 +1722,7 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
             case Some(v) => v
             case None => GatewayRpcRequest(method)
         }
-        let agentId = gatewayAgentRpcStringParam(requestValue, ["id", "agent", "agentId"], "general")
+        let agentId = gatewayResolveRequestAgentId(requestValue)
         let params = gatewayAgentResolvedInvokeParams(agentId, requestValue)
         let context = gatewayAgentInvokeContext(agentId, requestValue)
         let invoke = gatewayExecuteChatTurnFromRpc(params, fallbackSource: GatewayIngressSource.GatewayRpc)

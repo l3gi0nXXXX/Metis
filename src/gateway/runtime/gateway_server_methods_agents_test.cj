@@ -3,7 +3,7 @@ package metis.gateway.runtime
 import metis.core.config.CliSettingManager
 
 import std.collection.ArrayList
-import std.fs.Path
+import std.fs.{Directory, File, Path, exists, remove}
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 
@@ -23,6 +23,32 @@ private func agentsTestStringArray(values: Array<String>): JsonArray {
     out
 }
 
+private func agentsTestObject(obj: JsonObject, key: String): JsonObject {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asObject() } catch (_: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+}
+
+private func agentsTestBool(obj: JsonObject, key: String): Bool {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asBool().getValue() } catch (_: Exception) { false }
+        case None => false
+    }
+}
+
+private func agentsTestClean(path: Path): Unit {
+    try {
+        if (exists(path)) {
+            remove(path, recursive: true)
+        }
+    } catch (_: Exception) {
+        ()
+    }
+}
+
 @Test
 public class GatewayServerMethodsAgentsTest {
     @TestCase
@@ -37,12 +63,12 @@ public class GatewayServerMethodsAgentsTest {
         @Expect(response.ok, true)
         let result = response.result.asObject()
         let routing = result.get("routing").getOrThrow().asObject()
-        @Expect(agentsTestString(routing, "sessionKey"), "agent:general:main")
+        @Expect(agentsTestString(routing, "sessionKey"), "agent:main:main")
         let deliveryTarget = routing.get("deliveryTarget").getOrThrow().asObject()
         @Expect(agentsTestString(deliveryTarget, "replyChannel"), "cli")
         let actions = routing.get("actions").getOrThrow().asArray()
         let invoke = actions[0].asObject().get("params").getOrThrow().asObject()
-        @Expect(agentsTestString(invoke, "session"), "agent:general:main")
+        @Expect(agentsTestString(invoke, "session"), "agent:main:main")
         @Expect(agentsTestString(invoke, "channel"), "cli")
     }
 
@@ -73,8 +99,8 @@ public class GatewayServerMethodsAgentsTest {
         params.put("session", JsonString("main"))
         params.put("lane", JsonString("primary"))
 
-        let invoke = gatewayAgentResolvedInvokeParams("general", GatewayRpcRequest("agent.invoke", params: params))
-        @Expect(agentsTestString(invoke, "session"), "agent:general:main:lane:primary")
+        let invoke = gatewayAgentResolvedInvokeParams("main", GatewayRpcRequest("agent.invoke", params: params))
+        @Expect(agentsTestString(invoke, "session"), "agent:main:main:lane:primary")
         @Expect(agentsTestString(invoke, "channel"), "cli")
         @Expect(agentsTestString(invoke, "source"), "cli")
     }
@@ -96,7 +122,7 @@ public class GatewayServerMethodsAgentsTest {
         @Expect(memory.get("activeSearchBackend").isSome(), true)
         @Expect(memory.get("activeOrchestrationBackend").isSome(), true)
         let resolved = memory.get("resolvedBackendConfig").getOrThrow().asObject()
-        @Expect(agentsTestString(resolved, "agentId"), "general")
+        @Expect(agentsTestString(resolved, "agentId"), "main")
         @Expect(agentsTestString(resolved, "purpose"), "agents-inspect")
     }
 
@@ -106,13 +132,13 @@ public class GatewayServerMethodsAgentsTest {
         @Expect(response.ok, true)
         let result = response.result.asObject()
         let agents = result.get("agents").getOrThrow().asObject()
-        @Expect(agentsTestString(agents, "defaultId"), "general")
+        @Expect(agentsTestString(agents, "defaultId"), "main")
         @Expect(agentsTestString(agents, "mainKey"), "main")
         @Expect(agentsTestString(agents, "scope"), "global")
         let rows = agents.get("agents").getOrThrow().asArray()
         @Expect(rows.size() > 0, true)
         let first = rows[0].asObject()
-        @Expect(agentsTestString(first, "id"), "general")
+        @Expect(agentsTestString(first, "id"), "main")
         @Expect(agentsTestString(first, "kind"), "builtin")
         @Expect(first.get("skills").isSome(), true)
     }
@@ -122,13 +148,13 @@ public class GatewayServerMethodsAgentsTest {
         let response = handleGatewayAgentsFamily("agents.status").getOrThrow()
         @Expect(response.ok, true)
         let result = response.result.asObject()
-        @Expect(agentsTestString(result, "defaultId"), "general")
+        @Expect(agentsTestString(result, "defaultId"), "main")
         @Expect(agentsTestString(result, "mainKey"), "main")
         @Expect(agentsTestString(result, "scope"), "global")
         let rows = result.get("agents").getOrThrow().asArray()
         @Expect(rows.size() > 0, true)
         let first = rows[0].asObject()
-        @Expect(agentsTestString(first, "id"), "general")
+        @Expect(agentsTestString(first, "id"), "main")
         @Expect(first.get("skills").isSome(), true)
     }
 
@@ -172,6 +198,64 @@ public class GatewayServerMethodsAgentsTest {
 
         let defaultScope = gatewayResolveDefaultAgentScopeFromRoot(root, homeRoot: home, defaultWorkspace: home.join("workspaces"))
         @Expect(agentsTestString(defaultScope, "agentId"), "pm")
+    }
+
+    @TestCase
+    public func agentScopeRpcUsesInjectedTempRootWithoutCreatingConfig(): Unit {
+        let home = Path("/tmp").join("metis-agent-scope-rpc-readonly")
+        agentsTestClean(home)
+        let root = JsonObject()
+        let agents = JsonObject()
+        let defaults = JsonObject()
+        defaults.put("workspace", JsonString(home.join("team").toString()))
+        defaults.put("model", JsonString("qwen:qwen-plus"))
+        agents.put("defaults", defaults)
+        let list = JsonArray([])
+        let pm = JsonObject()
+        pm.put("id", JsonString("pm"))
+        pm.put("default", JsonBool(true))
+        list.add(pm)
+        agents.put("list", list)
+        root.put("agents", agents)
+        let models = JsonObject()
+        let providers = JsonObject()
+        let qwen = JsonObject()
+        qwen.put("apiKey", JsonString("test-key"))
+        providers.put("qwen", qwen)
+        models.put("providers", providers)
+        root.put("models", models)
+
+        let params = JsonObject()
+        params.put("agentId", JsonString("pm"))
+        params.put("configRoot", root)
+        params.put("homeRoot", JsonString(home.toString()))
+        params.put("defaultWorkspace", JsonString(home.join("workspace").toString()))
+        let response = handleGatewayAgentsFamily("agent.scope", request: Some(GatewayRpcRequest("agent.scope", params: params))).getOrThrow()
+        @Expect(response.ok, true)
+        @Expect(exists(home), false)
+        let scope = response.result.asObject().get("scope").getOrThrow().asObject()
+        @Expect(agentsTestString(scope, "agentId"), "pm")
+        @Expect(agentsTestString(scope, "modelRef"), "qwen:qwen-plus")
+        @Expect(agentsTestBool(agentsTestObject(scope, "accountSummary"), "apiKeyConfigured"), true)
+    }
+
+    @TestCase
+    public func agentsScopeRpcReturnsMainDefaultAndGeneralAliasDiagnostic(): Unit {
+        let home = Path("/tmp").join("metis-agent-scope-rpc-empty")
+        agentsTestClean(home)
+        let params = JsonObject()
+        params.put("configRoot", JsonObject())
+        params.put("homeRoot", JsonString(home.toString()))
+        params.put("defaultWorkspace", JsonString(home.join("workspace").toString()))
+        let response = handleGatewayAgentsFamily("agents.scope", request: Some(GatewayRpcRequest("agents.scope", params: params))).getOrThrow()
+        @Expect(response.ok, true)
+        @Expect(exists(home), false)
+        let scope = response.result.asObject().get("scope").getOrThrow().asObject()
+        @Expect(agentsTestString(scope, "defaultAgentId"), "main")
+        let rows = scope.get("agents").getOrThrow().asArray()
+        @Expect(rows.size(), 1)
+        @Expect(agentsTestString(rows[0].asObject(), "agentId"), "main")
+        @Expect(scope.get("diagnostics").getOrThrow().asArray().toJsonString().contains("general-alias"), true)
     }
 
     @TestCase

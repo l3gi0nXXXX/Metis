@@ -4,6 +4,24 @@ import std.env.getVariable
 import std.fs.{Path, Directory, canonicalize, exists}
 
 public class MetisPaths {
+    private static func homeRootFromEnv(): Path {
+        match (getVariable("METIS_HOME")) {
+            case Some(raw) =>
+                let trimmed = raw.trimAscii()
+                if (!trimmed.isEmpty()) {
+                    return Path(trimmed)
+                }
+            case None => ()
+        }
+        let home = match (getVariable("HOME")) {
+            case Some(v) =>
+                let t = v.trimAscii()
+                if (!t.isEmpty()) { t } else { getVariable("USERPROFILE").getOrDefault { "." }.trimAscii() }
+            case None => getVariable("USERPROFILE").getOrDefault { "." }.trimAscii()
+        }
+        Path(home).join(".metis")
+    }
+
     private static func resolveExistingPath(raw: String): Option<Path> {
         let trimmed = raw.trimAscii()
         if (trimmed.isEmpty()) {
@@ -42,29 +60,15 @@ public class MetisPaths {
     }
 
     public static func homeRoot(): Path {
-        match (getVariable("METIS_HOME")) {
-            case Some(raw) =>
-                let trimmed = raw.trimAscii()
-                if (!trimmed.isEmpty()) {
-                    let p = Path(trimmed)
-                    if (!exists(p)) {
-                        Directory.create(p, recursive: true)
-                    }
-                    return p
-                }
-            case None => ()
-        }
-        let home = match (getVariable("HOME")) {
-            case Some(v) =>
-                let t = v.trimAscii()
-                if (!t.isEmpty()) { t } else { getVariable("USERPROFILE").getOrDefault { "." }.trimAscii() }
-            case None => getVariable("USERPROFILE").getOrDefault { "." }.trimAscii()
-        }
-        let root = Path(home).join(".metis")
+        let root = homeRootFromEnv()
         if (!exists(root)) {
             Directory.create(root, recursive: true)
         }
         root
+    }
+
+    public static func homeRootReadOnly(): Path {
+        homeRootFromEnv()
     }
 
     public static func workspaceRoot(): Path {
@@ -85,6 +89,22 @@ public class MetisPaths {
             Directory.create(fallback, recursive: true)
         }
         fallback
+    }
+
+    public static func workspaceRootReadOnly(): Path {
+        try {
+            return canonicalize(Path("."))
+        } catch (_: Exception) {
+            ()
+        }
+        match (getVariable("PWD")) {
+            case Some(raw) =>
+                if (let Some(path) <- resolveExistingPath(raw)) {
+                    return path
+                }
+            case None => ()
+        }
+        homeRootReadOnly()
     }
 
     public static func projectRoot(): Option<Path> {
@@ -113,6 +133,10 @@ public class MetisPaths {
 
     public static func configPath(): Path {
         homeRoot().join("metis.json")
+    }
+
+    public static func configPathReadOnly(): Path {
+        homeRootReadOnly().join("metis.json")
     }
 
     public static func modelsRuntimePath(): Path {
