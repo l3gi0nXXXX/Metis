@@ -15,44 +15,46 @@ import metis.gateway.runtime.{gatewayActionsMaskSecret, gatewayActionsPrintChann
     runGatewaySessionsCli}
 import metis.io.{InputUtils, PrintUtils, Theme, WithColor, AnsiColor}
 import metis.core.skills.SkillsPrompt
+import metis.program_support.{
+    programSupportIsGatewayChannelCommandLine,
+    programSupportIsGatewayCronCommandLine,
+    programSupportIsGatewayPluginCommandLine,
+    programSupportIsGatewaySessionsCommandLine,
+    programSupportIsGatewaySubagentsCommandLine,
+    programSupportIsMetisCommandLine
+}
 
 import std.collection.{ArrayList, filter, collectArray}
 import std.fs.Path
 
 /** 是否为 `/Metis` 交互菜单命令（大小写不敏感）。 */
 protected func isMetisCommandLine(raw: String): Bool {
-    let t = raw.trimAscii().toAsciiLower()
-    t == "/metis" || t.startsWith("/metis ")
+    programSupportIsMetisCommandLine(raw)
 }
 
 /** 顶层插件命令：`/plugin ...`。 */
 protected func isGatewayPluginCommandLine(raw: String): Bool {
-    let t = raw.trimAscii().toAsciiLower()
-    t == "/plugin" || t.startsWith("/plugin ")
+    programSupportIsGatewayPluginCommandLine(raw)
 }
 
 /** 顶层会话命令：`/sessions ...`。 */
 protected func isGatewaySessionsCommandLine(raw: String): Bool {
-    let t = raw.trimAscii().toAsciiLower()
-    t == "/sessions" || t.startsWith("/sessions ")
+    programSupportIsGatewaySessionsCommandLine(raw)
 }
 
 /** 顶层 subagent 命令：`/subagents ...`。 */
 protected func isGatewaySubagentsCommandLine(raw: String): Bool {
-    let t = raw.trimAscii().toAsciiLower()
-    t == "/subagents" || t.startsWith("/subagents ")
+    programSupportIsGatewaySubagentsCommandLine(raw)
 }
 
 /** 顶层渠道命令：`/channel ...`。 */
 protected func isGatewayChannelCommandLine(raw: String): Bool {
-    let t = raw.trimAscii().toAsciiLower()
-    t == "/channel" || t.startsWith("/channel ")
+    programSupportIsGatewayChannelCommandLine(raw)
 }
 
 /** 顶层定时任务命令：`/cron ...`（与 `gateway cron` 一致）。 */
 protected func isGatewayCronCommandLine(raw: String): Bool {
-    let t = raw.trimAscii().toAsciiLower()
-    t == "/cron" || t.startsWith("/cron ")
+    programSupportIsGatewayCronCommandLine(raw)
 }
 
 /** 顶层 `/cron`：与 `gateway cron` 一致。 */

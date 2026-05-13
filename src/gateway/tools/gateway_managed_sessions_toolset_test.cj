@@ -1,7 +1,7 @@
 package metis.gateway.tools
 
 import metis.core.{GatewayToolRuntimeContext, gatewayClearSubagentNoticeDeliveryHook, gatewayRegisterSubagentNoticeDeliveryHook, gatewaySubagentCreateRunRecord, gatewaySubagentMarkRunSucceeded, gatewaySubagentResolveAgent, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordString, gatewaySubagentWriteRunRecord, gatewayWithToolRuntimeContext}
-import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager}
+import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager, MetisProcessEnvironmentLock}
 import metis.core.memory.memorySessionStoreForGatewayUser
 import metis.utils.ShellUtils
 
@@ -14,32 +14,34 @@ import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString, JsonValue}
 
 private func withManagedSessionsToolsetTestHome<T>(home: String, block: () -> T): T {
-    let actualHome = "${home}-${DateTime.now().toUnixTimeStamp().toNanoseconds()}"
-    try {
-        remove(Path(actualHome), recursive: true)
-    } catch (_: Exception) {
-        ()
-    }
-    Directory.create(actualHome, recursive: true)
-    let oldHome = getVariable("METIS_HOME")
-    setVariable("METIS_HOME", actualHome)
-    CliConfig.invalidatePathCache()
-    MetisConfigManager.invalidate()
-    CliSettingManager.invalidate()
-    try {
-        return block()
-    } finally {
-        match (oldHome) {
-            case Some(value) => setVariable("METIS_HOME", value)
-            case None => setVariable("METIS_HOME", "")
-        }
-        CliConfig.invalidatePathCache()
-        MetisConfigManager.invalidate()
-        CliSettingManager.invalidate()
+    synchronized(MetisProcessEnvironmentLock) {
+        let actualHome = "${home}-${DateTime.now().toUnixTimeStamp().toNanoseconds()}"
         try {
             remove(Path(actualHome), recursive: true)
         } catch (_: Exception) {
             ()
+        }
+        Directory.create(actualHome, recursive: true)
+        let oldHome = getVariable("METIS_HOME")
+        setVariable("METIS_HOME", actualHome)
+        CliConfig.invalidatePathCache()
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+        try {
+            return block()
+        } finally {
+            match (oldHome) {
+                case Some(value) => setVariable("METIS_HOME", value)
+                case None => setVariable("METIS_HOME", "")
+            }
+            CliConfig.invalidatePathCache()
+            MetisConfigManager.invalidate()
+            CliSettingManager.invalidate()
+            try {
+                remove(Path(actualHome), recursive: true)
+            } catch (_: Exception) {
+                ()
+            }
         }
     }
 }

@@ -5,7 +5,7 @@ import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 
 private func scopeTestHome(name: String): Path {
-    Path("/tmp").join("metis-agent-scope-test").join(name)
+    metisConfigTestTempHome("agent-scope-${name}")
 }
 
 private func scopeTestString(obj: JsonObject, key: String): String {

@@ -10,6 +10,14 @@
   override-compile-option = ""
   link-option = ""
 
+[profile.test]
+  parallel = 1
+  no-progress = true
+  no-color = true
+
+[profile.test.env]
+  cjHeapSize = { value = "128MB", splice-type = "replace" }
+
 [dependencies]
   magic = { path = "${MAGIC_PATH}" }
 

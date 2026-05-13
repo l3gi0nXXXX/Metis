@@ -3,7 +3,7 @@ package metis.core.tools.fs_utils
 import metis.core.config.CliConfig
 import metis.io.PrintUtils
 
-import std.fs.{Directory, Path, exists}
+import std.fs.{Directory, File, Path, exists, remove}
 import std.unittest.testmacro.{Test, PowerAssert}
 
 /**
@@ -14,11 +14,16 @@ import std.unittest.testmacro.{Test, PowerAssert}
 public func testGlob(): Unit {
     PrintUtils.printLine("=== Testing Glob Functionality ===")
 
-    // Test pattern matching through the public glob API first
-    testBasicPatternMatching()
+    let fixtureRoot = createGlobFixture("all")
+    try {
+        // Test pattern matching through the public glob API first.
+        runBasicPatternMatching(fixtureRoot.toString())
 
-    // Test with current project structure
-    testWithRealFiles()
+        // Test recursive and path-based patterns against a bounded fixture.
+        testWithFixtureFiles(fixtureRoot.toString())
+    } finally {
+        cleanupGlobFixture(fixtureRoot)
+    }
 
     PrintUtils.printLine("=== Glob Tests Completed ===")
 }
@@ -29,43 +34,49 @@ public func testGlob(): Unit {
 @Test
 private func testBasicPatternMatching(): Unit {
     PrintUtils.printLine("\n--- Testing basic glob pattern matching ---")
-    let currentDir = CliConfig.cwd.toString()
+    let fixtureRoot = createGlobFixture("basic")
+    try {
+        runBasicPatternMatching(fixtureRoot.toString())
+    } finally {
+        cleanupGlobFixture(fixtureRoot)
+    }
+}
 
-    let currentMatches = glob("*.cj", currentDir)
+private func runBasicPatternMatching(rootPath: String): Unit {
+    let currentMatches = glob("*.cj", rootPath)
     PrintUtils.printLine("Pattern '*.cj' under cwd matched ${currentMatches.size} entries")
-    @PowerAssert(currentMatches.size >= 0)
+    @PowerAssert(currentMatches.size > 0)
 
-    let srcDir = Path(currentDir).join("src")
+    let srcDir = Path(rootPath).join("src")
     if (exists(srcDir)) {
-        let sourceMatches = glob("src/**/*.cj", currentDir)
+        let sourceMatches = glob("src/**/*.cj", rootPath)
         PrintUtils.printLine("Pattern 'src/**/*.cj' matched ${sourceMatches.size} entries")
-        @PowerAssert(sourceMatches.size > 0)
+        @PowerAssert(sourceMatches.size >= 3)
     }
 }
 
 /**
- * Tests glob function with real files in the current project
+ * Tests glob function with a small, isolated fixture.
  */
-private func testWithRealFiles(): Unit {
-    PrintUtils.printLine("\n--- Testing with real files ---")
-    let currentDir = CliConfig.cwd.toString()
+private func testWithFixtureFiles(rootPath: String): Unit {
+    PrintUtils.printLine("\n--- Testing with fixture files ---")
 
     // Test simple wildcard patterns
-    testPattern("*.cj", currentDir, "Find all .cj files in current directory", expectNonEmpty: false)
-    testPattern("src", currentDir, "Find 'src' directory", expectNonEmpty: false)
-    testPattern("src/*", currentDir, "Find all items directly under src/", expectNonEmpty: false)
+    testPattern("*.cj", rootPath, "Find all .cj files in fixture root")
+    testPattern("src/*", rootPath, "Find source files directly or recursively under src/", expectNonEmpty: false)
 
     // Test recursive patterns if src directory exists
-    let srcPath = Path(currentDir).join("src")
+    let srcPath = Path(rootPath).join("src")
     if (exists(srcPath)) {
-        testPattern("**/glob.cj", currentDir, "Find glob.cj files recursively")
-        testPattern("src/**/*.cj", currentDir, "Find all .cj files under src/ recursively")
-        testPattern("**/tools/**", currentDir, "Find all items under any 'tools' directory")
+        testPattern("**/glob.cj", rootPath, "Find glob.cj files recursively")
+        testPattern("src/**/*.cj", rootPath, "Find all .cj files under src/ recursively")
+        testPattern("**/tools/**", rootPath, "Find all items under any 'tools' directory")
+        testPattern("docs/*.txt", rootPath, "Find text files under docs/")
     }
 
     // Test edge cases
-    testPattern("**", currentDir, "Find everything (limited results for demo)")
-    testPattern("nonexistent*", currentDir, "Pattern matching no files")
+    testPattern("**", rootPath, "Find everything in bounded fixture")
+    testPattern("nonexistent*", rootPath, "Pattern matching no files")
 }
 
 /**
@@ -166,27 +177,66 @@ private func testPatternSplitting(): Unit {
 @Test
 public func benchmarkGlob(): Unit {
     PrintUtils.printLine("\n=== Glob Performance Benchmark ===")
-    let currentDir = CliConfig.cwd.toString()
+    let fixtureRoot = createGlobFixture("benchmark")
 
-    let patterns = [
-        "*.cj",           // Simple wildcard
-        "**/glob.cj",     // Recursive search
-        "src/**/*.cj",    // Complex recursive
-        "**"              // Match everything
-    ]
+    try {
+        let rootPath = fixtureRoot.toString()
+        let patterns = [
+            "*.cj",           // Simple wildcard
+            "**/glob.cj",     // Recursive search
+            "src/**/*.cj",    // Complex recursive
+            "**"              // Match everything in bounded fixture
+        ]
 
-    for (pattern in patterns) {
-        PrintUtils.printLine("\nBenchmarking pattern: '${pattern}'")
+        for (pattern in patterns) {
+            PrintUtils.printLine("\nBenchmarking pattern: '${pattern}'")
 
-        // Simple timing (note: Cangjie may not have precise timing APIs)
-        let results = glob(pattern, currentDir)
-        PrintUtils.printLine("Found ${results.size} matches")
+            // Simple timing (note: Cangjie may not have precise timing APIs)
+            let results = glob(pattern, rootPath)
+            PrintUtils.printLine("Found ${results.size} matches")
 
-        // Assert that we get reasonable results
-        @PowerAssert(results.size >= 0)
+            // Assert that we get reasonable results
+            @PowerAssert(results.size >= 0)
 
-        // Could add more sophisticated timing here if available
+            // Could add more sophisticated timing here if available
+        }
+    } finally {
+        cleanupGlobFixture(fixtureRoot)
     }
 
     PrintUtils.printLine("\n=== Benchmark Completed ===")
+}
+
+private func createGlobFixture(label: String): Path {
+    let root = Path(CliConfig.cwd.toString()).join("metis-glob-test-${label}")
+    cleanupGlobFixture(root)
+
+    Directory.create(root.join("src/core/tools/nested"), recursive: true)
+    Directory.create(root.join("docs"), recursive: true)
+
+    writeGlobFixtureFile(root.join("root.cj"), "package fixture\nfunc root(): Unit {}\n")
+    writeGlobFixtureFile(root.join("README.md"), "# fixture\n")
+    writeGlobFixtureFile(root.join("src/main.cj"), "package fixture\nfunc main(): Unit {}\n")
+    writeGlobFixtureFile(root.join("src/core/tools/glob.cj"), "package fixture\nfunc globFixture(): Unit {}\n")
+    writeGlobFixtureFile(root.join("src/core/tools/nested/extra.cj"), "package fixture\nfunc nested(): Unit {}\n")
+    writeGlobFixtureFile(root.join("docs/guide.txt"), "fixture guide\n")
+
+    return root
+}
+
+private func writeGlobFixtureFile(path: Path, content: String): Unit {
+    if (!exists(path.parent)) {
+        Directory.create(path.parent, recursive: true)
+    }
+    File.writeTo(path, content.toArray())
+}
+
+private func cleanupGlobFixture(root: Path): Unit {
+    try {
+        if (exists(root)) {
+            remove(root, recursive: true)
+        }
+    } catch (_: Exception) {
+        ()
+    }
 }

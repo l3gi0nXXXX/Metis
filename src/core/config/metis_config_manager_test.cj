@@ -38,7 +38,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func defaultHomeRootUsesMetisDirectory(): Unit {
-        let testHome = "/tmp/metis-phase2-default-home-root"
+        let testHome = metisConfigTestTempHome("metis-phase2-default-home-root").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -71,7 +71,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func defaultConfigPathUsesMetisJson(): Unit {
-        let testHome = "/tmp/metis-phase2-default-config-path"
+        let testHome = metisConfigTestTempHome("metis-phase2-default-config-path").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -108,7 +108,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func initializeIfMissingDoesNotInjectHardcodedPrimaryModel(): Unit {
-        let testHome = "/tmp/metis-phase1-no-default-primary"
+        let testHome = metisConfigTestTempHome("metis-phase1-no-default-primary").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -137,7 +137,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func setGatewaySettingsPreservesExistingPrimaryModelAndWizardState(): Unit {
-        let testHome = "/tmp/metis-phase1-gateway-preserves-model"
+        let testHome = metisConfigTestTempHome("metis-phase1-gateway-preserves-model").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -212,7 +212,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func migrateLegacyIfNeededDoesNotMoveLegacyMetaNamespaceToMetis(): Unit {
-        let testHome = "/tmp/metis-phase2-no-legacy-meta-namespace-migration"
+        let testHome = metisConfigTestTempHome("metis-phase2-no-legacy-meta-namespace-migration").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -268,7 +268,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func setGatewaySettingsFailsClosedWhenConfigIsInvalid(): Unit {
-        let testHome = "/tmp/metis-phase3-invalid-config-no-gateway-persist"
+        let testHome = metisConfigTestTempHome("metis-phase3-invalid-config-no-gateway-persist").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -308,7 +308,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func setGatewaySettingsFailsClosedWhenConfigIsParseableButMissingAgentsDefaults(): Unit {
-        let testHome = "/tmp/metis-phase4-incomplete-config-no-gateway-persist"
+        let testHome = metisConfigTestTempHome("metis-phase4-incomplete-config-no-gateway-persist").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -352,7 +352,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func setPrimaryModelRefPreservesExistingGatewayTokenAndWorkspace(): Unit {
-        let testHome = "/tmp/metis-phase2-model-preserves-gateway"
+        let testHome = metisConfigTestTempHome("metis-phase2-model-preserves-gateway").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -422,7 +422,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func setFallbackModelRefsPreservesExistingPrimaryModelAndGateway(): Unit {
-        let testHome = "/tmp/metis-phase2-fallbacks-preserve-model-gateway"
+        let testHome = metisConfigTestTempHome("metis-phase2-fallbacks-preserve-model-gateway").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -492,7 +492,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func setSkillsEnabledPreservesExistingModelAndGateway(): Unit {
-        let testHome = "/tmp/metis-phase2-skills-preserves-model-gateway"
+        let testHome = metisConfigTestTempHome("metis-phase2-skills-preserves-model-gateway").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -560,7 +560,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func setSkillsEntriesPreservesExistingModelAndGateway(): Unit {
-        let testHome = "/tmp/metis-phase2-skills-entries-preserve-model-gateway"
+        let testHome = metisConfigTestTempHome("metis-phase2-skills-entries-preserve-model-gateway").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -631,7 +631,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func setMcpServersPreservesExistingModelAndGateway(): Unit {
-        let testHome = "/tmp/metis-phase2-mcp-preserve-model-gateway"
+        let testHome = metisConfigTestTempHome("metis-phase2-mcp-preserve-model-gateway").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -708,7 +708,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func setLanguagePreservesExistingModelAndGateway(): Unit {
-        let testHome = "/tmp/metis-phase2-language-preserve-model-gateway"
+        let testHome = metisConfigTestTempHome("metis-phase2-language-preserve-model-gateway").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -772,7 +772,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func setCollectDataPreservesExistingModelAndGateway(): Unit {
-        let testHome = "/tmp/metis-phase2-collect-data-preserve-model-gateway"
+        let testHome = metisConfigTestTempHome("metis-phase2-collect-data-preserve-model-gateway").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -833,7 +833,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func setFastModelRefPreservesExistingPrimaryModelAndGateway(): Unit {
-        let testHome = "/tmp/metis-phase2-fast-model-preserve-model-gateway"
+        let testHome = metisConfigTestTempHome("metis-phase2-fast-model-preserve-model-gateway").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -897,7 +897,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func setTemperatureAndModelLimitsPreserveExistingModelAndGateway(): Unit {
-        let testHome = "/tmp/metis-phase2-runtime-tuning-preserve-model-gateway"
+        let testHome = metisConfigTestTempHome("metis-phase2-runtime-tuning-preserve-model-gateway").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -970,7 +970,7 @@ public class MetisConfigManagerTest {
 
     @TestCase
     public func setMemoryBackendPreservesExistingModelAndGateway(): Unit {
-        let testHome = "/tmp/metis-phase2-memory-backend-preserve-model-gateway"
+        let testHome = metisConfigTestTempHome("metis-phase2-memory-backend-preserve-model-gateway").toString()
         try {
             remove(Path(testHome), recursive: true)
         } catch (_: Exception) {
@@ -1035,7 +1035,7 @@ public class MetisConfigManagerTest {
     /*
     @TestCase
     public func applyPersistedFieldsMaterializesRuntimeEnvAliasesWithoutOverwritingExistingValues(): Unit {
-        let testHome = "/tmp/metis-phase2-runtime-env-bridge"
+        let testHome = metisConfigTestTempHome("metis-phase2-runtime-env-bridge").toString()
         Directory.create(testHome, recursive: true)
         setVariable("METIS_HOME", testHome)
         MetisConfigManager.invalidate()
@@ -1087,7 +1087,7 @@ public class MetisConfigManagerTest {
     /*
     @TestCase
     public func readToolApiKeysFromMetisJson(): Unit {
-        let testHome = "/tmp/metis-phase3-tool-api-keys"
+        let testHome = metisConfigTestTempHome("metis-phase3-tool-api-keys").toString()
         Directory.create(testHome, recursive: true)
         setVariable("METIS_HOME", testHome)
         MetisConfigManager.invalidate()

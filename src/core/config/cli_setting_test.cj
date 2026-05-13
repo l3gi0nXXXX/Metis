@@ -1,7 +1,5 @@
 package metis.core.config
 
-import std.env.{getVariable, setVariable}
-import std.fs.{Directory, Path, remove}
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString}
 
@@ -68,167 +66,116 @@ public class CliSettingManagerTest {
 
     @TestCase
     public func settingAssignmentDoesNotPersistWithoutExplicitPatch(): Unit {
-        let testHome = "/tmp/metis-phase3-setting-assignment-no-save"
-        try {
-            remove(Path(testHome), recursive: true)
-        } catch (_: Exception) {
-            ()
+        withMetisConfigTestHome("setting-assignment-no-save") { _home =>
+            let root = JsonObject()
+            let agents = JsonObject()
+            let defaults = JsonObject()
+            let model = JsonObject()
+            model.put("primary", JsonString("qwen/qwen3.6-plus"))
+            defaults.put("model", model)
+            defaults.put("workspace", JsonString("/tmp/project"))
+            agents.put("defaults", defaults)
+            root.put("agents", agents)
+            MetisConfigManager.writeRoot(root)
+
+            var updated = CliSettingManager.setting
+            updated.model = "openai:gpt-5"
+            CliSettingManager.setting = updated
+
+            let persistedPrimary = MetisConfigManager.rawConfig().getOrThrow()
+                .get("agents").getOrThrow().asObject()
+                .get("defaults").getOrThrow().asObject()
+                .get("model").getOrThrow().asObject()
+                .get("primary").getOrThrow().asString().getValue()
+            @Expect(persistedPrimary, "qwen/qwen3.6-plus")
+            @Expect(CliSettingManager.setting.model, "openai:gpt-5")
+
+            CliSettingManager.invalidate()
+            @Expect(CliSettingManager.setting.model, "dashscope:qwen3.6-plus")
         }
-        Directory.create(testHome, recursive: true)
-        let oldHome = getVariable("METIS_HOME")
-        setVariable("METIS_HOME", testHome)
-        MetisConfigManager.invalidate()
-        CliSettingManager.invalidate()
-
-        let root = JsonObject()
-        let agents = JsonObject()
-        let defaults = JsonObject()
-        let model = JsonObject()
-        model.put("primary", JsonString("qwen/qwen3.6-plus"))
-        defaults.put("model", model)
-        defaults.put("workspace", JsonString("/tmp/project"))
-        agents.put("defaults", defaults)
-        root.put("agents", agents)
-        MetisConfigManager.writeRoot(root)
-
-        var updated = CliSettingManager.setting
-        updated.model = "openai:gpt-5"
-        CliSettingManager.setting = updated
-
-        let persistedPrimary = MetisConfigManager.rawConfig().getOrThrow()
-            .get("agents").getOrThrow().asObject()
-            .get("defaults").getOrThrow().asObject()
-            .get("model").getOrThrow().asObject()
-            .get("primary").getOrThrow().asString().getValue()
-        @Expect(persistedPrimary, "qwen/qwen3.6-plus")
-        @Expect(CliSettingManager.setting.model, "openai:gpt-5")
-
-        CliSettingManager.invalidate()
-        @Expect(CliSettingManager.setting.model, "dashscope:qwen3.6-plus")
-
-        match (oldHome) {
-            case Some(value) => setVariable("METIS_HOME", value)
-            case None => setVariable("METIS_HOME", "")
-        }
-        MetisConfigManager.invalidate()
-        CliSettingManager.invalidate()
     }
 
     @TestCase
     public func gatewaySettingsReadKeepsAuthAndChannelFlagsWhenTelegramAllowFromHasNumber(): Unit {
-        let testHome = "/tmp/metis-phase3-gateway-field-tolerant-read"
-        try {
-            remove(Path(testHome), recursive: true)
-        } catch (_: Exception) {
-            ()
+        withMetisConfigTestHome("gateway-field-tolerant-read") { _home =>
+            let root = JsonObject()
+            let gateway = JsonObject()
+            let auth = JsonObject()
+            auth.put("mode", JsonString("token"))
+            auth.put("token", JsonString("existing-token"))
+            gateway.put("auth", auth)
+
+            let telegram = JsonObject()
+            telegram.put("enabled", JsonBool(true))
+            telegram.put("allowFrom", JsonArray([JsonInt(8734062810)]))
+            gateway.put("telegram", telegram)
+
+            let qq = JsonObject()
+            qq.put("enabled", JsonBool(true))
+            gateway.put("qq", qq)
+            root.put("gateway", gateway)
+            MetisConfigManager.writeRoot(root)
+            CliSettingManager.invalidate()
+
+            let parsed = CliSettingManager.readGatewaySettings()
+            @Expect(parsed.auth.token, "existing-token")
+            @Expect(parsed.telegram.enabled, true)
+            @Expect(parsed.telegram.allowFrom.size, 1)
+            @Expect(parsed.telegram.allowFrom[0], "8734062810")
+            @Expect(parsed.qq.enabled, true)
         }
-        Directory.create(testHome, recursive: true)
-        let oldHome = getVariable("METIS_HOME")
-        setVariable("METIS_HOME", testHome)
-        MetisConfigManager.invalidate()
-        CliSettingManager.invalidate()
-
-        let root = JsonObject()
-        let gateway = JsonObject()
-        let auth = JsonObject()
-        auth.put("mode", JsonString("token"))
-        auth.put("token", JsonString("existing-token"))
-        gateway.put("auth", auth)
-
-        let telegram = JsonObject()
-        telegram.put("enabled", JsonBool(true))
-        telegram.put("allowFrom", JsonArray([JsonInt(8734062810)]))
-        gateway.put("telegram", telegram)
-
-        let qq = JsonObject()
-        qq.put("enabled", JsonBool(true))
-        gateway.put("qq", qq)
-        root.put("gateway", gateway)
-        MetisConfigManager.writeRoot(root)
-        CliSettingManager.invalidate()
-
-        let parsed = CliSettingManager.readGatewaySettings()
-        @Expect(parsed.auth.token, "existing-token")
-        @Expect(parsed.telegram.enabled, true)
-        @Expect(parsed.telegram.allowFrom.size, 1)
-        @Expect(parsed.telegram.allowFrom[0], "8734062810")
-        @Expect(parsed.qq.enabled, true)
-
-        match (oldHome) {
-            case Some(value) => setVariable("METIS_HOME", value)
-            case None => setVariable("METIS_HOME", "")
-        }
-        MetisConfigManager.invalidate()
-        CliSettingManager.invalidate()
     }
 
     @TestCase
     public func gatewaySettingsReadParsesTelegramTypedOpenClawParityConfigInTempHome(): Unit {
-        let testHome = "/tmp/metis-telegram-typed-config-read"
-        try {
-            remove(Path(testHome), recursive: true)
-        } catch (_: Exception) {
-            ()
+        withMetisConfigTestHome("telegram-typed-config-read") { _home =>
+            let root = JsonObject()
+            let gateway = JsonObject()
+            let telegram = JsonObject()
+            telegram.put("enabled", JsonBool(true))
+            telegram.put("defaultAccount", JsonString("work"))
+            let inlineButtons = JsonObject()
+            inlineButtons.put("scope", JsonString("dm"))
+            inlineButtons.put("allowlist", JsonArray([JsonString("tg:dm:8734062810")]))
+            telegram.put("inlineButtons", inlineButtons)
+            let execApprovals = JsonObject()
+            execApprovals.put("enabled", JsonString("true"))
+            execApprovals.put("approvers", JsonArray([JsonString("8734062810")]))
+            execApprovals.put("agentFilter", JsonArray([JsonString("reviewer")]))
+            execApprovals.put("sessionFilter", JsonArray([JsonString("telegram:direct")]))
+            execApprovals.put("target", JsonString("both"))
+            telegram.put("execApprovals", execApprovals)
+            let errorPolicy = JsonObject()
+            errorPolicy.put("policy", JsonString("once"))
+            errorPolicy.put("cooldownMs", JsonInt(9876))
+            errorPolicy.put("silentErrorReplies", JsonBool(true))
+            telegram.put("errorPolicy", errorPolicy)
+            let autoTopicLabel = JsonObject()
+            autoTopicLabel.put("enabled", JsonBool(true))
+            autoTopicLabel.put("strategy", JsonString("model"))
+            autoTopicLabel.put("prompt", JsonString("label prompt"))
+            telegram.put("autoTopicLabel", autoTopicLabel)
+            gateway.put("telegram", telegram)
+            root.put("gateway", gateway)
+            MetisConfigManager.writeRoot(root)
+            CliSettingManager.invalidate()
+
+            let parsed = CliSettingManager.readGatewaySettings()
+            @Expect(parsed.telegram.enabled, true)
+            @Expect(parsed.telegram.defaultAccount, "work")
+            @Expect(parsed.telegram.inlineButtons.scope, "dm")
+            @Expect(parsed.telegram.inlineButtons.allowlist[0], "tg:dm:8734062810")
+            @Expect(parsed.telegram.execApprovals.enabled, "true")
+            @Expect(parsed.telegram.execApprovals.approvers[0], "8734062810")
+            @Expect(parsed.telegram.execApprovals.agentFilter[0], "reviewer")
+            @Expect(parsed.telegram.execApprovals.sessionFilter[0], "telegram:direct")
+            @Expect(parsed.telegram.execApprovals.target, "both")
+            @Expect(parsed.telegram.errorPolicy.policy, "once")
+            @Expect(parsed.telegram.errorPolicy.cooldownMs, 9876)
+            @Expect(parsed.telegram.errorPolicy.silentErrorReplies, true)
+            @Expect(parsed.telegram.autoTopicLabel.enabled, true)
+            @Expect(parsed.telegram.autoTopicLabel.strategy, "model")
+            @Expect(parsed.telegram.autoTopicLabel.prompt, "label prompt")
         }
-        Directory.create(testHome, recursive: true)
-        let oldHome = getVariable("METIS_HOME")
-        setVariable("METIS_HOME", testHome)
-        MetisConfigManager.invalidate()
-        CliSettingManager.invalidate()
-
-        let root = JsonObject()
-        let gateway = JsonObject()
-        let telegram = JsonObject()
-        telegram.put("enabled", JsonBool(true))
-        telegram.put("defaultAccount", JsonString("work"))
-        let inlineButtons = JsonObject()
-        inlineButtons.put("scope", JsonString("dm"))
-        inlineButtons.put("allowlist", JsonArray([JsonString("tg:dm:8734062810")]))
-        telegram.put("inlineButtons", inlineButtons)
-        let execApprovals = JsonObject()
-        execApprovals.put("enabled", JsonString("true"))
-        execApprovals.put("approvers", JsonArray([JsonString("8734062810")]))
-        execApprovals.put("agentFilter", JsonArray([JsonString("reviewer")]))
-        execApprovals.put("sessionFilter", JsonArray([JsonString("telegram:direct")]))
-        execApprovals.put("target", JsonString("both"))
-        telegram.put("execApprovals", execApprovals)
-        let errorPolicy = JsonObject()
-        errorPolicy.put("policy", JsonString("once"))
-        errorPolicy.put("cooldownMs", JsonInt(9876))
-        errorPolicy.put("silentErrorReplies", JsonBool(true))
-        telegram.put("errorPolicy", errorPolicy)
-        let autoTopicLabel = JsonObject()
-        autoTopicLabel.put("enabled", JsonBool(true))
-        autoTopicLabel.put("strategy", JsonString("model"))
-        autoTopicLabel.put("prompt", JsonString("label prompt"))
-        telegram.put("autoTopicLabel", autoTopicLabel)
-        gateway.put("telegram", telegram)
-        root.put("gateway", gateway)
-        MetisConfigManager.writeRoot(root)
-        CliSettingManager.invalidate()
-
-        let parsed = CliSettingManager.readGatewaySettings()
-        @Expect(parsed.telegram.enabled, true)
-        @Expect(parsed.telegram.defaultAccount, "work")
-        @Expect(parsed.telegram.inlineButtons.scope, "dm")
-        @Expect(parsed.telegram.inlineButtons.allowlist[0], "tg:dm:8734062810")
-        @Expect(parsed.telegram.execApprovals.enabled, "true")
-        @Expect(parsed.telegram.execApprovals.approvers[0], "8734062810")
-        @Expect(parsed.telegram.execApprovals.agentFilter[0], "reviewer")
-        @Expect(parsed.telegram.execApprovals.sessionFilter[0], "telegram:direct")
-        @Expect(parsed.telegram.execApprovals.target, "both")
-        @Expect(parsed.telegram.errorPolicy.policy, "once")
-        @Expect(parsed.telegram.errorPolicy.cooldownMs, 9876)
-        @Expect(parsed.telegram.errorPolicy.silentErrorReplies, true)
-        @Expect(parsed.telegram.autoTopicLabel.enabled, true)
-        @Expect(parsed.telegram.autoTopicLabel.strategy, "model")
-        @Expect(parsed.telegram.autoTopicLabel.prompt, "label prompt")
-
-        match (oldHome) {
-            case Some(value) => setVariable("METIS_HOME", value)
-            case None => setVariable("METIS_HOME", "")
-        }
-        MetisConfigManager.invalidate()
-        CliSettingManager.invalidate()
     }
 }
