@@ -1,7 +1,9 @@
 package metis.gateway.runtime
 
-import metis.core.config.GatewayUserSettings
+import metis.core.config.{GatewayUserSettings, MetisConfigManager}
 
+import std.env.{getVariable, setVariable}
+import std.fs.{Directory, Path, exists, remove}
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonObject}
 
@@ -57,6 +59,18 @@ public class GatewayServerMethodsOpsPlatformTest {
 
     @TestCase
     public func doctorExposesTelegramDiagnosticsAndActions(): Unit {
+        let testHome = "/tmp/metis-agent-team-doctor-runtime-test"
+        try {
+            if (exists(Path(testHome))) {
+                remove(Path(testHome), recursive: true)
+            }
+        } catch (_: Exception) {
+            ()
+        }
+        Directory.create(testHome, recursive: true)
+        let oldHome = getVariable("METIS_HOME")
+        setVariable("METIS_HOME", testHome)
+        MetisConfigManager.invalidate()
         var user = GatewayUserSettings()
         user.telegram.enabled = true
 
@@ -66,8 +80,15 @@ public class GatewayServerMethodsOpsPlatformTest {
         let diagnostics = doctor.get("telegramDiagnostics").getOrThrow().asObject()
         let findings = diagnostics.get("findings").getOrThrow().asArray().toJsonString()
         @Expect(findings.contains("telegram-token-missing"), true)
+        let agentTeamDiagnostics = doctor.get("agentTeamDiagnostics").getOrThrow().asObject()
+        @Expect(opsPlatformTestString(agentTeamDiagnostics, "mode"), "read-only")
         let actions = doctor.get("actions").getOrThrow().asArray().toJsonString()
         @Expect(actions.contains("telegram-diagnostic-followup"), true)
         @Expect(actions.contains("telegram-token-missing"), true)
+        match (oldHome) {
+            case Some(value) => setVariable("METIS_HOME", value)
+            case None => setVariable("METIS_HOME", "")
+        }
+        MetisConfigManager.invalidate()
     }
 }

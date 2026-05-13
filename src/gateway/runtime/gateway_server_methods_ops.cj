@@ -2,8 +2,9 @@ package metis.gateway.runtime
 
 import magic.jsonable.*
 
-import metis.core.config.{CliConfig, GatewayUserSettings}
+import metis.core.config.{CliConfig, GatewayUserSettings, MetisConfigManager, MetisPaths}
 import metis.gateway.config.buildGatewayConfigFromUserSettings
+import metis.gateway.core.gatewayAgentTeamDoctorScan
 import metis.gateway.model.GatewayConfig
 import metis.core.model.CliModelManager
 
@@ -457,6 +458,23 @@ private func gatewayModelsStatusJson(): JsonObject {
     result
 }
 
+private func gatewayOpsRawConfigReadOnly(): JsonObject {
+    match (MetisConfigManager.rawConfig()) {
+        case Some(root) =>
+            try {
+                return JsonValue.fromStr(root.toJsonString()).asObject()
+            } catch (_: Exception) {
+                return JsonObject()
+            }
+        case None => JsonObject()
+    }
+}
+
+private func gatewayOpsAgentTeamDiagnosticsJson(): JsonObject {
+    gatewayAgentTeamDoctorScan(gatewayOpsRawConfigReadOnly(), homeRoot: MetisPaths.homeRootReadOnly(),
+        defaultWorkspace: MetisPaths.workspaceRootReadOnly())
+}
+
 private func gatewayModelGetJson(modelId: String): JsonObject {
     let result = JsonObject()
     let normalized = modelId.trimAscii()
@@ -584,6 +602,7 @@ private func gatewayDoctorStatusJson(user: GatewayUserSettings): JsonObject {
     doctor.put("checks", checks)
     doctor.put("issues", issues)
     doctor.put("telegramDiagnostics", gatewayTelegramDiagnosticsJson(user))
+    doctor.put("agentTeamDiagnostics", gatewayOpsAgentTeamDiagnosticsJson())
     doctor.put("summary", gatewayProbeSummaryJson(checks, issues))
     doctor.put("actions", gatewayDoctorActionsJson(user, checks, issues))
     return doctor

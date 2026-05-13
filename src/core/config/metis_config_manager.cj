@@ -677,7 +677,7 @@ public class MetisConfigManager {
         if (let Some(raw) <- _raw) {
             return raw
         }
-        let path = configPath()
+        let path = MetisPaths.configPathReadOnly()
         _rawExists = exists(path)
         if (!_rawExists) {
             _rawParseError = ""

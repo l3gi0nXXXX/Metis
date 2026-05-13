@@ -2,7 +2,7 @@ package metis.gateway.core
 
 import metis.core.{GatewayToolRuntimeContext, gatewayMediaUnderstandingFirstText, gatewayMediaUnderstandingForRecordWithSettings}
 import metis.core.config.{CliSettingManager, GatewayUserSettings}
-import metis.gateway.session.{GatewaySessionContext, GatewaySessionRequest, gatewayResolveSessionContext}
+import metis.gateway.session.{GatewaySessionContext, GatewaySessionRequest}
 import std.collection.ArrayList
 import std.fs.{Path, exists}
 import stdx.encoding.json.{JsonArray, JsonObject}
@@ -249,13 +249,18 @@ public func gatewayExecuteSessionRequestTurn(
     streamingEnabled!: Bool = false,
     lifecycleHook!: Option<(String) -> Unit> = None<(String) -> Unit>
 ): GatewayResolvedSessionTurnResult {
-    let context = gatewayResolveSessionContext(request)
+    let context = gatewayResolveSessionContextWithAgentRoute(request)
     let toolRuntimeContext = GatewayToolRuntimeContext(
         context.sourceLabel,
         channelName: context.channelName,
         sessionKey: context.sessionKey,
         senderId: request.senderId,
         declaredUser: request.declaredUser,
+        agentId: context.turnContext.agentId,
+        workspaceDir: context.turnContext.workspaceDir,
+        agentDir: context.turnContext.agentDir,
+        modelsJsonPath: context.turnContext.modelsJsonPath,
+        authProfilesPath: context.turnContext.authProfilesPath,
         operatorScopes: request.operatorScopes,
         prompt: prompt,
         mediaContext: request.mediaContext,
@@ -312,7 +317,7 @@ public func gatewayExecuteSessionRequestTurnForUser(
     lifecycleHook!: Option<(String) -> Unit> = None<(String) -> Unit>
 ): GatewayResolvedSessionTurnResult {
     let bridge = gatewayBridgeForSessionRequest(user, request)
-    let context = gatewayResolveSessionContext(request)
+    let context = gatewayResolveSessionContextWithAgentRoute(request)
     gatewayExecuteSessionRequestTurn(
         bridge,
         request,

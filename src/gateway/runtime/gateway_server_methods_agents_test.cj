@@ -1,16 +1,119 @@
 package metis.gateway.runtime
 
-import metis.core.config.CliSettingManager
+import magic.jsonable.*
+
+import metis.core.gatewaySubagentResolveAgent
+import metis.core.config.{CliConfig, CliModelRuntimeStateManager, CliSettingManager, MetisConfigManager, MetisProcessEnvironmentLock}
 
 import std.collection.ArrayList
+import std.env.{getVariable, setVariable}
+import std.fs.{Directory, File, Path, exists, remove}
 import std.unittest.testmacro.*
-import stdx.encoding.json.{JsonObject, JsonString}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 
 private func agentsTestString(obj: JsonObject, key: String): String {
     match (obj.get(key)) {
         case Some(v) =>
             try { v.asString().getValue() } catch (_: Exception) { "" }
         case None => ""
+    }
+}
+
+private func agentsTestStringArray(values: Array<String>): JsonArray {
+    let out = JsonArray([])
+    for (value in values) {
+        out.add(JsonString(value))
+    }
+    out
+}
+
+private func agentsTestObject(obj: JsonObject, key: String): JsonObject {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asObject() } catch (_: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+}
+
+private func agentsTestBool(obj: JsonObject, key: String): Bool {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asBool().getValue() } catch (_: Exception) { false }
+        case None => false
+    }
+}
+
+private func agentsTestArrayContains(arr: JsonArray, expected: String): Bool {
+    for (i in 0..arr.size()) {
+        try {
+            if (arr[i].asString().getValue() == expected) {
+                return true
+            }
+        } catch (_: Exception) {
+            ()
+        }
+    }
+    false
+}
+
+private func agentsTestObjectArrayContainsString(obj: JsonObject, key: String, expected: String): Bool {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { agentsTestArrayContains(v.asArray(), expected) } catch (_: Exception) { false }
+        case None => false
+    }
+}
+
+private func agentsTestFindObjectById(rows: JsonArray, id: String): JsonObject {
+    for (i in 0..rows.size()) {
+        let row = try { rows[i].asObject() } catch (_: Exception) { JsonObject() }
+        if (agentsTestString(row, "id") == id || agentsTestString(row, "agentId") == id || agentsTestString(row, "name") == id) {
+            return row
+        }
+    }
+    JsonObject()
+}
+
+private func agentsTestClean(path: Path): Unit {
+    try {
+        if (exists(path)) {
+            remove(path, recursive: true)
+        }
+    } catch (_: Exception) {
+        ()
+    }
+}
+
+private func withAgentsTempHome<T>(label: String, block: (Path) -> T): T {
+    synchronized(MetisProcessEnvironmentLock) {
+        let home = Path("/tmp/${label}")
+        try {
+            remove(home, recursive: true)
+        } catch (_: Exception) {
+            ()
+        }
+        Directory.create(home, recursive: true)
+        let oldHome = getVariable("METIS_HOME")
+        setVariable("METIS_HOME", home.toString())
+        CliConfig.invalidatePathCache()
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+        try {
+            return block(home)
+        } finally {
+            match (oldHome) {
+                case Some(value) => setVariable("METIS_HOME", value)
+                case None => setVariable("METIS_HOME", "")
+            }
+            CliConfig.invalidatePathCache()
+            MetisConfigManager.invalidate()
+            CliSettingManager.invalidate()
+            try {
+                remove(home, recursive: true)
+            } catch (_: Exception) {
+                ()
+            }
+        }
     }
 }
 
@@ -28,12 +131,12 @@ public class GatewayServerMethodsAgentsTest {
         @Expect(response.ok, true)
         let result = response.result.asObject()
         let routing = result.get("routing").getOrThrow().asObject()
-        @Expect(agentsTestString(routing, "sessionKey"), "agent:general:main")
+        @Expect(agentsTestString(routing, "sessionKey"), "agent:main:main")
         let deliveryTarget = routing.get("deliveryTarget").getOrThrow().asObject()
         @Expect(agentsTestString(deliveryTarget, "replyChannel"), "cli")
         let actions = routing.get("actions").getOrThrow().asArray()
         let invoke = actions[0].asObject().get("params").getOrThrow().asObject()
-        @Expect(agentsTestString(invoke, "session"), "agent:general:main")
+        @Expect(agentsTestString(invoke, "session"), "agent:main:main")
         @Expect(agentsTestString(invoke, "channel"), "cli")
     }
 
@@ -64,8 +167,8 @@ public class GatewayServerMethodsAgentsTest {
         params.put("session", JsonString("main"))
         params.put("lane", JsonString("primary"))
 
-        let invoke = gatewayAgentResolvedInvokeParams("general", GatewayRpcRequest("agent.invoke", params: params))
-        @Expect(agentsTestString(invoke, "session"), "agent:general:main:lane:primary")
+        let invoke = gatewayAgentResolvedInvokeParams("main", GatewayRpcRequest("agent.invoke", params: params))
+        @Expect(agentsTestString(invoke, "session"), "agent:main:main:lane:primary")
         @Expect(agentsTestString(invoke, "channel"), "cli")
         @Expect(agentsTestString(invoke, "source"), "cli")
     }
@@ -79,6 +182,10 @@ public class GatewayServerMethodsAgentsTest {
         let result = response.result.asObject()
         let agent = result.get("agent").getOrThrow().asObject()
         @Expect(agent.get("memory").isSome(), true)
+        @Expect(agent.get("tools").isSome(), true)
+        let tools = agent.get("tools").getOrThrow().asObject()
+        @Expect(tools.get("policySource").isSome(), true)
+        @Expect(tools.get("visibleTools").isSome(), true)
         let memory = agent.get("memory").getOrThrow().asObject()
         @Expect(memory.get("resolvedBackendConfig").isSome(), true)
         @Expect(memory.get("backendSelection").isSome(), true)
@@ -87,7 +194,7 @@ public class GatewayServerMethodsAgentsTest {
         @Expect(memory.get("activeSearchBackend").isSome(), true)
         @Expect(memory.get("activeOrchestrationBackend").isSome(), true)
         let resolved = memory.get("resolvedBackendConfig").getOrThrow().asObject()
-        @Expect(agentsTestString(resolved, "agentId"), "general")
+        @Expect(agentsTestString(resolved, "agentId"), "main")
         @Expect(agentsTestString(resolved, "purpose"), "agents-inspect")
     }
 
@@ -97,13 +204,13 @@ public class GatewayServerMethodsAgentsTest {
         @Expect(response.ok, true)
         let result = response.result.asObject()
         let agents = result.get("agents").getOrThrow().asObject()
-        @Expect(agentsTestString(agents, "defaultId"), "general")
+        @Expect(agentsTestString(agents, "defaultId"), "main")
         @Expect(agentsTestString(agents, "mainKey"), "main")
         @Expect(agentsTestString(agents, "scope"), "global")
         let rows = agents.get("agents").getOrThrow().asArray()
         @Expect(rows.size() > 0, true)
         let first = rows[0].asObject()
-        @Expect(agentsTestString(first, "id"), "general")
+        @Expect(agentsTestString(first, "id"), "main")
         @Expect(agentsTestString(first, "kind"), "builtin")
         @Expect(first.get("skills").isSome(), true)
     }
@@ -113,14 +220,114 @@ public class GatewayServerMethodsAgentsTest {
         let response = handleGatewayAgentsFamily("agents.status").getOrThrow()
         @Expect(response.ok, true)
         let result = response.result.asObject()
-        @Expect(agentsTestString(result, "defaultId"), "general")
+        @Expect(agentsTestString(result, "defaultId"), "main")
         @Expect(agentsTestString(result, "mainKey"), "main")
         @Expect(agentsTestString(result, "scope"), "global")
         let rows = result.get("agents").getOrThrow().asArray()
         @Expect(rows.size() > 0, true)
         let first = rows[0].asObject()
-        @Expect(agentsTestString(first, "id"), "general")
+        @Expect(agentsTestString(first, "id"), "main")
         @Expect(first.get("skills").isSome(), true)
+    }
+
+    @TestCase
+    public func agentsScopeHelpersExposeReadOnlyResolvedAgentScope(): Unit {
+        let home = Path("/tmp").join("metis-agent-scope-gateway-test")
+        let root = JsonObject()
+        let agents = JsonObject()
+        let defaults = JsonObject()
+        defaults.put("workspace", JsonString(home.join("team").toString()))
+        defaults.put("skills", agentsTestStringArray(["safe-default"]))
+        let tools = JsonObject()
+        tools.put("allow", agentsTestStringArray(["fileRead"]))
+        defaults.put("tools", tools)
+        agents.put("defaults", defaults)
+        let list = JsonArray([])
+        let pm = JsonObject()
+        pm.put("id", JsonString("pm"))
+        pm.put("default", JsonBool(true))
+        list.add(pm)
+        let writer = JsonObject()
+        writer.put("id", JsonString("writer"))
+        writer.put("skills", agentsTestStringArray(["writer-skill"]))
+        list.add(writer)
+        agents.put("list", list)
+        root.put("agents", agents)
+
+        let summary = gatewayResolveAgentsScopeSummaryFromRoot(root, homeRoot: home, defaultWorkspace: home.join("workspaces"))
+        @Expect(agentsTestString(summary, "defaultAgentId"), "pm")
+        @Expect(summary.get("agents").getOrThrow().asArray().size(), 2)
+
+        let scope = gatewayResolveAgentScopeFromRoot(root, agentId: "writer", homeRoot: home, defaultWorkspace: home.join("workspaces"))
+        @Expect(agentsTestString(scope, "agentId"), "writer")
+        @Expect(agentsTestString(scope, "workspaceDir"), home.join("team").join("writer").toString())
+        @Expect(agentsTestString(scope, "agentDir"), home.join("agents").join("writer").join("agent").toString())
+        @Expect(agentsTestString(scope, "modelsJsonPath"), home.join("agents").join("writer").join("agent").join("models.json").toString())
+        @Expect(agentsTestString(scope, "authProfilesPath"), home.join("agents").join("writer").join("agent").join("auth-profiles.json").toString())
+        @Expect(agentsTestString(scope, "sessionsDir"), home.join("agents").join("writer").join("sessions").toString())
+        @Expect(scope.get("skillsPolicy").getOrThrow().asObject().toJsonString().contains("writer-skill"), true)
+        @Expect(scope.get("toolsPolicy").getOrThrow().asObject().toJsonString().contains("fileRead"), true)
+
+        let defaultScope = gatewayResolveDefaultAgentScopeFromRoot(root, homeRoot: home, defaultWorkspace: home.join("workspaces"))
+        @Expect(agentsTestString(defaultScope, "agentId"), "pm")
+    }
+
+    @TestCase
+    public func agentScopeRpcUsesInjectedTempRootWithoutCreatingConfig(): Unit {
+        let home = Path("/tmp").join("metis-agent-scope-rpc-readonly")
+        agentsTestClean(home)
+        let root = JsonObject()
+        let agents = JsonObject()
+        let defaults = JsonObject()
+        defaults.put("workspace", JsonString(home.join("team").toString()))
+        defaults.put("model", JsonString("qwen:qwen-plus"))
+        agents.put("defaults", defaults)
+        let list = JsonArray([])
+        let pm = JsonObject()
+        pm.put("id", JsonString("pm"))
+        pm.put("default", JsonBool(true))
+        list.add(pm)
+        agents.put("list", list)
+        root.put("agents", agents)
+        let models = JsonObject()
+        let providers = JsonObject()
+        let qwen = JsonObject()
+        qwen.put("apiKey", JsonString("test-key"))
+        providers.put("qwen", qwen)
+        models.put("providers", providers)
+        root.put("models", models)
+
+        let params = JsonObject()
+        params.put("agentId", JsonString("pm"))
+        params.put("configRoot", root)
+        params.put("homeRoot", JsonString(home.toString()))
+        params.put("defaultWorkspace", JsonString(home.join("workspace").toString()))
+        let response = handleGatewayAgentsFamily("agent.scope", request: Some(GatewayRpcRequest("agent.scope", params: params))).getOrThrow()
+        @Expect(response.ok, true)
+        @Expect(exists(home), false)
+        let scope = response.result.asObject().get("scope").getOrThrow().asObject()
+        @Expect(agentsTestString(scope, "agentId"), "pm")
+        @Expect(agentsTestString(scope, "modelRef"), "qwen:qwen-plus")
+        @Expect(agentsTestBool(agentsTestObject(scope, "accountSummary"), "apiKeyConfigured"), true)
+    }
+
+    @TestCase
+    public func agentsScopeRpcReturnsMainDefaultAndGeneralAliasDiagnostic(): Unit {
+        let home = Path("/tmp").join("metis-agent-scope-rpc-empty")
+        agentsTestClean(home)
+        let params = JsonObject()
+        params.put("configRoot", JsonObject())
+        params.put("homeRoot", JsonString(home.toString()))
+        params.put("defaultWorkspace", JsonString(home.join("workspace").toString()))
+        let response = handleGatewayAgentsFamily("agents.scope", request: Some(GatewayRpcRequest("agents.scope", params: params))).getOrThrow()
+        @Expect(response.ok, true)
+        @Expect(exists(home), false)
+        let scope = response.result.asObject().get("scope").getOrThrow().asObject()
+        @Expect(agentsTestString(scope, "defaultAgentId"), "main")
+        let rows = scope.get("agents").getOrThrow().asArray()
+        @Expect(rows.size(), 1)
+        @Expect(agentsTestString(rows[0].asObject(), "agentId"), "main")
+        @Expect(scope.get("diagnostics").getOrThrow().asArray().toJsonString().contains("general-alias"), true)
     }
 
     @TestCase
@@ -357,5 +564,385 @@ public class GatewayServerMethodsAgentsTest {
         let runtime = audit.get("runtime").getOrThrow().asObject()
         @Expect(runtime.get("effectiveTools").isSome(), true)
         @Expect(runtime.get("authorizationProfile").isSome(), true)
+    }
+
+    @TestCase
+    public func agentsAddBootstrapsWorkspaceAgentDirAndSessionsWithoutAuthCopy(): Unit {
+        withAgentsTempHome("metis-agents-add-phase5-home", { home =>
+            let params = JsonObject()
+            params.put("id", JsonString("pm"))
+            params.put("name", JsonString("Project Manager"))
+            let response = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: params))).getOrThrow()
+            @Expect(response.ok, true)
+            let result = response.result.asObject()
+            let workspaceDir = home.join("workspaces").join("pm")
+            let agentDir = home.join("agents").join("pm").join("agent")
+            let sessionsDir = home.join("agents").join("pm").join("sessions")
+
+            @Expect(agentsTestString(result, "workspaceDir"), workspaceDir.toString())
+            @Expect(agentsTestString(result, "agentDir"), agentDir.toString())
+            @Expect(agentsTestString(result, "sessionsDir"), sessionsDir.toString())
+            @Expect(exists(agentDir.join("AGENT.md")), true)
+            @Expect(exists(agentDir.join("models.json")), false)
+            @Expect(exists(agentDir.join("auth-profiles.json")), false)
+            @Expect(exists(sessionsDir), true)
+            for (name in ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md", "MEMORY.md"]) {
+                @Expect(exists(workspaceDir.join(name)), true)
+            }
+
+            let bootstrap = result.get("bootstrap").getOrThrow().asObject()
+            @Expect(agentsTestBool(bootstrap, "authProfilesCopied"), false)
+            @Expect(agentsTestBool(bootstrap, "authProfilesCopyRequiresExplicitRequest"), true)
+            @Expect(bootstrap.get("files").getOrThrow().asArray().size() >= 7, true)
+
+            let root = MetisConfigManager.rawConfig().getOrThrow()
+            let entries = root.get("agents").getOrThrow().asObject().get("list").getOrThrow().asArray()
+            var configuredAgentDir = ""
+            for (i in 0..entries.size()) {
+                let row = entries[i].asObject()
+                if (agentsTestString(row, "id") == "pm") {
+                    configuredAgentDir = agentsTestString(row, "agentDir")
+                }
+            }
+            @Expect(configuredAgentDir, agentDir.toString())
+        })
+    }
+
+    @TestCase
+    public func agentsAddDoesNotOverwriteExistingWorkspaceIdentityFile(): Unit {
+        withAgentsTempHome("metis-agents-add-phase5-existing-home", { home =>
+            let workspaceDir = home.join("custom-workspace")
+            Directory.create(workspaceDir, recursive: true)
+            File.writeTo(workspaceDir.join("IDENTITY.md"), "Name: Existing\n".toArray())
+
+            let params = JsonObject()
+            params.put("id", JsonString("writer"))
+            params.put("workspace", JsonString(workspaceDir.toString()))
+            let response = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: params))).getOrThrow()
+            @Expect(response.ok, true)
+
+            @Expect(String.fromUtf8(File.readFrom(workspaceDir.join("IDENTITY.md"))), "Name: Existing\n")
+            @Expect(exists(workspaceDir.join("AGENTS.md")), true)
+            @Expect(exists(workspaceDir.join("MEMORY.md")), true)
+        })
+    }
+
+    @TestCase
+    public func managedAgentDirIsDiscoverableBySummaryAndSubagentResolver(): Unit {
+        withAgentsTempHome("metis-agents-add-phase5-discovery-home", { home: Path =>
+            let params = JsonObject()
+            params.put("id", JsonString("pm"))
+            params.put("name", JsonString("Project Manager"))
+            let addResponse = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: params))).getOrThrow()
+            @Expect(addResponse.ok, true)
+
+            CliConfig.invalidatePathCache()
+            let summaryResponse = handleGatewayAgentsFamily("agents.summary").getOrThrow()
+            @Expect(summaryResponse.ok, true)
+            let rows = summaryResponse.result.asObject().get("agents").getOrThrow().asObject().get("agents").getOrThrow().asArray()
+            var sawPm = false
+            var sawSyntheticAgent = false
+            for (i in 0..rows.size()) {
+                let row = rows[i].asObject()
+                if (agentsTestString(row, "id") == "pm") {
+                    sawPm = true
+                    @Expect(agentsTestString(row, "kind"), "custom")
+                    @Expect(agentsTestString(row, "workspace"), home.join("workspaces").join("pm").toString())
+                }
+                if (agentsTestString(row, "id") == "agent") {
+                    sawSyntheticAgent = true
+                }
+            }
+            @Expect(sawPm, true)
+            @Expect(sawSyntheticAgent, false)
+
+            let resolved = gatewaySubagentResolveAgent("pm")
+            @Expect(resolved.found, true)
+            @Expect(resolved.agentId, "pm")
+            @Expect(resolved.agentDir, home.join("agents").join("pm").join("agent").toString())
+        })
+    }
+
+    @TestCase
+    public func agentModelRuntimeStateIsLazyEnsuredUnderAgentDirOnly(): Unit {
+        withAgentsTempHome("metis-agents-add-phase5-models-home", { home: Path =>
+            let agentDir = home.join("agents").join("pm").join("agent")
+            Directory.create(agentDir, recursive: true)
+            @Expect(exists(agentDir.join("models.json")), false)
+            @Expect(exists(home.join("models.json")), false)
+
+            let path = CliModelRuntimeStateManager.ensureAgentRuntimeState(agentDir)
+
+            @Expect(path.toString(), agentDir.join("models.json").toString())
+            @Expect(exists(agentDir.join("models.json")), true)
+            @Expect(exists(home.join("models.json")), false)
+            let content = String.fromUtf8(File.readFrom(agentDir.join("models.json")))
+            @Expect(content.contains("primaryModelRef"), true)
+            @Expect(content.contains("token"), false)
+            @Expect(content.contains("secret"), false)
+        })
+    }
+
+    @TestCase
+    public func agentsAddCopiesAuthProfilesOnlyWithExplicitSourceAndConfirm(): Unit {
+        withAgentsTempHome("metis-agents-add-phase5-auth-copy-home", { home: Path =>
+            File.writeTo(home.join("auth-profiles.json"), "{\"profiles\":[{\"id\":\"fixture\"}]}\n".toArray())
+
+            let aliasParams = JsonObject()
+            aliasParams.put("id", JsonString("alias"))
+            aliasParams.put("copyAuthProfiles", true.toJsonValue())
+            aliasParams.put("source", JsonString("global"))
+            aliasParams.put("confirm", true.toJsonValue())
+            let aliasDenied = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: aliasParams))).getOrThrow()
+            @Expect(aliasDenied.ok, false)
+            @Expect(aliasDenied.error.contains("default-agent"), true)
+            @Expect(exists(home.join("agents").join("alias").join("agent").join("auth-profiles.json")), false)
+
+            let deniedParams = JsonObject()
+            deniedParams.put("id", JsonString("denied"))
+            deniedParams.put("copyAuthProfiles", true.toJsonValue())
+            deniedParams.put("source", JsonString("default-agent"))
+            let denied = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: deniedParams))).getOrThrow()
+            @Expect(denied.ok, false)
+            @Expect(denied.error.contains("confirm"), true)
+            @Expect(exists(home.join("agents").join("denied").join("agent").join("auth-profiles.json")), false)
+
+            let params = JsonObject()
+            params.put("id", JsonString("pm"))
+            params.put("copyAuthProfiles", true.toJsonValue())
+            params.put("source", JsonString("default-agent"))
+            params.put("confirm", true.toJsonValue())
+            let response = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: params))).getOrThrow()
+            @Expect(response.ok, true)
+            let target = home.join("agents").join("pm").join("agent").join("auth-profiles.json")
+            @Expect(exists(target), true)
+            @Expect(String.fromUtf8(File.readFrom(target)), "{\"profiles\":[{\"id\":\"fixture\"}]}\n")
+            let bootstrap = response.result.asObject().get("bootstrap").getOrThrow().asObject()
+            @Expect(agentsTestBool(bootstrap, "authProfilesCopied"), true)
+        })
+    }
+
+    @TestCase
+    public func agentsAddRefusesAuthProfileCopyOverwrite(): Unit {
+        withAgentsTempHome("metis-agents-add-phase5-auth-overwrite-home", { home: Path =>
+            File.writeTo(home.join("auth-profiles.json"), "{\"profiles\":[{\"id\":\"source\"}]}\n".toArray())
+            let agentDir = home.join("agents").join("pm").join("agent")
+            Directory.create(agentDir, recursive: true)
+            File.writeTo(agentDir.join("auth-profiles.json"), "keep\n".toArray())
+
+            let params = JsonObject()
+            params.put("id", JsonString("pm"))
+            params.put("agentDir", JsonString(agentDir.toString()))
+            params.put("copyAuthProfiles", true.toJsonValue())
+            params.put("source", JsonString("default-agent"))
+            params.put("force", true.toJsonValue())
+            let response = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: params))).getOrThrow()
+            @Expect(response.ok, false)
+            @Expect(response.error.contains("already exists"), true)
+            @Expect(String.fromUtf8(File.readFrom(agentDir.join("auth-profiles.json"))), "keep\n")
+        })
+    }
+
+    @TestCase
+    public func agentsSetIdentityValidatesAvatarAgainstAgentWorkspace(): Unit {
+        withAgentsTempHome("metis-agents-set-identity-avatar-home", { _: Path =>
+            let addParams = JsonObject()
+            addParams.put("id", JsonString("pm"))
+            let addResponse = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: addParams))).getOrThrow()
+            @Expect(addResponse.ok, true)
+
+            let rejectedParams = JsonObject()
+            rejectedParams.put("id", JsonString("pm"))
+            rejectedParams.put("avatar", JsonString("../outside.png"))
+            let rejected = handleGatewayAgentsFamily("agents.set-identity", request: Some(GatewayRpcRequest("agents.set-identity", params: rejectedParams))).getOrThrow()
+            @Expect(rejected.ok, false)
+            @Expect(rejected.error.contains("avatar"), true)
+
+            let acceptedParams = JsonObject()
+            acceptedParams.put("id", JsonString("pm"))
+            acceptedParams.put("avatar", JsonString("HTTPS://example.test/avatar.png"))
+            let accepted = handleGatewayAgentsFamily("agents.set-identity", request: Some(GatewayRpcRequest("agents.set-identity", params: acceptedParams))).getOrThrow()
+            @Expect(accepted.ok, true)
+            let identity = accepted.result.asObject().get("identity").getOrThrow().asObject()
+            @Expect(agentsTestString(identity, "avatar"), "HTTPS://example.test/avatar.png")
+        })
+    }
+
+    @TestCase
+    public func agentsUpdateRoundTripsEditableConfigAndAliasDisplay(): Unit {
+        withAgentsTempHome("metis-agents-update-phase7-home", { home: Path =>
+            let addParams = JsonObject()
+            addParams.put("id", JsonString("writer"))
+            let addResponse = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: addParams))).getOrThrow()
+            @Expect(addResponse.ok, true)
+
+            let model = JsonObject()
+            model.put("primary", JsonString("qwen:qwen-plus"))
+            model.put("fallbacks", agentsTestStringArray(["openai:gpt-4o-mini"]))
+            let groupChat = JsonObject()
+            groupChat.put("mentionPatterns", agentsTestStringArray(["@writer", "/agent writer"]))
+            let identity = JsonObject()
+            identity.put("name", JsonString("Writer Prime"))
+            identity.put("avatar", JsonString("https://example.test/writer.png"))
+
+            let updateParams = JsonObject()
+            updateParams.put("id", JsonString("writer"))
+            updateParams.put("name", JsonString("Writer Prime"))
+            updateParams.put("workspace", JsonString(home.join("team-workspace").toString()))
+            updateParams.put("model", model)
+            updateParams.put("groupChat", groupChat)
+            updateParams.put("identity", identity)
+            let updateResponse = handleGatewayAgentsFamily("agents.update", request: Some(GatewayRpcRequest("agents.update", params: updateParams))).getOrThrow()
+            @Expect(updateResponse.ok, true)
+
+            let getParams = JsonObject()
+            getParams.put("agentId", JsonString("writer"))
+            let getResponse = handleGatewayAgentsFamily("agent.get", request: Some(GatewayRpcRequest("agent.get", params: getParams))).getOrThrow()
+            @Expect(getResponse.ok, true)
+            let agent = getResponse.result.asObject().get("agent").getOrThrow().asObject()
+            @Expect(agentsTestString(agent, "name"), "Writer Prime")
+            @Expect(agentsTestString(agent, "workspace"), home.join("team-workspace").toString())
+            @Expect(agentsTestString(agent.get("model").getOrThrow().asObject(), "primary"), "qwen:qwen-plus")
+            let returnedGroupChat = agent.get("groupChat").getOrThrow().asObject()
+            @Expect(agentsTestObjectArrayContainsString(returnedGroupChat, "mentionPatterns", "@writer"), true)
+            @Expect(agentsTestObjectArrayContainsString(agent, "aliases", "/agent writer"), true)
+            @Expect(exists(home.join("team-workspace").join("SOUL.md")), true)
+
+            let listResponse = handleGatewayAgentsFamily("agents.list").getOrThrow()
+            let rows = listResponse.result.asObject().get("agents").getOrThrow().asArray()
+            let writer = agentsTestFindObjectById(rows, "writer")
+            @Expect(agentsTestString(writer, "name"), "Writer Prime")
+            @Expect(agentsTestObjectArrayContainsString(writer, "aliases", "@writer"), true)
+        })
+    }
+
+    @TestCase
+    public func agentFilesRpcUsesWorkspaceSafeBootstrapFiles(): Unit {
+        withAgentsTempHome("metis-agents-files-phase7-home", { home: Path =>
+            let addParams = JsonObject()
+            addParams.put("id", JsonString("pm"))
+            let addResponse = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: addParams))).getOrThrow()
+            @Expect(addResponse.ok, true)
+
+            let listParams = JsonObject()
+            listParams.put("agentId", JsonString("pm"))
+            let listResponse = handleGatewayAgentsFamily("agents.files.list", request: Some(GatewayRpcRequest("agents.files.list", params: listParams))).getOrThrow()
+            @Expect(listResponse.ok, true)
+            let listResult = listResponse.result.asObject()
+            @Expect(agentsTestString(listResult, "workspace"), home.join("workspaces").join("pm").toString())
+            let files = listResult.get("files").getOrThrow().asArray()
+            let soulRow = agentsTestFindObjectById(files, "SOUL.md")
+            @Expect(agentsTestString(soulRow, "name"), "SOUL.md")
+            @Expect(agentsTestBool(soulRow, "missing"), false)
+
+            let setParams = JsonObject()
+            setParams.put("agentId", JsonString("pm"))
+            setParams.put("name", JsonString("SOUL.md"))
+            setParams.put("content", JsonString("# Soul\n\ncustom soul\n"))
+            let setResponse = handleGatewayAgentsFamily("agents.files.set", request: Some(GatewayRpcRequest("agents.files.set", params: setParams))).getOrThrow()
+            @Expect(setResponse.ok, true)
+            let file = setResponse.result.asObject().get("file").getOrThrow().asObject()
+            @Expect(agentsTestString(file, "content"), "# Soul\n\ncustom soul\n")
+
+            let escapeParams = JsonObject()
+            escapeParams.put("agentId", JsonString("pm"))
+            escapeParams.put("name", JsonString("../outside.md"))
+            escapeParams.put("content", JsonString("bad"))
+            let escaped = handleGatewayAgentsFamily("agents.files.set", request: Some(GatewayRpcRequest("agents.files.set", params: escapeParams))).getOrThrow()
+            @Expect(escaped.ok, false)
+            @Expect(exists(home.join("workspaces").join("outside.md")), false)
+        })
+    }
+
+    @TestCase
+    public func agentModelsRpcReadsWritesAndValidatesAgentDirModelsJson(): Unit {
+        withAgentsTempHome("metis-agents-models-phase7-home", { home: Path =>
+            let addParams = JsonObject()
+            addParams.put("id", JsonString("pm"))
+            addParams.put("model", JsonString("qwen:qwen-plus"))
+            let addResponse = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: addParams))).getOrThrow()
+            @Expect(addResponse.ok, true)
+
+            let statusParams = JsonObject()
+            statusParams.put("agentId", JsonString("pm"))
+            let statusResponse = handleGatewayAgentsFamily("agents.models.status", request: Some(GatewayRpcRequest("agents.models.status", params: statusParams))).getOrThrow()
+            @Expect(statusResponse.ok, true)
+            let status = statusResponse.result.asObject().get("models").getOrThrow().asObject()
+            let modelsPath = home.join("agents").join("pm").join("agent").join("models.json")
+            @Expect(agentsTestString(status, "path"), modelsPath.toString())
+            @Expect(agentsTestBool(status, "present"), true)
+            @Expect(exists(modelsPath), true)
+
+            let invalidParams = JsonObject()
+            invalidParams.put("agentId", JsonString("pm"))
+            invalidParams.put("content", JsonString("{bad"))
+            let invalid = handleGatewayAgentsFamily("agents.models.set", request: Some(GatewayRpcRequest("agents.models.set", params: invalidParams))).getOrThrow()
+            @Expect(invalid.ok, false)
+
+            let nextState = JsonObject()
+            nextState.put("primaryModelRef", JsonString("openai:gpt-4o-mini"))
+            nextState.put("runtimePrimaryModelRef", JsonString("openai:gpt-4o-mini"))
+            nextState.put("providers", JsonArray([]))
+            let setParams = JsonObject()
+            setParams.put("agentId", JsonString("pm"))
+            setParams.put("state", nextState)
+            let setResponse = handleGatewayAgentsFamily("agents.models.set", request: Some(GatewayRpcRequest("agents.models.set", params: setParams))).getOrThrow()
+            @Expect(setResponse.ok, true)
+
+            let getResponse = handleGatewayAgentsFamily("agents.models.get", request: Some(GatewayRpcRequest("agents.models.get", params: statusParams))).getOrThrow()
+            @Expect(getResponse.ok, true)
+            let modelState = getResponse.result.asObject().get("models").getOrThrow().asObject().get("state").getOrThrow().asObject()
+            @Expect(agentsTestString(modelState, "primaryModelRef"), "openai:gpt-4o-mini")
+            @Expect(String.fromUtf8(File.readFrom(modelsPath)).contains("token"), false)
+        })
+    }
+
+    @TestCase
+    public func agentTeamsCreateUpdateListAndDeleteRoundTripConfig(): Unit {
+        withAgentsTempHome("metis-agent-teams-phase7-home", { home: Path =>
+            let createParams = JsonObject()
+            createParams.put("id", JsonString("content"))
+            createParams.put("displayName", JsonString("Content Team"))
+            createParams.put("template", JsonString("pm-writer-reviewer"))
+            let createResponse = handleGatewayAgentsFamily("agents.teams.create", request: Some(GatewayRpcRequest("agents.teams.create", params: createParams))).getOrThrow()
+            @Expect(createResponse.ok, true)
+            let created = createResponse.result.asObject().get("team").getOrThrow().asObject()
+            @Expect(agentsTestString(created, "id"), "content")
+            @Expect(agentsTestString(created, "defaultAgentId"), "content-pm")
+            @Expect(exists(home.join("agents").join("content-pm").join("agent").join("AGENT.md")), true)
+            @Expect(exists(home.join("agents").join("content-writer").join("agent").join("AGENT.md")), true)
+            @Expect(exists(home.join("workspaces").join("content-reviewer").join("IDENTITY.md")), true)
+
+            let listResponse = handleGatewayAgentsFamily("agents.teams.list").getOrThrow()
+            @Expect(listResponse.ok, true)
+            let teams = listResponse.result.asObject().get("teams").getOrThrow().asArray()
+            @Expect(teams.size(), 1)
+
+            let alias = JsonObject()
+            alias.put("alias", JsonString("/agent writer"))
+            alias.put("agentId", JsonString("content-writer"))
+            let aliases = JsonArray([])
+            aliases.add(alias)
+            let updateParams = JsonObject()
+            updateParams.put("id", JsonString("content"))
+            updateParams.put("aliases", aliases)
+            let updateResponse = handleGatewayAgentsFamily("agents.teams.update", request: Some(GatewayRpcRequest("agents.teams.update", params: updateParams))).getOrThrow()
+            @Expect(updateResponse.ok, true)
+
+            let writerParams = JsonObject()
+            writerParams.put("agentId", JsonString("content-writer"))
+            let writerResponse = handleGatewayAgentsFamily("agent.get", request: Some(GatewayRpcRequest("agent.get", params: writerParams))).getOrThrow()
+            let writer = writerResponse.result.asObject().get("agent").getOrThrow().asObject()
+            @Expect(agentsTestObjectArrayContainsString(writer, "aliases", "/agent writer"), true)
+            @Expect(agentsTestObjectArrayContainsString(writer, "teamIds", "content"), true)
+
+            let deleteParams = JsonObject()
+            deleteParams.put("id", JsonString("content"))
+            let deleteResponse = handleGatewayAgentsFamily("agents.teams.delete", request: Some(GatewayRpcRequest("agents.teams.delete", params: deleteParams))).getOrThrow()
+            @Expect(deleteResponse.ok, true)
+            let emptyList = handleGatewayAgentsFamily("agents.teams.list").getOrThrow().result.asObject().get("teams").getOrThrow().asArray()
+            @Expect(emptyList.size(), 0)
+            @Expect(exists(home.join("agents").join("content-writer").join("agent").join("AGENT.md")), true)
+        })
     }
 }

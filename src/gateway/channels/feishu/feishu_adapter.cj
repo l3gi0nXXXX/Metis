@@ -242,6 +242,8 @@ public class FeishuAdapter <: ChannelAdapter {
         chatType!: ChatType = ChatType.Direct,
         mentioned!: Bool = true
     ): Unit {
+        let mediaContext = JsonObject()
+        this.attachFeishuImRouteContext(mediaContext, peerId, chatType, senderId, messageId, "", "")
         let msg = InboundMessage(
             ChannelType.Feishu,
             messageId,
@@ -251,7 +253,8 @@ public class FeishuAdapter <: ChannelAdapter {
             text,
             mentioned,
             DateTime.now(),
-            raw: None
+            raw: None,
+            mediaContext: mediaContext
         )
         synchronized(this.queueMutex) {
             this.inboundQueue.add(msg)
@@ -361,6 +364,8 @@ public class FeishuAdapter <: ChannelAdapter {
         let mentioned = isDirect ||
             this.messageMentionsBotOpenId(messageObj) ||
             (this.config.botOpenId.isEmpty() && (text.contains("@") || text.contains("<at ")))
+        let mediaContext = JsonObject()
+        this.attachFeishuImRouteContext(mediaContext, chatId, chatType, senderId, messageId, rootId, threadId)
 
         return InboundMessage(
             ChannelType.Feishu,
@@ -375,8 +380,55 @@ public class FeishuAdapter <: ChannelAdapter {
             threadId: if (threadId.trimAscii().isEmpty()) { None<String> } else { Some(threadId.trimAscii()) },
             replyTargetMessageId: this.resolveReplyTargetMessageId(messageId, rootId, threadId),
             replyInThread: this.shouldReplyInThread(chatType, rootId, threadId),
-            raw: Some(root.toJsonString())
+            raw: Some(root.toJsonString()),
+            mediaContext: mediaContext
         )
+    }
+
+    private func attachFeishuImRouteContext(
+        mediaContext: JsonObject,
+        chatId: String,
+        chatType: ChatType,
+        senderId: String,
+        messageId: String,
+        rootId: String,
+        threadId: String
+    ): Unit {
+        let context = match (mediaContext.get("context")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let route = JsonObject()
+        route.put("channel", JsonString("feishu"))
+        route.put("accountId", JsonString("default"))
+        route.put("defaultAccountId", JsonString("default"))
+        match (chatType) {
+            case ChatType.Direct =>
+                route.put("peerKind", JsonString("direct"))
+                route.put("peerId", JsonString(if (!senderId.trimAscii().isEmpty()) { senderId.trimAscii() } else { chatId.trimAscii() }))
+            case ChatType.Group =>
+                let topicId = if (!threadId.trimAscii().isEmpty()) {
+                    threadId.trimAscii()
+                } else {
+                    rootId.trimAscii()
+                }
+                if (!topicId.isEmpty()) {
+                    route.put("peerKind", JsonString("thread"))
+                    route.put("peerId", JsonString(topicId))
+                    route.put("parentPeerKind", JsonString("group"))
+                    route.put("parentPeerId", JsonString(chatId.trimAscii()))
+                    route.put("threadId", JsonString(topicId))
+                } else {
+                    route.put("peerKind", JsonString("group"))
+                    route.put("peerId", JsonString(chatId.trimAscii()))
+                }
+        }
+        route.put("senderId", JsonString(senderId.trimAscii()))
+        route.put("messageId", JsonString(messageId.trimAscii()))
+        context.put("imRoute", route)
+        mediaContext.put("channel", JsonString("feishu"))
+        mediaContext.put("accountId", JsonString("default"))
+        mediaContext.put("context", context)
     }
 
     private func readHeaderEventType(root: JsonObject): String {

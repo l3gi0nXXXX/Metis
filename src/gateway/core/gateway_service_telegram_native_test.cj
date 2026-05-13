@@ -1,6 +1,6 @@
 package metis.gateway.core
 
-import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager, TelegramCustomCommandUserSettings}
+import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager, MetisProcessEnvironmentLock, TelegramCustomCommandUserSettings}
 import metis.core.{GatewaySpeechTtsDashScopeQwenHttpResult, gatewaySubagentCreateRunRecord, gatewaySubagentListRunRecords, gatewaySubagentRunRecordString, setGatewaySpeechTtsDashScopeQwenRunnerForTest}
 import metis.gateway.model.{ChannelPolicyConfig, ChannelType, ChatType, InboundMessage, OutboundMessage, SendResult}
 import metis.core.memory.memorySessionStoreForGatewayUser
@@ -13,7 +13,6 @@ import magic.model.ModelManager
 import std.collection.{ArrayList, HashMap}
 import std.env.{getVariable, setVariable}
 import std.fs.{Directory, File, Path, remove}
-import std.sync.Mutex
 import std.time.DateTime
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString, JsonValue}
@@ -182,8 +181,6 @@ private class GatewayTelegramNativeSilentReplyFakeModel <: ChatModel {
     }
 }
 
-private let gatewayTelegramNativeTestLock: Mutex = Mutex()
-
 private func gatewayTelegramNativeTestConfigRoot(): JsonObject {
     let root = JsonObject()
     let agents = JsonObject()
@@ -205,7 +202,7 @@ private func gatewayTelegramNativeTestConfigRoot(): JsonObject {
 }
 
 private func withGatewayTelegramNativeTestHome<T>(block: () -> T): T {
-    synchronized(gatewayTelegramNativeTestLock) {
+    synchronized(MetisProcessEnvironmentLock) {
         let testHome = "/tmp/metis-gateway-telegram-native-test-home"
         try { remove(Path(testHome), recursive: true) } catch (_: Exception) { () }
         Directory.create(testHome, recursive: true)

@@ -294,7 +294,8 @@ private func gatewayReplyWithTimeout(
                         agentId: context.agentId,
                         extraSystemPrompt: extraSystemPrompt,
                         streamingEnabled: streamingEnabled,
-                        streamChunkHook: streamChunkHook
+                        streamChunkHook: streamChunkHook,
+                        turnContext: Some(context.turnContext)
                     )
                 })
             case None =>
@@ -305,7 +306,8 @@ private func gatewayReplyWithTimeout(
                     agentId: context.agentId,
                     extraSystemPrompt: extraSystemPrompt,
                     streamingEnabled: streamingEnabled,
-                    streamChunkHook: streamChunkHook
+                    streamChunkHook: streamChunkHook,
+                    turnContext: Some(context.turnContext)
                 )
         }
     }
@@ -321,7 +323,8 @@ private func gatewayReplyWithTimeout(
                         agentId: context.agentId,
                         extraSystemPrompt: extraSystemPrompt,
                         streamingEnabled: streamingEnabled,
-                        streamChunkHook: streamChunkHook
+                        streamChunkHook: streamChunkHook,
+                        turnContext: Some(context.turnContext)
                     )
                 })
             case None =>
@@ -332,7 +335,8 @@ private func gatewayReplyWithTimeout(
                     agentId: context.agentId,
                     extraSystemPrompt: extraSystemPrompt,
                     streamingEnabled: streamingEnabled,
-                    streamChunkHook: streamChunkHook
+                    streamChunkHook: streamChunkHook,
+                    turnContext: Some(context.turnContext)
                 )
         }
     }

@@ -4,7 +4,7 @@ import metis.core.config.CliConfig
 import metis.io.PrintUtils
 
 import std.collection.any
-import std.fs.{Directory, Path, exists}
+import std.fs.{Directory, File, Path, exists, remove}
 import std.unittest.testmacro.{Test, PowerAssert}
 
 /**
@@ -13,19 +13,24 @@ import std.unittest.testmacro.{Test, PowerAssert}
 @Test
 private func testBasicPatterns(): Unit {
     PrintUtils.printLine("\n--- Testing basic patterns ---")
-    let currentDir = CliConfig.cwd.toString()
+    let fixtureRoot = createGrepFixture("basic")
+    try {
+        let srcPath = Some(fixtureRoot.join("src").toString())
 
-    // Test simple word search
-    testGrepPattern("func", "./src", None, "Find function declarations")
+        // Test simple word search
+        testGrepPattern("func", srcPath, None, "Find function declarations")
 
-    // Test regex pattern
-    testGrepPattern("import.*std", "./src", None, "Find std library imports")
+        // Test regex pattern
+        testGrepPattern("import.*std", srcPath, None, "Find std library imports")
 
-    // Test case-sensitive search
-    testGrepPattern("PrintUtils.printLine", "./src", None, "Find PrintUtils.printLine statements")
+        // Test case-sensitive search
+        testGrepPattern("PrintUtils.printLine", srcPath, None, "Find PrintUtils.printLine statements")
 
-    // Test pattern with special regex characters
-    testGrepPattern("\\*\\*", "./src", None, "Find double asterisk patterns")
+        // Test pattern with special regex characters
+        testGrepPattern("\\*\\*", srcPath, None, "Find double asterisk patterns")
+    } finally {
+        cleanupGrepFixture(fixtureRoot)
+    }
 }
 
 /**
@@ -34,15 +39,21 @@ private func testBasicPatterns(): Unit {
 @Test
 private func testFileTypeFiltering(): Unit {
     PrintUtils.printLine("\n--- Testing file type filtering ---")
+    let fixtureRoot = createGrepFixture("filter")
+    try {
+        let rootPath = Some(fixtureRoot.toString())
 
-    // Test .cj files only
-    testGrepPattern("func", "./src", Some("*.cj"), "Search only in .cj files")
+        // Test .cj files only
+        testGrepPattern("func", rootPath, Some("*.cj"), "Search only in .cj files")
 
-    // Test multiple extensions (if supported)
-    testGrepPattern("test", "./src", Some("*test*.cj"), "Search in test files")
+        // Test multiple extensions (if supported)
+        testGrepPattern("test", rootPath, Some("*test*.cj"), "Search in test files")
 
-    // Test specific directory pattern
-    testGrepPattern("import", "./src", Some("src/**/*.cj"), "Search recursively in src/")
+        // Test specific directory pattern
+        testGrepPattern("import", rootPath, Some("src/**/*.cj"), "Search recursively in src/")
+    } finally {
+        cleanupGrepFixture(fixtureRoot)
+    }
 }
 
 /**
@@ -51,17 +62,22 @@ private func testFileTypeFiltering(): Unit {
 @Test
 private func testPathFiltering(): Unit {
     PrintUtils.printLine("\n--- Testing path filtering ---")
-    let currentDir = CliConfig.cwd.toString()
+    let fixtureRoot = createGrepFixture("path")
+    try {
+        let rootPath = fixtureRoot.toString()
 
-    // Test searching in src directory if it exists
-    let srcPath = Path(currentDir).join("src")
-    if (exists(srcPath)) {
-        testGrepPattern("package", Some(srcPath.toString()), None, "Search in src/ directory")
-        testGrepPattern("func", Some(srcPath.toString()), Some("*.cj"), "Search .cj files in src/")
+        // Test searching in src directory if it exists
+        let srcPath = fixtureRoot.join("src")
+        if (exists(srcPath)) {
+            testGrepPattern("package", Some(srcPath.toString()), None, "Search in src/ directory")
+            testGrepPattern("func", Some(srcPath.toString()), Some("*.cj"), "Search .cj files in src/")
+        }
+
+        // Test searching in fixture root explicitly
+        testGrepPattern("glob", Some(rootPath), None, "Search in fixture root")
+    } finally {
+        cleanupGrepFixture(fixtureRoot)
     }
-
-    // Test searching in current directory explicitly
-    testGrepPattern("glob", Some(currentDir), None, "Search in current directory")
 }
 
 /**
@@ -70,18 +86,24 @@ private func testPathFiltering(): Unit {
 @Test
 private func testEdgeCases(): Unit {
     PrintUtils.printLine("\n--- Testing edge cases ---")
+    let fixtureRoot = createGrepFixture("edge")
+    try {
+        let srcPath = Some(fixtureRoot.join("src").toString())
 
-    // Test pattern that should return no matches
-    testGrepPattern("zzzzNeverMatchThis", "./src", None, "Pattern with no matches")
+        // Test pattern that should return no matches
+        testGrepPattern("zzzzNeverMatchThis", srcPath, None, "Pattern with no matches")
 
-    // Test empty pattern (if allowed)
-    testGrepPattern("", "./src", None, "Empty pattern")
+        // Test empty pattern (if allowed)
+        testGrepPattern("", srcPath, None, "Empty pattern")
 
-    // Test complex regex pattern
-    testGrepPattern("func\\s+\\w+\\(", "./src", Some("*.cj"), "Complex function declaration pattern")
+        // Test complex regex pattern
+        testGrepPattern("func\\s+\\w+\\(", srcPath, Some("*.cj"), "Complex function declaration pattern")
 
-    // Test search with non-existent path
-    testGrepPattern("test", Some("/nonexistent/path"), None, "Search in non-existent path")
+        // Test search with non-existent path
+        testGrepPattern("test", Some("/nonexistent/path"), None, "Search in non-existent path")
+    } finally {
+        cleanupGrepFixture(fixtureRoot)
+    }
 }
 
 /**
@@ -208,31 +230,75 @@ private func testOutputParsing(): Unit {
 @Test
 public func benchmarkGrep(): Unit {
     PrintUtils.printLine("\n=== Grep Performance Benchmark ===")
-    let currentDir = CliConfig.cwd.toString()
+    let fixtureRoot = createGrepFixture("benchmark")
 
-    let testCases: Array<(String, ?String, ?String, String)> = [
-        ("func", "./src", None, "Simple word search"),
-        ("import.*std", "./src", Some("*.cj"), "Regex in .cj files"),
-        ("\\w+", "./src", Some("src/**/*.cj"), "Complex pattern in src/")
-    ]
+    try {
+        let rootPath = fixtureRoot.toString()
+        let srcPath = fixtureRoot.join("src").toString()
+        let testCases: Array<(String, ?String, ?String, String)> = [
+            ("func", Some(srcPath), None, "Simple word search"),
+            ("import.*std", Some(rootPath), Some("*.cj"), "Regex in .cj files"),
+            ("\\w+", Some(rootPath), Some("src/**/*.cj"), "Complex pattern in src/")
+        ]
 
-    for (testCase in testCases) {
-        let pattern = testCase[0]
-        let path = testCase[1]
-        let include = testCase[2]
-        let description = testCase[3]
+        for (testCase in testCases) {
+            let pattern = testCase[0]
+            let path = testCase[1]
+            let include = testCase[2]
+            let description = testCase[3]
 
-        PrintUtils.printLine("\nBenchmarking: ${description}")
-        PrintUtils.printLine("Pattern: '${pattern}'")
+            PrintUtils.printLine("\nBenchmarking: ${description}")
+            PrintUtils.printLine("Pattern: '${pattern}'")
 
-        // Simple timing (Cangjie may not have precise timing APIs)
-        let result = grep(pattern, path, include)
-        let lineCount = result.split("\n").size
-        PrintUtils.printLine("Found ${lineCount} lines")
+            // Simple timing (Cangjie may not have precise timing APIs)
+            let result = grep(pattern, path, include)
+            let lineCount = result.split("\n").size
+            PrintUtils.printLine("Found ${lineCount} lines")
 
-        // Assert reasonable performance (non-negative results)
-        @PowerAssert(lineCount >= 0)
+            // Assert reasonable performance (non-negative results)
+            @PowerAssert(lineCount >= 0)
+        }
+    } finally {
+        cleanupGrepFixture(fixtureRoot)
     }
 
     PrintUtils.printLine("\n=== Benchmark Completed ===")
+}
+
+private func createGrepFixture(label: String): Path {
+    let root = Path(CliConfig.cwd.toString()).join("metis-grep-test-${label}")
+    cleanupGrepFixture(root)
+
+    Directory.create(root.join("src/nested"), recursive: true)
+    Directory.create(root.join("docs"), recursive: true)
+
+    writeGrepFixtureFile(root.join("src/main.cj"),
+        "package fixture\nimport std.fs.*\nfunc main(): Unit {\n    PrintUtils.printLine(\"hello\")\n}\n")
+    writeGrepFixtureFile(root.join("src/sample_test.cj"),
+        "package fixture\nfunc testCase(): Unit {}\n// ** marker for glob-style grep\n")
+    writeGrepFixtureFile(root.join("src/nested/helper.cj"),
+        "package fixture\nfunc helper(): Unit {}\n")
+    writeGrepFixtureFile(root.join("src/notes.txt"),
+        "plain text func marker\n")
+    writeGrepFixtureFile(root.join("docs/readme.md"),
+        "glob docs\n")
+
+    return root
+}
+
+private func writeGrepFixtureFile(path: Path, content: String): Unit {
+    if (!exists(path.parent)) {
+        Directory.create(path.parent, recursive: true)
+    }
+    File.writeTo(path, content.toArray())
+}
+
+private func cleanupGrepFixture(root: Path): Unit {
+    try {
+        if (exists(root)) {
+            remove(root, recursive: true)
+        }
+    } catch (_: Exception) {
+        ()
+    }
 }

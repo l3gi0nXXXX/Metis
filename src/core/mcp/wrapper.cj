@@ -3,6 +3,7 @@ package metis.core.mcp
 import magic.core.tool.*
 import magic.jsonable.TypeSchema
 
+import metis.core.{runtimeCurrentToolInvocationPolicyContext, runtimeToolInvocationAllowedFromRoot}
 import metis.io.PrintUtils
 
 import std.collection.{HashMap, map, collectArray}
@@ -46,6 +47,23 @@ protected class MCPToolWrapper <: Tool {
     }
 
     override public func invoke(args: HashMap<String, JsonValue>): ToolResponse {
+        match (runtimeCurrentToolInvocationPolicyContext()) {
+            case Some(context) =>
+                let decision = runtimeToolInvocationAllowedFromRoot(
+                    context.root,
+                    this.mcpTool.name,
+                    context.inventory,
+                    agentId: context.agentId,
+                    provider: context.provider
+                )
+                if (!decision.allowed) {
+                    return ToolResponse(
+                        "tool policy rejected `${this.mcpTool.name}`: ${decision.reason}; source=${decision.policySource}",
+                        isError: true
+                    )
+                }
+            case None => ()
+        }
         let message = String.join(
             args.iterator() |> map { kv => "${kv[0]}: ${kv[1]}" } |> collectArray,
             delimiter: "\n"

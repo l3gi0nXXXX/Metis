@@ -2,9 +2,10 @@ package metis.gateway.runtime
 
 import magic.jsonable.*
 
-import metis.core.{gatewayMainRuntimeExtendedToolNames, gatewayMainRuntimeRequiredToolNames, missingRuntimeToolNames}
-import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager, MetisPaths, GatewayUserSettings}
+import metis.core.{gatewayMainRuntimeExtendedToolNames, gatewayMainRuntimeRequiredToolNames, missingRuntimeToolNames, resolveRuntimeToolPolicyFromRoot, runtimeToolPolicyReportToJson}
+import metis.core.config.{CliConfig, CliModelRuntimeStateManager, CliSettingManager, MetisAgentScope, MetisConfigManager, MetisPaths, GatewayUserSettings}
 import metis.core.memory.MemoryRuntimeRegistry
+import metis.core.prompting.{MetisAgentWorkspaceBootstrapResult, ensureMetisAgentWorkspace, metisWorkspaceBootstrapFilenames, metisWorkspaceSafeRead, metisWorkspaceSafeWrite, validateMetisIdentityAvatar}
 import metis.core.skills.resolveAgentSkillVisibility
 import metis.gateway.config.buildGatewayConfigFromUserSettings
 import metis.gateway.core.{gatewayAuthorizedChatToolNames, gatewayCorePromptRuntimeCapabilities, gatewayDefaultChatRuntimeHasUnifiedCoreTools, gatewayDefaultChatToolNames, gatewayMainRuntimePromptTemplateId, gatewayMainRuntimePromptVarianceFields, gatewaySanitizeAgentId}
@@ -12,7 +13,7 @@ import metis.gateway.session.{GatewayIngressSource, GatewaySessionRequest, gatew
 
 import std.collection.{ArrayList, HashMap}
 import std.convert.Parsable
-import std.fs.{Directory, File, Path, exists, remove}
+import std.fs.{Directory, File, FileInfo, Path, copy, exists, remove}
 import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
 
 private func gatewayAgentRpcStringParam(request: GatewayRpcRequest, keys: Array<String>, defaultValue: String): String {
@@ -24,6 +25,21 @@ private func gatewayAgentRpcStringParam(request: GatewayRpcRequest, keys: Array<
                     if (!value.isEmpty()) {
                         return value
                     }
+                } catch (_e: Exception) {
+                    ()
+                }
+            case None => ()
+        }
+    }
+    defaultValue
+}
+
+private func gatewayAgentRpcRawStringParam(request: GatewayRpcRequest, keys: Array<String>, defaultValue: String): String {
+    for (key in keys) {
+        match (request.params.get(key)) {
+            case Some(v) =>
+                try {
+                    return v.asString().getValue()
                 } catch (_e: Exception) {
                     ()
                 }
@@ -49,6 +65,55 @@ private func gatewayAgentJsonBool(obj: JsonObject, key: String, defaultValue: Bo
     }
 }
 
+private func gatewayAgentRequestHasAny(request: GatewayRpcRequest, keys: Array<String>): Bool {
+    for (key in keys) {
+        if (request.params.get(key).isSome()) {
+            return true
+        }
+    }
+    false
+}
+
+private func gatewayAgentCloneValue(value: JsonValue): JsonValue {
+    try {
+        JsonValue.fromStr(value.toJsonString())
+    } catch (_e: Exception) {
+        value
+    }
+}
+
+private func gatewayAgentCloneObject(obj: JsonObject): JsonObject {
+    try {
+        JsonValue.fromStr(obj.toJsonString()).asObject()
+    } catch (_e: Exception) {
+        JsonObject()
+    }
+}
+
+private func gatewayAgentCloneArray(arr: JsonArray): JsonArray {
+    try {
+        JsonValue.fromStr(arr.toJsonString()).asArray()
+    } catch (_e: Exception) {
+        JsonArray([])
+    }
+}
+
+private func gatewayAgentJsonArray(obj: JsonObject, key: String): JsonArray {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
+        case None => JsonArray([])
+    }
+}
+
+private func gatewayAgentJsonObject(obj: JsonObject, key: String): JsonObject {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+}
+
 private func gatewayAgentConfigRootClone(): JsonObject {
     MetisConfigManager.initializeIfMissing()
     match (MetisConfigManager.rawConfig()) {
@@ -60,6 +125,43 @@ private func gatewayAgentConfigRootClone(): JsonObject {
             }
         case None => JsonObject()
     }
+}
+
+private func gatewayAgentConfigRootCloneReadOnly(): JsonObject {
+    match (MetisConfigManager.rawConfig()) {
+        case Some(root) =>
+            try {
+                JsonValue.fromStr(root.toJsonString()).asObject()
+            } catch (_e: Exception) {
+                JsonObject()
+            }
+        case None => JsonObject()
+    }
+}
+
+private func gatewayAgentScopeRootFromRequest(request: GatewayRpcRequest): JsonObject {
+    match (request.params.get("configRoot")) {
+        case Some(v) =>
+            try { return scopeCloneObjectForGateway(v.asObject()) } catch (_e: Exception) { () }
+        case None => ()
+    }
+    gatewayAgentConfigRootCloneReadOnly()
+}
+
+private func scopeCloneObjectForGateway(root: JsonObject): JsonObject {
+    try {
+        JsonValue.fromStr(root.toJsonString()).asObject()
+    } catch (_e: Exception) {
+        JsonObject()
+    }
+}
+
+private func gatewayAgentScopePathParam(request: GatewayRpcRequest, key: String, fallback: Path): Path {
+    let raw = gatewayAgentRpcStringParam(request, [key], "")
+    if (raw.trimAscii().isEmpty()) {
+        return fallback
+    }
+    try { Path(raw.trimAscii()).normalize() } catch (_e: Exception) { Path(raw.trimAscii()) }
 }
 
 private func gatewayAgentConfigEntries(root: JsonObject): JsonArray {
@@ -138,6 +240,137 @@ private func gatewayAgentSummaryModelJson(model: String): JsonObject {
     out
 }
 
+private func gatewayAgentPutModelJson(out: JsonObject, entry: JsonObject): Unit {
+    match (entry.get("model")) {
+        case Some(v) =>
+            try {
+                out.put("model", gatewayAgentCloneObject(v.asObject()))
+                return
+            } catch (_e: Exception) {
+                ()
+            }
+            try {
+                let model = v.asString().getValue().trimAscii()
+                let modelJson = gatewayAgentSummaryModelJson(model)
+                if (modelJson.size() > 0) {
+                    out.put("model", modelJson)
+                }
+            } catch (_e: Exception) {
+                ()
+            }
+        case None => ()
+    }
+}
+
+private func gatewayAgentAliasArrayFromGroupChat(groupChat: JsonObject): JsonArray {
+    let out = JsonArray([])
+    let seen = ArrayList<String>()
+    let mentionPatterns = gatewayAgentJsonArray(groupChat, "mentionPatterns")
+    for (i in 0..mentionPatterns.size()) {
+        let alias = try { mentionPatterns[i].asString().getValue().trimAscii() } catch (_e: Exception) { "" }
+        if (!alias.isEmpty() && !seen.contains(alias)) {
+            out.add(JsonString(alias))
+            seen.add(alias)
+        }
+    }
+    out
+}
+
+private func gatewayAgentPutGroupChatAndAliases(out: JsonObject, entry: JsonObject): Unit {
+    match (entry.get("groupChat")) {
+        case Some(v) =>
+            try {
+                let groupChat = gatewayAgentCloneObject(v.asObject())
+                out.put("groupChat", groupChat)
+                let aliases = gatewayAgentAliasArrayFromGroupChat(groupChat)
+                if (aliases.size() > 0) {
+                    out.put("aliases", aliases)
+                }
+            } catch (_e: Exception) {
+                ()
+            }
+        case None => ()
+    }
+}
+
+private func gatewayAgentTeamsList(root: JsonObject): JsonArray {
+    match (root.get("agentTeams")) {
+        case Some(v) =>
+            try {
+                let teams = v.asObject()
+                match (teams.get("list")) {
+                    case Some(listValue) =>
+                        try { listValue.asArray() } catch (_e: Exception) { JsonArray([]) }
+                    case None => JsonArray([])
+                }
+            } catch (_e: Exception) {
+                JsonArray([])
+            }
+        case None => JsonArray([])
+    }
+}
+
+private func gatewayAgentTeamsWriteList(root: JsonObject, teamsList: JsonArray): Unit {
+    let teams = match (root.get("agentTeams")) {
+        case Some(v) =>
+            try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    teams.put("list", teamsList)
+    root.put("agentTeams", teams)
+}
+
+private func gatewayAgentTeamIdsForAgent(root: JsonObject, agentId: String): JsonArray {
+    let normalized = gatewaySanitizeAgentId(agentId)
+    let out = JsonArray([])
+    let seen = ArrayList<String>()
+    let teams = gatewayAgentTeamsList(root)
+    for (i in 0..teams.size()) {
+        let team = try { teams[i].asObject() } catch (_e: Exception) { JsonObject() }
+        let teamId = gatewaySanitizeAgentId(gatewayAgentJsonString(team, "id", ""))
+        if (teamId.isEmpty()) {
+            continue
+        }
+        var matched = false
+        let members = gatewayAgentJsonArray(team, "members")
+        for (j in 0..members.size()) {
+            let memberAgentId = try {
+                gatewaySanitizeAgentId(members[j].asObject().get("agentId").getOrThrow().asString().getValue())
+            } catch (_e: Exception) {
+                try { gatewaySanitizeAgentId(members[j].asString().getValue()) } catch (_e2: Exception) { "" }
+            }
+            if (memberAgentId == normalized) {
+                matched = true
+                break
+            }
+        }
+        if (!matched) {
+            let aliases = gatewayAgentJsonArray(team, "aliases")
+            for (j in 0..aliases.size()) {
+                let aliasObj = try { aliases[j].asObject() } catch (_e: Exception) { JsonObject() }
+                if (gatewaySanitizeAgentId(gatewayAgentJsonString(aliasObj, "agentId", "")) == normalized) {
+                    matched = true
+                    break
+                }
+            }
+        }
+        if (matched && !seen.contains(teamId)) {
+            out.add(JsonString(teamId))
+            seen.add(teamId)
+        }
+    }
+    out
+}
+
+private func gatewayAgentArrayContains(items: ArrayList<String>, value: String): Bool {
+    for (item in items) {
+        if (item == value) {
+            return true
+        }
+    }
+    false
+}
+
 private func gatewayAgentSkillsJson(agentId: String): JsonObject {
     let resolved = resolveAgentSkillVisibility(agentId)
     let out = JsonObject()
@@ -154,6 +387,45 @@ private func gatewayAgentSkillsJson(agentId: String): JsonObject {
     out
 }
 
+private func gatewayAgentStringArrayJson(values: Array<String>): JsonArray {
+    let arr = JsonArray([])
+    for (value in values) {
+        arr.add(JsonString(value))
+    }
+    arr
+}
+
+private func gatewayAgentRuntimePolicyRoot(user: GatewayUserSettings): JsonObject {
+    let root = gatewayAgentConfigRootClone()
+    let gatewayObj = match (root.get("gateway")) {
+        case Some(v) =>
+            try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    let toolsObj = JsonObject()
+    if (user.tools.allow.size > 0) {
+        toolsObj.put("allow", gatewayAgentStringArrayJson(user.tools.allow))
+    }
+    if (user.tools.deny.size > 0) {
+        toolsObj.put("deny", gatewayAgentStringArrayJson(user.tools.deny))
+    }
+    if (toolsObj.size() > 0) {
+        gatewayObj.put("tools", toolsObj)
+        root.put("gateway", gatewayObj)
+    }
+    root
+}
+
+private func gatewayAgentToolsJson(agentId: String, currentNames: Array<String>): JsonObject {
+    runtimeToolPolicyReportToJson(
+        resolveRuntimeToolPolicyFromRoot(
+            gatewayAgentRuntimePolicyRoot(CliSettingManager.readGatewaySettings()),
+            currentNames,
+            agentId: agentId
+        )
+    )
+}
+
 private func gatewayMainRuntimeProfileJson(): JsonObject {
     let result = JsonObject()
     let gatewayUser = CliSettingManager.readGatewaySettings()
@@ -164,6 +436,10 @@ private func gatewayMainRuntimeProfileJson(): JsonObject {
     let currentNames = gatewayDefaultChatToolNames()
     let effectiveNames = gatewayAuthorizedChatToolNames()
     let authorizationProfile = gatewayMainRuntimeAuthorizationProfileJson(gatewayUser, currentNames, effectiveNames)
+    authorizationProfile.put(
+        "effectivePolicy",
+        runtimeToolPolicyReportToJson(resolveRuntimeToolPolicyFromRoot(gatewayAgentRuntimePolicyRoot(gatewayUser), currentNames))
+    )
     let current = JsonArray([])
     for (name in currentNames) {
         current.add(JsonString(name))
@@ -416,7 +692,7 @@ private func gatewayMainRuntimeAuthorizationProfileJson(
     out
 }
 
-private func gatewayAgentSummaryRow(agentId: String, kind: String, entry!: JsonObject = JsonObject()): JsonObject {
+private func gatewayAgentSummaryRow(agentId: String, kind: String, entry!: JsonObject = JsonObject(), root!: JsonObject = JsonObject()): JsonObject {
     let row = JsonObject()
     let normalized = gatewaySanitizeAgentId(agentId)
     row.put("id", JsonString(normalized))
@@ -437,21 +713,41 @@ private func gatewayAgentSummaryRow(agentId: String, kind: String, entry!: JsonO
     if (!configuredWorkspace.isEmpty()) {
         row.put("workspace", JsonString(configuredWorkspace))
     }
-    let model = gatewayAgentJsonString(entry, "model", "").trimAscii()
-    let modelJson = gatewayAgentSummaryModelJson(model)
-    if (modelJson.size() > 0) {
-        row.put("model", modelJson)
+    let configuredAgentDir = gatewayAgentJsonString(entry, "agentDir", "").trimAscii()
+    if (!configuredAgentDir.isEmpty()) {
+        row.put("agentDir", JsonString(configuredAgentDir))
+    }
+    let configuredSessionsDir = gatewayAgentJsonString(entry, "sessionsDir", "").trimAscii()
+    if (!configuredSessionsDir.isEmpty()) {
+        row.put("sessionsDir", JsonString(configuredSessionsDir))
+    }
+    gatewayAgentPutModelJson(row, entry)
+    gatewayAgentPutGroupChatAndAliases(row, entry)
+    let teamIds = gatewayAgentTeamIdsForAgent(root, normalized)
+    if (teamIds.size() > 0) {
+        row.put("teamIds", teamIds)
     }
     row.put("skills", gatewayAgentSkillsJson(normalized))
+    row.put("tools", gatewayAgentToolsJson(normalized, gatewayDefaultChatToolNames()))
     row.put("kind", JsonString(kind))
     row
 }
 
+private func gatewayAgentAppendCustomSummaryRow(rows: JsonArray, seen: ArrayList<String>, agentId: String, entry: JsonObject, root!: JsonObject = JsonObject()): Unit {
+    let normalized = gatewaySanitizeAgentId(agentId)
+    if (normalized.isEmpty() || gatewayAgentArrayContains(seen, normalized)) {
+        return
+    }
+    rows.add(gatewayAgentSummaryRow(normalized, "custom", entry: entry, root: root))
+    seen.add(normalized)
+}
+
 private func gatewayAgentsContractJson(): JsonObject {
-    let root = gatewayAgentConfigRootClone()
+    let root = gatewayAgentConfigRootCloneReadOnly()
+    let scopeSummary = MetisAgentScope.summary(root, homeRoot: MetisPaths.homeRootReadOnly(), defaultWorkspace: MetisPaths.workspaceRootReadOnly())
     let agents = JsonArray([])
     for (agentId in [
-        "general",
+        "main",
         "cangjie",
         "explorer",
         "editor",
@@ -462,12 +758,42 @@ private func gatewayAgentsContractJson(): JsonObject {
     ]) {
         agents.add(gatewayAgentSummaryRow(agentId, "builtin"))
     }
+    let seenCustom = ArrayList<String>()
+    let entries = gatewayAgentConfigEntries(root)
+    for (i in 0..entries.size()) {
+        let entry = try { entries[i].asObject() } catch (_e: Exception) { JsonObject() }
+        let agentId = gatewayAgentJsonString(entry, "id", "")
+        let agentDirText = gatewayAgentJsonString(entry, "agentDir", "")
+        if (agentId.trimAscii().isEmpty() || agentDirText.trimAscii().isEmpty()) {
+            continue
+        }
+        if (exists(Path(agentDirText).join("AGENT.md"))) {
+            gatewayAgentAppendCustomSummaryRow(agents, seenCustom, agentId, entry, root: root)
+        }
+    }
     for (agentDir in CliConfig.subagentDirs) {
         if (!exists(agentDir)) {
             continue
         }
+        let directManifest = agentDir.join("AGENT.md")
+        if (exists(directManifest)) {
+            let agentId = agentDir.fileName
+            let configuredEntry = gatewayAgentConfigEntry(root, agentId)
+            gatewayAgentAppendCustomSummaryRow(agents, seenCustom, agentId, configuredEntry, root: root)
+            continue
+        }
+        let nestedManifest = agentDir.join("agent").join("AGENT.md")
+        if (exists(nestedManifest)) {
+            let agentId = agentDir.fileName
+            let configuredEntry = gatewayAgentConfigEntry(root, agentId)
+            gatewayAgentAppendCustomSummaryRow(agents, seenCustom, agentId, configuredEntry, root: root)
+            continue
+        }
         for (entry in Directory.readFrom(agentDir)) {
             if (!entry.isDirectory()) {
+                continue
+            }
+            if (entry.name == "agent") {
                 continue
             }
             let manifest = agentDir.join(entry.name).join("AGENT.md")
@@ -475,11 +801,11 @@ private func gatewayAgentsContractJson(): JsonObject {
                 continue
             }
             let configuredEntry = gatewayAgentConfigEntry(root, entry.name)
-            agents.add(gatewayAgentSummaryRow(entry.name, "custom", entry: configuredEntry))
+            gatewayAgentAppendCustomSummaryRow(agents, seenCustom, entry.name, configuredEntry, root: root)
         }
     }
     let result = JsonObject()
-    result.put("defaultId", JsonString("general"))
+    result.put("defaultId", scopeSummary.get("defaultAgentId") ?? JsonString("main"))
     result.put("mainKey", JsonString("main"))
     result.put("scope", JsonString("global"))
     result.put("agents", agents)
@@ -495,11 +821,24 @@ private func gatewayAgentExists(root: JsonObject, agentId: String): Bool {
 }
 
 private func gatewayAgentDefaultAgentDir(agentId: String): Path {
-    MetisPaths.homeRoot().join("agents").join(gatewaySanitizeAgentId(agentId))
+    MetisPaths.homeRoot().join("agents").join(gatewaySanitizeAgentId(agentId)).join("agent")
+}
+
+private func gatewayAgentDefaultSessionsDir(agentId: String): Path {
+    MetisPaths.homeRoot().join("agents").join(gatewaySanitizeAgentId(agentId)).join("sessions")
 }
 
 private func gatewayAgentDefaultWorkspaceDir(agentId: String): Path {
     MetisPaths.homeRoot().join("workspaces").join(gatewaySanitizeAgentId(agentId))
+}
+
+private class GatewayAgentAuthProfileCopyPlan {
+    public var requested: Bool = false
+    public var ok: Bool = true
+    public var error: String = ""
+    public var sourcePath: String = ""
+    public var targetPath: String = ""
+    public init() {}
 }
 
 private func gatewayAgentBuildDefaultManifest(agentId: String, name: String, workspace: String): String {
@@ -511,6 +850,70 @@ private func gatewayAgentBuildDefaultManifest(agentId: String, name: String, wor
     "# ${title}\n\n" +
     "This custom agent is managed by Metis.\n\n" +
     "Workspace: ${workspace}\n"
+}
+
+private func gatewayAgentResolveAuthProfileSource(source: String): String {
+    let normalized = source.trimAscii()
+    if (normalized.isEmpty()) {
+        return ""
+    }
+    let low = normalized.toAsciiLower()
+    if (low == "default-agent") {
+        return MetisPaths.homeRoot().join("auth-profiles.json").toString()
+    }
+    ""
+}
+
+private func gatewayAgentAuthProfileCopyPlan(request: GatewayRpcRequest, targetAgentDir: Path): GatewayAgentAuthProfileCopyPlan {
+    let plan = GatewayAgentAuthProfileCopyPlan()
+    plan.requested = gatewayAgentJsonBool(request.params, "copyAuthProfiles", false) ||
+        gatewayAgentJsonBool(request.params, "importAuthProfiles", false)
+    plan.targetPath = targetAgentDir.join("auth-profiles.json").toString()
+    if (!plan.requested) {
+        return plan
+    }
+    let confirmed = gatewayAgentJsonBool(request.params, "confirm", false) || gatewayAgentJsonBool(request.params, "force", false)
+    if (!confirmed) {
+        plan.ok = false
+        plan.error = "Auth profile copy/import requires confirm=true or force=true."
+        return plan
+    }
+    let source = gatewayAgentRpcStringParam(
+        request,
+        ["source", "authProfilesSource"],
+        ""
+    )
+    if (source.trimAscii().isEmpty() || source.trimAscii().toAsciiLower() != "default-agent") {
+        plan.ok = false
+        plan.error = "Auth profile copy/import requires source=default-agent."
+        return plan
+    }
+    let sourcePath = gatewayAgentResolveAuthProfileSource(source)
+    if (sourcePath.trimAscii().isEmpty() || !exists(Path(sourcePath))) {
+        plan.ok = false
+        plan.error = "Auth profile source not found."
+        return plan
+    }
+    if (exists(Path(plan.targetPath))) {
+        plan.ok = false
+        plan.error = "Target auth-profiles.json already exists; refusing to overwrite."
+        return plan
+    }
+    plan.sourcePath = sourcePath
+    plan
+}
+
+private func gatewayAgentBootstrapFilesJson(bootstrap: MetisAgentWorkspaceBootstrapResult): JsonArray {
+    let files = JsonArray([])
+    for (file in bootstrap.files) {
+        let row = JsonObject()
+        row.put("name", JsonString(file.name))
+        row.put("path", JsonString(file.path))
+        row.put("created", file.created.toJsonValue())
+        row.put("existed", file.existed.toJsonValue())
+        files.add(row)
+    }
+    files
 }
 
 private func gatewayAgentBindingAccountId(matchObj: JsonObject): String {
@@ -803,13 +1206,25 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
     let workspace = gatewayAgentRpcStringParam(request, ["workspace"], gatewayAgentDefaultWorkspaceDir(agentId).toString())
     let model = gatewayAgentRpcStringParam(request, ["model"], "")
     let agentDir = gatewayAgentRpcStringParam(request, ["agentDir"], gatewayAgentDefaultAgentDir(agentId).toString())
+    let sessionsDir = gatewayAgentRpcStringParam(request, ["sessionsDir"], gatewayAgentDefaultSessionsDir(agentId).toString())
     let agentDirPath = Path(agentDir)
     let workspacePath = Path(workspace)
+    let sessionsDirPath = Path(sessionsDir)
+    let authCopy = gatewayAgentAuthProfileCopyPlan(request, agentDirPath)
+    if (!authCopy.ok) {
+        return GatewayRpcResponse(false, "agents.add", error: authCopy.error)
+    }
     if (!exists(agentDirPath)) {
         Directory.create(agentDirPath, recursive: true)
     }
-    if (!exists(workspacePath)) {
-        Directory.create(workspacePath, recursive: true)
+    if (!exists(sessionsDirPath)) {
+        Directory.create(sessionsDirPath, recursive: true)
+    }
+    let bootstrap = ensureMetisAgentWorkspace(workspacePath)
+    var authProfilesCopied = false
+    if (authCopy.requested) {
+        copy(Path(authCopy.sourcePath), to: Path(authCopy.targetPath), overwrite: false)
+        authProfilesCopied = true
     }
     let manifestPath = agentDirPath.join("AGENT.md")
     if (!exists(manifestPath)) {
@@ -820,6 +1235,7 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
     entry.put("name", JsonString(name))
     entry.put("workspace", JsonString(workspace))
     entry.put("agentDir", JsonString(agentDir))
+    entry.put("sessionsDir", JsonString(sessionsDir))
     if (!model.trimAscii().isEmpty()) {
         entry.put("model", JsonString(model.trimAscii()))
     }
@@ -834,9 +1250,748 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
     result.put("agentId", JsonString(agentId))
     result.put("name", JsonString(name))
     result.put("workspace", JsonString(workspace))
+    result.put("workspaceDir", JsonString(workspace))
     result.put("agentDir", JsonString(agentDir))
+    result.put("sessionsDir", JsonString(sessionsDir))
     result.put("createdManifest", JsonString(manifestPath.toString()))
+    let bootstrapJson = JsonObject()
+    bootstrapJson.put("workspaceDir", JsonString(bootstrap.workspaceDir))
+    bootstrapJson.put("createdCount", bootstrap.createdCount.toJsonValue())
+    bootstrapJson.put("files", gatewayAgentBootstrapFilesJson(bootstrap))
+    bootstrapJson.put("authProfilesCopied", authProfilesCopied.toJsonValue())
+    bootstrapJson.put("authProfilesCopyRequiresExplicitRequest", true.toJsonValue())
+    bootstrapJson.put("authProfilesPath", JsonString(agentDirPath.join("auth-profiles.json").toString()))
+    bootstrapJson.put("modelsJsonPath", JsonString(agentDirPath.join("models.json").toString()))
+    result.put("bootstrap", bootstrapJson)
     GatewayRpcResponse(true, "agents.add", result: result)
+}
+
+private func gatewayAgentPutRequestString(entry: JsonObject, request: GatewayRpcRequest, keys: Array<String>, field: String): Unit {
+    if (!gatewayAgentRequestHasAny(request, keys)) {
+        return
+    }
+    let value = gatewayAgentRpcStringParam(request, keys, "").trimAscii()
+    if (!value.isEmpty()) {
+        entry.put(field, JsonString(value))
+    }
+}
+
+private func gatewayAgentValidateIdentityForWorkspace(workspace: String, identity: JsonObject): String {
+    let avatar = gatewayAgentJsonString(identity, "avatar", "").trimAscii()
+    if (avatar.isEmpty()) {
+        return ""
+    }
+    let validation = validateMetisIdentityAvatar(Path(workspace), avatar)
+    if (!validation.ok) {
+        return "Invalid avatar: ${validation.reason}"
+    }
+    ""
+}
+
+private func gatewayAgentPutIdentityFromRequest(entry: JsonObject, request: GatewayRpcRequest, workspace: String): String {
+    var identity = match (entry.get("identity")) {
+        case Some(v) =>
+            try { gatewayAgentCloneObject(v.asObject()) } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    match (request.params.get("identity")) {
+        case Some(v) =>
+            try {
+                identity = gatewayAgentCloneObject(v.asObject())
+            } catch (_e: Exception) {
+                return "identity must be a JSON object."
+            }
+        case None => ()
+    }
+    for (field in ["name", "emoji", "theme", "avatar"]) {
+        let value = gatewayAgentRpcStringParam(request, [field], "").trimAscii()
+        if (!value.isEmpty()) {
+            identity.put(field, JsonString(value))
+        }
+    }
+    let validationError = gatewayAgentValidateIdentityForWorkspace(workspace, identity)
+    if (!validationError.isEmpty()) {
+        return validationError
+    }
+    if (identity.size() > 0) {
+        entry.put("identity", identity)
+    }
+    ""
+}
+
+private func gatewayAgentPutModelFromRequest(entry: JsonObject, request: GatewayRpcRequest): String {
+    match (request.params.get("model")) {
+        case Some(v) =>
+            try {
+                entry.put("model", gatewayAgentCloneObject(v.asObject()))
+                return ""
+            } catch (_e: Exception) {
+                ()
+            }
+            try {
+                let model = v.asString().getValue().trimAscii()
+                if (!model.isEmpty()) {
+                    entry.put("model", JsonString(model))
+                }
+                return ""
+            } catch (_e: Exception) {
+                return "model must be a string or JSON object."
+            }
+        case None => ""
+    }
+}
+
+private func gatewayAgentPutGroupChatFromRequest(entry: JsonObject, request: GatewayRpcRequest): String {
+    match (request.params.get("groupChat")) {
+        case Some(v) =>
+            try {
+                entry.put("groupChat", gatewayAgentCloneObject(v.asObject()))
+                ""
+            } catch (_e: Exception) {
+                "groupChat must be a JSON object."
+            }
+        case None => ""
+    }
+}
+
+private func gatewayAgentUpdateJson(request: GatewayRpcRequest): GatewayRpcResponse {
+    let root = gatewayAgentConfigRootClone()
+    let agentId = gatewaySanitizeAgentId(gatewayAgentRpcStringParam(request, ["id", "agent", "agentId"], ""))
+    if (agentId.isEmpty()) {
+        return GatewayRpcResponse(false, "agents.update", error: "Agent id is required.")
+    }
+    let entries = gatewayAgentConfigEntries(root)
+    let index = gatewayAgentConfigFindEntryIndex(entries, agentId)
+    if (index < 0) {
+        return GatewayRpcResponse(false, "agents.update", error: "Agent \"${agentId}\" not found.")
+    }
+    let existing = try { entries[index].asObject() } catch (_e: Exception) { JsonObject() }
+    let updated = gatewayAgentCloneObject(existing)
+    gatewayAgentPutRequestString(updated, request, ["name"], "name")
+    gatewayAgentPutRequestString(updated, request, ["workspace"], "workspace")
+    gatewayAgentPutRequestString(updated, request, ["agentDir"], "agentDir")
+    gatewayAgentPutRequestString(updated, request, ["sessionsDir"], "sessionsDir")
+    let workspace = gatewayAgentJsonString(updated, "workspace", gatewayAgentDefaultWorkspaceDir(agentId).toString()).trimAscii()
+    let modelError = gatewayAgentPutModelFromRequest(updated, request)
+    if (!modelError.isEmpty()) {
+        return GatewayRpcResponse(false, "agents.update", error: modelError)
+    }
+    let groupChatError = gatewayAgentPutGroupChatFromRequest(updated, request)
+    if (!groupChatError.isEmpty()) {
+        return GatewayRpcResponse(false, "agents.update", error: groupChatError)
+    }
+    let identityError = gatewayAgentPutIdentityFromRequest(updated, request, workspace)
+    if (!identityError.isEmpty()) {
+        return GatewayRpcResponse(false, "agents.update", error: identityError)
+    }
+    let workspacePath = Path(workspace)
+    let bootstrap = ensureMetisAgentWorkspace(workspacePath)
+    let agentDir = gatewayAgentJsonString(updated, "agentDir", gatewayAgentDefaultAgentDir(agentId).toString())
+    let sessionsDir = gatewayAgentJsonString(updated, "sessionsDir", gatewayAgentDefaultSessionsDir(agentId).toString())
+    if (!exists(Path(agentDir))) {
+        Directory.create(Path(agentDir), recursive: true)
+    }
+    if (!exists(Path(sessionsDir))) {
+        Directory.create(Path(sessionsDir), recursive: true)
+    }
+    let manifestPath = Path(agentDir).join("AGENT.md")
+    if (!exists(manifestPath)) {
+        File.writeTo(
+            manifestPath,
+            gatewayAgentBuildDefaultManifest(agentId, gatewayAgentJsonString(updated, "name", agentId), workspace).toArray()
+        )
+    }
+    let nextEntries = JsonArray([])
+    for (i in 0..entries.size()) {
+        if (i == index) {
+            nextEntries.add(updated)
+        } else {
+            nextEntries.add(entries[i])
+        }
+    }
+    gatewayAgentConfigWriteEntries(root, nextEntries)
+    MetisConfigManager.writeRoot(root)
+    let result = JsonObject()
+    result.put("agentId", JsonString(agentId))
+    result.put("agent", gatewayAgentGetJson(agentId))
+    let bootstrapJson = JsonObject()
+    bootstrapJson.put("workspaceDir", JsonString(bootstrap.workspaceDir))
+    bootstrapJson.put("createdCount", bootstrap.createdCount.toJsonValue())
+    bootstrapJson.put("files", gatewayAgentBootstrapFilesJson(bootstrap))
+    result.put("bootstrap", bootstrapJson)
+    GatewayRpcResponse(true, "agents.update", result: result)
+}
+
+private func gatewayAgentScopeForManagementRequest(request: GatewayRpcRequest): (String, JsonObject) {
+    let root = gatewayAgentConfigRootCloneReadOnly()
+    let agentId = gatewayResolveRequestAgentId(request)
+    let scope = MetisAgentScope.resolve(
+        root,
+        agentId: agentId,
+        homeRoot: MetisPaths.homeRootReadOnly(),
+        defaultWorkspace: MetisPaths.workspaceRootReadOnly()
+    )
+    (gatewayAgentJsonString(scope, "agentId", agentId), scope)
+}
+
+private func gatewayAgentFileUpdatedAtMillis(path: Path): Int64 {
+    if (!exists(path)) {
+        return 0
+    }
+    try {
+        FileInfo(path).lastModificationTime.toUnixTimeStamp().toMilliseconds()
+    } catch (_e: Exception) {
+        0
+    }
+}
+
+private func gatewayAgentFileSize(path: Path): Int64 {
+    if (!exists(path)) {
+        return 0
+    }
+    try {
+        FileInfo(path).size
+    } catch (_e: Exception) {
+        0
+    }
+}
+
+private func gatewayAgentWorkspaceFileRow(workspace: Path, name: String): JsonObject {
+    let path = workspace.join(name)
+    let row = JsonObject()
+    row.put("name", JsonString(name))
+    row.put("path", JsonString(path.toString()))
+    row.put("missing", (!exists(path)).toJsonValue())
+    row.put("size", gatewayAgentFileSize(path).toJsonValue())
+    row.put("updatedAtMs", gatewayAgentFileUpdatedAtMillis(path).toJsonValue())
+    row
+}
+
+private func gatewayAgentWorkspaceFilesListJson(request: GatewayRpcRequest): GatewayRpcResponse {
+    let (agentId, scope) = gatewayAgentScopeForManagementRequest(request)
+    if (!gatewayAgentJsonBool(gatewayAgentGetJson(agentId), "configured", false)) {
+        return GatewayRpcResponse(false, "agents.files.list", error: "Agent \"${agentId}\" not found.")
+    }
+    let workspaceText = gatewayAgentJsonString(scope, "workspaceDir", "").trimAscii()
+    if (workspaceText.isEmpty()) {
+        return GatewayRpcResponse(false, "agents.files.list", error: "Agent workspace is not resolved.")
+    }
+    let workspace = Path(workspaceText)
+    let files = JsonArray([])
+    let seen = ArrayList<String>()
+    for (name in metisWorkspaceBootstrapFilenames()) {
+        files.add(gatewayAgentWorkspaceFileRow(workspace, name))
+        seen.add(name)
+    }
+    if (exists(workspace)) {
+        for (entry in Directory.readFrom(workspace)) {
+            if (entry.isDirectory()) {
+                continue
+            }
+            let name = entry.name.trimAscii()
+            if (name.isEmpty() || seen.contains(name)) {
+                continue
+            }
+            let lower = name.toAsciiLower()
+            if (!(lower.endsWith(".md") || lower.endsWith(".txt") || lower.endsWith(".json"))) {
+                continue
+            }
+            files.add(gatewayAgentWorkspaceFileRow(workspace, name))
+            seen.add(name)
+        }
+    }
+    let result = JsonObject()
+    result.put("agentId", JsonString(agentId))
+    result.put("workspace", JsonString(workspaceText))
+    result.put("files", files)
+    GatewayRpcResponse(true, "agents.files.list", result: result)
+}
+
+private func gatewayAgentWorkspaceFileJson(request: GatewayRpcRequest, content!: String = "", includeContent!: Bool = false): GatewayRpcResponse {
+    let (agentId, scope) = gatewayAgentScopeForManagementRequest(request)
+    if (!gatewayAgentJsonBool(gatewayAgentGetJson(agentId), "configured", false)) {
+        return GatewayRpcResponse(false, request.method, error: "Agent \"${agentId}\" not found.")
+    }
+    let workspaceText = gatewayAgentJsonString(scope, "workspaceDir", "").trimAscii()
+    let name = gatewayAgentRpcStringParam(request, ["name", "path"], "").trimAscii()
+    if (workspaceText.isEmpty() || name.isEmpty()) {
+        return GatewayRpcResponse(false, request.method, error: "Agent workspace and file name are required.")
+    }
+    let workspace = Path(workspaceText)
+    let io = if (includeContent) {
+        metisWorkspaceSafeWrite(workspace, name, content)
+    } else {
+        metisWorkspaceSafeRead(workspace, name)
+    }
+    if (!io.ok) {
+        return GatewayRpcResponse(false, request.method, error: io.reason)
+    }
+    let file = gatewayAgentWorkspaceFileRow(workspace, name)
+    file.put("path", JsonString(io.path))
+    file.put("missing", false.toJsonValue())
+    file.put("content", JsonString(io.content))
+    let result = JsonObject()
+    result.put("agentId", JsonString(agentId))
+    result.put("workspace", JsonString(workspaceText))
+    result.put("file", file)
+    GatewayRpcResponse(true, request.method, result: result)
+}
+
+private func gatewayAgentSecretKey(key: String): Bool {
+    let lower = key.trimAscii().toAsciiLower()
+    lower.contains("token") || lower.contains("secret") || lower.contains("apikey") ||
+        lower.contains("api_key") || lower.contains("password") || lower.contains("authorization")
+}
+
+private func gatewayAgentRedactArray(arr: JsonArray): JsonArray {
+    let out = JsonArray([])
+    for (item in arr.getItems()) {
+        try {
+            out.add(gatewayAgentRedactObject(item.asObject()))
+        } catch (_e: Exception) {
+            try {
+                out.add(gatewayAgentRedactArray(item.asArray()))
+            } catch (_e2: Exception) {
+                out.add(gatewayAgentCloneValue(item))
+            }
+        }
+    }
+    out
+}
+
+private func gatewayAgentRedactObject(obj: JsonObject): JsonObject {
+    let out = JsonObject()
+    for ((key, value) in obj.getFields()) {
+        if (gatewayAgentSecretKey(key)) {
+            out.put(key, JsonString("<redacted>"))
+            continue
+        }
+        try {
+            out.put(key, gatewayAgentRedactObject(value.asObject()))
+        } catch (_e: Exception) {
+            try {
+                out.put(key, gatewayAgentRedactArray(value.asArray()))
+            } catch (_e2: Exception) {
+                out.put(key, gatewayAgentCloneValue(value))
+            }
+        }
+    }
+    out
+}
+
+private func gatewayAgentProviderCount(state: JsonObject): Int64 {
+    match (state.get("providers")) {
+        case Some(v) =>
+            try { return v.asArray().size() } catch (_e: Exception) { () }
+            try { return v.asObject().size() } catch (_e2: Exception) { () }
+            0
+        case None => 0
+    }
+}
+
+private func gatewayAgentModelsReadState(path: Path, diagnostics: JsonArray): JsonObject {
+    if (!exists(path)) {
+        return JsonObject()
+    }
+    try {
+        JsonValue.fromStr(String.fromUtf8(File.readFrom(path))).asObject()
+    } catch (e: Exception) {
+        diagnostics.add(JsonString("invalid models.json: ${e.message}"))
+        JsonObject()
+    }
+}
+
+private func gatewayAgentModelsResponse(agentId: String, agentDir: Path, path: Path, state: JsonObject, diagnostics: JsonArray): JsonObject {
+    let models = JsonObject()
+    models.put("agentId", JsonString(agentId))
+    models.put("agentDir", JsonString(agentDir.toString()))
+    models.put("path", JsonString(path.toString()))
+    models.put("present", exists(path).toJsonValue())
+    models.put("primaryModelRef", JsonString(gatewayAgentJsonString(state, "primaryModelRef", "")))
+    models.put("runtimePrimaryModelRef", JsonString(gatewayAgentJsonString(state, "runtimePrimaryModelRef", "")))
+    models.put("providerCount", gatewayAgentProviderCount(state).toJsonValue())
+    models.put("diagnostics", diagnostics)
+    models.put("state", gatewayAgentRedactObject(state))
+    let result = JsonObject()
+    result.put("models", models)
+    result
+}
+
+private func gatewayAgentModelsGetJson(request: GatewayRpcRequest): GatewayRpcResponse {
+    let (agentId, scope) = gatewayAgentScopeForManagementRequest(request)
+    if (!gatewayAgentJsonBool(gatewayAgentGetJson(agentId), "configured", false)) {
+        return GatewayRpcResponse(false, request.method, error: "Agent \"${agentId}\" not found.")
+    }
+    let agentDir = Path(gatewayAgentJsonString(scope, "agentDir", gatewayAgentDefaultAgentDir(agentId).toString()))
+    let path = CliModelRuntimeStateManager.ensureAgentRuntimeState(agentDir)
+    let diagnostics = JsonArray([])
+    let state = gatewayAgentModelsReadState(path, diagnostics)
+    GatewayRpcResponse(true, request.method, result: gatewayAgentModelsResponse(agentId, agentDir, path, state, diagnostics))
+}
+
+private func gatewayAgentModelsStateFromRequest(request: GatewayRpcRequest): (Bool, String, JsonObject) {
+    match (request.params.get("state")) {
+        case Some(v) =>
+            try {
+                return (true, "", gatewayAgentCloneObject(v.asObject()))
+            } catch (_e: Exception) {
+                return (false, "state must be a JSON object.", JsonObject())
+            }
+        case None => ()
+    }
+    match (request.params.get("content")) {
+        case Some(v) =>
+            let content = try { v.asString().getValue() } catch (_e: Exception) { v.toJsonString() }
+            try {
+                return (true, "", JsonValue.fromStr(content).asObject())
+            } catch (_e: Exception) {
+                return (false, "content must be valid JSON object.", JsonObject())
+            }
+        case None => (false, "Provide state object or content JSON.", JsonObject())
+    }
+}
+
+private func gatewayAgentModelsSetJson(request: GatewayRpcRequest): GatewayRpcResponse {
+    let (ok, error, state) = gatewayAgentModelsStateFromRequest(request)
+    if (!ok) {
+        return GatewayRpcResponse(false, request.method, error: error)
+    }
+    let (agentId, scope) = gatewayAgentScopeForManagementRequest(request)
+    if (!gatewayAgentJsonBool(gatewayAgentGetJson(agentId), "configured", false)) {
+        return GatewayRpcResponse(false, request.method, error: "Agent \"${agentId}\" not found.")
+    }
+    let agentDir = Path(gatewayAgentJsonString(scope, "agentDir", gatewayAgentDefaultAgentDir(agentId).toString()))
+    if (!exists(agentDir)) {
+        Directory.create(agentDir, recursive: true)
+    }
+    let path = CliModelRuntimeStateManager.agentRuntimePath(agentDir)
+    File.writeTo(path, state.toJsonString().toArray())
+    let diagnostics = JsonArray([])
+    GatewayRpcResponse(true, request.method, result: gatewayAgentModelsResponse(agentId, agentDir, path, state, diagnostics))
+}
+
+private func gatewayAgentEntryAddAlias(entry: JsonObject, alias: String): Unit {
+    let normalized = alias.trimAscii()
+    if (normalized.isEmpty()) {
+        return
+    }
+    let groupChat = match (entry.get("groupChat")) {
+        case Some(v) =>
+            try { gatewayAgentCloneObject(v.asObject()) } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    let existing = gatewayAgentJsonArray(groupChat, "mentionPatterns")
+    let next = JsonArray([])
+    var saw = false
+    for (i in 0..existing.size()) {
+        let current = try { existing[i].asString().getValue().trimAscii() } catch (_e: Exception) { "" }
+        if (current.isEmpty()) {
+            continue
+        }
+        if (current == normalized) {
+            saw = true
+        }
+        next.add(JsonString(current))
+    }
+    if (!saw) {
+        next.add(JsonString(normalized))
+    }
+    groupChat.put("mentionPatterns", next)
+    entry.put("groupChat", groupChat)
+}
+
+private func gatewayAgentApplyAliasToAgent(root: JsonObject, agentId: String, alias: String): Unit {
+    let normalized = gatewaySanitizeAgentId(agentId)
+    if (normalized.isEmpty() || alias.trimAscii().isEmpty()) {
+        return
+    }
+    let entries = gatewayAgentConfigEntries(root)
+    let index = gatewayAgentConfigFindEntryIndex(entries, normalized)
+    if (index < 0) {
+        return
+    }
+    let nextEntries = JsonArray([])
+    for (i in 0..entries.size()) {
+        if (i == index) {
+            let entry = try { gatewayAgentCloneObject(entries[i].asObject()) } catch (_e: Exception) { JsonObject() }
+            gatewayAgentEntryAddAlias(entry, alias)
+            nextEntries.add(entry)
+        } else {
+            nextEntries.add(entries[i])
+        }
+    }
+    gatewayAgentConfigWriteEntries(root, nextEntries)
+}
+
+private func gatewayAgentApplyTeamAliases(root: JsonObject, aliases: JsonArray): Unit {
+    for (i in 0..aliases.size()) {
+        let aliasObj = try { aliases[i].asObject() } catch (_e: Exception) { JsonObject() }
+        let alias = gatewayAgentJsonString(aliasObj, "alias", "").trimAscii()
+        let agentId = gatewaySanitizeAgentId(gatewayAgentJsonString(aliasObj, "agentId", ""))
+        gatewayAgentApplyAliasToAgent(root, agentId, alias)
+    }
+}
+
+private func gatewayAgentTeamFindIndex(teams: JsonArray, teamId: String): Int64 {
+    let normalized = gatewaySanitizeAgentId(teamId)
+    for (i in 0..teams.size()) {
+        let team = try { teams[i].asObject() } catch (_e: Exception) { JsonObject() }
+        if (gatewaySanitizeAgentId(gatewayAgentJsonString(team, "id", "")) == normalized) {
+            return i
+        }
+    }
+    -1
+}
+
+private func gatewayAgentTeamMember(agentId: String, role: String, name: String): JsonObject {
+    let row = JsonObject()
+    row.put("agentId", JsonString(gatewaySanitizeAgentId(agentId)))
+    row.put("role", JsonString(role))
+    row.put("name", JsonString(name))
+    row
+}
+
+private func gatewayAgentTeamTemplateMembers(teamId: String, template: String): JsonArray {
+    let members = JsonArray([])
+    if (template.trimAscii().toAsciiLower() == "pm-writer-reviewer") {
+        members.add(gatewayAgentTeamMember("${teamId}-pm", "pm", "${teamId} PM"))
+        members.add(gatewayAgentTeamMember("${teamId}-writer", "writer", "${teamId} Writer"))
+        members.add(gatewayAgentTeamMember("${teamId}-reviewer", "reviewer", "${teamId} Reviewer"))
+    }
+    members
+}
+
+private func gatewayAgentEnsureManagedConfigEntry(root: JsonObject, agentId: String, name: String): JsonObject {
+    let normalized = gatewaySanitizeAgentId(agentId)
+    let entries = gatewayAgentConfigEntries(root)
+    let index = gatewayAgentConfigFindEntryIndex(entries, normalized)
+    let workspace = gatewayAgentDefaultWorkspaceDir(normalized).toString()
+    let agentDir = gatewayAgentDefaultAgentDir(normalized).toString()
+    let sessionsDir = gatewayAgentDefaultSessionsDir(normalized).toString()
+    if (!exists(Path(agentDir))) {
+        Directory.create(Path(agentDir), recursive: true)
+    }
+    if (!exists(Path(sessionsDir))) {
+        Directory.create(Path(sessionsDir), recursive: true)
+    }
+    ensureMetisAgentWorkspace(Path(workspace))
+    let manifestPath = Path(agentDir).join("AGENT.md")
+    if (!exists(manifestPath)) {
+        File.writeTo(manifestPath, gatewayAgentBuildDefaultManifest(normalized, name, workspace).toArray())
+    }
+    if (index >= 0) {
+        return try { entries[index].asObject() } catch (_e: Exception) { JsonObject() }
+    }
+    let entry = JsonObject()
+    entry.put("id", JsonString(normalized))
+    entry.put("name", JsonString(if (name.trimAscii().isEmpty()) { normalized } else { name.trimAscii() }))
+    entry.put("workspace", JsonString(workspace))
+    entry.put("agentDir", JsonString(agentDir))
+    entry.put("sessionsDir", JsonString(sessionsDir))
+    let next = JsonArray([])
+    for (i in 0..entries.size()) {
+        next.add(entries[i])
+    }
+    next.add(entry)
+    gatewayAgentConfigWriteEntries(root, next)
+    entry
+}
+
+private func gatewayAgentTeamMembersFromRequest(request: GatewayRpcRequest, teamId: String): JsonArray {
+    match (request.params.get("members")) {
+        case Some(v) =>
+            try { return gatewayAgentCloneArray(v.asArray()) } catch (_e: Exception) { return JsonArray([]) }
+        case None => ()
+    }
+    gatewayAgentTeamTemplateMembers(teamId, gatewayAgentRpcStringParam(request, ["template"], ""))
+}
+
+private func gatewayAgentTeamAliasesFromRequest(request: GatewayRpcRequest): JsonArray {
+    match (request.params.get("aliases")) {
+        case Some(v) =>
+            try { gatewayAgentCloneArray(v.asArray()) } catch (_e: Exception) { JsonArray([]) }
+        case None => JsonArray([])
+    }
+}
+
+private func gatewayAgentTeamBroadcastFromRequest(request: GatewayRpcRequest): JsonObject {
+    match (request.params.get("broadcast")) {
+        case Some(v) =>
+            try { return gatewayAgentCloneObject(v.asObject()) } catch (_e: Exception) { () }
+        case None => ()
+    }
+    let broadcast = JsonObject()
+    broadcast.put("enabled", false.toJsonValue())
+    broadcast
+}
+
+private func gatewayAgentEnsureTeamMemberAgents(root: JsonObject, members: JsonArray): JsonArray {
+    let createdOrPresent = JsonArray([])
+    for (i in 0..members.size()) {
+        let member = try { members[i].asObject() } catch (_e: Exception) { JsonObject() }
+        let agentId = gatewaySanitizeAgentId(gatewayAgentJsonString(member, "agentId", ""))
+        if (agentId.isEmpty()) {
+            continue
+        }
+        let name = gatewayAgentJsonString(member, "name", agentId)
+        let entry = gatewayAgentEnsureManagedConfigEntry(root, agentId, name)
+        createdOrPresent.add(gatewayAgentSummaryRow(agentId, "custom", entry: entry, root: root))
+    }
+    createdOrPresent
+}
+
+private func gatewayAgentTeamsListJson(_request: GatewayRpcRequest): GatewayRpcResponse {
+    let result = JsonObject()
+    let teams = gatewayAgentTeamsList(gatewayAgentConfigRootCloneReadOnly())
+    result.put("teams", teams)
+    result.put("count", teams.size().toJsonValue())
+    GatewayRpcResponse(true, "agents.teams.list", result: result)
+}
+
+private func gatewayAgentTeamGetJson(request: GatewayRpcRequest): GatewayRpcResponse {
+    let root = gatewayAgentConfigRootCloneReadOnly()
+    let teamId = gatewaySanitizeAgentId(gatewayAgentRpcStringParam(request, ["id", "teamId"], ""))
+    let teams = gatewayAgentTeamsList(root)
+    let index = gatewayAgentTeamFindIndex(teams, teamId)
+    if (index < 0) {
+        return GatewayRpcResponse(false, request.method, error: "Agent team \"${teamId}\" not found.")
+    }
+    let result = JsonObject()
+    result.put("team", teams[index])
+    GatewayRpcResponse(true, request.method, result: result)
+}
+
+private func gatewayAgentTeamCreateJson(request: GatewayRpcRequest): GatewayRpcResponse {
+    let root = gatewayAgentConfigRootClone()
+    let teamId = gatewaySanitizeAgentId(gatewayAgentRpcStringParam(request, ["id", "teamId"], ""))
+    if (teamId.isEmpty()) {
+        return GatewayRpcResponse(false, request.method, error: "Agent team id is required.")
+    }
+    let teams = gatewayAgentTeamsList(root)
+    if (gatewayAgentTeamFindIndex(teams, teamId) >= 0) {
+        return GatewayRpcResponse(false, request.method, error: "Agent team \"${teamId}\" already exists.")
+    }
+    let members = gatewayAgentTeamMembersFromRequest(request, teamId)
+    if (members.size() == 0) {
+        return GatewayRpcResponse(false, request.method, error: "Agent team requires members or a supported template.")
+    }
+    let memberAgents = gatewayAgentEnsureTeamMemberAgents(root, members)
+    let team = JsonObject()
+    team.put("id", JsonString(teamId))
+    team.put("displayName", JsonString(gatewayAgentRpcStringParam(request, ["displayName", "name"], teamId)))
+    let rawDefaultAgentId = gatewayAgentRpcStringParam(request, ["defaultAgentId"], "")
+    let fallbackDefault = try { gatewayAgentJsonString(members[0].asObject(), "agentId", "") } catch (_e: Exception) { "" }
+    team.put("defaultAgentId", JsonString(
+        if (rawDefaultAgentId.isEmpty()) { gatewaySanitizeAgentId(fallbackDefault) } else { gatewaySanitizeAgentId(rawDefaultAgentId) }
+    ))
+    team.put("members", members)
+    let aliases = gatewayAgentTeamAliasesFromRequest(request)
+    team.put("aliases", aliases)
+    match (request.params.get("bindings")) {
+        case Some(v) =>
+            try { team.put("bindings", gatewayAgentCloneArray(v.asArray())) } catch (_e: Exception) { team.put("bindings", JsonArray([])) }
+        case None => team.put("bindings", JsonArray([]))
+    }
+    team.put("broadcast", gatewayAgentTeamBroadcastFromRequest(request))
+    let nextTeams = JsonArray([])
+    for (i in 0..teams.size()) {
+        nextTeams.add(teams[i])
+    }
+    nextTeams.add(team)
+    gatewayAgentTeamsWriteList(root, nextTeams)
+    gatewayAgentApplyTeamAliases(root, aliases)
+    MetisConfigManager.writeRoot(root)
+    let result = JsonObject()
+    result.put("team", team)
+    result.put("agents", memberAgents)
+    GatewayRpcResponse(true, request.method, result: result)
+}
+
+private func gatewayAgentTeamUpdateJson(request: GatewayRpcRequest): GatewayRpcResponse {
+    let root = gatewayAgentConfigRootClone()
+    let teamId = gatewaySanitizeAgentId(gatewayAgentRpcStringParam(request, ["id", "teamId"], ""))
+    let teams = gatewayAgentTeamsList(root)
+    let index = gatewayAgentTeamFindIndex(teams, teamId)
+    if (index < 0) {
+        return GatewayRpcResponse(false, request.method, error: "Agent team \"${teamId}\" not found.")
+    }
+    let team = try { gatewayAgentCloneObject(teams[index].asObject()) } catch (_e: Exception) { JsonObject() }
+    gatewayAgentPutRequestString(team, request, ["displayName", "name"], "displayName")
+    gatewayAgentPutRequestString(team, request, ["defaultAgentId"], "defaultAgentId")
+    match (request.params.get("members")) {
+        case Some(v) =>
+            try {
+                let members = gatewayAgentCloneArray(v.asArray())
+                team.put("members", members)
+                gatewayAgentEnsureTeamMemberAgents(root, members)
+            } catch (_e: Exception) {
+                return GatewayRpcResponse(false, request.method, error: "members must be an array.")
+            }
+        case None => ()
+    }
+    match (request.params.get("aliases")) {
+        case Some(v) =>
+            try {
+                let aliases = gatewayAgentCloneArray(v.asArray())
+                team.put("aliases", aliases)
+                gatewayAgentApplyTeamAliases(root, aliases)
+            } catch (_e: Exception) {
+                return GatewayRpcResponse(false, request.method, error: "aliases must be an array.")
+            }
+        case None => ()
+    }
+    match (request.params.get("bindings")) {
+        case Some(v) =>
+            try { team.put("bindings", gatewayAgentCloneArray(v.asArray())) } catch (_e: Exception) {
+                return GatewayRpcResponse(false, request.method, error: "bindings must be an array.")
+            }
+        case None => ()
+    }
+    match (request.params.get("broadcast")) {
+        case Some(v) =>
+            try { team.put("broadcast", gatewayAgentCloneObject(v.asObject())) } catch (_e: Exception) {
+                return GatewayRpcResponse(false, request.method, error: "broadcast must be an object.")
+            }
+        case None => ()
+    }
+    let nextTeams = JsonArray([])
+    for (i in 0..teams.size()) {
+        if (i == index) {
+            nextTeams.add(team)
+        } else {
+            nextTeams.add(teams[i])
+        }
+    }
+    gatewayAgentTeamsWriteList(root, nextTeams)
+    MetisConfigManager.writeRoot(root)
+    let result = JsonObject()
+    result.put("team", team)
+    GatewayRpcResponse(true, request.method, result: result)
+}
+
+private func gatewayAgentTeamDeleteJson(request: GatewayRpcRequest): GatewayRpcResponse {
+    let root = gatewayAgentConfigRootClone()
+    let teamId = gatewaySanitizeAgentId(gatewayAgentRpcStringParam(request, ["id", "teamId"], ""))
+    let teams = gatewayAgentTeamsList(root)
+    let index = gatewayAgentTeamFindIndex(teams, teamId)
+    if (index < 0) {
+        return GatewayRpcResponse(false, request.method, error: "Agent team \"${teamId}\" not found.")
+    }
+    let nextTeams = JsonArray([])
+    var removed = JsonObject()
+    for (i in 0..teams.size()) {
+        if (i == index) {
+            removed = try { teams[i].asObject() } catch (_e: Exception) { JsonObject() }
+        } else {
+            nextTeams.add(teams[i])
+        }
+    }
+    gatewayAgentTeamsWriteList(root, nextTeams)
+    MetisConfigManager.writeRoot(root)
+    let result = JsonObject()
+    result.put("team", removed)
+    result.put("removed", true.toJsonValue())
+    GatewayRpcResponse(true, request.method, result: result)
 }
 
 private func gatewayAgentSetIdentityJson(request: GatewayRpcRequest): GatewayRpcResponse {
@@ -849,6 +2004,15 @@ private func gatewayAgentSetIdentityJson(request: GatewayRpcRequest): GatewayRpc
     let index = gatewayAgentConfigFindEntryIndex(entries, agentId)
     if (index < 0) {
         return GatewayRpcResponse(false, "agents.set-identity", error: "Agent \"${agentId}\" not found.")
+    }
+    let existingEntry = try { entries[index].asObject() } catch (_e: Exception) { JsonObject() }
+    let avatar = gatewayAgentRpcStringParam(request, ["avatar"], "").trimAscii()
+    if (!avatar.isEmpty()) {
+        let workspace = gatewayAgentJsonString(existingEntry, "workspace", gatewayAgentDefaultWorkspaceDir(agentId).toString())
+        let validation = validateMetisIdentityAvatar(Path(workspace), avatar)
+        if (!validation.ok) {
+            return GatewayRpcResponse(false, "agents.set-identity", error: "Invalid avatar: ${validation.reason}")
+        }
     }
     let nextEntries = JsonArray([])
     for (i in 0..entries.size()) {
@@ -1062,7 +2226,7 @@ public func gatewayAgentResolvedInvokeParams(agentId: String, request: GatewayRp
 
 private func gatewayBuiltinAgentsJson(): JsonArray {
     let names = [
-        "general",
+        "main",
         "cangjie",
         "explorer",
         "editor",
@@ -1088,7 +2252,7 @@ private func gatewayBuiltinAgentsJson(): JsonArray {
 private func gatewayBuiltinAgentCapabilities(agentId: String): JsonArray {
     let out = JsonArray([])
     match (agentId.trimAscii().toAsciiLower()) {
-        case "general" =>
+        case "main" | "general" =>
             out.add(JsonString("chat"))
             out.add(JsonString("tools"))
         case "cangjie" =>
@@ -1113,29 +2277,61 @@ private func gatewayBuiltinAgentCapabilities(agentId: String): JsonArray {
     out
 }
 
+private func gatewayAppendCustomAgentJsonRow(out: JsonArray, seen: ArrayList<String>, agentId: String, path: Path): Unit {
+    let normalized = gatewaySanitizeAgentId(agentId)
+    if (normalized.isEmpty() || gatewayAgentArrayContains(seen, normalized)) {
+        return
+    }
+    let row = JsonObject()
+    row.put("id", JsonString(normalized))
+    row.put("kind", JsonString("custom"))
+    row.put("path", JsonString(path.toString()))
+    row.put("available", true.toJsonValue())
+    row.put("configured", true.toJsonValue())
+    row.put("health", JsonString("ok"))
+    row.put("memory", gatewayAgentMemoryJson(normalized))
+    out.add(row)
+    seen.add(normalized)
+}
+
 private func gatewayCustomAgentsJson(): JsonArray {
+    let root = gatewayAgentConfigRootClone()
     let out = JsonArray([])
+    let seen = ArrayList<String>()
+    let entries = gatewayAgentConfigEntries(root)
+    for (i in 0..entries.size()) {
+        let cfg = try { entries[i].asObject() } catch (_e: Exception) { JsonObject() }
+        let agentId = gatewayAgentJsonString(cfg, "id", "")
+        let agentDir = gatewayAgentJsonString(cfg, "agentDir", "")
+        if (!agentId.trimAscii().isEmpty() && !agentDir.trimAscii().isEmpty() && exists(Path(agentDir).join("AGENT.md"))) {
+            gatewayAppendCustomAgentJsonRow(out, seen, agentId, Path(agentDir))
+        }
+    }
     for (agentDir in CliConfig.subagentDirs) {
         if (!exists(agentDir)) {
+            continue
+        }
+        if (exists(agentDir.join("AGENT.md"))) {
+            gatewayAppendCustomAgentJsonRow(out, seen, agentDir.fileName, agentDir)
+            continue
+        }
+        let managedAgentDir = agentDir.join("agent")
+        if (exists(managedAgentDir.join("AGENT.md"))) {
+            gatewayAppendCustomAgentJsonRow(out, seen, agentDir.fileName, managedAgentDir)
             continue
         }
         for (entry in Directory.readFrom(agentDir)) {
             if (!entry.isDirectory()) {
                 continue
             }
+            if (entry.name == "agent") {
+                continue
+            }
             let manifest = agentDir.join(entry.name).join("AGENT.md")
             if (!exists(manifest)) {
                 continue
             }
-            let row = JsonObject()
-            row.put("id", JsonString(entry.name))
-            row.put("kind", JsonString("custom"))
-            row.put("path", JsonString(agentDir.join(entry.name).toString()))
-            row.put("available", true.toJsonValue())
-            row.put("configured", true.toJsonValue())
-            row.put("health", JsonString("ok"))
-            row.put("memory", gatewayAgentMemoryJson(entry.name))
-            out.add(row)
+            gatewayAppendCustomAgentJsonRow(out, seen, entry.name, agentDir.join(entry.name))
         }
     }
     out
@@ -1189,8 +2385,28 @@ private func gatewayAgentMemoryJson(agentId: String): JsonObject {
     out
 }
 
+private func gatewayAgentPutResolvedScopePaths(row: JsonObject, scope: JsonObject): Unit {
+    for ((targetKey, scopeKey) in [
+        ("workspace", "workspaceDir"),
+        ("workspaceDir", "workspaceDir"),
+        ("agentDir", "agentDir"),
+        ("sessionsDir", "sessionsDir"),
+        ("modelsJsonPath", "modelsJsonPath"),
+        ("authProfilesPath", "authProfilesPath")
+    ]) {
+        if (row.get(targetKey).isSome()) {
+            continue
+        }
+        let value = gatewayAgentJsonString(scope, scopeKey, "").trimAscii()
+        if (!value.isEmpty()) {
+            row.put(targetKey, JsonString(value))
+        }
+    }
+}
+
 private func gatewayAgentGetJson(agentId: String): JsonObject {
     let normalized = agentId.trimAscii().toAsciiLower()
+    let root = gatewayAgentConfigRootCloneReadOnly()
     let builtins = gatewayBuiltinAgentsJson()
     for (i in 0..builtins.size()) {
         let item = builtins[i]
@@ -1210,7 +2426,12 @@ private func gatewayAgentGetJson(agentId: String): JsonObject {
             row.put("kind", JsonString("builtin"))
             row.put("capabilities", gatewayBuiltinAgentCapabilities(id))
             row.put("configured", true.toJsonValue())
+            let teamIds = gatewayAgentTeamIdsForAgent(root, id)
+            if (teamIds.size() > 0) {
+                row.put("teamIds", teamIds)
+            }
             row.put("skills", gatewayAgentSkillsJson(id))
+            row.put("tools", gatewayAgentToolsJson(id, gatewayDefaultChatToolNames()))
             row.put("memory", gatewayAgentMemoryJson(id))
             return row
         }
@@ -1229,12 +2450,14 @@ private func gatewayAgentGetJson(agentId: String): JsonObject {
             case None => ""
         }
         if (id == normalized) {
-            let row = JsonObject()
-            row.put("id", JsonString(id))
-            row.put("kind", JsonString("custom"))
+            let configuredEntry = gatewayAgentConfigEntry(root, id)
+            let row = gatewayAgentSummaryRow(id, "custom", entry: configuredEntry, root: root)
             row.put("path", obj.get("path") ?? JsonString(""))
             row.put("configured", true.toJsonValue())
-            row.put("skills", gatewayAgentSkillsJson(id))
+            gatewayAgentPutResolvedScopePaths(
+                row,
+                MetisAgentScope.resolve(root, agentId: id, homeRoot: MetisPaths.homeRootReadOnly(), defaultWorkspace: MetisPaths.workspaceRootReadOnly())
+            )
             row.put("memory", gatewayAgentMemoryJson(id))
             return row
         }
@@ -1242,6 +2465,7 @@ private func gatewayAgentGetJson(agentId: String): JsonObject {
     let row = JsonObject()
     row.put("id", JsonString(normalized))
     row.put("configured", false.toJsonValue())
+    row.put("tools", gatewayAgentToolsJson(normalized, gatewayDefaultChatToolNames()))
     row
 }
 
@@ -1435,18 +2659,85 @@ private func gatewayAgentsSummaryJson(): JsonObject {
     summary.put("totalCount", Int64(builtins.size() + customs.size()).toJsonValue())
     summary.put("healthy", (builtins.size() > 0).toJsonValue())
     let contract = gatewayAgentsContractJson()
-    summary.put("defaultId", contract.get("defaultId") ?? JsonString("general"))
+    summary.put("defaultId", contract.get("defaultId") ?? JsonString("main"))
     summary.put("mainKey", contract.get("mainKey") ?? JsonString("main"))
     summary.put("scope", contract.get("scope") ?? JsonString("global"))
     summary.put("agents", contract.get("agents") ?? JsonArray([]))
     summary
 }
 
+public func gatewayResolveAgentScopeFromRoot(
+    root: JsonObject,
+    agentId!: String = "",
+    homeRoot!: Path = MetisPaths.homeRootReadOnly(),
+    defaultWorkspace!: Path = MetisPaths.workspaceRootReadOnly()
+): JsonObject {
+    MetisAgentScope.resolve(root, agentId: agentId, homeRoot: homeRoot, defaultWorkspace: defaultWorkspace)
+}
+
+public func gatewayResolveAgentsScopeSummaryFromRoot(
+    root: JsonObject,
+    homeRoot!: Path = MetisPaths.homeRootReadOnly(),
+    defaultWorkspace!: Path = MetisPaths.workspaceRootReadOnly()
+): JsonObject {
+    MetisAgentScope.summary(root, homeRoot: homeRoot, defaultWorkspace: defaultWorkspace)
+}
+
+public func gatewayResolveDefaultAgentScopeFromRoot(
+    root: JsonObject,
+    homeRoot!: Path = MetisPaths.homeRootReadOnly(),
+    defaultWorkspace!: Path = MetisPaths.workspaceRootReadOnly()
+): JsonObject {
+    let summary = gatewayResolveAgentsScopeSummaryFromRoot(root, homeRoot: homeRoot, defaultWorkspace: defaultWorkspace)
+    let defaultId = gatewayAgentJsonString(summary, "defaultAgentId", "main")
+    gatewayResolveAgentScopeFromRoot(root, agentId: defaultId, homeRoot: homeRoot, defaultWorkspace: defaultWorkspace)
+}
+
+private func gatewayAgentScopeJson(request: GatewayRpcRequest): JsonObject {
+    let root = gatewayAgentScopeRootFromRequest(request)
+    let agentId = gatewayAgentRpcStringParam(request, ["id", "agent", "agentId"], "")
+    let homeRoot = gatewayAgentScopePathParam(request, "homeRoot", MetisPaths.homeRootReadOnly())
+    let defaultWorkspace = gatewayAgentScopePathParam(request, "defaultWorkspace", MetisPaths.workspaceRootReadOnly())
+    gatewayResolveAgentScopeFromRoot(root, agentId: agentId, homeRoot: homeRoot, defaultWorkspace: defaultWorkspace)
+}
+
+private func gatewayDefaultAgentIdReadOnly(): String {
+    let summary = MetisAgentScope.summary(
+        gatewayAgentConfigRootCloneReadOnly(),
+        homeRoot: MetisPaths.homeRootReadOnly(),
+        defaultWorkspace: MetisPaths.workspaceRootReadOnly()
+    )
+    gatewayAgentJsonString(summary, "defaultAgentId", "main")
+}
+
+private func gatewayResolveRequestAgentId(request: GatewayRpcRequest): String {
+    let requested = gatewayAgentRpcStringParam(request, ["id", "agent", "agentId"], "")
+    let scope = MetisAgentScope.resolve(
+        gatewayAgentConfigRootCloneReadOnly(),
+        agentId: requested,
+        homeRoot: MetisPaths.homeRootReadOnly(),
+        defaultWorkspace: MetisPaths.workspaceRootReadOnly()
+    )
+    gatewayAgentJsonString(scope, "agentId", if (requested.trimAscii().isEmpty()) { gatewayDefaultAgentIdReadOnly() } else { requested.trimAscii() })
+}
+
+private func gatewayAgentsScopeSummaryJson(request: GatewayRpcRequest): JsonObject {
+    let homeRoot = gatewayAgentScopePathParam(request, "homeRoot", MetisPaths.homeRootReadOnly())
+    let defaultWorkspace = gatewayAgentScopePathParam(request, "defaultWorkspace", MetisPaths.workspaceRootReadOnly())
+    gatewayResolveAgentsScopeSummaryFromRoot(gatewayAgentScopeRootFromRequest(request), homeRoot: homeRoot, defaultWorkspace: defaultWorkspace)
+}
+
+private func gatewayAgentsDefaultScopeJson(request: GatewayRpcRequest): JsonObject {
+    let homeRoot = gatewayAgentScopePathParam(request, "homeRoot", MetisPaths.homeRootReadOnly())
+    let defaultWorkspace = gatewayAgentScopePathParam(request, "defaultWorkspace", MetisPaths.workspaceRootReadOnly())
+    gatewayResolveDefaultAgentScopeFromRoot(gatewayAgentScopeRootFromRequest(request), homeRoot: homeRoot, defaultWorkspace: defaultWorkspace)
+}
+
 public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRpcRequest> = None): Option<GatewayRpcResponse> {
     if (method == "agents.list" || method == "agents.status") {
         let result = JsonObject()
         let contract = gatewayAgentsContractJson()
-        result.put("defaultId", contract.get("defaultId") ?? JsonString("general"))
+        result.put("defaultId", contract.get("defaultId") ?? JsonString("main"))
         result.put("mainKey", contract.get("mainKey") ?? JsonString("main"))
         result.put("scope", contract.get("scope") ?? JsonString("global"))
         result.put("agents", contract.get("agents") ?? JsonArray([]))
@@ -1466,10 +2757,28 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
         result.put("agents", gatewayAgentsSummaryJson())
         return Some(GatewayRpcResponse(true, method, result: result))
     }
+    if (method == "agents.scope") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let result = JsonObject()
+        result.put("scope", gatewayAgentsScopeSummaryJson(requestValue))
+        return Some(GatewayRpcResponse(true, method, result: result))
+    }
+    if (method == "agents.default") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let result = JsonObject()
+        result.put("scope", gatewayAgentsDefaultScopeJson(requestValue))
+        return Some(GatewayRpcResponse(true, method, result: result))
+    }
     if (method == "agents.capabilities") {
         let result = JsonObject()
         let rows = JsonArray([])
-        for (name in ["general", "cangjie", "explorer", "editor", "reviewer", "test_generator", "refactoring", "planner"]) {
+        for (name in ["main", "cangjie", "explorer", "editor", "reviewer", "test_generator", "refactoring", "planner"]) {
             let row = JsonObject()
             row.put("id", JsonString(name))
             row.put("capabilities", gatewayBuiltinAgentCapabilities(name))
@@ -1519,6 +2828,14 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
         let response = gatewayAgentAddJson(requestValue)
         return Some(GatewayRpcResponse(response.ok, method, result: response.result, error: response.error))
     }
+    if (method == "agents.update") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let response = gatewayAgentUpdateJson(requestValue)
+        return Some(GatewayRpcResponse(response.ok, method, result: response.result, error: response.error))
+    }
     if (method == "agents.set-identity") {
         let requestValue = match (request) {
             case Some(v) => v
@@ -1535,14 +2852,104 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
         let response = gatewayAgentDeleteJson(requestValue)
         return Some(GatewayRpcResponse(response.ok, method, result: response.result, error: response.error))
     }
+    if (method == "agents.files.list") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let response = gatewayAgentWorkspaceFilesListJson(requestValue)
+        return Some(GatewayRpcResponse(response.ok, method, result: response.result, error: response.error))
+    }
+    if (method == "agents.files.get") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let response = gatewayAgentWorkspaceFileJson(requestValue)
+        return Some(GatewayRpcResponse(response.ok, method, result: response.result, error: response.error))
+    }
+    if (method == "agents.files.set") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let content = gatewayAgentRpcRawStringParam(requestValue, ["content"], "")
+        let response = gatewayAgentWorkspaceFileJson(requestValue, content: content, includeContent: true)
+        return Some(GatewayRpcResponse(response.ok, method, result: response.result, error: response.error))
+    }
+    if (method == "agents.models.status" || method == "agents.models.get") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let response = gatewayAgentModelsGetJson(requestValue)
+        return Some(GatewayRpcResponse(response.ok, method, result: response.result, error: response.error))
+    }
+    if (method == "agents.models.set") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let response = gatewayAgentModelsSetJson(requestValue)
+        return Some(GatewayRpcResponse(response.ok, method, result: response.result, error: response.error))
+    }
+    if (method == "agents.teams.list") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let response = gatewayAgentTeamsListJson(requestValue)
+        return Some(GatewayRpcResponse(response.ok, method, result: response.result, error: response.error))
+    }
+    if (method == "agents.teams.get") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let response = gatewayAgentTeamGetJson(requestValue)
+        return Some(GatewayRpcResponse(response.ok, method, result: response.result, error: response.error))
+    }
+    if (method == "agents.teams.create") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let response = gatewayAgentTeamCreateJson(requestValue)
+        return Some(GatewayRpcResponse(response.ok, method, result: response.result, error: response.error))
+    }
+    if (method == "agents.teams.update") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let response = gatewayAgentTeamUpdateJson(requestValue)
+        return Some(GatewayRpcResponse(response.ok, method, result: response.result, error: response.error))
+    }
+    if (method == "agents.teams.delete") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let response = gatewayAgentTeamDeleteJson(requestValue)
+        return Some(GatewayRpcResponse(response.ok, method, result: response.result, error: response.error))
+    }
     if (method == "agent.get") {
         let requestValue = match (request) {
             case Some(v) => v
             case None => GatewayRpcRequest(method)
         }
-        let agentId = gatewayAgentRpcStringParam(requestValue, ["id", "agent", "agentId"], "general")
+        let agentId = gatewayResolveRequestAgentId(requestValue)
         let result = JsonObject()
         result.put("agent", gatewayAgentGetJson(agentId))
+        return Some(GatewayRpcResponse(true, method, result: result))
+    }
+    if (method == "agent.scope") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let result = JsonObject()
+        result.put("scope", gatewayAgentScopeJson(requestValue))
         return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "agent.preview") {
@@ -1550,7 +2957,7 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
             case Some(v) => v
             case None => GatewayRpcRequest(method)
         }
-        let agentId = gatewayAgentRpcStringParam(requestValue, ["id", "agent", "agentId"], "general")
+        let agentId = gatewayResolveRequestAgentId(requestValue)
         let result = JsonObject()
         result.put("preview", gatewayAgentPreviewJson(agentId, requestValue))
         return Some(GatewayRpcResponse(true, method, result: result))
@@ -1560,7 +2967,7 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
             case Some(v) => v
             case None => GatewayRpcRequest(method)
         }
-        let agentId = gatewayAgentRpcStringParam(requestValue, ["id", "agent", "agentId"], "general")
+        let agentId = gatewayResolveRequestAgentId(requestValue)
         let result = JsonObject()
         result.put("health", gatewayAgentHealthJson(agentId))
         return Some(GatewayRpcResponse(true, method, result: result))
@@ -1570,7 +2977,7 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
             case Some(v) => v
             case None => GatewayRpcRequest(method)
         }
-        let agentId = gatewayAgentRpcStringParam(requestValue, ["id", "agent", "agentId"], "general")
+        let agentId = gatewayResolveRequestAgentId(requestValue)
         let result = JsonObject()
         result.put("routing", gatewayAgentRoutingJson(agentId, requestValue))
         return Some(GatewayRpcResponse(true, method, result: result))
@@ -1580,7 +2987,7 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
             case Some(v) => v
             case None => GatewayRpcRequest(method)
         }
-        let agentId = gatewayAgentRpcStringParam(requestValue, ["id", "agent", "agentId"], "general")
+        let agentId = gatewayResolveRequestAgentId(requestValue)
         let result = JsonObject()
         result.put("actions", gatewayAgentActionsJson(agentId, requestValue))
         return Some(GatewayRpcResponse(true, method, result: result))
@@ -1590,7 +2997,7 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
             case Some(v) => v
             case None => GatewayRpcRequest(method)
         }
-        let agentId = gatewayAgentRpcStringParam(requestValue, ["id", "agent", "agentId"], "general")
+        let agentId = gatewayResolveRequestAgentId(requestValue)
         let params = gatewayAgentResolvedInvokeParams(agentId, requestValue)
         let context = gatewayAgentInvokeContext(agentId, requestValue)
         let invoke = gatewayExecuteChatTurnFromRpc(params, fallbackSource: GatewayIngressSource.GatewayRpc)

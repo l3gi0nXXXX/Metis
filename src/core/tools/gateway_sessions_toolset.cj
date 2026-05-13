@@ -3,8 +3,8 @@ package metis.core.tools
 import magic.dsl.{tool, toolset}
 import magic.prelude.*
 
-import metis.core.{gatewayCurrentToolRuntimeContext, gatewayMessagePayloadPreview, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunFailed, gatewaySubagentMarkRunRunning, gatewaySubagentMarkRunState, gatewaySubagentMarkRunSucceeded, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentWriteRunRecord, parseGatewayPollParts, renderGatewayAudioText, renderGatewayDeleteText, renderGatewayDocumentText, renderGatewayEditText, renderGatewayPhotoText, renderGatewayPinText, renderGatewayPollTextAdvanced, renderGatewayReactionText, renderGatewayTopicCreateText, renderGatewayTopicEditText, renderGatewayUnpinText, renderGatewayVideoNoteText, renderGatewayVideoText, renderGatewayVoiceText}
-import metis.core.config.{CliConfig, CliSettingManager}
+import metis.core.{gatewayCurrentToolRuntimeContext, gatewayMessagePayloadPreview, gatewaySubagentCreateRunRecord, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunFailed, gatewaySubagentMarkRunRunning, gatewaySubagentMarkRunState, gatewaySubagentMarkRunSucceeded, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentResolveRunRecord, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentWriteRunRecord, parseGatewayPollParts, renderGatewayAudioText, renderGatewayDeleteText, renderGatewayDocumentText, renderGatewayEditText, renderGatewayPhotoText, renderGatewayPinText, renderGatewayPollTextAdvanced, renderGatewayReactionText, renderGatewayTopicCreateText, renderGatewayTopicEditText, renderGatewayUnpinText, renderGatewayVideoNoteText, renderGatewayVideoText, renderGatewayVoiceText, resolveRuntimeToolPolicyFromRoot, runtimeSubagentBoundaryDecision, runtimeToolPolicyReportToJson}
+import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager}
 import metis.core.config.GatewayUserSettings
 import metis.core.plan.Plan
 import metis.gateway.config.mergeGatewayUserSettings
@@ -43,6 +43,54 @@ public class GatewaySessionsToolset {
 
     private func gwStore(): GatewaySessionStore {
         gatewaySessionStoreForUser(CliSettingManager.readGatewaySettings())
+    }
+
+    private func stringArrayJson(values: Array<String>): JsonArray {
+        let arr = JsonArray([])
+        for (value in values) {
+            arr.add(JsonString(value))
+        }
+        arr
+    }
+
+    private func runtimePolicyRootForSpawn(): JsonObject {
+        let root = match (MetisConfigManager.rawConfig()) {
+            case Some(raw) =>
+                try { JsonValue.fromStr(raw.toJsonString()).asObject() } catch (_: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let user = CliSettingManager.readGatewaySettings()
+        let gatewayObj = match (root.get("gateway")) {
+            case Some(value) =>
+                try { value.asObject() } catch (_: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let toolsObj = JsonObject()
+        if (user.tools.allow.size > 0) {
+            toolsObj.put("allow", this.stringArrayJson(user.tools.allow))
+        }
+        if (user.tools.deny.size > 0) {
+            toolsObj.put("deny", this.stringArrayJson(user.tools.deny))
+        }
+        if (toolsObj.size() > 0) {
+            gatewayObj.put("tools", toolsObj)
+            root.put("gateway", gatewayObj)
+        }
+        root
+    }
+
+    private func subagentBoundaryInventory(settingsTools: Array<String>): Array<String> {
+        let values = ArrayList<String>()
+        for (name in ["fileRead", "listDirectory", "shellExecute", "sessions_spawn", "sessions_batch_delegate", "subagents"]) {
+            values.add(name)
+        }
+        for (name in settingsTools) {
+            let clean = name.trimAscii()
+            if (!clean.isEmpty()) {
+                values.add(clean)
+            }
+        }
+        values.toArray()
     }
 
     private func normalizeSessionKinds(kinds: Option<Array<String>>): Array<String> {
@@ -1479,6 +1527,42 @@ public class GatewaySessionsToolset {
         sandbox: Option<String>,
         streamTo: Option<String>
     ): String {
+        this.sessionsSpawnForCommand(
+            task,
+            label,
+            runtime,
+            agentId,
+            resumeSessionId,
+            model,
+            thinking,
+            cwd,
+            runTimeoutSeconds,
+            timeoutSeconds,
+            thread,
+            mode,
+            cleanup,
+            sandbox,
+            streamTo
+        )
+    }
+
+    public func sessionsSpawnForCommand(
+        task: String,
+        label: Option<String>,
+        runtime: Option<String>,
+        agentId: Option<String>,
+        resumeSessionId: Option<String>,
+        model: Option<String>,
+        thinking: Option<String>,
+        cwd: Option<String>,
+        runTimeoutSeconds: Option<Int64>,
+        timeoutSeconds: Option<Int64>,
+        thread: Option<Bool>,
+        mode: Option<String>,
+        cleanup: Option<String>,
+        sandbox: Option<String>,
+        streamTo: Option<String>
+    ): String {
         PrintUtils.printTool("sessions_spawn", shortMessage: "gateway-sessions")
         let trimmedTask = task.trimAscii()
         if (trimmedTask.isEmpty()) {
@@ -1516,7 +1600,8 @@ public class GatewaySessionsToolset {
         } else {
             timeoutSeconds ?? -1
         }
-        let requesterSessionKey = match (gatewayCurrentToolRuntimeContext()) {
+        let runtimeContext = gatewayCurrentToolRuntimeContext()
+        let requesterSessionKey = match (runtimeContext) {
             case Some(ctx) => ctx.sessionKey
             case None => ""
         }
@@ -1532,8 +1617,9 @@ public class GatewaySessionsToolset {
             case None => ""
         }
         let agentSourceText = if (runtimeText == "acp") { "acp" } else { "builtin" }
+        let subagentSettings = CliSettingManager.readGatewaySettings().subagents
         let policyDecision = gatewaySubagentEvaluateSpawnPolicy(
-            CliSettingManager.readGatewaySettings().subagents,
+            subagentSettings,
             st.sessionsRoot(),
             requesterSessionKey,
             agentIdText,
@@ -1546,6 +1632,36 @@ public class GatewaySessionsToolset {
         effectiveTimeout = policyDecision.effectiveTimeoutSeconds
         if (!policyDecision.allowed) {
             let err = gatewaySubagentPolicyRejectionJson(policyDecision, agentIdText, runtimeText)
+            let out = err.toJsonString()
+            PrintUtils.printToolResult(out)
+            return out
+        }
+        let parentAgentId = match (runtimeContext) {
+            case Some(ctx) => ctx.agentId
+            case None => ""
+        }
+        let parentToolPolicy = resolveRuntimeToolPolicyFromRoot(
+            this.runtimePolicyRootForSpawn(),
+            this.subagentBoundaryInventory(subagentSettings.childAllowedTools),
+            agentId: parentAgentId
+        )
+        let boundaryDecision = runtimeSubagentBoundaryDecision(
+            parentToolPolicy,
+            requestedAgentId: agentIdText,
+            requireAgentId: subagentSettings.requireAgentId,
+            allowAgents: subagentSettings.allowAgents,
+            requestedTools: subagentSettings.childAllowedTools
+        )
+        if (!boundaryDecision.allowed) {
+            let err = JsonObject()
+            err.put("ok", false.toJsonValue())
+            err.put("status", JsonString("rejected"))
+            err.put("error", JsonString("subagent policy rejected: ${boundaryDecision.reason}"))
+            err.put("reason", JsonString(boundaryDecision.reason))
+            err.put("agentId", JsonString(agentIdText))
+            err.put("runtime", JsonString(runtimeText))
+            err.put("parentAgentId", JsonString(parentAgentId))
+            err.put("parentToolPolicy", runtimeToolPolicyReportToJson(parentToolPolicy))
             let out = err.toJsonString()
             PrintUtils.printToolResult(out)
             return out

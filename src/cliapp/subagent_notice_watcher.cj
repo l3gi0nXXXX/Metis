@@ -4,92 +4,32 @@ import magic.log.LogUtils
 
 import metis.gateway.runtime.{gatewayCliClient, gatewayEnsureSubagentNoticeEventPublisherRegistered}
 import metis.io.PrintUtils
+import metis.program_support.{
+    programSupportCliSubagentNoticeEventMatchesSession,
+    programSupportCliSubagentNoticeFromGatewayEvent,
+    programSupportCliSubagentNoticeGatewayEventSessionKey,
+    programSupportCliSubagentNoticesFromGatewayStreamResult
+}
 
-import std.collection.ArrayList
 import std.sync.AtomicBool
-import stdx.encoding.json.{JsonArray, JsonObject, JsonValue}
+import stdx.encoding.json.{JsonObject, JsonValue}
 
 private let CLI_SUBAGENT_NOTICE_EVENT_KIND = "session.subagent.notice"
 
-private func cliNoticeJsonString(obj: JsonObject, key: String): String {
-    match (obj.get(key)) {
-        case Some(v) => try { v.asString().getValue() } catch (_e: Exception) { "" }
-        case None => ""
-    }
-}
-
-private func cliSubagentNoticeEventPayload(event: JsonObject): Option<JsonObject> {
-    match (event.get("payload")) {
-        case Some(v) =>
-            try { Some(v.asObject()) } catch (_e: Exception) { None<JsonObject> }
-        case None => None<JsonObject>
-    }
-}
-
 public func cliSubagentNoticeFromGatewayEvent(event: JsonObject): Option<String> {
-    if (cliNoticeJsonString(event, "kind") != CLI_SUBAGENT_NOTICE_EVENT_KIND) {
-        return None<String>
-    }
-    let payload = match (cliSubagentNoticeEventPayload(event)) {
-        case Some(v) => v
-        case None => return None<String>
-    }
-    let notice = cliNoticeJsonString(payload, "notice")
-    if (!notice.trimAscii().isEmpty()) {
-        return Some(notice)
-    }
-    let text = cliNoticeJsonString(payload, "text")
-    if (!text.trimAscii().isEmpty()) {
-        return Some(text)
-    }
-    None<String>
+    programSupportCliSubagentNoticeFromGatewayEvent(event)
 }
 
 public func cliSubagentNoticeGatewayEventSessionKey(event: JsonObject): String {
-    let payload = match (cliSubagentNoticeEventPayload(event)) {
-        case Some(v) => v
-        case None => return ""
-    }
-    cliNoticeJsonString(payload, "sessionKey").trimAscii()
+    programSupportCliSubagentNoticeGatewayEventSessionKey(event)
 }
 
 public func cliSubagentNoticeEventMatchesSession(event: JsonObject, sessionKey: String): Bool {
-    let eventSessionKey = cliSubagentNoticeGatewayEventSessionKey(event)
-    let expected = sessionKey.trimAscii()
-    eventSessionKey == expected || (expected == "main" && eventSessionKey == "agent:general:main")
+    programSupportCliSubagentNoticeEventMatchesSession(event, sessionKey)
 }
 
 public func cliSubagentNoticesFromGatewayStreamResult(result: JsonValue, sessionKey: String): Array<String> {
-    let notices = ArrayList<String>()
-    try {
-        let root = result.asObject()
-        let pull = match (root.get("pull")) {
-            case Some(v) => try { v.asObject() } catch (_inner: Exception) { JsonObject() }
-            case None => JsonObject()
-        }
-        let events = match (pull.get("events")) {
-            case Some(v) => try { v.asArray() } catch (_inner: Exception) { JsonArray([]) }
-            case None => JsonArray([])
-        }
-        var i: Int64 = 0
-        while (i < Int64(events.size())) {
-            try {
-                let event = events[i].asObject()
-                if (cliSubagentNoticeEventMatchesSession(event, sessionKey)) {
-                    match (cliSubagentNoticeFromGatewayEvent(event)) {
-                        case Some(notice) => notices.add(notice)
-                        case None => ()
-                    }
-                }
-            } catch (_inner: Exception) {
-                ()
-            }
-            i += 1
-        }
-    } catch (_e: Exception) {
-        ()
-    }
-    notices.toArray()
+    programSupportCliSubagentNoticesFromGatewayStreamResult(result, sessionKey)
 }
 
 protected class CliSubagentNoticeWatcher {

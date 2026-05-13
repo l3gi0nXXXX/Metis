@@ -2,10 +2,11 @@ package metis.gateway.session
 
 import magic.jsonable.*
 
+import metis.core.config.{MetisAgentScope, MetisConfigManager, MetisPaths}
 import metis.gateway.model.ChatType
 import metis.gateway.model.{InboundMessage, channelToString}
 import std.collection.ArrayList
-import stdx.encoding.json.{JsonBool, JsonObject, JsonString}
+import stdx.encoding.json.{JsonBool, JsonObject, JsonString, JsonValue}
 
 private func gatewaySessionSanitizeAgentId(raw: String): String {
     var s = raw.trimAscii().replace("/", "_").replace("\\", "_").replace("..", "_").replace(":", "_")
@@ -24,17 +25,25 @@ private func gatewayNormalizeDmScope(raw: String): String {
 }
 
 private func gatewayRouteAgentIdFromMediaContext(mediaContext: JsonObject): String {
+    let route = gatewayRouteFromMediaContext(mediaContext)
+    match (route.get("agentId")) {
+        case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func gatewayRouteFromMediaContext(mediaContext: JsonObject): JsonObject {
     let context = match (mediaContext.get("context")) {
         case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
         case None => JsonObject()
     }
-    let route = match (context.get("telegramRoute")) {
+    match (context.get("imRoute")) {
         case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
-        case None => JsonObject()
-    }
-    match (route.get("agentId")) {
-        case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
-        case None => ""
+        case None =>
+            match (context.get("telegramRoute")) {
+                case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+                case None => JsonObject()
+            }
     }
 }
 
@@ -119,6 +128,71 @@ private func gatewaySessionJsonObject(params: JsonObject, key: String): JsonObje
             try { v.asObject() } catch (_e: Exception) { JsonObject() }
         case None => JsonObject()
     }
+}
+
+private func gatewaySessionMediaContextObject(mediaContext: JsonObject): JsonObject {
+    match (mediaContext.get("context")) {
+        case Some(v) =>
+            try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+}
+
+private func gatewaySessionScopeRoot(): JsonObject {
+    match (MetisConfigManager.rawConfig()) {
+        case Some(root) => root
+        case None => JsonObject()
+    }
+}
+
+private func gatewaySessionImRouteContext(mediaContext: JsonObject): JsonObject {
+    let context = gatewaySessionMediaContextObject(mediaContext)
+    match (context.get("imRoute")) {
+        case Some(v) =>
+            try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+}
+
+private func gatewaySessionRouteString(route: JsonObject, key: String): String {
+    match (route.get(key)) {
+        case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func gatewaySessionScopeString(scope: JsonObject, key: String): String {
+    match (scope.get(key)) {
+        case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func gatewayBuildTurnRouteContext(
+    route: JsonObject,
+    agentId: String,
+    channelName: String,
+    accountId: String,
+    sessionKey: String,
+    mainSessionKey: String,
+    matchedBy: String,
+    lastRoutePolicy: String
+): JsonObject {
+    let out = try {
+        JsonValue.fromStr(route.toJsonString()).asObject()
+    } catch (_: Exception) {
+        JsonObject()
+    }
+    out.put("agentId", JsonString(agentId))
+    out.put("channel", JsonString(channelName))
+    out.put("accountId", JsonString(accountId))
+    out.put("sessionKey", JsonString(sessionKey))
+    out.put("mainSessionKey", JsonString(mainSessionKey))
+    out.put("matchedBy", JsonString(matchedBy))
+    if (!lastRoutePolicy.trimAscii().isEmpty()) {
+        out.put("lastRoutePolicy", JsonString(lastRoutePolicy.trimAscii()))
+    }
+    out
 }
 
 public func gatewayIngressSourceFromString(raw: String, fallback!: GatewayIngressSource = GatewayIngressSource.Unknown("")): GatewayIngressSource {
@@ -249,13 +323,17 @@ private func gatewayInferDeliveryTargetFromSessionKey(sessionKey: String, accoun
     None
 }
 
-private func gatewayResolveDeliveryTarget(request: GatewaySessionRequest, sessionKey: String): Option<GatewayDeliveryTarget> {
+public func gatewayResolveDeliveryTarget(
+    request: GatewaySessionRequest,
+    sessionKey: String,
+    preferredAccountId!: String = ""
+): Option<GatewayDeliveryTarget> {
     if (!request.replyChannel.isEmpty() && !request.replyTo.isEmpty()) {
         return Some(
             GatewayDeliveryTarget(
                 request.replyChannel,
                 request.replyTo,
-                accountId: request.replyAccountId,
+                accountId: if (!request.replyAccountId.isEmpty()) { request.replyAccountId } else { preferredAccountId },
                 conversationId: request.conversationId,
                 threadId: request.threadId,
                 sourceMessageId: request.sourceMessageId,
@@ -268,7 +346,13 @@ private func gatewayResolveDeliveryTarget(request: GatewaySessionRequest, sessio
         case GatewayIngressSource.Channel(_channel) =>
             let channelName = gatewayNormalizeChannelName(request.channelName, request.source)
             if (!channelName.isEmpty() && !request.peerId.isEmpty()) {
-                let accountId = if (!request.replyAccountId.isEmpty()) { request.replyAccountId } else { request.accountId }
+                let accountId = if (!request.replyAccountId.isEmpty()) {
+                    request.replyAccountId
+                } else if (!preferredAccountId.isEmpty()) {
+                    preferredAccountId
+                } else {
+                    request.accountId
+                }
                 return Some(
                     GatewayDeliveryTarget(
                         channelName,
@@ -284,14 +368,23 @@ private func gatewayResolveDeliveryTarget(request: GatewaySessionRequest, sessio
             }
         case _ => ()
     }
-    gatewayInferDeliveryTargetFromSessionKey(sessionKey, request.accountId)
+    gatewayInferDeliveryTargetFromSessionKey(
+        sessionKey,
+        if (!preferredAccountId.isEmpty()) { preferredAccountId } else { request.accountId }
+    )
 }
 
-public func gatewaySessionRequestFromInbound(message: InboundMessage, dmScope!: String = "per-chat", accountId!: String = ""): GatewaySessionRequest {
+public func gatewaySessionRequestFromInbound(
+    message: InboundMessage,
+    dmScope!: String = "per-chat",
+    accountId!: String = "",
+    routeRoot!: JsonObject = JsonObject()
+): GatewaySessionRequest {
     let replyToMessageId = match (message.replyTargetMessageId) {
         case Some(msgId) => msgId
         case None => message.messageId
     }
+    let imRoute = gatewaySessionImRouteContext(message.mediaContext)
     GatewaySessionRequest(
         GatewayIngressSource.Channel(channelToString(message.channel)),
         channelName: channelToString(message.channel),
@@ -309,7 +402,14 @@ public func gatewaySessionRequestFromInbound(message: InboundMessage, dmScope!: 
         replyToMessageId: replyToMessageId,
         replyInThread: message.replyInThread,
         deliver: true,
-        mediaContext: message.mediaContext
+        mediaContext: message.mediaContext,
+        routeRoot: routeRoot,
+        routeAccountId: gatewaySessionJsonString(imRoute, "accountId"),
+        routeDefaultAccountId: gatewaySessionJsonString(imRoute, "defaultAccountId"),
+        routePeerKind: gatewaySessionJsonString(imRoute, "peerKind"),
+        routePeerId: gatewaySessionJsonString(imRoute, "peerId"),
+        routeParentPeerKind: gatewaySessionJsonString(imRoute, "parentPeerKind"),
+        routeParentPeerId: gatewaySessionJsonString(imRoute, "parentPeerId")
     )
 }
 
@@ -317,12 +417,14 @@ public func gatewaySessionRequestFromInbound(
     message: InboundMessage,
     sessionHint!: String,
     dmScope!: String = "per-chat",
-    accountId!: String = ""
+    accountId!: String = "",
+    routeRoot!: JsonObject = JsonObject()
 ): GatewaySessionRequest {
     let replyToMessageId = match (message.replyTargetMessageId) {
         case Some(msgId) => msgId
         case None => message.messageId
     }
+    let imRoute = gatewaySessionImRouteContext(message.mediaContext)
     GatewaySessionRequest(
         GatewayIngressSource.Channel(channelToString(message.channel)),
         channelName: channelToString(message.channel),
@@ -340,7 +442,14 @@ public func gatewaySessionRequestFromInbound(
         replyToMessageId: replyToMessageId,
         replyInThread: message.replyInThread,
         deliver: true,
-        mediaContext: message.mediaContext
+        mediaContext: message.mediaContext,
+        routeRoot: routeRoot,
+        routeAccountId: gatewaySessionJsonString(imRoute, "accountId"),
+        routeDefaultAccountId: gatewaySessionJsonString(imRoute, "defaultAccountId"),
+        routePeerKind: gatewaySessionJsonString(imRoute, "peerKind"),
+        routePeerId: gatewaySessionJsonString(imRoute, "peerId"),
+        routeParentPeerKind: gatewaySessionJsonString(imRoute, "parentPeerKind"),
+        routeParentPeerId: gatewaySessionJsonString(imRoute, "parentPeerId")
     )
 }
 
@@ -550,14 +659,18 @@ public func gatewayResolveSessionContext(request: GatewaySessionRequest): Gatewa
     let channelName = gatewayNormalizeChannelName(request.channelName, request.source)
     let explicitSessionHint = request.sessionHint.trimAscii().toAsciiLower()
     let hintedAgentId = gatewayHintedAgentId(explicitSessionHint)
+    let mediaRoute = gatewayRouteFromMediaContext(request.mediaContext)
+    let routedAgentId = gatewaySessionRouteString(mediaRoute, "agentId")
     let agentId = gatewaySessionSanitizeAgentId(
         if (!request.agentId.trimAscii().isEmpty()) {
             request.agentId
+        } else if (!routedAgentId.isEmpty()) {
+            routedAgentId
         } else {
             hintedAgentId
         }
     )
-    let sessionKey = match (request.chatType) {
+    let derivedSessionKey = match (request.chatType) {
         case Some(chatType) =>
             if (!explicitSessionHint.isEmpty()) {
                 explicitSessionHint
@@ -574,6 +687,63 @@ public func gatewayResolveSessionContext(request: GatewaySessionRequest): Gatewa
         case None =>
             gatewayResolveAgentSessionKey(agentId, explicitSessionHint, request.to, request.lane)
     }
+    let routeSessionKey = gatewaySessionRouteString(mediaRoute, "sessionKey")
+    let sessionKey = if (!routeSessionKey.isEmpty()) { routeSessionKey } else { derivedSessionKey }
+    let routeMainSessionKey = gatewaySessionRouteString(mediaRoute, "mainSessionKey")
+    let mainSessionKey = if (!routeMainSessionKey.isEmpty()) {
+        routeMainSessionKey
+    } else {
+        gatewayResolveAgentSessionKey(agentId, "main", "", "")
+    }
+    let routeMatchedBy = gatewaySessionRouteString(mediaRoute, "matchedBy")
+    let matchedBy = if (!routeMatchedBy.isEmpty()) {
+        routeMatchedBy
+    } else if (!request.agentId.trimAscii().isEmpty()) {
+        "request.agentId"
+    } else if (!routedAgentId.isEmpty()) {
+        "route.agentId"
+    } else if (!hintedAgentId.isEmpty()) {
+        "sessionHint"
+    } else {
+        "default"
+    }
+    let lastRoutePolicy = gatewaySessionRouteString(mediaRoute, "lastRoutePolicy")
+    let scope = MetisAgentScope.resolve(
+        gatewaySessionScopeRoot(),
+        agentId: agentId,
+        homeRoot: MetisPaths.homeRootReadOnly(),
+        defaultWorkspace: MetisPaths.workspaceRootReadOnly()
+    )
+    let turnRoute = gatewayBuildTurnRouteContext(
+        mediaRoute,
+        agentId,
+        channelName,
+        request.accountId,
+        sessionKey,
+        mainSessionKey,
+        matchedBy,
+        lastRoutePolicy
+    )
+    let turnContext = GatewayTurnContext(
+        agentId,
+        workspaceDir: gatewaySessionScopeString(scope, "workspaceDir"),
+        agentDir: gatewaySessionScopeString(scope, "agentDir"),
+        modelsJsonPath: gatewaySessionScopeString(scope, "modelsJsonPath"),
+        authProfilesPath: gatewaySessionScopeString(scope, "authProfilesPath"),
+        legacyAuthPath: gatewaySessionScopeString(scope, "legacyAuthPath"),
+        sessionsDir: gatewaySessionScopeString(scope, "sessionsDir"),
+        sessionKey: sessionKey,
+        mainSessionKey: mainSessionKey,
+        matchedBy: matchedBy,
+        lastRoutePolicy: lastRoutePolicy,
+        modelRef: gatewaySessionScopeString(scope, "modelRef"),
+        channelName: channelName,
+        accountId: request.accountId,
+        peerId: request.peerId,
+        threadId: request.threadId,
+        route: turnRoute,
+        agentScope: scope
+    )
     let deliveryTarget = gatewayResolveDeliveryTarget(request, sessionKey)
     GatewaySessionContext(
         request.source,
@@ -583,6 +753,7 @@ public func gatewayResolveSessionContext(request: GatewaySessionRequest): Gatewa
         agentId,
         accountId: request.accountId,
         lane: request.lane,
-        deliveryTarget: deliveryTarget
+        deliveryTarget: deliveryTarget,
+        turnContext: Some(turnContext)
     )
 }

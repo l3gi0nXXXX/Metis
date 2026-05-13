@@ -1,6 +1,6 @@
 package metis.gateway.runtime
 
-import metis.core.config.{CliSettingManager, GatewayUserSettings, MetisConfigManager}
+import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager, MetisProcessEnvironmentLock}
 import metis.gateway.config.buildGatewayConfigFromUserSettings
 
 import std.env.{getVariable, setVariable}
@@ -19,28 +19,32 @@ private func gatewayHttpSurfaceTestResult(raw: String): JsonValue {
 }
 
 private func withGatewayHttpSurfaceTestSettings<T>(block: () -> T): T {
-    let testHome = "/tmp/metis-gateway-http-surface-test-home"
-    try {
-        remove(Path(testHome), recursive: true)
-    } catch (_: Exception) {
-        ()
-    }
-    Directory.create(testHome, recursive: true)
-    let oldHome = getVariable("METIS_HOME")
-    setVariable("METIS_HOME", testHome)
-    MetisConfigManager.invalidate()
-    CliSettingManager.invalidate()
-    let _ = MetisConfigManager.setGatewaySettings(gatewayHttpSurfaceTestUser())
-    CliSettingManager.invalidate()
-    try {
-        block()
-    } finally {
-        match (oldHome) {
-            case Some(value) => setVariable("METIS_HOME", value)
-            case None => setVariable("METIS_HOME", "")
+    synchronized(MetisProcessEnvironmentLock) {
+        let testHome = "/tmp/metis-gateway-http-surface-test-home"
+        try {
+            remove(Path(testHome), recursive: true)
+        } catch (_: Exception) {
+            ()
         }
+        Directory.create(testHome, recursive: true)
+        let oldHome = getVariable("METIS_HOME")
+        setVariable("METIS_HOME", testHome)
+        CliConfig.invalidatePathCache()
         MetisConfigManager.invalidate()
         CliSettingManager.invalidate()
+        let _ = MetisConfigManager.setGatewaySettings(gatewayHttpSurfaceTestUser())
+        CliSettingManager.invalidate()
+        try {
+            block()
+        } finally {
+            match (oldHome) {
+                case Some(value) => setVariable("METIS_HOME", value)
+                case None => setVariable("METIS_HOME", "")
+            }
+            CliConfig.invalidatePathCache()
+            MetisConfigManager.invalidate()
+            CliSettingManager.invalidate()
+        }
     }
 }
 
@@ -102,6 +106,24 @@ public class GatewayHttpSurfaceTest {
             @Expect(response.contains("gateway.webchat.status"), true)
             @Expect(response.contains("gateway.webchat.start"), true)
             @Expect(response.contains("gateway.channels.audit"), true)
+        })
+    }
+
+    @TestCase
+    public func mcpToolsCallRejectsDeniedGatewayToolBeforeDispatch(): Unit {
+        withGatewayHttpSurfaceTestSettings<Unit>({ =>
+            var user = gatewayHttpSurfaceTestUser()
+            user.tools.deny = ["gateway.http.start"]
+
+            let response = gatewayHandleMcpRequest(
+                user,
+                "{\"jsonrpc\":\"2.0\",\"id\":17,\"method\":\"tools/call\",\"params\":{\"name\":\"gateway.http.start\",\"arguments\":{}}}"
+            )
+
+            @Expect(response.contains("\"error\""), true)
+            @Expect(response.contains("tool denied by policy"), true)
+            @Expect(response.contains("gateway.http.start"), true)
+            @Expect(response.contains("\"started\""), false)
         })
     }
 

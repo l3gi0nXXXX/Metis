@@ -10,6 +10,7 @@ import metis.gateway.channels.telegram.telegramPairingAccountStore
 import metis.mcp.{MetisMcpServeOptions, serveMetisChannelMcp}
 import metis.gateway.runtime.{gatewayCliClient, gatewayInvokeCliAgent, gatewayInvokeCliAgentResult}
 import metis.io.PrintUtils
+import metis.program_support.programSupportRenderLocalCommandSummary
 
 import std.collection.ArrayList
 import std.convert.*
@@ -159,75 +160,7 @@ private func localAppendField(lines: ArrayList<String>, obj: JsonObject, key: St
 }
 
 public func cliRenderLocalCommandSummary(obj: JsonObject): String {
-    let kind = localJsonString(obj, "kind")
-    let command = if (kind.isEmpty()) { localJsonString(obj, "command") } else { kind }
-    let sub = localJsonString(obj, "subcommand")
-    let mode = localJsonString(obj, "mode")
-    let action = localJsonString(obj, "action")
-    let detail = if (!sub.isEmpty()) {
-        sub
-    } else if (!mode.isEmpty()) {
-        mode
-    } else {
-        action
-    }
-    let title = if (detail.isEmpty()) { "Metis ${command}" } else { "Metis ${command} ${detail}" }
-    let lines = ArrayList<String>()
-    lines.add(title)
-
-    let orderedFields = [
-        "surface", "mode", "action", "field", "key", "value", "provider", "currentModel", "resolved",
-        "workspace", "home", "path", "configPath", "logsDir", "storeRoot", "channel", "accountId",
-        "exists", "enabled", "entrypoint", "profile", "preview", "url", "primaryPath", "query",
-        "target", "source", "dispatchMode", "model", "pendingCount", "approvedCount", "rootRemoval",
-        "availableProviders", "recommended"
-    ]
-    for (key in orderedFields) {
-        localAppendField(lines, obj, key)
-    }
-    for ((key, value) in obj.getFields()) {
-        if (localSummaryKnownField(key)) {
-            continue
-        }
-        var alreadyPrinted = false
-        for (known in orderedFields) {
-            if (known == key) {
-                alreadyPrinted = true
-            }
-        }
-        if (!alreadyPrinted) {
-            let text = localJsonScalarSummary(value)
-            if (!text.isEmpty()) {
-                lines.add("  ${localFieldLabel(key)}: ${text}")
-            }
-        }
-    }
-    if (obj.get("modelConfig").isSome() || obj.get("modelRuntime").isSome() || obj.get("runtimeState").isSome() || obj.get("modelSelection").isSome()) {
-        lines.add("  Model details: available with --json")
-    }
-    if (obj.get("providers").isSome() || obj.get("authChoices").isSome() || obj.get("authChoiceGroups").isSome()) {
-        lines.add("  Catalog details: available with --json")
-    }
-    if (obj.get("pending").isSome() || obj.get("approvedSenders").isSome()) {
-        lines.add("  Pairing details: codes and sender records are hidden by default; use --json for machine output.")
-    }
-    match (obj.get("nextSteps")) {
-        case Some(value) =>
-            let arr = try { value.asArray() } catch (_e: Exception) { JsonArray([]) }
-            if (arr.size() > 0) {
-                lines.add("Next steps:")
-                for (idx in 0..arr.size()) {
-                    try {
-                        lines.add("  - ${arr[idx].asString().getValue()}")
-                    } catch (_e: Exception) {
-                        ()
-                    }
-                }
-            }
-        case None => ()
-    }
-    lines.add("Machine output: rerun with --json.")
-    String.join(lines.toArray(), delimiter: "\n")
+    programSupportRenderLocalCommandSummary(obj)
 }
 
 private func printLocalCommandHuman(obj: JsonObject): Int64 {

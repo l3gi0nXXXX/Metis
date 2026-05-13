@@ -5,6 +5,7 @@ import metis.core.config.{MetisConfigManager, MetisPaths, CliSettingManager, Gat
     cliModelAuthChoiceGroups, cliSetupVisibleModelProviders, cliValidateProviderBaseUrl}
 import metis.gateway.runtime.{gatewayAnotherServeInstanceSeemsRunning, gatewayExecuteRestartServe, gatewayLaunchDedicatedConsole}
 import metis.io.{InputUtils, PrintUtils}
+import metis.program_support.programSupportOnboardWorkspacePromptState
 
 import std.collection.ArrayList
 import std.fs.exists
@@ -133,23 +134,8 @@ private func normalizeWorkspacePath(raw: String): String {
     trimmed
 }
 
-func onboardWorkspacePromptState(root: JsonObject): (String, String, String, Bool) {
-    let agents = wizardEnsureObject(root, "agents")
-    let defaults = wizardEnsureObject(agents, "defaults")
-    let currentDirectory = normalizeWorkspacePath(MetisPaths.workspaceRoot().toString())
-    let configuredWorkspace = wizardReadString(defaults, "workspace").trimAscii()
-    let normalizedConfigured = if (configuredWorkspace.isEmpty()) {
-        ""
-    } else {
-        normalizeWorkspacePath(configuredWorkspace)
-    }
-    let effectiveWorkspace = if (normalizedConfigured.isEmpty()) {
-        currentDirectory
-    } else {
-        normalizedConfigured
-    }
-    let showConfiguredOption = !normalizedConfigured.isEmpty() && normalizedConfigured != currentDirectory
-    (currentDirectory, normalizedConfigured, effectiveWorkspace, showConfiguredOption)
+public func onboardWorkspacePromptState(root: JsonObject): (String, String, String, Bool) {
+    programSupportOnboardWorkspacePromptState(root)
 }
 
 private func promptWorkspaceDirectory(root: JsonObject): String {

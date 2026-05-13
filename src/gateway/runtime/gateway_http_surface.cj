@@ -2,7 +2,8 @@ package metis.gateway.runtime
 
 import magic.jsonable.*
 
-import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings}
+import metis.core.runtimeToolInvocationAllowedFromRoot
+import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager}
 import metis.core.model.CliModelManager
 import metis.gateway.config.buildGatewayConfigFromUserSettings
 import metis.gateway.model.GatewayConfig
@@ -312,10 +313,14 @@ private func handleMcpHttp(ctx: HttpContext, cfg: GatewayConfig): String {
 }
 
 public func gatewayHandleMcpRequest(user: GatewayUserSettings, raw: String): String {
-    gatewayHandleMcpRequest(buildGatewayConfigFromUserSettings(user), raw)
+    gatewayHandleMcpRequestWithPolicy(buildGatewayConfigFromUserSettings(user), raw, user)
 }
 
 public func gatewayHandleMcpRequest(cfg: GatewayConfig, raw: String): String {
+    gatewayHandleMcpRequestWithPolicy(cfg, raw, CliSettingManager.readGatewaySettings())
+}
+
+private func gatewayHandleMcpRequestWithPolicy(cfg: GatewayConfig, raw: String, user: GatewayUserSettings): String {
     let root = parseRequestObject(raw)
     let method = jsonStringAt(root, "method").trimAscii()
     let idValue = match (root.get("id")) {
@@ -505,7 +510,7 @@ public func gatewayHandleMcpRequest(cfg: GatewayConfig, raw: String): String {
                 try { v.asObject() } catch (_e: Exception) { JsonObject() }
             case None => JsonObject()
         }
-        let callResult = gatewayMcpToolCall(toolName, args)
+        let callResult = gatewayMcpToolCall(user, toolName, args)
         if (callResult.ok) {
             let payload = gatewayMcpNormalizedPayload(callResult.result)
             response.put("result", gatewayMcpCompatEnvelope(payload, callResult.result))
@@ -522,6 +527,39 @@ public func gatewayHandleMcpRequest(cfg: GatewayConfig, raw: String): String {
     error.put("message", JsonString("Unsupported MCP method"))
     response.put("error", error)
     response.toJsonString()
+}
+
+private func gatewayHttpStringArrayJson(values: Array<String>): JsonArray {
+    let arr = JsonArray([])
+    for (value in values) {
+        arr.add(JsonString(value))
+    }
+    arr
+}
+
+private func gatewayHttpRuntimePolicyRoot(user: GatewayUserSettings): JsonObject {
+    let root = match (MetisConfigManager.rawConfig()) {
+        case Some(raw) =>
+            try { JsonValue.fromStr(raw.toJsonString()).asObject() } catch (_: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    let gatewayObj = match (root.get("gateway")) {
+        case Some(value) =>
+            try { value.asObject() } catch (_: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    let toolsObj = JsonObject()
+    if (user.tools.allow.size > 0) {
+        toolsObj.put("allow", gatewayHttpStringArrayJson(user.tools.allow))
+    }
+    if (user.tools.deny.size > 0) {
+        toolsObj.put("deny", gatewayHttpStringArrayJson(user.tools.deny))
+    }
+    if (toolsObj.size() > 0) {
+        gatewayObj.put("tools", toolsObj)
+        root.put("gateway", gatewayObj)
+    }
+    root
 }
 
 private func handleRpcHttp(ctx: HttpContext, cfg: GatewayConfig): String {
@@ -1189,7 +1227,15 @@ private func gatewayHttpRequestContext(ctx: HttpContext, root: JsonObject, surfa
     out
 }
 
-private func gatewayMcpToolCall(name: String, args: JsonObject): GatewayRpcResponse {
+private func gatewayMcpToolCall(user: GatewayUserSettings, name: String, args: JsonObject): GatewayRpcResponse {
+    let decision = runtimeToolInvocationAllowedFromRoot(
+        gatewayHttpRuntimePolicyRoot(user),
+        name,
+        [name]
+    )
+    if (!decision.allowed) {
+        return GatewayRpcResponse(false, "tools.call", error: "tool policy rejected `${name.trimAscii()}`: ${decision.reason}; source=${decision.policySource}")
+    }
     let normalized = name.trimAscii().toAsciiLower()
     let client = gatewayBuildClient("gateway-http-mcp", "http-mcp")
     if (normalized == "gateway.status") {

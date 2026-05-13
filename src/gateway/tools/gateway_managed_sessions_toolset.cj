@@ -3,9 +3,9 @@ package metis.gateway.tools
 import magic.dsl.{tool, toolset}
 import magic.prelude.*
 
-import metis.core.config.{CliConfig, CliSettingManager}
+import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager}
 import metis.core.memory.{MemorySessionTranscriptStore, memorySessionStoreForGatewayUser}
-import metis.core.{GatewaySubagentAgentSpec, GatewaySubagentEffectiveState, gatewayCurrentToolRuntimeContext, gatewaySubagentBuildBuiltinPrompt, gatewaySubagentBuildContextPrompt, gatewaySubagentBuildCustomPrompt, gatewaySubagentControllerCanAccessRun, gatewaySubagentCreateRunRecord, gatewaySubagentDeliverNoticeToChannel, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentIsBuiltinAgent, gatewaySubagentListRunRecords, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunState, gatewaySubagentMarkRunTimedOut, gatewaySubagentNormalizeBuiltinAgentId, gatewaySubagentNormalizeCleanupMode, gatewaySubagentNormalizeContextMode, gatewaySubagentNormalizeIsolationMode, gatewaySubagentNormalizeSandboxMode, gatewaySubagentNoticeShouldDeliver, gatewaySubagentNoticeTargetSession, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentPublishNoticeEvent, gatewaySubagentPutEffectiveState, gatewaySubagentRenderNotice, gatewaySubagentResolveAgent, gatewaySubagentResolveEffectiveState, gatewaySubagentResolveRunRecord, gatewaySubagentRunMatchesControlFilter, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentRunStatusIsTerminal, gatewaySubagentUpdateChannelNoticeStatus, gatewaySubagentUpdateNoticeStatus, gatewaySubagentWriteRunRecord, renderGatewayTopicCreateText}
+import metis.core.{GatewaySubagentAgentSpec, GatewaySubagentEffectiveState, gatewayCurrentToolRuntimeContext, gatewaySubagentBuildBuiltinPrompt, gatewaySubagentBuildContextPrompt, gatewaySubagentBuildCustomPrompt, gatewaySubagentControllerCanAccessRun, gatewaySubagentCreateRunRecord, gatewaySubagentDeliverNoticeToChannel, gatewaySubagentEvaluateSpawnPolicy, gatewaySubagentFindRunBySessionKey, gatewaySubagentIsBuiltinAgent, gatewaySubagentListRunRecords, gatewaySubagentMarkRunCancelled, gatewaySubagentMarkRunState, gatewaySubagentMarkRunTimedOut, gatewaySubagentNormalizeBuiltinAgentId, gatewaySubagentNormalizeCleanupMode, gatewaySubagentNormalizeContextMode, gatewaySubagentNormalizeIsolationMode, gatewaySubagentNormalizeSandboxMode, gatewaySubagentNoticeShouldDeliver, gatewaySubagentNoticeTargetSession, gatewaySubagentPolicyDecisionToJson, gatewaySubagentPolicyRejectionJson, gatewaySubagentPublishNoticeEvent, gatewaySubagentPutEffectiveState, gatewaySubagentRenderNotice, gatewaySubagentResolveAgent, gatewaySubagentResolveEffectiveState, gatewaySubagentResolveRunRecord, gatewaySubagentRunMatchesControlFilter, gatewaySubagentRunRecordInt, gatewaySubagentRunRecordString, gatewaySubagentRunStatusIsTerminal, gatewaySubagentUpdateChannelNoticeStatus, gatewaySubagentUpdateNoticeStatus, gatewaySubagentWriteRunRecord, renderGatewayTopicCreateText, resolveRuntimeToolPolicyFromRoot, runtimeSubagentBoundaryDecision, runtimeToolPolicyReportToJson}
 import metis.io.PrintUtils
 
 import std.collection.{ArrayList, HashMap}
@@ -46,6 +46,54 @@ public class GatewayManagedSessionsToolset {
 
     private func gwStore(): MemorySessionTranscriptStore {
         memorySessionStoreForGatewayUser(CliSettingManager.readGatewaySettings())
+    }
+
+    private func stringArrayJson(values: Array<String>): JsonArray {
+        let arr = JsonArray([])
+        for (value in values) {
+            arr.add(JsonString(value))
+        }
+        arr
+    }
+
+    private func runtimePolicyRootForSpawn(): JsonObject {
+        let root = match (MetisConfigManager.rawConfig()) {
+            case Some(raw) =>
+                try { JsonValue.fromStr(raw.toJsonString()).asObject() } catch (_: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let user = CliSettingManager.readGatewaySettings()
+        let gatewayObj = match (root.get("gateway")) {
+            case Some(value) =>
+                try { value.asObject() } catch (_: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let toolsObj = JsonObject()
+        if (user.tools.allow.size > 0) {
+            toolsObj.put("allow", this.stringArrayJson(user.tools.allow))
+        }
+        if (user.tools.deny.size > 0) {
+            toolsObj.put("deny", this.stringArrayJson(user.tools.deny))
+        }
+        if (toolsObj.size() > 0) {
+            gatewayObj.put("tools", toolsObj)
+            root.put("gateway", gatewayObj)
+        }
+        root
+    }
+
+    private func subagentBoundaryInventory(settingsTools: Array<String>): Array<String> {
+        let values = ArrayList<String>()
+        for (name in ["fileRead", "listDirectory", "shellExecute", "sessions_spawn", "sessions_batch_delegate", "subagents"]) {
+            values.add(name)
+        }
+        for (name in settingsTools) {
+            let clean = name.trimAscii()
+            if (!clean.isEmpty()) {
+                values.add(clean)
+            }
+        }
+        values.toArray()
     }
 
     private func invokeGatewayCall(method: String, params: JsonObject): JsonObject {
@@ -1963,6 +2011,37 @@ public class GatewayManagedSessionsToolset {
         effectiveTimeout = policyDecision.effectiveTimeoutSeconds
         if (!policyDecision.allowed) {
             let err = gatewaySubagentPolicyRejectionJson(policyDecision, agentIdText, runtimeText)
+            let out = err.toJsonString()
+            PrintUtils.printToolResult(out)
+            return out
+        }
+        let parentAgentId = match (runtimeContext) {
+            case Some(ctx) => ctx.agentId
+            case None => ""
+        }
+        let subagentSettings = CliSettingManager.readGatewaySettings().subagents
+        let parentToolPolicy = resolveRuntimeToolPolicyFromRoot(
+            this.runtimePolicyRootForSpawn(),
+            this.subagentBoundaryInventory(subagentSettings.childAllowedTools),
+            agentId: parentAgentId
+        )
+        let boundaryDecision = runtimeSubagentBoundaryDecision(
+            parentToolPolicy,
+            requestedAgentId: agentIdText,
+            requireAgentId: subagentSettings.requireAgentId,
+            allowAgents: subagentSettings.allowAgents,
+            requestedTools: subagentSettings.childAllowedTools
+        )
+        if (!boundaryDecision.allowed) {
+            let err = JsonObject()
+            err.put("ok", JsonBool(false))
+            err.put("status", JsonString("rejected"))
+            err.put("error", JsonString("subagent policy rejected: ${boundaryDecision.reason}"))
+            err.put("reason", JsonString(boundaryDecision.reason))
+            err.put("agentId", JsonString(agentIdText))
+            err.put("runtime", JsonString(runtimeText))
+            err.put("parentAgentId", JsonString(parentAgentId))
+            err.put("parentToolPolicy", runtimeToolPolicyReportToJson(parentToolPolicy))
             let out = err.toJsonString()
             PrintUtils.printToolResult(out)
             return out

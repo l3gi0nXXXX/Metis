@@ -8,21 +8,23 @@ import magic.jsonable.TypeSchema
 import magic.prelude.*
 import magic.log.LogUtils
 
-import metis.core.{gatewayMainRuntimeRequiredToolNames, gatewayNotifyCurrentToolRuntimeStatus, runtimeToolNamesContainAll}
+import metis.core.{RuntimeToolInvocationPolicyContext, gatewayMainRuntimeRequiredToolNames, gatewayNotifyCurrentToolRuntimeStatus, resolveRuntimeToolPolicyFromRoot, runtimePopToolInvocationPolicyContext, runtimePushToolInvocationPolicyContext, runtimeToolInvocationAllowedFromRoot, runtimeToolNamesContain, runtimeToolNamesContainAll}
 import metis.core.model.CliModelManager
 import metis.core.model.ModelTokenLimits
-import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings}
+import metis.core.config.{CliConfig, CliModelRuntimeStateManager, CliSettingManager, GatewayUserSettings, MetisConfigManager}
 import metis.core.prompting.{MetisBootstrapBudgetResult, MetisSystemPromptParams, MetisSystemPromptBuilder, MetisWorkspaceBootstrap}
 import metis.core.skills.SkillsPrompt
 import metis.core.skills.tryHandleSkillsCommand
 import metis.cron.{executeGatewayCronCommand, parseSlashCronLine}
+import metis.gateway.session.GatewayTurnContext
 import metis.gateway.tools.{GatewayCronToolset, GatewayFSToolset, GatewayGatewayToolset, GatewayImageGenerationToolset, GatewayManagedSessionsToolset, GatewayMemoryToolset, GatewayMessageToolset, GatewayPlanToolset, GatewaySessionTranscriptToolset, GatewayShellToolset, GatewayTelegramMediaToolset, GatewayTtsToolset, GatewayVideoGenerationToolset, GatewayWeatherToolset, gatewayHandleNativeCommandLine, gatewayHandleSubagentsCommandLine}
 import metis.io.{PrintUtils, AnsiColor, WithColor}
 
 import std.collection.{HashMap, ArrayList, enumerate}
+import std.fs.Path
 import std.sync.Mutex
 import std.time.*
-import stdx.encoding.json.JsonValue
+import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
 import magic.model.ModelManager
 import magic.core.model.ChatModel
 
@@ -88,6 +90,39 @@ func gatewaySkillSelectionUserNotice(skillsEnabled: Bool, selectedSkillNameOpt: 
 public func gatewayDefaultChatToolNames(): Array<String> {
     let agent = GatewayP1ChatAgent()
     MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
+}
+
+private func gatewayStringArrayJson(values: Array<String>): JsonArray {
+    let arr = JsonArray([])
+    for (value in values) {
+        arr.add(JsonString(value))
+    }
+    arr
+}
+
+private func gatewayRuntimePolicyRoot(user: GatewayUserSettings): JsonObject {
+    let root = match (MetisConfigManager.rawConfig()) {
+        case Some(raw) =>
+            try { JsonValue.fromStr(raw.toJsonString()).asObject() } catch (_: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    let gatewayObj = match (root.get("gateway")) {
+        case Some(value) =>
+            try { value.asObject() } catch (_: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    let toolsObj = JsonObject()
+    if (user.tools.allow.size > 0) {
+        toolsObj.put("allow", gatewayStringArrayJson(user.tools.allow))
+    }
+    if (user.tools.deny.size > 0) {
+        toolsObj.put("deny", gatewayStringArrayJson(user.tools.deny))
+    }
+    if (toolsObj.size() > 0) {
+        gatewayObj.put("tools", toolsObj)
+        root.put("gateway", gatewayObj)
+    }
+    root
 }
 
 private func gatewayToolPolicyState(user: GatewayUserSettings): (HashMap<String, Bool>, HashMap<String, Bool>, Bool) {
@@ -188,9 +223,23 @@ public func setGatewayAgentBridgeReplyRunnerForTest(
 
 private class GatewayLifecycleToolWrapper <: Tool {
     private let inner: Tool
+    private let policyRoot: JsonObject
+    private let inventory: Array<String>
+    private let agentId: String
+    private let provider: String
 
-    public init(inner: Tool) {
+    public init(
+        inner: Tool,
+        policyRoot!: JsonObject = JsonObject(),
+        inventory!: Array<String> = [],
+        agentId!: String = "",
+        provider!: String = ""
+    ) {
         this.inner = inner
+        this.policyRoot = policyRoot
+        this.inventory = inventory
+        this.agentId = agentId.trimAscii()
+        this.provider = provider.trimAscii()
     }
 
     public prop name: String {
@@ -219,6 +268,19 @@ private class GatewayLifecycleToolWrapper <: Tool {
 
     override public func invoke(args: HashMap<String, JsonValue>): ToolResponse {
         gatewayNotifyCurrentToolRuntimeStatus("tool")
+        let decision = runtimeToolInvocationAllowedFromRoot(
+            this.policyRoot,
+            this.inner.name,
+            this.inventory,
+            agentId: this.agentId,
+            provider: this.provider
+        )
+        if (!decision.allowed) {
+            return ToolResponse(
+                "tool policy rejected `${this.inner.name}`: ${decision.reason}; source=${decision.policySource}",
+                isError: true
+            )
+        }
         this.inner.invoke(args)
     }
 
@@ -227,47 +289,73 @@ private class GatewayLifecycleToolWrapper <: Tool {
     }
 }
 
-private func gatewayLifecycleWrappedTools(tools: ArrayList<Tool>): ArrayList<Tool> {
+private func gatewayLifecycleWrappedTools(
+    tools: ArrayList<Tool>,
+    policyRoot!: JsonObject = JsonObject(),
+    inventory!: Array<String> = [],
+    agentId!: String = "",
+    provider!: String = ""
+): ArrayList<Tool> {
     let wrapped = ArrayList<Tool>()
     for (tool in tools) {
-        wrapped.add(GatewayLifecycleToolWrapper(tool))
+        wrapped.add(GatewayLifecycleToolWrapper(
+            tool,
+            policyRoot: policyRoot,
+            inventory: inventory,
+            agentId: agentId,
+            provider: provider
+        ))
     }
     wrapped
 }
 
-public func gatewayAuthorizedChatToolNames(): Array<String> {
+public func gatewayAuthorizedChatToolNames(agentId!: String = "", provider!: String = ""): Array<String> {
     let user = CliSettingManager.readGatewaySettings()
-    let (allow, deny, denyAll) = gatewayToolPolicyState(user)
-    let authorized = ArrayList<String>()
-    for (toolName in gatewayDefaultChatToolNames()) {
-        if (gatewayToolAuthorized(toolName, allow, deny, denyAll)) {
-            authorized.add(toolName)
-        }
-    }
-    authorized.toArray()
+    let inventory = gatewayDefaultChatToolNames()
+    resolveRuntimeToolPolicyFromRoot(
+        gatewayRuntimePolicyRoot(user),
+        inventory,
+        agentId: agentId,
+        provider: provider
+    ).visibleTools
 }
 
-public func gatewayPolicyFilteredChatToolNames(): Array<String> {
+public func gatewayPolicyFilteredChatToolNames(agentId!: String = "", provider!: String = ""): Array<String> {
     let user = CliSettingManager.readGatewaySettings()
     let agent = GatewayP1ChatAgent()
-    gatewayApplyToolPolicy(agent, user)
+    gatewayApplyToolPolicy(agent, user, agentId: agentId, provider: provider)
     MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
 }
 
-private func gatewayApplyToolPolicy(agent: GatewayP1ChatAgent, user: GatewayUserSettings): Array<String> {
-    let (allow, deny, denyAll) = gatewayToolPolicyState(user)
+private func gatewayApplyToolPolicy(
+    agent: GatewayP1ChatAgent,
+    user: GatewayUserSettings,
+    agentId!: String = "",
+    provider!: String = ""
+): Array<String> {
+    let inventory = MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
+    let policyRoot = gatewayRuntimePolicyRoot(user)
+    let report = resolveRuntimeToolPolicyFromRoot(
+        policyRoot,
+        inventory,
+        agentId: agentId,
+        provider: provider
+    )
     let keep = ArrayList<Tool>()
-    let restricted = ArrayList<String>()
     for (tool in agent.toolManager.tools) {
-        if (gatewayToolAuthorized(tool.name, allow, deny, denyAll)) {
+        if (runtimeToolNamesContain(report.visibleTools, tool.name)) {
             keep.add(tool)
-        } else {
-            restricted.add(tool.name)
         }
     }
     agent.toolManager.clear()
-    agent.toolManager.addTools(gatewayLifecycleWrappedTools(keep))
-    restricted.toArray()
+    agent.toolManager.addTools(gatewayLifecycleWrappedTools(
+        keep,
+        policyRoot: policyRoot,
+        inventory: inventory,
+        agentId: agentId,
+        provider: provider
+    ))
+    report.deniedTools
 }
 
 public func gatewayDefaultChatRuntimeHasUnifiedCoreTools(): Bool {
@@ -282,18 +370,58 @@ public func gatewayMainRuntimePromptVarianceFields(): Array<String> {
     ["channel-label", "delivery-capabilities"]
 }
 
+private func gatewayTurnEffectiveAgentId(agentId: String, turnContext: Option<GatewayTurnContext>): String {
+    match (turnContext) {
+        case Some(ctx) =>
+            let scoped = ctx.agentId.trimAscii()
+            if (!scoped.isEmpty()) {
+                return scoped
+            }
+        case None => ()
+    }
+    agentId.trimAscii()
+}
+
+private func gatewayTurnWorkspacePath(turnContext: Option<GatewayTurnContext>): Path {
+    match (turnContext) {
+        case Some(ctx) =>
+            let workspaceDir = ctx.workspaceDir.trimAscii()
+            if (!workspaceDir.isEmpty()) {
+                return Path(workspaceDir)
+            }
+        case None => ()
+    }
+    CliConfig.cwd
+}
+
+private func gatewayEnsureTurnRuntimeState(turnContext: GatewayTurnContext): Unit {
+    let agentDir = turnContext.agentDir.trimAscii()
+    if (agentDir.isEmpty()) {
+        return
+    }
+    CliModelRuntimeStateManager.ensureAgentRuntimeStateForScope(Path(agentDir), turnContext.agentScope)
+}
+
+private func gatewayModelOrderForTurnContext(turnContext: GatewayTurnContext): Array<String> {
+    gatewayEnsureTurnRuntimeState(turnContext)
+    CliModelManager.modelSelectionSummaryForAgentScope(turnContext.agentScope)
+}
+
 private func buildGatewaySystemPrompt(
     agent: GatewayP1ChatAgent,
     channelName: String,
     modelName: String,
     agentId!: String = "",
-    extraPrompt!: String = ""
+    extraPrompt!: String = "",
+    turnContext!: Option<GatewayTurnContext> = None<GatewayTurnContext>
 ): (String, MetisBootstrapBudgetResult) {
     let gatewayUser = CliSettingManager.readGatewaySettings()
+    let effectiveAgentId = gatewayTurnEffectiveAgentId(agentId, turnContext)
+    let workspacePath = gatewayTurnWorkspacePath(turnContext)
     let params = MetisSystemPromptParams()
-    params.workspaceDir = CliConfig.cwd.toString()
+    params.workspaceDir = workspacePath.toString()
     params.toolNames = MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
-    params.runtimeInfo.agentId = agentId.trimAscii()
+    params.runtimeInfo.agentId = effectiveAgentId
     params.runtimeInfo.model = modelName.trimAscii()
     params.runtimeInfo.channel = channelName.trimAscii().toAsciiLower()
     params.runtimeInfo.capabilities = gatewayCorePromptRuntimeCapabilities(gatewayUser, channelName)
@@ -308,9 +436,9 @@ private func buildGatewaySystemPrompt(
         }
     }
     params.runtimeInfo.nativeApprovalUiAvailable = nativeApprovalUiAvailable
-    params.skillsPrompt = SkillsPrompt.buildAvailableSkillsMetadataForPrompt(agentId: agentId)
+    params.skillsPrompt = SkillsPrompt.buildAvailableSkillsMetadataForPrompt(agentId: effectiveAgentId)
     let bootstrap = MetisWorkspaceBootstrap.resolveContextFilesDetailed(
-        CliConfig.cwd,
+        workspacePath,
         runtimeChannel: channelName
     )
     params.contextFiles = bootstrap.files
@@ -327,7 +455,7 @@ public func gatewayPolicyFilteredSystemPrompt(
 ): String {
     let gatewayUser = CliSettingManager.readGatewaySettings()
     let agent = GatewayP1ChatAgent()
-    gatewayApplyToolPolicy(agent, gatewayUser)
+    gatewayApplyToolPolicy(agent, gatewayUser, agentId: agentId, provider: modelName)
     buildGatewaySystemPrompt(
         agent,
         channelName,
@@ -335,6 +463,30 @@ public func gatewayPolicyFilteredSystemPrompt(
         agentId: agentId,
         extraPrompt: extraPrompt
     )[0]
+}
+
+public func gatewayPolicyFilteredSystemPromptForTurnContext(
+    turnContext: GatewayTurnContext,
+    channelName!: String = "cli",
+    modelName!: String = "test-model",
+    extraPrompt!: String = ""
+): String {
+    gatewayEnsureTurnRuntimeState(turnContext)
+    let gatewayUser = CliSettingManager.readGatewaySettings()
+    let agent = GatewayP1ChatAgent()
+    gatewayApplyToolPolicy(agent, gatewayUser, agentId: turnContext.agentId, provider: modelName)
+    buildGatewaySystemPrompt(
+        agent,
+        channelName,
+        modelName,
+        agentId: turnContext.agentId,
+        extraPrompt: extraPrompt,
+        turnContext: Some(turnContext)
+    )[0]
+}
+
+public func gatewayDebugModelOrderForTurnContext(turnContext: GatewayTurnContext): Array<String> {
+    gatewayModelOrderForTurnContext(turnContext)
 }
 
 private func gatewayLogReplyMemory(
@@ -446,14 +598,16 @@ public class AgentBridge {
         agentId!: String = "",
         extraSystemPrompt!: String = "",
         streamingEnabled!: Bool = false,
-        streamChunkHook!: Option<(String) -> Unit> = None<(String) -> Unit>
+        streamChunkHook!: Option<(String) -> Unit> = None<(String) -> Unit>,
+        turnContext!: Option<GatewayTurnContext> = None<GatewayTurnContext>
     ): String {
         synchronized(this.replyLock) {
+            let effectiveAgentId = gatewayTurnEffectiveAgentId(agentId, turnContext)
             LogUtils.info(
-                "Gateway.reply: channel=${channelName.trimAscii().toAsciiLower()}, agentId=${agentId.trimAscii()}, conversationKey=${conversationKey}, rawPrompt='${prompt}'"
+                "Gateway.reply: channel=${channelName.trimAscii().toAsciiLower()}, agentId=${effectiveAgentId}, conversationKey=${conversationKey}, rawPrompt='${prompt}'"
             )
             match (gatewayAgentBridgeReplyRunnerForTest) {
-                case Some(runner) => return runner(conversationKey, prompt, channelName, agentId, streamingEnabled, streamChunkHook)
+                case Some(runner) => return runner(conversationKey, prompt, channelName, effectiveAgentId, streamingEnabled, streamChunkHook)
                 case None => ()
             }
             // Unknown slash command should be handled deterministically and must not pollute session history.
@@ -480,7 +634,7 @@ public class AgentBridge {
                         return out
                     }
                 }
-                let forcedSkillCheck = parseForcedSkillFromSlash(trimmedPrompt)
+                let forcedSkillCheck = parseForcedSkillFromSlash(trimmedPrompt, agentId: effectiveAgentId)
                 if (forcedSkillCheck.isNone()) {
                     LogUtils.info("Gateway.reply: unknown slash command, bypass LLM and history")
                     return "这不是一个有效的命令。可用 /cron 管理定时任务，/subagents 管理后台 subagent，或使用 /skills list 查看可用技能，或使用 /<skillName> 参数（例如 /weather 上海）。"
@@ -498,12 +652,17 @@ public class AgentBridge {
             // Skill-driven model selection:
             // - if a skill configured `model` + api key, try it first
             // - if apikey invalid/auth error occurs, fall back to global model config
-            var allModels = CliModelManager.getAllModels()
+            var allModels = match (turnContext) {
+                case Some(ctx) =>
+                    gatewayEnsureTurnRuntimeState(ctx)
+                    CliModelManager.getAllModelsForAgentScope(ctx.agentScope)
+                case None => CliModelManager.getAllModels()
+            }
             let channelBoundModelOpt = resolveChannelBoundModelName(channelName, sessionKey: conversationKey)
             allModels = applyChannelModelBinding(channelBoundModelOpt, allModels)
             let skillsEnabled = CliSettingManager.readSkillsEnabled()
-            let forcedSkillName: Option<String> = parseForcedSkillFromSlash(prompt, agentId: agentId)
-            let decision = SkillsPrompt.decideForInput(prompt, forcedSkillName, agentId: agentId)
+            let forcedSkillName: Option<String> = parseForcedSkillFromSlash(prompt, agentId: effectiveAgentId)
+            let decision = SkillsPrompt.decideForInput(prompt, forcedSkillName, agentId: effectiveAgentId)
             let selectedSkillNameOpt = decision.selectedSkillName
             let enabledSelectedSkillNameOpt: Option<String> = match (selectedSkillNameOpt) {
                 case Some(skillName) => if (decision.selectedSkillEnabled) { Some(skillName) } else { None }
@@ -545,7 +704,7 @@ public class AgentBridge {
             var successfulPromptTokens: Int64 = -1
             var successfulCompletionTokens: Int64 = -1
             let availableSkillsMeta = if (skillsEnabled) {
-                SkillsPrompt.buildAvailableSkillsMetadataForPrompt(agentId: agentId)
+                SkillsPrompt.buildAvailableSkillsMetadataForPrompt(agentId: effectiveAgentId)
             } else {
                 ""
             }
@@ -582,7 +741,7 @@ public class AgentBridge {
                 "before-model-loop",
                 conversationKey,
                 channelName,
-                agentId: agentId,
+                agentId: effectiveAgentId,
                 note: "history=${history.size}, modelInputChars=${modelInput.size}, models=${allModels.size}"
             )
             for ((idx, currModel) in enumerate(allModels)) {
@@ -594,14 +753,17 @@ public class AgentBridge {
                     }
                     try {
                     let agent = GatewayP1ChatAgent()
-                    let restrictedTools = gatewayApplyToolPolicy(agent, gatewayUser)
+                    let invocationPolicyRoot = gatewayRuntimePolicyRoot(gatewayUser)
+                    let invocationPolicyInventory = MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
+                    let restrictedTools = gatewayApplyToolPolicy(agent, gatewayUser, agentId: effectiveAgentId, provider: currModel.fullName)
                     agent.model = currModel
                     let promptBuild = buildGatewaySystemPrompt(
                         agent,
                         channelName,
                         currModel.fullName,
-                        agentId: agentId,
-                        extraPrompt: extraSystemPrompt
+                        agentId: effectiveAgentId,
+                        extraPrompt: extraSystemPrompt,
+                        turnContext: turnContext
                     )
                     let builtPrompt = promptBuild[0]
                     attemptPromptChars = Int64(builtPrompt.size)
@@ -620,43 +782,53 @@ public class AgentBridge {
                         "before-agent-chat",
                         conversationKey,
                         channelName,
-                        agentId: agentId,
+                        agentId: effectiveAgentId,
                         modelName: currModel.fullName,
                         note: "attempt=${idx + 1}, promptChars=${builtPrompt.size}"
                     )
                     var firstTokenMs: Int64 = -1
                     gatewayBeginUsageCapture(agent.name)
-                    if (streamingEnabled) {
-                        let response = agent.asyncChat(modelInput)
-                        var lastChunkContent = ""
-                        try {
-                            for (_chunk in response) {
-                                let currentContent = response.content
-                                if (currentContent == lastChunkContent) {
-                                    continue
+                    runtimePushToolInvocationPolicyContext(RuntimeToolInvocationPolicyContext(
+                        invocationPolicyRoot,
+                        invocationPolicyInventory,
+                        agentId: effectiveAgentId,
+                        provider: currModel.fullName
+                    ))
+                    try {
+                            if (streamingEnabled) {
+                                let response = agent.asyncChat(modelInput)
+                                var lastChunkContent = ""
+                                try {
+                                    for (_chunk in response) {
+                                        let currentContent = response.content
+                                        if (currentContent == lastChunkContent) {
+                                            continue
+                                        }
+                                        if (firstTokenMs < 0) {
+                                            firstTokenMs = DateTime.now().toUnixTimeStamp().toMilliseconds() - modelCallStartedAtMs
+                                        }
+                                        lastChunkContent = currentContent
+                                        match (streamChunkHook) {
+                                            case Some(notify) => notify(currentContent)
+                                            case None => ()
+                                        }
+                                    }
+                                } catch (_streamEx: Exception) {
+                                    ()
                                 }
-                                if (firstTokenMs < 0) {
-                                    firstTokenMs = DateTime.now().toUnixTimeStamp().toMilliseconds() - modelCallStartedAtMs
+                                answer = response.content
+                                match (response.status) {
+                                    case AgentResponseStatus.Success => ()
+                                    case AgentResponseStatus.Cancelled =>
+                                        throw Exception(if (answer.trimAscii().isEmpty()) { "gateway async response cancelled" } else { answer })
+                                    case AgentResponseStatus.Failed =>
+                                        throw Exception(if (answer.trimAscii().isEmpty()) { "gateway async response failed" } else { answer })
                                 }
-                                lastChunkContent = currentContent
-                                match (streamChunkHook) {
-                                    case Some(notify) => notify(currentContent)
-                                    case None => ()
-                                }
+                            } else {
+                                answer = agent.chat(modelInput)
                             }
-                        } catch (_streamEx: Exception) {
-                            ()
-                        }
-                        answer = response.content
-                        match (response.status) {
-                            case AgentResponseStatus.Success => ()
-                            case AgentResponseStatus.Cancelled =>
-                                throw Exception(if (answer.trimAscii().isEmpty()) { "gateway async response cancelled" } else { answer })
-                            case AgentResponseStatus.Failed =>
-                                throw Exception(if (answer.trimAscii().isEmpty()) { "gateway async response failed" } else { answer })
-                        }
-                    } else {
-                        answer = agent.chat(modelInput)
+                    } finally {
+                        runtimePopToolInvocationPolicyContext()
                     }
                     let usagePair = gatewayFinishUsageCapture()
                     successfulPromptTokens = usagePair[0]
@@ -667,7 +839,7 @@ public class AgentBridge {
                         "after-agent-chat",
                         conversationKey,
                         channelName,
-                        agentId: agentId,
+                        agentId: effectiveAgentId,
                         modelName: currModel.fullName,
                         note: "attempt=${idx + 1}, answerChars=${answer.size}"
                     )
@@ -699,7 +871,7 @@ public class AgentBridge {
                         "agent-chat-exception",
                         conversationKey,
                         channelName,
-                        agentId: agentId,
+                        agentId: effectiveAgentId,
                         modelName: currModel.fullName,
                         note: "attempt=${idx + 1}, error=${e.message}"
                     )
@@ -731,7 +903,7 @@ public class AgentBridge {
                         LogUtils.info(
                             "Gateway channel-bound model ${currModel.fullName} failed, force fallback to global models: ${e.message}"
                         )
-                    } else if (CliModelManager.shouldFallback(e)) {
+                    } else if (match (turnContext) { case Some(ctx) => CliModelManager.shouldFallbackForAgentScope(e, ctx.agentScope) case None => CliModelManager.shouldFallback(e) }) {
                         LogUtils.info("Gateway model ${currModel.fullName} failed, trying fallback: ${e.message}")
                     } else {
                         throw e
@@ -764,7 +936,7 @@ public class AgentBridge {
                 "reply-finished",
                 conversationKey,
                 channelName,
-                agentId: agentId,
+                agentId: effectiveAgentId,
                 note: "history=${history.size}, replyChars=${reply.size}"
             )
             return reply
