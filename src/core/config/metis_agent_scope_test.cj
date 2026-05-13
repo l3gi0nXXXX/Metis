@@ -453,4 +453,46 @@ public class MetisAgentScopeTest {
         @Expect(scopeTestBool(accountSummary, "apiKeyConfigured"), true)
         @Expect(scopeTestBool(accountSummary, "baseUrlConfigured"), true)
     }
+
+    @TestCase
+    public func providerCredentialSummaryPrefersAgentAuthProfilesAndRedactsSecrets(): Unit {
+        let home = scopeTestHome("provider-agent-auth-summary")
+        let agentDir = home.join("agents").join("runner").join("agent")
+        scopePrepareDir(agentDir)
+        File.writeTo(agentDir.join("auth-profiles.json"),
+            "{\"profiles\":[{\"id\":\"runner-qwen\",\"provider\":\"qwen\",\"apiKey\":\"agent-auth-secret\",\"baseUrl\":\"https://agent-auth.example/v1\"}]}".toArray())
+        File.writeTo(agentDir.join("models.json"),
+            "{\"providers\":{\"qwen\":{\"apiKey\":\"agent-model-secret\",\"baseUrl\":\"https://agent-model.example/v1\"}}}".toArray())
+
+        let root = JsonObject()
+        let agents = JsonObject()
+        let list = JsonArray([])
+        let runner = JsonObject()
+        runner.put("id", JsonString("runner"))
+        runner.put("model", JsonString("qwen:qwen-plus"))
+        runner.put("agentDir", JsonString(agentDir.toString()))
+        list.add(runner)
+        agents.put("list", list)
+        root.put("agents", agents)
+        let models = JsonObject()
+        let providers = JsonObject()
+        let qwen = JsonObject()
+        qwen.put("apiKey", JsonString("global-secret"))
+        providers.put("qwen", qwen)
+        models.put("providers", providers)
+        root.put("models", models)
+
+        let scope = MetisAgentScope.resolve(root, agentId: "runner", homeRoot: home, defaultWorkspace: home.join("workspace"))
+        let accountSummary = scopeTestObject(scope, "accountSummary")
+        let rendered = accountSummary.toJsonString()
+
+        @Expect(scopeTestString(accountSummary, "status"), "configured")
+        @Expect(scopeTestString(accountSummary, "source"), "agent.auth-profiles.qwen")
+        @Expect(scopeTestBool(accountSummary, "apiKeyConfigured"), true)
+        @Expect(scopeTestBool(accountSummary, "baseUrlConfigured"), true)
+        @Expect(scopeTestArray(accountSummary, "sources").size(), 4)
+        @Expect(rendered.contains("agent-auth-secret"), false)
+        @Expect(rendered.contains("agent-model-secret"), false)
+        @Expect(rendered.contains("global-secret"), false)
+    }
 }

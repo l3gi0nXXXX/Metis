@@ -327,6 +327,29 @@ private func teamScanAgentFilesAndPolicies(findings: JsonArray, summary: JsonObj
             "agent-team-models-invalid", "models.json")
         teamScanJsonFile(findings, teamString(agent, "authProfilesPath"), agentId, "agent-team-auth-profiles-missing",
             "agent-team-auth-profiles-invalid", "auth-profiles.json")
+        let accountSummary = teamObject(agent, "accountSummary")
+        let credentialSource = teamString(accountSummary, "source")
+        let credentialStatus = teamString(accountSummary, "status")
+        let modelRef = teamString(agent, "modelRef")
+        if (!modelRef.isEmpty() && credentialStatus != "configured") {
+            teamAddFinding(findings, "agent-team-provider-credential-missing", "warning", "agents.list[].model",
+                "Agent ${agentId} model ${modelRef} has no configured provider credential in its source chain.",
+                "The agent cannot use its configured model unless a later runtime injects credentials.",
+                "Configure ${teamString(agent, "authProfilesPath")} or ${teamString(agent, "modelsJsonPath")} for this agent.",
+                agentId: agentId)
+        } else if (credentialSource.startsWith("models.providers.")) {
+            teamAddFinding(findings, "agent-team-provider-credential-global-fallback", "notice", "models.providers",
+                "Agent ${agentId} model ${modelRef} uses a global provider credential source.",
+                "This preserves compatibility but is not an isolated per-agent credential view.",
+                "Move the provider credential into the agentDir auth-profiles.json or models.json when isolation is required.",
+                agentId: agentId)
+        } else if (credentialSource.startsWith("env.")) {
+            teamAddFinding(findings, "agent-team-provider-credential-env-fallback", "notice", "env",
+                "Agent ${agentId} model ${modelRef} uses shell environment credential fallback.",
+                "Environment fallback is process-wide and not isolated per agent.",
+                "Prefer explicit per-agent auth-profiles.json for AgentTeam credentials.",
+                agentId: agentId)
+        }
         let legacyAuthPath = teamString(agent, "legacyAuthPath")
         if (!legacyAuthPath.trimAscii().isEmpty() && exists(Path(legacyAuthPath))) {
             teamAddFinding(findings, "agent-team-legacy-auth-json", "notice", legacyAuthPath,

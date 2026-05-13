@@ -1583,6 +1583,9 @@ private func gatewayAgentWorkspaceFileJson(request: GatewayRpcRequest, content!:
 
 private func gatewayAgentSecretKey(key: String): Bool {
     let lower = key.trimAscii().toAsciiLower()
+    if (lower.endsWith("configured") || lower.endsWith("status")) {
+        return false
+    }
     lower.contains("token") || lower.contains("secret") || lower.contains("apikey") ||
         lower.contains("api_key") || lower.contains("password") || lower.contains("authorization")
 }
@@ -1645,7 +1648,8 @@ private func gatewayAgentModelsReadState(path: Path, diagnostics: JsonArray): Js
     }
 }
 
-private func gatewayAgentModelsResponse(agentId: String, agentDir: Path, path: Path, state: JsonObject, diagnostics: JsonArray): JsonObject {
+private func gatewayAgentModelsResponse(agentId: String, agentDir: Path, path: Path, state: JsonObject,
+    diagnostics: JsonArray, credentialSource: JsonObject): JsonObject {
     let models = JsonObject()
     models.put("agentId", JsonString(agentId))
     models.put("agentDir", JsonString(agentDir.toString()))
@@ -1654,6 +1658,7 @@ private func gatewayAgentModelsResponse(agentId: String, agentDir: Path, path: P
     models.put("primaryModelRef", JsonString(gatewayAgentJsonString(state, "primaryModelRef", "")))
     models.put("runtimePrimaryModelRef", JsonString(gatewayAgentJsonString(state, "runtimePrimaryModelRef", "")))
     models.put("providerCount", gatewayAgentProviderCount(state).toJsonValue())
+    models.put("credentialSource", gatewayAgentRedactObject(credentialSource))
     models.put("diagnostics", diagnostics)
     models.put("state", gatewayAgentRedactObject(state))
     let result = JsonObject()
@@ -1679,7 +1684,8 @@ private func gatewayAgentModelsGetJson(request: GatewayRpcRequest): GatewayRpcRe
     let path = CliModelRuntimeStateManager.ensureAgentRuntimeStateForScope(agentDir, scope)
     let diagnostics = JsonArray([])
     let state = gatewayAgentModelsReadState(path, diagnostics)
-    GatewayRpcResponse(true, request.method, result: gatewayAgentModelsResponse(agentId, agentDir, path, state, diagnostics))
+    GatewayRpcResponse(true, request.method, result: gatewayAgentModelsResponse(agentId, agentDir, path, state, diagnostics,
+        gatewayAgentJsonObject(scope, "credentialSource")))
 }
 
 private func gatewayAgentModelsStateFromRequest(request: GatewayRpcRequest): (Bool, String, JsonObject) {
@@ -1720,7 +1726,8 @@ private func gatewayAgentModelsSetJson(request: GatewayRpcRequest): GatewayRpcRe
     let path = CliModelRuntimeStateManager.agentRuntimePath(agentDir)
     File.writeTo(path, state.toJsonString().toArray())
     let diagnostics = JsonArray([])
-    GatewayRpcResponse(true, request.method, result: gatewayAgentModelsResponse(agentId, agentDir, path, state, diagnostics))
+    GatewayRpcResponse(true, request.method, result: gatewayAgentModelsResponse(agentId, agentDir, path, state, diagnostics,
+        gatewayAgentJsonObject(scope, "credentialSource")))
 }
 
 private func gatewayAgentEntryAddAlias(entry: JsonObject, alias: String): Unit {

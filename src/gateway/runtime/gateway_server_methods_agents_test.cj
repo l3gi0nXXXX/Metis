@@ -1047,6 +1047,47 @@ public class GatewayServerMethodsAgentsTest {
     }
 
     @TestCase
+    public func agentModelsRpcReportsCredentialSourcesWithoutImplicitMainAuthOrSecretLeaks(): Unit {
+        withAgentsTempHome("metis-agents-models-source-order-home", { home: Path =>
+            File.writeTo(home.join("auth-profiles.json"),
+                "{\"profiles\":[{\"id\":\"main-qwen\",\"provider\":\"qwen\",\"apiKey\":\"main-auth-secret\"}]}\n".toArray())
+
+            let addParams = JsonObject()
+            addParams.put("id", JsonString("pm"))
+            addParams.put("model", JsonString("qwen:qwen-plus"))
+            let addResponse = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: addParams))).getOrThrow()
+            @Expect(addResponse.ok, true)
+
+            let getParams = JsonObject()
+            getParams.put("agentId", JsonString("pm"))
+            let missingAuthResponse = handleGatewayAgentsFamily("agents.models.get", request: Some(GatewayRpcRequest("agents.models.get", params: getParams))).getOrThrow()
+            @Expect(missingAuthResponse.ok, true)
+            let missingModels = missingAuthResponse.result.asObject().get("models").getOrThrow().asObject()
+            @Expect(missingModels.get("credentialSource").isSome(), true)
+            let missingSource = agentsTestObject(missingModels, "credentialSource")
+            let missingRendered = missingModels.toJsonString()
+            @Expect(agentsTestString(missingSource, "source"), "unconfigured")
+            @Expect(agentsTestString(missingSource, "status"), "not-configured")
+            @Expect(missingRendered.contains("main-auth-secret"), false)
+
+            let authPath = home.join("agents").join("pm").join("agent").join("auth-profiles.json")
+            File.writeTo(authPath,
+                "{\"profiles\":[{\"id\":\"pm-qwen\",\"provider\":\"qwen\",\"apiKey\":\"pm-auth-secret\",\"baseUrl\":\"https://agent.example/v1\"}]}\n".toArray())
+            let copiedAuthResponse = handleGatewayAgentsFamily("agents.models.get", request: Some(GatewayRpcRequest("agents.models.get", params: getParams))).getOrThrow()
+            @Expect(copiedAuthResponse.ok, true)
+            let copiedModels = copiedAuthResponse.result.asObject().get("models").getOrThrow().asObject()
+            @Expect(copiedModels.get("credentialSource").isSome(), true)
+            let copiedSource = agentsTestObject(copiedModels, "credentialSource")
+            let copiedRendered = copiedModels.toJsonString()
+            @Expect(agentsTestString(copiedSource, "source"), "agent.auth-profiles.qwen")
+            @Expect(agentsTestString(copiedSource, "status"), "configured")
+            @Expect(agentsTestBool(copiedSource, "apiKeyConfigured"), true)
+            @Expect(copiedRendered.contains("pm-auth-secret"), false)
+            @Expect(copiedRendered.contains("main-auth-secret"), false)
+        })
+    }
+
+    @TestCase
     public func agentUpdateRefreshesGeneratedModelsJsonButPreservesManualState(): Unit {
         withAgentsTempHome("metis-agents-models-refresh-hook-home", { home: Path =>
             let addParams = JsonObject()

@@ -247,6 +247,14 @@ public class CliModelRuntimeStateManager {
             root.put("fallbackModelRefs", jsonArrayFromStrings(canonicalModelArray(scopedFallbacks)))
             root.put("runtimeFallbackModelRefs", jsonArrayFromStrings(scopedFallbacks))
         }
+        match (runtimeStateGetObject(scope, "credentialSource")) {
+            case Some(source) => root.put("credentialSource", source)
+            case None =>
+                match (runtimeStateGetObject(scope, "accountSummary")) {
+                    case Some(source) => root.put("credentialSource", source)
+                    case None => ()
+                }
+        }
         runtimeStateMarkGeneratedForScope(root, scope)
     }
 

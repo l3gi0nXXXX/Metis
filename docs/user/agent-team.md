@@ -142,6 +142,8 @@ metis gateway call agents.models.set '{"agentId":"content-writer","state":{"prim
 
 The response redacts secret-like fields. Do not put provider secrets into workspace markdown files.
 
+`agents.models.get` also returns a redacted `credentialSource` summary. Metis resolves provider credential status in this order: the agent's `auth-profiles.json`, the agent's `models.json` provider entry, global `models.providers`, then environment fallback. Missing per-agent auth does not implicitly read another agent or the main auth file; copying `auth-profiles.json` into an agent must be explicit.
+
 ## Bind Telegram Or Feishu Accounts
 
 Current CLI binding accepts `channel[:account]` and writes route bindings for one agent:

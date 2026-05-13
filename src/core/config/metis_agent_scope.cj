@@ -63,6 +63,14 @@ private func scopeCloneArray(value: JsonArray): JsonArray {
     }
 }
 
+private func scopeJsonArrayFromStrings(items: Array<String>): JsonArray {
+    let out = JsonArray([])
+    for (item in items) {
+        out.add(JsonString(item))
+    }
+    out
+}
+
 private func scopeAgents(root: JsonObject): JsonObject {
     match (scopeJsonObject(root, "agents")) {
         case Some(agents) => agents
@@ -727,37 +735,191 @@ private func scopeProviderConfig(root: JsonObject, providerId: String): JsonObje
     scopeJsonObject(providers, providerId) ?? JsonObject()
 }
 
-private func scopeProviderSummary(root: JsonObject, modelRef: String): JsonObject {
-    let providerId = scopeProviderIdFromModelRef(modelRef)
-    let provider = scopeProviderConfig(root, providerId)
+private func scopeReadJsonObjectFile(path: Path): Option<JsonObject> {
+    if (!exists(path)) {
+        return None
+    }
+    try {
+        Some(JsonValue.fromStr(String.fromUtf8(File.readFrom(path))).asObject())
+    } catch (_: Exception) {
+        None
+    }
+}
+
+private func scopeProviderField(provider: JsonObject, keys: Array<String>): String {
+    for (key in keys) {
+        match (scopeJsonString(provider, key)) {
+            case Some(value) =>
+                let trimmed = value.trimAscii()
+                if (!trimmed.isEmpty()) {
+                    return trimmed
+                }
+            case None => ()
+        }
+    }
+    ""
+}
+
+private func scopeCredentialSourceRow(
+    source: String,
+    status: String,
+    apiKeyConfigured: Bool,
+    baseUrlConfigured: Bool,
+    path!: String = "",
+    profileId!: String = ""
+): JsonObject {
     let out = JsonObject()
-    out.put("providerId", JsonString(providerId))
-    out.put("modelRef", JsonString(modelRef.trimAscii()))
-    out.put("configured", (provider.size() > 0).toJsonValue())
-    out.put("source", JsonString(if (providerId.isEmpty()) { "unconfigured" } else { "modelRef" }))
+    out.put("source", JsonString(source))
+    out.put("status", JsonString(status))
+    out.put("apiKeyConfigured", apiKeyConfigured.toJsonValue())
+    out.put("baseUrlConfigured", baseUrlConfigured.toJsonValue())
+    if (!path.trimAscii().isEmpty()) {
+        out.put("path", JsonString(path.trimAscii()))
+    }
+    if (!profileId.trimAscii().isEmpty()) {
+        out.put("profileId", JsonString(profileId.trimAscii()))
+    }
     out
 }
 
-private func scopeAccountSummary(root: JsonObject, modelRef: String): JsonObject {
-    let providerId = scopeProviderIdFromModelRef(modelRef)
-    let provider = scopeProviderConfig(root, providerId)
-    let apiKey = scopeJsonString(provider, "apiKey").getOrDefault { "" }.trimAscii()
-    let baseUrl = scopeJsonString(provider, "baseUrl").getOrDefault { "" }.trimAscii()
-    let out = JsonObject()
-    out.put("providerId", JsonString(providerId))
-    out.put("source", JsonString(if (providerId.isEmpty()) { "unconfigured" } else { "models.providers.${providerId}" }))
-    out.put("apiKeyConfigured", (!apiKey.isEmpty()).toJsonValue())
-    out.put("baseUrlConfigured", (!baseUrl.isEmpty()).toJsonValue())
-    let status = if (providerId.isEmpty()) {
-        "unconfigured"
+private func scopeProviderCredentialStatus(provider: JsonObject): (Bool, Bool, String) {
+    let apiKey = scopeProviderField(provider, ["apiKey", "api_key", "token", "accessToken", "access_token"])
+    let baseUrl = scopeProviderField(provider, ["baseUrl", "baseURL", "base_url", "apiBaseUrl", "api_base_url"])
+    let apiKeyConfigured = !apiKey.isEmpty()
+    let baseUrlConfigured = !baseUrl.isEmpty()
+    let status = if (apiKeyConfigured) {
+        "configured"
     } else if (provider.size() == 0) {
         "not-configured"
-    } else if (!apiKey.isEmpty()) {
-        "configured"
     } else {
         "missing-api-key"
     }
-    out.put("status", JsonString(status))
+    (apiKeyConfigured, baseUrlConfigured, status)
+}
+
+private func scopeProviderFromProviderMap(root: JsonObject, providerId: String): JsonObject {
+    let providers = scopeJsonObject(root, "providers") ?? JsonObject()
+    scopeJsonObject(providers, providerId) ?? JsonObject()
+}
+
+private func scopeAgentModelsProvider(path: Path, providerId: String): JsonObject {
+    match (scopeReadJsonObjectFile(path)) {
+        case Some(root) =>
+            let mapped = scopeProviderFromProviderMap(root, providerId)
+            if (mapped.size() > 0) {
+                return mapped
+            }
+            let providers = scopeJsonArray(root, "providers").getOrDefault { JsonArray([]) }
+            for (item in providers.getItems()) {
+                let row = try { item.asObject() } catch (_: Exception) { JsonObject() }
+                let rowProvider = scopeJsonString(row, "provider").getOrDefault { "" }.trimAscii().toAsciiLower()
+                if (rowProvider == providerId) {
+                    return row
+                }
+            }
+            JsonObject()
+        case None => JsonObject()
+    }
+}
+
+private func scopeAuthProfileProvider(path: Path, providerId: String): JsonObject {
+    match (scopeReadJsonObjectFile(path)) {
+        case Some(root) =>
+            let mapped = scopeProviderFromProviderMap(root, providerId)
+            if (mapped.size() > 0) {
+                return mapped
+            }
+            let profiles = scopeJsonArray(root, "profiles").getOrDefault { JsonArray([]) }
+            for (item in profiles.getItems()) {
+                let profile = try { item.asObject() } catch (_: Exception) { JsonObject() }
+                let rawProvider = (scopeJsonString(profile, "provider") ??
+                    scopeJsonString(profile, "providerId") ??
+                    scopeJsonString(profile, "id") ??
+                    "").trimAscii().toAsciiLower()
+                if (rawProvider == providerId) {
+                    return profile
+                }
+            }
+            JsonObject()
+        case None => JsonObject()
+    }
+}
+
+private func scopeEnvConfigured(keys: Array<String>): Bool {
+    for (key in keys) {
+        let trimmed = key.trimAscii()
+        if (trimmed.isEmpty()) {
+            continue
+        }
+        match (getVariable(trimmed)) {
+            case Some(value) =>
+                if (!value.trimAscii().isEmpty()) {
+                    return true
+                }
+            case None => ()
+        }
+    }
+    false
+}
+
+private func scopeCredentialSummary(root: JsonObject, modelRef: String, agentDir: Path): JsonObject {
+    let providerId = scopeProviderIdFromModelRef(modelRef)
+    let out = JsonObject()
+    let sources = JsonArray([])
+    out.put("providerId", JsonString(providerId))
+    out.put("modelRef", JsonString(modelRef.trimAscii()))
+
+    if (providerId.isEmpty()) {
+        out.put("source", JsonString("unconfigured"))
+        out.put("status", JsonString("unconfigured"))
+        out.put("configured", false.toJsonValue())
+        out.put("apiKeyConfigured", false.toJsonValue())
+        out.put("baseUrlConfigured", false.toJsonValue())
+        out.put("sources", sources)
+        return out
+    }
+
+    let authPath = agentDir.join("auth-profiles.json")
+    let authProvider = scopeAuthProfileProvider(authPath, providerId)
+    let (authApiKey, authBaseUrl, authStatus) = scopeProviderCredentialStatus(authProvider)
+    sources.add(scopeCredentialSourceRow("agent.auth-profiles.${providerId}", authStatus, authApiKey, authBaseUrl,
+        path: authPath.toString(), profileId: scopeJsonString(authProvider, "id").getOrDefault { "" }))
+
+    let modelsPath = agentDir.join("models.json")
+    let agentProvider = scopeAgentModelsProvider(modelsPath, providerId)
+    let (agentApiKey, agentBaseUrl, agentStatus) = scopeProviderCredentialStatus(agentProvider)
+    sources.add(scopeCredentialSourceRow("agent.models.providers.${providerId}", agentStatus, agentApiKey, agentBaseUrl,
+        path: modelsPath.toString()))
+
+    let globalProvider = scopeProviderConfig(root, providerId)
+    let (globalApiKey, globalBaseUrl, globalStatus) = scopeProviderCredentialStatus(globalProvider)
+    sources.add(scopeCredentialSourceRow("models.providers.${providerId}", globalStatus, globalApiKey, globalBaseUrl))
+
+    let envApiKeyConfigured = scopeEnvConfigured(cliProviderApiKeyEnvAliases(providerId))
+    let envBaseUrlConfigured = scopeEnvConfigured(cliProviderBaseUrlEnvAliases(providerId))
+    let envStatus = if (envApiKeyConfigured) { "configured" } else { "not-configured" }
+    sources.add(scopeCredentialSourceRow("env.${providerId}", envStatus, envApiKeyConfigured, envBaseUrlConfigured))
+
+    var effective = scopeCredentialSourceRow("unconfigured", "not-configured", false, false)
+    for (item in sources.getItems()) {
+        let row = try { item.asObject() } catch (_: Exception) { JsonObject() }
+        if (scopeJsonString(row, "status").getOrDefault { "" } == "configured") {
+            effective = row
+            break
+        }
+    }
+    out.put("source", JsonString(scopeJsonString(effective, "source").getOrDefault { "unconfigured" }))
+    out.put("status", JsonString(scopeJsonString(effective, "status").getOrDefault { "not-configured" }))
+    out.put("configured", (scopeJsonString(effective, "status").getOrDefault { "" } == "configured").toJsonValue())
+    out.put("apiKeyConfigured", (scopeJsonBool(effective, "apiKeyConfigured").getOrDefault { false }).toJsonValue())
+    out.put("baseUrlConfigured", (scopeJsonBool(effective, "baseUrlConfigured").getOrDefault { false }).toJsonValue())
+    out.put("sources", sources)
+    out.put("sourceOrder", scopeJsonArrayFromStrings([
+        "agent.auth-profiles.${providerId}",
+        "agent.models.providers.${providerId}",
+        "models.providers.${providerId}",
+        "env.${providerId}"
+    ]))
     out
 }
 
@@ -896,8 +1058,10 @@ public class MetisAgentScope {
         out.put("model", model)
         out.put("modelRef", JsonString(modelRef))
         out.put("modelRefSource", JsonString(scopeJsonString(model, "modelRefSource").getOrDefault { "unconfigured" }))
-        out.put("providerSummary", scopeProviderSummary(root, modelRef))
-        out.put("accountSummary", scopeAccountSummary(root, modelRef))
+        let credentialSummary = scopeCredentialSummary(root, modelRef, agentDir)
+        out.put("providerSummary", scopeCloneObject(credentialSummary))
+        out.put("accountSummary", scopeCloneObject(credentialSummary))
+        out.put("credentialSource", scopeCloneObject(credentialSummary))
         out.put("runtimeDefaults", scopeCopyRuntimeDefaults(entryOpt, defaults))
         out.put("skillsPolicy", scopeArrayPolicy(entryOpt, defaults, "skills", "skills"))
         out.put("toolsPolicy", scopeObjectPolicy(entryOpt, defaults, "tools", "tools"))

@@ -231,4 +231,36 @@ public class GatewayAgentTeamDoctorTest {
         @Expect(doctorArray(bindingApply, "added").size(), 1)
         @Expect(doctorConfigHasBindingType(doctorObject(bindingApply, "configPreview"), "acp"), true)
     }
+
+    @TestCase
+    public func scanReportsPerAgentCredentialFallbackToGlobalProvider(): Unit {
+        let home = doctorTestHome("credential-source-global-fallback")
+        doctorPrepareDir(home)
+        let agentDir = home.join("agents").join("pm").join("agent")
+        doctorPrepareDir(agentDir)
+        File.writeTo(agentDir.join("models.json"), "{\"providers\":{}}".toArray())
+        File.writeTo(agentDir.join("auth-profiles.json"), "{\"profiles\":[]}".toArray())
+
+        let root = JsonObject()
+        let agents = JsonObject()
+        let list = JsonArray([])
+        let pm = doctorAgent("pm", home.join("workspace").toString(), isDefault: true, agentDir: agentDir.toString())
+        pm.put("model", JsonString("qwen:qwen-plus"))
+        list.add(pm)
+        agents.put("list", list)
+        root.put("agents", agents)
+        let models = JsonObject()
+        let providers = JsonObject()
+        let qwen = JsonObject()
+        qwen.put("apiKey", JsonString("global-secret"))
+        providers.put("qwen", qwen)
+        models.put("providers", providers)
+        root.put("models", models)
+
+        let report = gatewayAgentTeamDoctorScan(root, homeRoot: home, defaultWorkspace: home.join("workspace"))
+        let rendered = report.toJsonString()
+
+        @Expect(doctorHasCode(doctorArray(report, "findings"), "agent-team-provider-credential-global-fallback"), true)
+        @Expect(rendered.contains("global-secret"), false)
+    }
 }
