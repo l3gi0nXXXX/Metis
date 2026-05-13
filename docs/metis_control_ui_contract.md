@@ -25,6 +25,12 @@ Goal:
 
 These methods are the current compatibility baseline.
 
+## AgentTeam IM Scope
+
+Telegram and Feishu are the first-priority IM objects for AgentTeam control-plane flows. The UI should model them as channel/account/peer/thread route targets owned by Gateway. Other IMs should be added through the same ChannelAdapter and route-binding semantics, not by introducing IM-specific agent selectors in the UI contract.
+
+Feishu fields in Control UI are configuration and diagnostics fields. They must not imply that the full OpenClaw Lark plugin surface is complete. Plugin-level capabilities such as Feishu docs, wiki, drive, task, calendar, resource download, OAuth/auth, and native `/feishu ...` commands should be shown only when the backing Gateway method exists.
+
 ## Chat Slash Commands
 
 Control UI chat slash command metadata is maintained in `ui/src/ui/chat/slash-command-manifest.ts`.
@@ -219,7 +225,58 @@ Minimum response:
 }
 ```
 
-### 7. `agents.files.list`
+### 7. `agents.migration.dryRun`
+
+Used by:
+- future team create/update previews
+- migration diagnostics panels
+
+Minimum response:
+
+```json
+{
+  "kind": "agent-team-migration",
+  "mode": "dry-run",
+  "readOnly": true,
+  "doctor": {},
+  "bindingApply": {
+    "added": [],
+    "updated": [],
+    "skipped": [],
+    "conflicts": [],
+    "configPreview": {}
+  },
+  "feishuMigration": {
+    "channel": "feishu",
+    "readOnly": true,
+    "currentShape": "single-account",
+    "defaultAccount": {
+      "suggested": "default",
+      "targetPath": "channels.feishu.defaultAccountId"
+    },
+    "accounts": {
+      "suggested": [],
+      "targetPath": "channels.feishu.accounts"
+    },
+    "threadSession": {
+      "suggested": "enabled",
+      "targetPath": "channels.feishu.threadSession"
+    },
+    "groups": {
+      "currentCount": 0,
+      "groupIds": [],
+      "suggestedPath": "channels.feishu.groups"
+    }
+  }
+}
+```
+
+Hard requirements:
+- The method is read-only and must not write `~/.metis/metis.json`.
+- `bindingApply.configPreview` must redact secret-like fields before returning to the browser.
+- Feishu `defaultAccount`, `accounts`, `threadSession`, and `groups` are preview suggestions until an explicit apply workflow exists.
+
+### 8. `agents.files.list`
 
 Used by:
 - upstream UI agent file controller sources
@@ -245,7 +302,7 @@ Hard requirements:
 - `files` must be an array.
 - UI checks `list.files.some(...)`.
 
-### 8. `agents.files.get`
+### 9. `agents.files.get`
 
 Minimum response:
 
@@ -260,7 +317,7 @@ Minimum response:
 }
 ```
 
-### 9. `agents.files.set`
+### 10. `agents.files.set`
 
 Minimum response:
 
@@ -275,7 +332,7 @@ Minimum response:
 }
 ```
 
-### 10. `cron.status`
+### 11. `cron.status`
 
 Used by:
 - upstream UI cron controller sources
@@ -290,7 +347,7 @@ Minimum response:
 }
 ```
 
-### 11. `cron.list`
+### 12. `cron.list`
 
 Minimum response:
 
@@ -305,7 +362,7 @@ Minimum response:
 }
 ```
 
-### 9. `cron.runs`
+### 13. `cron.runs`
 
 Minimum response:
 
@@ -320,7 +377,7 @@ Minimum response:
 }
 ```
 
-### 10. `sessions.usage`
+### 14. `sessions.usage`
 
 Used by:
 - upstream UI usage controller sources
@@ -346,7 +403,7 @@ Minimum response:
 }
 ```
 
-### 11. `usage.cost`
+### 15. `usage.cost`
 
 Minimum response:
 
@@ -359,7 +416,7 @@ Minimum response:
 }
 ```
 
-### 12. `config.get`
+### 16. `config.get`
 
 Minimum response:
 
@@ -376,7 +433,7 @@ Minimum response:
 }
 ```
 
-### 13. `config.schema`
+### 17. `config.schema`
 
 Minimum response:
 
@@ -389,7 +446,7 @@ Minimum response:
 }
 ```
 
-### 14. `system-presence`
+### 18. `system-presence`
 
 Minimum response:
 
@@ -401,7 +458,7 @@ Minimum response:
 }
 ```
 
-### 15. `last-heartbeat`
+### 19. `last-heartbeat`
 
 Minimum response:
 
@@ -411,7 +468,7 @@ Minimum response:
 }
 ```
 
-### 16. `node.list`
+### 20. `node.list`
 
 Minimum response:
 
@@ -422,7 +479,7 @@ Minimum response:
 }
 ```
 
-### 17. `device.pair.list`
+### 21. `device.pair.list`
 
 Minimum response:
 
@@ -433,7 +490,7 @@ Minimum response:
 }
 ```
 
-### 18. `sessions.list`
+### 22. `sessions.list`
 
 Minimum response:
 
@@ -453,6 +510,7 @@ Stable enough:
 - `agents.models.*`
 - `agents.bind`
 - `agents.unbind`
+- `agents.migration.dryRun`
 - `agents.files.*`
 - `cron.status`
 - `cron.list`

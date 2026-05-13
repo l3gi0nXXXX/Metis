@@ -2,6 +2,19 @@
 
 AgentTeam lets one Gateway runtime manage multiple named agents, route IM accounts to specific agents, and keep each agent's workspace, model state, and session state separate. The current user-facing surface is a mix of stable `metis agents ...` CLI commands and Gateway RPC calls for team operations.
 
+Telegram and Feishu are the first-priority IM targets for AgentTeam. Other IM adapters should extend through the same `ChannelAdapter` inbound model, route binding, account, peer, and thread semantics instead of adding agent routing inside each adapter.
+
+## Current Capability Vs Planned Capability
+
+| Area | Current capability | Planned capability |
+| --- | --- | --- |
+| Agent isolation | Managed agents have separate workspace, `agentDir`, `models.json`, auth profile path, and sessions path. | Runtime credential resolution will fully prefer agent-scoped auth/model state before global fallback. |
+| Team management | `agents.teams.*` can create, list, update, delete, and reject binding conflicts without partial writes. | Control UI will expose a fuller team wizard, member editor, profile editor, binding builder, and doctor panel. |
+| Route bindings | Telegram and Feishu can use shared route semantics for channel, account, peer, thread, team, and role matches through Gateway RPC. | Feishu multi-account config, thread session policy, group policy, and structured mention routing will be productized. |
+| Telegram | Existing Telegram adapter has broad fake-tested group/topic/media/native-command coverage and AgentTeam alias routing baseline. | Telegram remains the first full IM validation path for future ChannelAdapter route extensions. |
+| Feishu | Built-in Feishu adapter maps fake webhook payloads to unified route context, account id, group/thread context, gate diagnostics, and metadata-only attachments. | OpenClaw Lark-style plugin capabilities such as Feishu native commands, resource downloads, docs/wiki/drive/task/calendar tools, thread-capable group checks, and OAuth/auth flows are not all complete yet. |
+| Migration | `agents.migration.dryRun` is read-only, previews doctor findings, binding apply, redacted config preview, and Feishu single-account migration suggestions. | Future migration may add apply-mode helpers after dry-run acceptance, but it must not rewrite user config silently. |
+
 ## Start Gateway
 
 Agent and AgentTeam management goes through the Gateway runtime. Start it before using the commands below:
@@ -192,7 +205,7 @@ To preview route binding changes, pass one or more JSON binding objects:
 metis agents migrate --dry-run --binding-json '{"type":"route","agentId":"content-writer","match":{"channel":"telegram","accountId":"bot-a"}}'
 ```
 
-The underlying RPC is `agents.migration.dryRun`. It accepts `configRoot` and `proposedBindings` and returns a read-only report with doctor findings, summary, and binding apply preview.
+The underlying RPC is `agents.migration.dryRun`. It accepts `configRoot` and `proposedBindings` and returns a read-only report with doctor findings, summary, binding apply preview, and Feishu migration suggestions. The Feishu section previews `defaultAccountId`, `accounts`, `threadSession`, and `groups` target paths; it does not write config and redacts secret-like fields from the config preview.
 
 ## Recommended Session Scope
 
@@ -214,4 +227,5 @@ After editing `~/.metis/metis.json`, restart Gateway so the running process load
 
 - `metis agents bind` intentionally exposes the simple `channel[:account]` form. Use Gateway RPC JSON payloads for peer/thread/team/role binding matches.
 - Migration dry-run is read-only. It previews diagnostics and route-binding application but does not rewrite `session.dmScope`, model state, auth profiles, or workspace files automatically.
+- Feishu AgentTeam routing is not the same as the full OpenClaw Lark plugin surface. Message routing and dry-run diagnostics exist; plugin-level Feishu tools, resource downloads, native commands, and auth flows are still planned work unless a later release note says otherwise.
 - Live Telegram and Feishu operation still depends on the normal channel credentials and account setup. This guide does not require real Telegram or Feishu network access.
