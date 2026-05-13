@@ -130,6 +130,15 @@ private func doctorRiskConfig(home: Path): JsonObject {
     let sandbox = JsonObject()
     sandbox.put("mode", JsonString("workspace-write"))
     mainAgent.put("sandbox", sandbox)
+    let heartbeat = JsonObject()
+    heartbeat.put("enabled", JsonBool(true))
+    mainAgent.put("heartbeat", heartbeat)
+    let groupChat = JsonObject()
+    groupChat.put("mentionRequired", JsonBool(true))
+    mainAgent.put("groupChat", groupChat)
+    let tools = JsonObject()
+    tools.put("allow", JsonArray([JsonString("fileRead")]))
+    mainAgent.put("tools", tools)
     list.add(mainAgent)
     list.add(doctorAgent("Ops Agent", sharedWorkspace, isDefault: true, agentDir: home.join("agents").join("ops-agent").toString()))
     agents.put("list", list)
@@ -194,6 +203,9 @@ public class GatewayAgentTeamDoctorTest {
         @Expect(doctorHasCode(findings, "agent-team-runtime-memorysearch-not-enforced"), true)
         @Expect(doctorHasCode(findings, "agent-team-runtime-subagents-partial"), true)
         @Expect(doctorHasCode(findings, "agent-team-runtime-sandbox-not-enforced"), true)
+        @Expect(doctorHasCode(findings, "agent-team-runtime-heartbeat-not-enforced"), true)
+        @Expect(doctorHasCode(findings, "agent-team-runtime-groupchat-partial"), true)
+        @Expect(doctorHasCode(findings, "agent-team-runtime-tools-policy-active"), true)
     }
 
     @TestCase

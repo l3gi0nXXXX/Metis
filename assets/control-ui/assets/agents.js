@@ -1,4 +1,4 @@
-import{f as e,o as t,r as n,u as r}from"./i18n.js";import{l as i}from"./format.js";import{A as a,C as o,D as s,F as c,I as l,L as u,N as d,O as f,P as p,S as m,T as h,_ as g,a as _,b as v,d as y,f as b,g as x,h as S,k as C,m as w,n as T,p as E,r as D,t as O,u as k,v as A,w as j,x as M,y as N}from"./index.js";import{r as P}from"./channel-config-extras.js";import{i as F,n as ee,r as te,t as ne}from"./skills-shared.js";function re(t){let{agent:i,configForm:a,agentFilesList:o,configLoading:s,configSaving:c,configDirty:l,onConfigReload:u,onConfigSave:d,onModelChange:f,onModelFallbacksChange:p,onSelectPanel:m}=t,h=A(a,i.id),_=i.model,y=(o&&o.agentId===i.id?o.workspace:null)||h.entry?.workspace||h.defaults?.workspace||i.workspace||`default`,S=h.entry?.model?v(h.entry?.model):h.defaults?.model?v(h.defaults?.model):v(_),C=v(h.defaults?.model??_),w=M(h.entry?.model),T=M(h.defaults?.model)||(C===`-`?null:x(C))||(a?null:M(_)),E=w??T??null,D=N(h.entry?.model)??N(h.defaults?.model)??(a?null:N(_))??[],O=Array.isArray(h.entry?.skills)?h.entry?.skills:null,k=O?.length??null,j=!!(t.defaultId&&i.id===t.defaultId),P=!a||s||c,F=e=>{let t=D.filter((t,n)=>n!==e);p(i.id,t)};return e`
+import{f as e,o as t,r as n,u as r}from"./i18n.js";import{l as i}from"./format.js";import{A as a,B as o,C as s,D as c,F as l,H as u,I as d,L as f,N as p,O as m,P as h,R as g,S as _,T as v,V as y,_ as b,a as x,b as S,d as C,f as w,g as ee,h as T,k as E,m as D,n as O,p as k,r as A,t as j,u as te,v as M,w as ne,x as N,y as P,z as re}from"./index.js";import{r as ie}from"./channel-config-extras.js";import{i as ae,n as oe,r as se,t as ce}from"./skills-shared.js";function le(t){let{agent:i,configForm:a,agentFilesList:o,configLoading:s,configSaving:c,configDirty:l,onConfigReload:u,onConfigSave:d,onModelChange:f,onModelFallbacksChange:p,onSelectPanel:m}=t,h=M(a,i.id),g=i.model,_=(o&&o.agentId===i.id?o.workspace:null)||h.entry?.workspace||h.defaults?.workspace||i.workspace||`default`,v=h.entry?.model?S(h.entry?.model):h.defaults?.model?S(h.defaults?.model):S(g),y=S(h.defaults?.model??g),x=N(h.entry?.model),C=N(h.defaults?.model)||(y===`-`?null:ee(y))||(a?null:N(g)),T=x??C??null,E=P(h.entry?.model)??P(h.defaults?.model)??(a?null:P(g))??[],D=Array.isArray(h.entry?.skills)?h.entry?.skills:null,O=D?.length??null,k=!!(t.defaultId&&i.id===t.defaultId),A=!a||s||c,j=e=>{let t=E.filter((t,n)=>n!==e);p(i.id,t)};return e`
     <section class="card">
       <div class="card-title">Overview</div>
       <div class="card-sub">Workspace paths and identity metadata.</div>
@@ -13,17 +13,17 @@ import{f as e,o as t,r as n,u as r}from"./i18n.js";import{l as i}from"./format.j
               @click=${()=>m(`files`)}
               title="Open Files tab"
             >
-              ${y}
+              ${_}
             </button>
           </div>
         </div>
         <div class="agent-kv">
           <div class="label">Primary Model</div>
-          <div class="mono">${S}</div>
+          <div class="mono">${v}</div>
         </div>
         <div class="agent-kv">
           <div class="label">Skills Filter</div>
-          <div>${O?`${k} selected`:`all skills`}</div>
+          <div>${D?`${O} selected`:`all skills`}</div>
         </div>
       </div>
 
@@ -37,18 +37,18 @@ import{f as e,o as t,r as n,u as r}from"./i18n.js";import{l as i}from"./format.j
         <div class="label">Model Selection</div>
         <div class="agent-model-fields">
           <label class="field">
-            <span>Primary model${j?` (default)`:``}</span>
+            <span>Primary model${k?` (default)`:``}</span>
             <select
-              .value=${j?E??``:w??``}
-              ?disabled=${P}
+              .value=${k?T??``:x??``}
+              ?disabled=${A}
               @change=${e=>f(i.id,e.target.value||null)}
             >
-              ${j?e` <option value="">Not set</option> `:e`
+              ${k?e` <option value="">Not set</option> `:e`
                     <option value="">
-                      ${T?`Inherit default (${T})`:`Inherit default`}
+                      ${C?`Inherit default (${C})`:`Inherit default`}
                     </option>
                   `}
-              ${b(a,E??void 0,t.modelCatalog)}
+              ${w(a,T??void 0,t.modelCatalog)}
             </select>
           </label>
           <div class="field">
@@ -57,24 +57,24 @@ import{f as e,o as t,r as n,u as r}from"./i18n.js";import{l as i}from"./format.j
               class="agent-chip-input"
               @click=${e=>{let t=e.currentTarget.querySelector(`input`);t&&t.focus()}}
             >
-              ${D.map((t,n)=>e`
+              ${E.map((t,n)=>e`
                   <span class="chip">
                     ${t}
                     <button
                       type="button"
                       class="chip-remove"
-                      ?disabled=${P}
-                      @click=${()=>F(n)}
+                      ?disabled=${A}
+                      @click=${()=>j(n)}
                     >
                       &times;
                     </button>
                   </span>
                 `)}
               <input
-                ?disabled=${P}
-                placeholder=${D.length===0?`provider/model`:``}
-                @keydown=${e=>{let t=e.target;if(e.key===`Enter`||e.key===`,`){e.preventDefault();let n=g(t.value);n.length>0&&(p(i.id,[...D,...n]),t.value=``)}}}
-                @blur=${e=>{let t=e.target,n=g(t.value);n.length>0&&(p(i.id,[...D,...n]),t.value=``)}}
+                ?disabled=${A}
+                placeholder=${E.length===0?`provider/model`:``}
+                @keydown=${e=>{let t=e.target;if(e.key===`Enter`||e.key===`,`){e.preventDefault();let n=b(t.value);n.length>0&&(p(i.id,[...E,...n]),t.value=``)}}}
+                @blur=${e=>{let t=e.target,n=b(t.value);n.length>0&&(p(i.id,[...E,...n]),t.value=``)}}
               />
             </div>
           </div>
@@ -99,30 +99,30 @@ import{f as e,o as t,r as n,u as r}from"./i18n.js";import{l as i}from"./format.j
         </div>
       </div>
     </section>
-  `}var ie=Object.defineProperty,ae=(e,t,n)=>t in e?ie(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n,I=(e,t,n)=>ae(e,typeof t==`symbol`?t:t+``,n),oe={classPrefix:`cm-`,theme:`github`,linkTarget:`_blank`,sanitize:!1,plugins:[],customRenderers:{}};function L(e){return{...oe,...e,plugins:e?.plugins??[],customRenderers:e?.customRenderers??{}}}function se(e,t){return typeof t==`function`?t(e):e}function R(e,t){let n=L(t),r=n.classPrefix,i=e;for(let e of n.plugins)e.transformBlock&&(i=i.map(e.transformBlock));let a=`<div class="${r}preview">${i.map(e=>{for(let t of n.plugins)if(t.renderBlock){let r=t.renderBlock(e,()=>z(e,n));if(r!==null)return r}let t=n.customRenderers[e.type];return t?t(e):z(e,n)}).join(`
-`)}</div>`;return a=se(a,n.sanitize),a}async function ce(e,t){let n=L(t);for(let e of n.plugins)e.init&&await e.init();let r=R(e,t);for(let e of n.plugins)e.postProcess&&(r=await e.postProcess(r));return r}function z(e,t){let n=t.classPrefix;switch(e.type){case`paragraph`:return`<p class="${n}paragraph">${V(e.content,t)}</p>`;case`heading`:return le(e,t);case`bulletList`:return ue(e,t);case`numberedList`:return de(e,t);case`checkList`:return fe(e,t);case`codeBlock`:return pe(e,t);case`blockquote`:return`<blockquote class="${n}blockquote">${V(e.content,t)}</blockquote>`;case`table`:return B(e,t);case`image`:return me(e,t);case`divider`:return`<hr class="${n}divider" />`;case`callout`:return he(e,t);default:return`<div class="${n}unknown">${V(e.content,t)}</div>`}}function le(e,t){let n=t.classPrefix,r=e.props.level,i=`h${r}`;return`<${i} class="${n}heading ${n}h${r}">${V(e.content,t)}</${i}>`}function ue(e,t){return`<ul class="${t.classPrefix}bullet-list">
-${e.children.map(e=>`<li>${V(e.content,t)}</li>`).join(`
+  `}var ue=Object.defineProperty,de=(e,t,n)=>t in e?ue(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n,F=(e,t,n)=>de(e,typeof t==`symbol`?t:t+``,n),fe={classPrefix:`cm-`,theme:`github`,linkTarget:`_blank`,sanitize:!1,plugins:[],customRenderers:{}};function I(e){return{...fe,...e,plugins:e?.plugins??[],customRenderers:e?.customRenderers??{}}}function pe(e,t){return typeof t==`function`?t(e):e}function L(e,t){let n=I(t),r=n.classPrefix,i=e;for(let e of n.plugins)e.transformBlock&&(i=i.map(e.transformBlock));let a=`<div class="${r}preview">${i.map(e=>{for(let t of n.plugins)if(t.renderBlock){let r=t.renderBlock(e,()=>R(e,n));if(r!==null)return r}let t=n.customRenderers[e.type];return t?t(e):R(e,n)}).join(`
+`)}</div>`;return a=pe(a,n.sanitize),a}async function me(e,t){let n=I(t);for(let e of n.plugins)e.init&&await e.init();let r=L(e,t);for(let e of n.plugins)e.postProcess&&(r=await e.postProcess(r));return r}function R(e,t){let n=t.classPrefix;switch(e.type){case`paragraph`:return`<p class="${n}paragraph">${z(e.content,t)}</p>`;case`heading`:return he(e,t);case`bulletList`:return ge(e,t);case`numberedList`:return _e(e,t);case`checkList`:return ve(e,t);case`codeBlock`:return ye(e,t);case`blockquote`:return`<blockquote class="${n}blockquote">${z(e.content,t)}</blockquote>`;case`table`:return be(e,t);case`image`:return xe(e,t);case`divider`:return`<hr class="${n}divider" />`;case`callout`:return Se(e,t);default:return`<div class="${n}unknown">${z(e.content,t)}</div>`}}function he(e,t){let n=t.classPrefix,r=e.props.level,i=`h${r}`;return`<${i} class="${n}heading ${n}h${r}">${z(e.content,t)}</${i}>`}function ge(e,t){return`<ul class="${t.classPrefix}bullet-list">
+${e.children.map(e=>`<li>${z(e.content,t)}</li>`).join(`
 `)}
-</ul>`}function de(e,t){return`<ol class="${t.classPrefix}numbered-list">
-${e.children.map(e=>`<li>${V(e.content,t)}</li>`).join(`
+</ul>`}function _e(e,t){return`<ol class="${t.classPrefix}numbered-list">
+${e.children.map(e=>`<li>${z(e.content,t)}</li>`).join(`
 `)}
-</ol>`}function fe(e,t){let n=t.classPrefix,r=e.props.checked;return`
+</ol>`}function ve(e,t){let n=t.classPrefix,r=e.props.checked;return`
 <div class="${n}checklist-item">
   <input type="checkbox" ${r?`checked disabled`:`disabled`} />
-  <span class="${r?`${n}checked`:``}">${V(e.content,t)}</span>
-</div>`.trim()}function pe(e,t){let n=t.classPrefix,r=e.content.map(e=>e.text).join(``),i=e.props.language||``,a=H(r),o=i?` language-${i}`:``;return`<pre class="${n}code-block"${i?` data-language="${i}"`:``}><code class="${n}code${o}">${a}</code></pre>`}function B(e,t){let n=t.classPrefix,{headers:r,rows:i,alignments:a}=e.props,o=e=>{let t=a?.[e];return t?` style="text-align: ${t}"`:``};return`<table class="${n}table">
-${r.length>0?`<thead><tr>${r.map((e,t)=>`<th${o(t)}>${H(e)}</th>`).join(``)}</tr></thead>`:``}
+  <span class="${r?`${n}checked`:``}">${z(e.content,t)}</span>
+</div>`.trim()}function ye(e,t){let n=t.classPrefix,r=e.content.map(e=>e.text).join(``),i=e.props.language||``,a=B(r),o=i?` language-${i}`:``;return`<pre class="${n}code-block"${i?` data-language="${i}"`:``}><code class="${n}code${o}">${a}</code></pre>`}function be(e,t){let n=t.classPrefix,{headers:r,rows:i,alignments:a}=e.props,o=e=>{let t=a?.[e];return t?` style="text-align: ${t}"`:``};return`<table class="${n}table">
+${r.length>0?`<thead><tr>${r.map((e,t)=>`<th${o(t)}>${B(e)}</th>`).join(``)}</tr></thead>`:``}
 <tbody>
-${i.map(e=>`<tr>${e.map((e,t)=>`<td${o(t)}>${H(e)}</td>`).join(``)}</tr>`).join(`
+${i.map(e=>`<tr>${e.map((e,t)=>`<td${o(t)}>${B(e)}</td>`).join(``)}</tr>`).join(`
 `)}
 </tbody>
-</table>`}function me(e,t){let n=t.classPrefix,{url:r,alt:i,title:a,width:o,height:s}=e.props,c=i?` alt="${H(i)}"`:` alt=""`,l=a?` title="${H(a)}"`:``,u=o?` width="${o}"`:``,d=s?` height="${s}"`:``;return`<figure class="${n}image">${`<img src="${H(r)}"${c}${l}${u}${d} />`}${i?`<figcaption>${H(i)}</figcaption>`:``}</figure>`}function he(e,t){let n=t.classPrefix,r=e.props.type;return`
+</table>`}function xe(e,t){let n=t.classPrefix,{url:r,alt:i,title:a,width:o,height:s}=e.props,c=i?` alt="${B(i)}"`:` alt=""`,l=a?` title="${B(a)}"`:``,u=o?` width="${o}"`:``,d=s?` height="${s}"`:``;return`<figure class="${n}image">${`<img src="${B(r)}"${c}${l}${u}${d} />`}${i?`<figcaption>${B(i)}</figcaption>`:``}</figure>`}function Se(e,t){let n=t.classPrefix,r=e.props.type;return`
 <div class="${n}callout ${n}callout-${r}" role="alert">
   <strong class="${n}callout-title">${r}</strong>
-  <div class="${n}callout-content">${V(e.content,t)}</div>
-</div>`.trim()}function V(e,t){return e.map(e=>ge(e,t)).join(``)}function ge(e,t){let n=H(e.text),r=e.styles;if(r.code&&(n=`<code>${n}</code>`),r.highlight&&(n=`<mark>${n}</mark>`),r.strikethrough&&(n=`<del>${n}</del>`),r.underline&&(n=`<u>${n}</u>`),r.italic&&(n=`<em>${n}</em>`),r.bold&&(n=`<strong>${n}</strong>`),r.link){let e=t.linkTarget===`_blank`?` target="_blank" rel="noopener noreferrer"`:``,i=r.link.title?` title="${H(r.link.title)}"`:``;n=`<a href="${H(r.link.url)}"${i}${e}>${n}</a>`}return n}function H(e){return e.replace(/&/g,`&amp;`).replace(/</g,`&lt;`).replace(/>/g,`&gt;`).replace(/"/g,`&quot;`).replace(/'/g,`&#039;`)}function _e(e){return[...[1,2,3,4,5,6].map(t=>({tag:`h${t}`,classes:[`${e}heading`,`${e}h${t}`]})),{tag:`p`,classes:[`${e}paragraph`]},{tag:`ul`,classes:[`${e}bullet-list`]},{tag:`ol`,classes:[`${e}numbered-list`]},{tag:`pre`,classes:[`${e}code-block`]},{tag:`blockquote`,classes:[`${e}blockquote`]},{tag:`hr`,classes:[`${e}divider`]},{tag:`table`,classes:[`${e}table`]},{tag:`figure`,classes:[`${e}image`]}]}function ve(e,t){let n=t.join(` `),r=/\bclass\s*=\s*"([^"]*)"/i,i=e.match(r);return i?e.replace(r,`class="${n} ${i[1]}"`):e.endsWith(`/>`)?e.slice(0,-2)+` class="${n}" />`:e.slice(0,-1)+` class="${n}">`}function ye(e,t){return e.replace(/(?<!<figure[^>]*>\s*)(<img\s[^>]*\/?>)(?!\s*<\/figure>)/gi,`<figure class="${t}image">$1</figure>`)}function be(e,t){let n=t?.classPrefix??`cm-`,r=t?.wrapperClass??`${n}preview`,i=_e(n),a=e;for(let{tag:e,classes:t}of i){let n=RegExp(`<${e}(\\s[^>]*)?>|<${e}\\s*\\/?>`,`gi`);a=a.replace(n,e=>ve(e,t))}return a=ye(a,n),a=`<div class="${r}">${a}</div>`,typeof t?.sanitize==`function`&&(a=t.sanitize(a)),a}async function xe(e){try{return(await t(()=>import(`./preview.js`),[],import.meta.url)).parse(e)}catch{throw Error(`@create-markdown/core is required to parse markdown in <markdown-preview>. Install it, or provide pre-parsed blocks via the blocks attribute / setBlocks().`)}}I(class extends HTMLElement{constructor(){super(),I(this,`_shadow`,null),I(this,`plugins`,[]),I(this,`defaultTheme`,`github`),I(this,`styleElement`),I(this,`contentElement`);let e=this.constructor._shadowMode;e!==`none`&&(this._shadow=this.attachShadow({mode:e})),this.styleElement=document.createElement(`style`),this.renderRoot.appendChild(this.styleElement),this.contentElement=document.createElement(`div`),this.contentElement.className=`markdown-preview-content`,this.renderRoot.appendChild(this.contentElement),this.updateStyles()}static get observedAttributes(){return[`theme`,`link-target`,`async`]}get renderRoot(){return this._shadow??this}connectedCallback(){this.render()}attributeChangedCallback(e,t,n){this.render()}setPlugins(e){this.plugins=e,this.render()}setDefaultTheme(e){this.defaultTheme=e,this.render()}getMarkdown(){let e=this.getAttribute(`blocks`);if(e)try{return JSON.parse(e).map(e=>e.content.map(e=>e.text).join(``)).join(`
+  <div class="${n}callout-content">${z(e.content,t)}</div>
+</div>`.trim()}function z(e,t){return e.map(e=>Ce(e,t)).join(``)}function Ce(e,t){let n=B(e.text),r=e.styles;if(r.code&&(n=`<code>${n}</code>`),r.highlight&&(n=`<mark>${n}</mark>`),r.strikethrough&&(n=`<del>${n}</del>`),r.underline&&(n=`<u>${n}</u>`),r.italic&&(n=`<em>${n}</em>`),r.bold&&(n=`<strong>${n}</strong>`),r.link){let e=t.linkTarget===`_blank`?` target="_blank" rel="noopener noreferrer"`:``,i=r.link.title?` title="${B(r.link.title)}"`:``;n=`<a href="${B(r.link.url)}"${i}${e}>${n}</a>`}return n}function B(e){return e.replace(/&/g,`&amp;`).replace(/</g,`&lt;`).replace(/>/g,`&gt;`).replace(/"/g,`&quot;`).replace(/'/g,`&#039;`)}function we(e){return[...[1,2,3,4,5,6].map(t=>({tag:`h${t}`,classes:[`${e}heading`,`${e}h${t}`]})),{tag:`p`,classes:[`${e}paragraph`]},{tag:`ul`,classes:[`${e}bullet-list`]},{tag:`ol`,classes:[`${e}numbered-list`]},{tag:`pre`,classes:[`${e}code-block`]},{tag:`blockquote`,classes:[`${e}blockquote`]},{tag:`hr`,classes:[`${e}divider`]},{tag:`table`,classes:[`${e}table`]},{tag:`figure`,classes:[`${e}image`]}]}function Te(e,t){let n=t.join(` `),r=/\bclass\s*=\s*"([^"]*)"/i,i=e.match(r);return i?e.replace(r,`class="${n} ${i[1]}"`):e.endsWith(`/>`)?e.slice(0,-2)+` class="${n}" />`:e.slice(0,-1)+` class="${n}">`}function Ee(e,t){return e.replace(/(?<!<figure[^>]*>\s*)(<img\s[^>]*\/?>)(?!\s*<\/figure>)/gi,`<figure class="${t}image">$1</figure>`)}function De(e,t){let n=t?.classPrefix??`cm-`,r=t?.wrapperClass??`${n}preview`,i=we(n),a=e;for(let{tag:e,classes:t}of i){let n=RegExp(`<${e}(\\s[^>]*)?>|<${e}\\s*\\/?>`,`gi`);a=a.replace(n,e=>Te(e,t))}return a=Ee(a,n),a=`<div class="${r}">${a}</div>`,typeof t?.sanitize==`function`&&(a=t.sanitize(a)),a}async function Oe(e){try{return(await t(()=>import(`./preview.js`),[],import.meta.url)).parse(e)}catch{throw Error(`@create-markdown/core is required to parse markdown in <markdown-preview>. Install it, or provide pre-parsed blocks via the blocks attribute / setBlocks().`)}}F(class extends HTMLElement{constructor(){super(),F(this,`_shadow`,null),F(this,`plugins`,[]),F(this,`defaultTheme`,`github`),F(this,`styleElement`),F(this,`contentElement`);let e=this.constructor._shadowMode;e!==`none`&&(this._shadow=this.attachShadow({mode:e})),this.styleElement=document.createElement(`style`),this.renderRoot.appendChild(this.styleElement),this.contentElement=document.createElement(`div`),this.contentElement.className=`markdown-preview-content`,this.renderRoot.appendChild(this.contentElement),this.updateStyles()}static get observedAttributes(){return[`theme`,`link-target`,`async`]}get renderRoot(){return this._shadow??this}connectedCallback(){this.render()}attributeChangedCallback(e,t,n){this.render()}setPlugins(e){this.plugins=e,this.render()}setDefaultTheme(e){this.defaultTheme=e,this.render()}getMarkdown(){let e=this.getAttribute(`blocks`);if(e)try{return JSON.parse(e).map(e=>e.content.map(e=>e.text).join(``)).join(`
 
-`)}catch{return``}return this.textContent||``}setMarkdown(e){this.textContent=e,this.render()}setBlocks(e){this.setAttribute(`blocks`,JSON.stringify(e)),this.render()}getOptions(){return{theme:this.getAttribute(`theme`)||this.defaultTheme,linkTarget:this.getAttribute(`link-target`)||`_blank`,plugins:this.plugins}}async getBlocks(){let e=this.getAttribute(`blocks`);if(e)try{return JSON.parse(e)}catch{return console.warn(`Invalid blocks JSON in markdown-preview element`),[]}return xe(this.textContent||``)}async render(){let e=await this.getBlocks(),t=this.getOptions(),n=this.hasAttribute(`async`)||this.plugins.length>0;try{let r;r=n?await ce(e,t):R(e,t),this.contentElement.innerHTML=r}catch(e){console.error(`Error rendering markdown preview:`,e),this.contentElement.innerHTML=`<div class="error">Error rendering content</div>`}}updateStyles(){let e=this.plugins.filter(e=>e.getCSS).map(e=>e.getCSS()).join(`
+`)}catch{return``}return this.textContent||``}setMarkdown(e){this.textContent=e,this.render()}setBlocks(e){this.setAttribute(`blocks`,JSON.stringify(e)),this.render()}getOptions(){return{theme:this.getAttribute(`theme`)||this.defaultTheme,linkTarget:this.getAttribute(`link-target`)||`_blank`,plugins:this.plugins}}async getBlocks(){let e=this.getAttribute(`blocks`);if(e)try{return JSON.parse(e)}catch{return console.warn(`Invalid blocks JSON in markdown-preview element`),[]}return Oe(this.textContent||``)}async render(){let e=await this.getBlocks(),t=this.getOptions(),n=this.hasAttribute(`async`)||this.plugins.length>0;try{let r;r=n?await me(e,t):L(e,t),this.contentElement.innerHTML=r}catch(e){console.error(`Error rendering markdown preview:`,e),this.contentElement.innerHTML=`<div class="error">Error rendering content</div>`}}updateStyles(){let e=this.plugins.filter(e=>e.getCSS).map(e=>e.getCSS()).join(`
 
 `),t=this._shadow?`:host { display: block; }`:`markdown-preview { display: block; }`;this.styleElement.textContent=`
 ${t}
@@ -141,7 +141,7 @@ ${t}
 }
 
 ${e}
-    `.trim()}},`_shadowMode`,`open`);function U(t,n,r){return e`
+    `.trim()}},`_shadowMode`,`open`);function V(t,n,r){return e`
     <section class="card">
       <div class="card-title">Agent Context</div>
       <div class="card-sub">${n}</div>
@@ -181,9 +181,9 @@ ${e}
         </div>
       </div>
     </section>
-  `}function Se(e,t){let n=e.channelMeta?.find(e=>e.id===t);return n?.label?n.label:e.channelLabels?.[t]??t}function Ce(e){if(!e)return[];let t=new Set;for(let n of e.channelOrder??[])t.add(n);for(let n of e.channelMeta??[])t.add(n.id);for(let n of Object.keys(e.channelAccounts??{}))t.add(n);let n=[],r=e.channelOrder?.length?e.channelOrder:Array.from(t);for(let e of r)t.has(e)&&(n.push(e),t.delete(e));for(let e of t)n.push(e);return n.map(t=>({id:t,label:Se(e,t),accounts:e.channelAccounts?.[t]??[]}))}var we=[`groupPolicy`,`streamMode`,`dmPolicy`];function Te(e){let t=0,n=0,r=0;for(let i of e){let e=i.probe&&typeof i.probe==`object`&&`ok`in i.probe?!!i.probe.ok:!1;(i.connected===!0||i.running===!0||e)&&(t+=1),i.configured&&(n+=1),i.enabled&&(r+=1)}return{total:e.length,connected:t,configured:n,enabled:r}}function Ee(t){let a=Ce(t.snapshot),o=t.lastSuccess?i(t.lastSuccess):`never`;return e`
+  `}function ke(e,t){let n=e.channelMeta?.find(e=>e.id===t);return n?.label?n.label:e.channelLabels?.[t]??t}function Ae(e){if(!e)return[];let t=new Set;for(let n of e.channelOrder??[])t.add(n);for(let n of e.channelMeta??[])t.add(n.id);for(let n of Object.keys(e.channelAccounts??{}))t.add(n);let n=[],r=e.channelOrder?.length?e.channelOrder:Array.from(t);for(let e of r)t.has(e)&&(n.push(e),t.delete(e));for(let e of t)n.push(e);return n.map(t=>({id:t,label:ke(e,t),accounts:e.channelAccounts?.[t]??[]}))}var je=[`groupPolicy`,`streamMode`,`dmPolicy`];function Me(e){let t=0,n=0,r=0;for(let i of e){let e=i.probe&&typeof i.probe==`object`&&`ok`in i.probe?!!i.probe.ok:!1;(i.connected===!0||i.running===!0||e)&&(t+=1),i.configured&&(n+=1),i.enabled&&(r+=1)}return{total:e.length,connected:t,configured:n,enabled:r}}function Ne(t){let a=Ae(t.snapshot),o=t.lastSuccess?i(t.lastSuccess):`never`;return e`
     <section class="grid grid-cols-2">
-      ${U(t.context,`Workspace, identity, and model configuration.`,t.onSelectPanel)}
+      ${V(t.context,`Workspace, identity, and model configuration.`,t.onSelectPanel)}
       <section class="card">
         <div class="row" style="justify-content: space-between;">
           <div>
@@ -203,7 +203,7 @@ ${e}
             `}
         ${a.length===0?e` <div class="muted" style="margin-top: 16px">No channels found.</div> `:e`
               <div class="list" style="margin-top: 16px;">
-                ${a.map(n=>{let i=Te(n.accounts),a=i.total?`${i.connected}/${i.total} connected`:`no accounts`,o=i.configured?`${i.configured} configured`:`not configured`,s=i.total?`${i.enabled} enabled`:`disabled`,c=P({configForm:t.configForm,channelId:n.id,fields:we});return e`
+                ${a.map(n=>{let i=Me(n.accounts),a=i.total?`${i.connected}/${i.total} connected`:`no accounts`,o=i.configured?`${i.configured} configured`:`not configured`,s=i.total?`${i.enabled} enabled`:`disabled`,c=ie({configForm:t.configForm,channelId:n.id,fields:je});return e`
                     <div class="list-item">
                       <div class="list-main">
                         <div class="list-title">${n.label}</div>
@@ -232,9 +232,9 @@ ${e}
             `}
       </section>
     </section>
-  `}function De(t){let i=t.jobs.filter(e=>e.agentId===t.agentId);return e`
+  `}function Pe(t){let i=t.jobs.filter(e=>e.agentId===t.agentId);return e`
     <section class="grid grid-cols-2">
-      ${U(t.context,`Workspace and scheduling targets.`,t.onSelectPanel)}
+      ${V(t.context,`Workspace and scheduling targets.`,t.onSelectPanel)}
       <section class="card">
         <div class="row" style="justify-content: space-between;">
           <div>
@@ -258,7 +258,7 @@ ${e}
           </div>
           <div class="stat">
             <div class="stat-label">Next wake</div>
-            <div class="stat-value">${_(t.status?.nextWakeAtMs??null)}</div>
+            <div class="stat-value">${x(t.status?.nextWakeAtMs??null)}</div>
           </div>
         </div>
         ${t.error?e`<div class="callout danger" style="margin-top: 12px;">${t.error}</div>`:r}
@@ -275,7 +275,7 @@ ${e}
                       <div class="list-title">${n.name}</div>
                       ${n.description?e`<div class="list-sub">${n.description}</div>`:r}
                       <div class="chip-row" style="margin-top: 6px;">
-                        <span class="chip">${T(n)}</span>
+                        <span class="chip">${O(n)}</span>
                         <span class="chip ${n.enabled?`chip-ok`:`chip-warn`}">
                           ${n.enabled?`enabled`:`disabled`}
                         </span>
@@ -283,8 +283,8 @@ ${e}
                       </div>
                     </div>
                     <div class="list-meta">
-                      <div class="mono">${D(n)}</div>
-                      <div class="muted">${O(n)}</div>
+                      <div class="mono">${A(n)}</div>
+                      <div class="muted">${j(n)}</div>
                       <button
                         class="btn btn--sm"
                         style="margin-top: 6px;"
@@ -299,7 +299,7 @@ ${e}
             </div>
           `}
     </section>
-  `}function W(t){let i=t.agentFilesList?.agentId===t.agentId?t.agentFilesList:null,o=i?.files??[],c=t.agentFileActive??null,l=c?o.find(e=>e.name===c)??null:null,u=c?t.agentFileContents[c]??``:``,d=c?t.agentFileDrafts[c]??u:``,p=c?d!==u:!1;return e`
+  `}function Fe(t){let i=t.agentFilesList?.agentId===t.agentId?t.agentFilesList:null,o=i?.files??[],s=t.agentFileActive??null,l=s?o.find(e=>e.name===s)??null:null,u=s?t.agentFileContents[s]??``:``,d=s?t.agentFileDrafts[s]??u:``,f=s?d!==u:!1;return e`
     <section class="card">
       <div class="row" style="justify-content: space-between;">
         <div>
@@ -322,7 +322,7 @@ ${e}
           </div>`:r}
       ${i?o.length===0?e` <div class="muted" style="margin-top: 16px">No files found.</div> `:e`
               <div class="agent-tabs" style="margin-top: 14px;">
-                ${o.map(n=>{let i=c===n.name,a=n.name.replace(/\.md$/i,``);return e`
+                ${o.map(n=>{let i=s===n.name,a=n.name.replace(/\.md$/i,``);return e`
                     <button
                       class="agent-tab ${i?`active`:``} ${n.missing?`agent-tab--missing`:``}"
                       @click=${()=>t.onSelectFile(n.name)}
@@ -342,18 +342,18 @@ ${e}
                           title="Preview rendered markdown"
                           @click=${e=>{let t=e.currentTarget.closest(`.card`)?.querySelector(`dialog`);t&&t.showModal()}}
                         >
-                          ${C.eye} Preview
+                          ${E.eye} Preview
                         </button>
                         <button
                           class="btn btn--sm"
-                          ?disabled=${!p}
+                          ?disabled=${!f}
                           @click=${()=>t.onFileReset(l.name)}
                         >
                           Reset
                         </button>
                         <button
                           class="btn btn--sm primary"
-                          ?disabled=${t.agentFileSaving||!p}
+                          ?disabled=${t.agentFileSaving||!f}
                           @click=${()=>t.onFileSave(l.name)}
                         >
                           ${t.agentFileSaving?`Saving…`:`Save`}
@@ -387,26 +387,26 @@ ${e}
                               title="Toggle fullscreen"
                               @click=${e=>{let t=e.currentTarget,n=t.closest(`.md-preview-dialog__panel`);if(!n)return;let r=n.classList.toggle(`fullscreen`);t.classList.toggle(`is-fullscreen`,r)}}
                             >
-                              <span class="when-normal">${C.maximize} Expand</span
-                              ><span class="when-fullscreen">${C.minimize} Collapse</span>
+                              <span class="when-normal">${E.maximize} Expand</span
+                              ><span class="when-fullscreen">${E.minimize} Collapse</span>
                             </button>
                             <button
                               class="btn btn--sm"
                               title="Edit file"
                               @click=${e=>{e.currentTarget.closest(`dialog`)?.close(),document.querySelector(`.agent-file-textarea`)?.focus()}}
                             >
-                              ${C.edit} Editor
+                              ${E.edit} Editor
                             </button>
                             <button
                               class="btn btn--sm"
                               @click=${e=>{e.currentTarget.closest(`dialog`)?.close()}}
                             >
-                              ${C.x} Close
+                              ${E.x} Close
                             </button>
                           </div>
                         </div>
                         <div class="md-preview-dialog__body">
-                          ${a(be(s.parse(d,{gfm:!0,breaks:!0}),{sanitize:e=>f.sanitize(e)}))}
+                          ${a(De(c.parse(d,{gfm:!0,breaks:!0}),{sanitize:e=>m.sanitize(e)}))}
                         </div>
                       </div>
                     </dialog>
@@ -417,11 +417,11 @@ ${e}
             </div>
           `}
     </section>
-  `}function Oe(t,n){let i=n.source??t.source,a=n.pluginId??t.pluginId,o=[];return i===`plugin`&&a?o.push(`plugin:${a}`):i===`core`&&o.push(`core`),n.optional&&o.push(`optional`),o.length===0?r:e`
+  `}function Ie(t,n){let i=n.source??t.source,a=n.pluginId??t.pluginId,o=[];return i===`plugin`&&a?o.push(`plugin:${a}`):i===`core`&&o.push(`core`),n.optional&&o.push(`optional`),o.length===0?r:e`
     <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px;">
       ${o.map(t=>e`<span class="agent-pill">${t}</span>`)}
     </div>
-  `}function ke(e){return e.source===`plugin`?e.pluginId?n(`agentTools.connectedSource`,{id:e.pluginId}):n(`agentTools.connected`):e.source===`channel`?e.channelId?n(`agentTools.channelSource`,{id:e.channelId}):n(`agentTools.channel`):n(`agentTools.builtIn`)}function Ae(t){let i=A(t.configForm,t.agentId),a=i.entry?.tools??{},s=i.globalTools??{},c=a.profile??s.profile??`full`,l=o(t.toolsCatalogResult),u=j(t.toolsCatalogResult),d=a.profile?`agent override`:s.profile?`global default`:`default`,f=Array.isArray(a.allow)&&a.allow.length>0,p=Array.isArray(s.allow)&&s.allow.length>0,g=!!t.configForm&&!t.configLoading&&!t.configSaving&&!f&&!(t.toolsCatalogLoading&&!t.toolsCatalogResult&&!t.toolsCatalogError),_=f?[]:Array.isArray(a.alsoAllow)?a.alsoAllow:[],v=f?[]:Array.isArray(a.deny)?a.deny:[],y=f?{allow:a.allow??[],deny:a.deny??[]}:m(c)??void 0,b=u.flatMap(e=>e.tools.map(e=>e.id)),x=e=>{let t=E(e,y),n=w(e,_),r=w(e,v);return{allowed:(t||n)&&!r,baseAllowed:t,denied:r}},S=b.filter(e=>x(e).allowed).length,C=(e,n)=>{let r=new Set(_.map(e=>h(e)).filter(e=>e.length>0)),i=new Set(v.map(e=>h(e)).filter(e=>e.length>0)),a=x(e).baseAllowed,o=h(e);n?(i.delete(o),a||r.add(o)):(r.delete(o),i.add(o)),t.onOverridesChange(t.agentId,[...r],[...i])},T=e=>{let n=new Set(_.map(e=>h(e)).filter(e=>e.length>0)),r=new Set(v.map(e=>h(e)).filter(e=>e.length>0));for(let t of b){let i=x(t).baseAllowed,a=h(t);e?(r.delete(a),i||n.add(a)):(n.delete(a),r.add(a))}t.onOverridesChange(t.agentId,[...n],[...r])};return e`
+  `}function Le(e){return e.source===`plugin`?e.pluginId?n(`agentTools.connectedSource`,{id:e.pluginId}):n(`agentTools.connected`):e.source===`channel`?e.channelId?n(`agentTools.channelSource`,{id:e.channelId}):n(`agentTools.channel`):n(`agentTools.builtIn`)}function Re(t){let i=M(t.configForm,t.agentId),a=i.entry?.tools??{},o=i.globalTools??{},c=a.profile??o.profile??`full`,l=s(t.toolsCatalogResult),u=ne(t.toolsCatalogResult),d=a.profile?`agent override`:o.profile?`global default`:`default`,f=Array.isArray(a.allow)&&a.allow.length>0,p=Array.isArray(o.allow)&&o.allow.length>0,m=!!t.configForm&&!t.configLoading&&!t.configSaving&&!f&&!(t.toolsCatalogLoading&&!t.toolsCatalogResult&&!t.toolsCatalogError),h=f?[]:Array.isArray(a.alsoAllow)?a.alsoAllow:[],g=f?[]:Array.isArray(a.deny)?a.deny:[],y=f?{allow:a.allow??[],deny:a.deny??[]}:_(c)??void 0,b=u.flatMap(e=>e.tools.map(e=>e.id)),x=e=>{let t=k(e,y),n=D(e,h),r=D(e,g);return{allowed:(t||n)&&!r,baseAllowed:t,denied:r}},S=b.filter(e=>x(e).allowed).length,C=(e,n)=>{let r=new Set(h.map(e=>v(e)).filter(e=>e.length>0)),i=new Set(g.map(e=>v(e)).filter(e=>e.length>0)),a=x(e).baseAllowed,o=v(e);n?(i.delete(o),a||r.add(o)):(r.delete(o),i.add(o)),t.onOverridesChange(t.agentId,[...r],[...i])},w=e=>{let n=new Set(h.map(e=>v(e)).filter(e=>e.length>0)),r=new Set(g.map(e=>v(e)).filter(e=>e.length>0));for(let t of b){let i=x(t).baseAllowed,a=v(t);e?(r.delete(a),i||n.add(a)):(n.delete(a),r.add(a))}t.onOverridesChange(t.agentId,[...n],[...r])};return e`
     <section class="card">
       <div class="row" style="justify-content: space-between; flex-wrap: wrap;">
         <div style="min-width: 0;">
@@ -432,10 +432,10 @@ ${e}
           </div>
         </div>
         <div class="row" style="gap: 8px; flex-wrap: wrap;">
-          <button class="btn btn--sm" ?disabled=${!g} @click=${()=>T(!0)}>
+          <button class="btn btn--sm" ?disabled=${!m} @click=${()=>w(!0)}>
             Enable All
           </button>
-          <button class="btn btn--sm" ?disabled=${!g} @click=${()=>T(!1)}>
+          <button class="btn btn--sm" ?disabled=${!m} @click=${()=>w(!1)}>
             Disable All
           </button>
           <button
@@ -529,7 +529,7 @@ ${e}
                                         style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px;"
                                       >
                                         <span class="agent-pill"
-                                          >${ke(t)}</span
+                                          >${Le(t)}</span
                                         >
                                       </div>
                                     </div>
@@ -552,7 +552,7 @@ ${e}
           ${l.map(n=>e`
               <button
                 class="btn btn--sm ${c===n.id?`active`:``}"
-                ?disabled=${!g}
+                ?disabled=${!m}
                 @click=${()=>t.onProfileChange(t.agentId,n.id,!0)}
               >
                 ${n.label}
@@ -560,7 +560,7 @@ ${e}
             `)}
           <button
             class="btn btn--sm"
-            ?disabled=${!g}
+            ?disabled=${!m}
             @click=${()=>t.onProfileChange(t.agentId,null,!1)}
           >
             Inherit
@@ -583,13 +583,13 @@ ${e}
                       <div>
                         <div class="agent-tool-title mono">${n.label}</div>
                         <div class="agent-tool-sub">${n.description}</div>
-                        ${Oe(t,n)}
+                        ${Ie(t,n)}
                       </div>
                       <label class="cfg-toggle">
                         <input
                           type="checkbox"
                           .checked=${r}
-                          ?disabled=${!g}
+                          ?disabled=${!m}
                           @change=${e=>C(n.id,e.target.checked)}
                         />
                         <span class="cfg-toggle__track"></span>
@@ -601,7 +601,7 @@ ${e}
           `)}
       </div>
     </section>
-  `}function je(t){let i=!!t.configForm&&!t.configLoading&&!t.configSaving,a=A(t.configForm,t.agentId),o=Array.isArray(a.entry?.skills)?a.entry?.skills:void 0,s=new Set((o??[]).map(e=>e.trim()).filter(Boolean)),c=o!==void 0,l=!!(t.report&&t.activeAgentId===t.agentId),u=l?t.report?.skills??[]:[],d=t.filter.trim().toLowerCase(),f=d?u.filter(e=>[e.name,e.description,e.source].join(` `).toLowerCase().includes(d)):u,p=F(f),m=c?u.filter(e=>s.has(e.name)).length:u.length,h=u.length;return e`
+  `}function ze(t){let i=!!t.configForm&&!t.configLoading&&!t.configSaving,a=M(t.configForm,t.agentId),o=Array.isArray(a.entry?.skills)?a.entry?.skills:void 0,s=new Set((o??[]).map(e=>e.trim()).filter(Boolean)),c=o!==void 0,l=!!(t.report&&t.activeAgentId===t.agentId),u=l?t.report?.skills??[]:[],d=t.filter.trim().toLowerCase(),f=d?u.filter(e=>[e.name,e.description,e.source].join(` `).toLowerCase().includes(d)):u,p=ae(f),m=c?u.filter(e=>s.has(e.name)).length:u.length,h=u.length;return e`
     <section class="card">
       <div class="row" style="justify-content: space-between; flex-wrap: wrap;">
         <div style="min-width: 0;">
@@ -696,26 +696,26 @@ ${e}
 
       ${f.length===0?e` <div class="muted" style="margin-top: 16px">No skills found.</div> `:e`
             <div class="agent-skills-groups" style="margin-top: 16px;">
-              ${p.map(e=>Me(e,{agentId:t.agentId,allowSet:s,usingAllowlist:c,editable:i,onToggle:t.onToggle}))}
+              ${p.map(e=>Be(e,{agentId:t.agentId,allowSet:s,usingAllowlist:c,editable:i,onToggle:t.onToggle}))}
             </div>
           `}
     </section>
-  `}function Me(t,n){return e`
+  `}function Be(t,n){return e`
     <details class="agent-skills-group" ?open=${!(t.id===`workspace`||t.id===`built-in`)}>
       <summary class="agent-skills-header">
         <span>${t.label}</span>
         <span class="muted">${t.skills.length}</span>
       </summary>
       <div class="list skills-grid">
-        ${t.skills.map(e=>Ne(e,{agentId:n.agentId,allowSet:n.allowSet,usingAllowlist:n.usingAllowlist,editable:n.editable,onToggle:n.onToggle}))}
+        ${t.skills.map(e=>Ve(e,{agentId:n.agentId,allowSet:n.allowSet,usingAllowlist:n.usingAllowlist,editable:n.editable,onToggle:n.onToggle}))}
       </div>
     </details>
-  `}function Ne(t,n){let i=n.usingAllowlist?n.allowSet.has(t.name):!0,a=ne(t),o=ee(t);return e`
+  `}function Ve(t,n){let i=n.usingAllowlist?n.allowSet.has(t.name):!0,a=ce(t),o=oe(t);return e`
     <div class="list-item agent-skill-row">
       <div class="list-main">
         <div class="list-title">${t.emoji?`${t.emoji} `:``}${t.name}</div>
         <div class="list-sub">${t.description}</div>
-        ${te({skill:t})}
+        ${se({skill:t})}
         ${a.length>0?e`<div class="muted" style="margin-top: 6px;">Missing: ${a.join(`, `)}</div>`:r}
         ${o.length>0?e`<div class="muted" style="margin-top: 6px;">Reason: ${o.join(`, `)}</div>`:r}
       </div>
@@ -731,26 +731,26 @@ ${e}
         </label>
       </div>
     </div>
-  `}function Pe(t){let n=t.list?.teams??[],r=We(t.draft.membersJson),i=r.length>0?r:t.detail?.members??[],a=t.detail?q(t.detail):t.selectedId?t.selectedId:`New team`;return e`
+  `}function He(t){let n=t.list?.teams??[],r=rt(t.draft.membersJson),i=r.length>0?r:t.detail?.members??[],a=K(t.draft.aliasesJson),o=a.length>0?a:it(t.detail),s=at(t.draft.broadcastJson,t.detail?.broadcast),c=t.detail?W(t.detail):t.selectedId?t.selectedId:`New team`;return e`
     <section class="grid grid-cols-2">
-      ${Fe(t,n)}
-      ${Ie(t,a,r,i)}
+      ${Ue(t,n)}
+      ${We(t,c,r,i,o,s)}
     </section>
 
     <section class="grid grid-cols-2" style="margin-top: 16px;">
-      ${Re(t,i)}
-      ${ze(t,i)}
+      ${Xe(t,i)}
+      ${Ze(t,i)}
     </section>
 
     <section class="grid grid-cols-2" style="margin-top: 16px;">
-      ${Be(t,i)}
-      ${Ve(t)}
+      ${Qe(t,i)}
+      ${$e(t)}
     </section>
 
     <section style="margin-top: 16px;">
-      ${He(t,n,i)}
+      ${tt(t,n,i)}
     </section>
-  `}function Fe(t,i){return e`
+  `}function Ue(t,i){return e`
     <section class="card">
       <div class="row" style="justify-content: space-between; align-items: flex-start;">
         <div>
@@ -779,24 +779,27 @@ ${e}
                     aria-pressed=${n.id===t.selectedId?`true`:`false`}
                   >
                     <div class="list-main">
-                      <div class="list-title">${q(n)}</div>
+                      <div class="list-title">${W(n)}</div>
                       <div class="list-sub">
-                        ${n.members?.length??0} members · default
-                        ${J(n.defaultAgentId,n.members??[])}
+                        ${J(n.members?.length??0,`member`)} ·
+                        ${J(n.aliases?.length??0,`alias`)} · default
+                        ${G(n.defaultAgentId,n.members??[])}
                       </div>
                     </div>
                     <div class="list-meta">
-                      <span class="badge">${n.bindings?.length??0} bindings</span>
+                      <span class="badge">${J(n.bindings?.length??0,`binding`)}</span>
+                      <span class="badge">${q(n.broadcast)?`broadcast on`:`broadcast off`}</span>
                     </div>
                   </button>
                 `)}
             </div>
           `}
     </section>
-  `}function Ie(t,n,r,i){return e`
+  `}function We(t,n,r,i,a,o){return e`
     <section class="card">
       <div class="card-title">${n}</div>
       <div class="card-sub">Create teams, edit members, and keep JSON metadata available for compatibility.</div>
+      ${Ke(i,a,t.draft.bindingsJson,o)}
       <div class="grid grid-cols-2" style="margin-top: 14px;">
         <label class="field">
           <span>Team key</span>
@@ -804,7 +807,7 @@ ${e}
             .value=${t.draft.id}
             ?disabled=${!!t.detail}
             placeholder="content"
-            @input=${e=>t.onDraftChange({id:Z(e)})}
+            @input=${e=>t.onDraftChange({id:Q(e)})}
           />
         </label>
         <label class="field">
@@ -812,7 +815,7 @@ ${e}
           <input
             .value=${t.draft.displayName}
             placeholder="Content Team"
-            @input=${e=>t.onDraftChange({displayName:Z(e)})}
+            @input=${e=>t.onDraftChange({displayName:Q(e)})}
           />
         </label>
         <label class="field">
@@ -820,7 +823,7 @@ ${e}
           <select
             .value=${t.draft.template}
             ?disabled=${!!t.detail||r.length>0}
-            @change=${e=>t.onDraftChange({template:Q(e)})}
+            @change=${e=>t.onDraftChange({template:$(e)})}
           >
             <option value="pm-writer-reviewer">PM / Writer / Reviewer</option>
             <option value="">Custom members</option>
@@ -830,11 +833,11 @@ ${e}
           <span>Default member</span>
           <select
             .value=${t.draft.defaultAgentId}
-            @change=${e=>t.onDraftChange({defaultAgentId:Q(e)})}
+            @change=${e=>t.onDraftChange({defaultAgentId:$(e)})}
           >
             <option value="">First member</option>
             ${i.map(t=>e`
-                <option value=${t.agentId}>${J(t.agentId,i)}</option>
+                <option value=${t.agentId}>${G(t.agentId,i)}</option>
               `)}
           </select>
         </label>
@@ -848,21 +851,25 @@ ${e}
         <button
           type="button"
           class="btn btn--sm"
-          @click=${()=>t.onDraftChange(p(t.draft))}
+          @click=${()=>t.onDraftChange(l(t.draft))}
         >
           Add Member
         </button>
       </div>
       ${r.length===0?e`<div class="callout info" style="margin-top: 12px;">Use a template, or add members for a custom team.</div>`:e`
             <div class="list" style="margin-top: 12px;">
-              ${r.map((e,n)=>Le(t,e,n))}
+              ${r.map((e,n)=>Ge(t,e,n))}
             </div>
           `}
 
+      ${qe(t,i)}
+      ${Ye(t,i,o)}
+
       <details style="margin-top: 14px;">
         <summary class="muted">Advanced metadata JSON</summary>
-        ${K(`Aliases JSON`,t.draft.aliasesJson,e=>t.onDraftChange({aliasesJson:e}))}
-        ${K(`Team bindings JSON`,t.draft.bindingsJson,e=>t.onDraftChange({bindingsJson:e}))}
+        ${U(`Aliases JSON`,t.draft.aliasesJson,e=>t.onDraftChange({aliasesJson:e}))}
+        ${U(`Team bindings JSON`,t.draft.bindingsJson,e=>t.onDraftChange({bindingsJson:e}))}
+        ${U(`Broadcast JSON`,t.draft.broadcastJson,e=>t.onDraftChange({broadcastJson:e}))}
       </details>
 
       <div class="agent-model-actions">
@@ -892,7 +899,7 @@ ${e}
         </button>
       </div>
     </section>
-  `}function Le(t,n,r){return e`
+  `}function Ge(t,n,r){return e`
     <div class="list-item">
       <div class="list-main">
         <div class="grid grid-cols-3">
@@ -901,7 +908,7 @@ ${e}
             <input
               .value=${n.agentId??``}
               placeholder="content-writer"
-              @input=${e=>t.onDraftChange(l(t.draft,r,{agentId:Z(e)}))}
+              @input=${e=>t.onDraftChange(g(t.draft,r,{agentId:Q(e)}))}
             />
           </label>
           <label class="field">
@@ -909,7 +916,7 @@ ${e}
             <input
               .value=${n.role??``}
               placeholder="writer"
-              @input=${e=>t.onDraftChange(l(t.draft,r,{role:Z(e)}))}
+              @input=${e=>t.onDraftChange(g(t.draft,r,{role:Q(e)}))}
             />
           </label>
           <label class="field">
@@ -917,7 +924,7 @@ ${e}
             <input
               .value=${n.name??``}
               placeholder="Writer"
-              @input=${e=>t.onDraftChange(l(t.draft,r,{name:Z(e)}))}
+              @input=${e=>t.onDraftChange(g(t.draft,r,{name:Q(e)}))}
             />
           </label>
         </div>
@@ -926,29 +933,136 @@ ${e}
         <button
           type="button"
           class="btn btn--sm btn--ghost"
-          @click=${()=>t.onDraftChange(u(t.draft,r))}
+          @click=${()=>t.onDraftChange(o(t.draft,r))}
         >
           Remove
         </button>
       </div>
     </div>
-  `}function Re(t,n){let i=t.bindingPreview??c(t.binding);return e`
+  `}function Ke(t,n,r,i){return e`
+    <div class="agents-overview-grid" style="margin-top: 14px;">
+      <div class="agent-kv">
+        <div class="label">Members</div>
+        <div>${J(t.length,`member`)}</div>
+      </div>
+      <div class="agent-kv">
+        <div class="label">Aliases</div>
+        <div>${J(n.length,`alias`)}</div>
+      </div>
+      <div class="agent-kv">
+        <div class="label">Bindings</div>
+        <div>${J(ot(r),`binding`)}</div>
+      </div>
+      <div class="agent-kv">
+        <div class="label">Broadcast</div>
+        <div>${q(i)?`Broadcast enabled`:`Broadcast disabled`}</div>
+      </div>
+    </div>
+  `}function qe(t,n){let r=K(t.draft.aliasesJson);return e`
+    <div class="row" style="justify-content: space-between; margin-top: 16px;">
+      <div>
+        <div class="list-title">Aliases</div>
+        <div class="muted">Map mention text such as @writer or /agent writer to a member.</div>
+      </div>
+      <button
+        type="button"
+        class="btn btn--sm"
+        @click=${()=>t.onDraftChange(h(t.draft))}
+      >
+        Add Alias
+      </button>
+    </div>
+    ${r.length===0?e`<div class="callout info" style="margin-top: 12px;">No aliases are configured.</div>`:e`
+          <div class="list" style="margin-top: 12px;">
+            ${r.map((e,r)=>Je(t,n,e,r))}
+          </div>
+        `}
+  `}function Je(t,n,r,i){return e`
+    <div class="list-item">
+      <div class="list-main">
+        <div class="grid grid-cols-2">
+          <label class="field">
+            <span>Alias</span>
+            <input
+              .value=${r.alias??``}
+              placeholder="@writer"
+              @input=${e=>t.onDraftChange(f(t.draft,i,{alias:Q(e)}))}
+            />
+          </label>
+          <label class="field">
+            <span>Member</span>
+            <select
+              .value=${r.agentId??``}
+              @change=${e=>t.onDraftChange(f(t.draft,i,{agentId:$(e)}))}
+            >
+              <option value="">Choose member</option>
+              ${n.map(t=>e`<option value=${t.agentId}>${G(t.agentId,n)}</option>`)}
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="list-meta">
+        <button
+          type="button"
+          class="btn btn--sm btn--ghost"
+          @click=${()=>t.onDraftChange(re(t.draft,i))}
+        >
+          Remove
+        </button>
+      </div>
+    </div>
+  `}function Ye(t,n,r){let i=q(r),a=Y(r.members);return e`
+    <div style="margin-top: 16px;">
+      <div class="row" style="justify-content: space-between; align-items: flex-start;">
+        <div>
+          <div class="list-title">Broadcast</div>
+          <div class="muted">Gateway persists this team fan-out plan; runtime fan-out remains a partial capability.</div>
+        </div>
+        <label class="row" style="gap: 8px;">
+          <input
+            type="checkbox"
+            ?checked=${i}
+            @change=${e=>t.onDraftChange(y(t.draft,ut(e)))}
+          />
+          <span>${i?`Broadcast enabled`:`Broadcast disabled`}</span>
+        </label>
+      </div>
+      <div class="list" style="margin-top: 12px;">
+        ${n.map(r=>{let o=a.includes(r.agentId);return e`
+            <label class="list-item" style="cursor: pointer;">
+              <div class="list-main">
+                <div class="list-title">${G(r.agentId,n)}</div>
+                <div class="list-sub">${o?`Included in broadcast`:`Not included`}</div>
+              </div>
+              <div class="list-meta">
+                <input
+                  type="checkbox"
+                  ?checked=${o}
+                  ?disabled=${!i}
+                  @change=${e=>t.onDraftChange(u(t.draft,r.agentId,ut(e)))}
+                />
+              </div>
+            </label>
+          `})}
+      </div>
+    </div>
+  `}function Xe(t,n){let i=t.bindingPreview??d(t.binding);return e`
     <section class="card">
       <div class="card-title">Binding Builder</div>
       <div class="card-sub">Build channel/account/peer/thread/group/team/role routes before applying them.</div>
       <div class="grid grid-cols-2" style="margin-top: 14px;">
         <label class="field">
           <span>Member</span>
-          <select .value=${t.binding.agentId} @change=${e=>t.onBindingChange({agentId:Q(e)})}>
+          <select .value=${t.binding.agentId} @change=${e=>t.onBindingChange({agentId:$(e)})}>
             <option value="">Choose member</option>
-            ${n.map(t=>e`<option value=${t.agentId}>${J(t.agentId,n)}</option>`)}
+            ${n.map(t=>e`<option value=${t.agentId}>${G(t.agentId,n)}</option>`)}
           </select>
         </label>
         <label class="field">
           <span>Action</span>
           <select
             .value=${t.binding.mode}
-            @change=${e=>t.onBindingChange({mode:Q(e)===`unbind`?`unbind`:`bind`})}
+            @change=${e=>t.onBindingChange({mode:$(e)===`unbind`?`unbind`:`bind`})}
           >
             <option value="bind">Apply</option>
             <option value="unbind">Remove</option>
@@ -958,7 +1072,7 @@ ${e}
           <span>Payload type</span>
           <select
             .value=${t.binding.useStructuredBinding?`structured`:`simple`}
-            @change=${e=>t.onBindingChange({useStructuredBinding:Q(e)===`structured`})}
+            @change=${e=>t.onBindingChange({useStructuredBinding:$(e)===`structured`})}
           >
             <option value="simple">Simple binding</option>
             <option value="structured">JSON route binding</option>
@@ -969,24 +1083,24 @@ ${e}
           <input
             .value=${t.binding.spec}
             placeholder="feishu:tenant-a"
-            @input=${e=>t.onBindingChange({spec:Z(e)})}
+            @input=${e=>t.onBindingChange({spec:Q(e)})}
           />
         </label>
-        ${G(t,`Channel`,`channel`,`feishu`)}
-        ${G(t,`Account`,`accountId`,`tenant-a`)}
-        ${G(t,`Peer kind`,`peerKind`,`group`)}
-        ${G(t,`Peer id`,`peer`,`chat:oc_123`)}
-        ${G(t,`Thread`,`thread`,`thread:om_456`)}
-        ${G(t,`Group`,`group`,`chat:oc_123`)}
-        ${G(t,`Team`,`team`,`content`)}
-        ${G(t,`Roles`,`roles`,`writer,reviewer`)}
+        ${H(t,`Channel`,`channel`,`feishu`)}
+        ${H(t,`Account`,`accountId`,`tenant-a`)}
+        ${H(t,`Peer kind`,`peerKind`,`group`)}
+        ${H(t,`Peer id`,`peer`,`chat:oc_123`)}
+        ${H(t,`Thread`,`thread`,`thread:om_456`)}
+        ${H(t,`Group`,`group`,`chat:oc_123`)}
+        ${H(t,`Team`,`team`,`content`)}
+        ${H(t,`Roles`,`roles`,`writer,reviewer`)}
       </div>
       <label class="field" style="margin-top: 12px;">
         <span>Comment</span>
         <input
           .value=${t.binding.comment}
           placeholder="content team route"
-          @input=${e=>t.onBindingChange({comment:Z(e)})}
+          @input=${e=>t.onBindingChange({comment:Q(e)})}
         />
       </label>
       <div class="agent-model-actions">
@@ -1004,40 +1118,40 @@ ${e}
         <pre style="white-space: pre-wrap; margin: 0;">${i.lines.join(`
 `)}</pre>
       </div>
-      ${t.bindingResult?e`<div class="callout success" style="margin-top: 12px;">${Ue(t.bindingResult)}</div>`:r}
+      ${t.bindingResult?e`<div class="callout success" style="margin-top: 12px;">${nt(t.bindingResult)}</div>`:r}
     </section>
-  `}function G(t,n,r,i){return e`
+  `}function H(t,n,r,i){return e`
     <label class="field">
       <span>${n}</span>
       <input
         .value=${String(t.binding[r]??``)}
         placeholder=${i}
-        @input=${e=>t.onBindingChange({[r]:Z(e)})}
+        @input=${e=>t.onBindingChange({[r]:Q(e)})}
       />
     </label>
-  `}function ze(t,n){return e`
+  `}function Ze(t,n){return e`
     <section class="card">
       <div class="card-title">Workspace Profiles</div>
-      <div class="card-sub">Edit SOUL, AGENTS, IDENTITY, USER, TOOLS, and MEMORY via agents.files RPC.</div>
+      <div class="card-sub">Edit Gateway-supported workspace files via agents.files RPC.</div>
       ${t.workspaceError?e`<div class="callout danger" style="margin-top: 12px;">${t.workspaceError}</div>`:r}
       <div class="grid grid-cols-2" style="margin-top: 14px;">
         <label class="field">
           <span>Member</span>
           <select
             .value=${t.workspace.agentId}
-            @change=${e=>t.onWorkspaceChange({agentId:Q(e)})}
+            @change=${e=>t.onWorkspaceChange({agentId:$(e)})}
           >
             <option value="">Choose member</option>
-            ${n.map(t=>e`<option value=${t.agentId}>${J(t.agentId,n)}</option>`)}
+            ${n.map(t=>e`<option value=${t.agentId}>${G(t.agentId,n)}</option>`)}
           </select>
         </label>
         <label class="field">
           <span>Profile file</span>
           <select
             .value=${t.workspace.fileName}
-            @change=${e=>{let n=Q(e);t.onWorkspaceChange({fileName:n}),t.onLoadWorkspaceFile(n)}}
+            @change=${e=>{let n=$(e);t.onWorkspaceChange({fileName:n}),t.onLoadWorkspaceFile(n)}}
           >
-            ${d.map(t=>e`<option value=${t}>${t}</option>`)}
+            ${p.map(t=>e`<option value=${t}>${t}</option>`)}
           </select>
         </label>
       </div>
@@ -1059,7 +1173,7 @@ ${e}
           class="agent-file-textarea"
           rows="12"
           .value=${t.workspace.draft}
-          @input=${e=>t.onWorkspaceChange({draft:$(e)})}
+          @input=${e=>t.onWorkspaceChange({draft:lt(e)})}
         ></textarea>
       </label>
       <div class="agent-model-actions">
@@ -1089,7 +1203,7 @@ ${e}
         </button>
       </div>
     </section>
-  `}function Be(t,n){let i=t.modelResult?.models??null;return e`
+  `}function Qe(t,n){let i=t.modelResult?.models??null;return e`
     <section class="card">
       <div class="card-title">Model Editor</div>
       <div class="card-sub">Read and write per-agent models.json through Gateway.</div>
@@ -1099,10 +1213,10 @@ ${e}
           <span>Member</span>
           <select
             .value=${t.modelDraft.agentId}
-            @change=${e=>t.onModelDraftChange({agentId:Q(e)})}
+            @change=${e=>t.onModelDraftChange({agentId:$(e)})}
           >
             <option value="">Choose member</option>
-            ${n.map(t=>e`<option value=${t.agentId}>${J(t.agentId,n)}</option>`)}
+            ${n.map(t=>e`<option value=${t.agentId}>${G(t.agentId,n)}</option>`)}
           </select>
         </label>
         <div class="field">
@@ -1119,7 +1233,7 @@ ${e}
           <input
             .value=${t.modelDraft.primaryModelRef}
             placeholder="openai:gpt-5-mini"
-            @input=${e=>t.onModelDraftChange({primaryModelRef:Z(e)})}
+            @input=${e=>t.onModelDraftChange({primaryModelRef:Q(e)})}
           />
         </label>
         <label class="field">
@@ -1127,7 +1241,7 @@ ${e}
           <input
             .value=${t.modelDraft.runtimePrimaryModelRef}
             placeholder="openai:gpt-5-mini"
-            @input=${e=>t.onModelDraftChange({runtimePrimaryModelRef:Z(e)})}
+            @input=${e=>t.onModelDraftChange({runtimePrimaryModelRef:Q(e)})}
           />
         </label>
       </div>
@@ -1137,7 +1251,7 @@ ${e}
               <div class="mono">${i.path}</div>
             </div>
           `:r}
-      ${K(`models.json state`,t.modelDraft.stateJson,e=>t.onModelDraftChange({stateJson:e}))}
+      ${U(`models.json state`,t.modelDraft.stateJson,e=>t.onModelDraftChange({stateJson:e}))}
       <div class="agent-model-actions">
         <button
           type="button"
@@ -1157,10 +1271,14 @@ ${e}
         </button>
       </div>
     </section>
-  `}function Ve(t){let n=Ge(t);return e`
+  `}function $e(t){let n=st(t);return e`
     <section class="card">
       <div class="card-title">Feishu Settings</div>
       <div class="card-sub">Non-secret channel settings and account runtime snapshot.</div>
+      <div class="callout info" style="margin-top: 12px;">
+        Team-agent parity is partial. This panel reports Gateway status and explicit missing
+        capabilities without implying OAuth, OAPI tools, or interactive cards are complete.
+      </div>
       <div class="agents-overview-grid" style="margin-top: 14px;">
         <div class="agent-kv">
           <div class="label">Default Account</div>
@@ -1195,8 +1313,24 @@ ${e}
                 `)}
             </div>
           `}
+      ${et(t)}
     </section>
-  `}function He(t,r,i){let a=Ke(t,r,i);return e`
+  `}function et(t){let n=X(t.channelsSnapshot?.channels?.feishu),r=Y(n?.capabilities),i=X(n?.auth)??X(n?.oauth),a=X(n?.doctor)??X(n?.diagnostics),o=!!i||r.some(e=>e.includes(`oauth`)),s=r.some(e=>e.includes(`oapi`)||e.includes(`openapi`)),c=!!a||r.some(e=>e.includes(`doctor`));return e`
+    <div style="margin-top: 14px;">
+      <div class="list-title">Capability gaps</div>
+      <div class="list" style="margin-top: 8px;">
+        ${[{title:`Account status`,message:(t.channelsSnapshot?.channelAccounts?.feishu??[]).length?`channels.status exposes redacted Feishu account state.`:`No Feishu accounts are visible in channels.status.`,status:(t.channelsSnapshot?.channelAccounts?.feishu??[]).length?`available`:`missing`},{title:`OAuth`,message:o?`Gateway exposes Feishu auth status.`:`OAuth missing from the current status contract.`,status:o?`available`:`missing`},{title:`OAPI tools`,message:s?`Gateway advertises Feishu OAPI tool capability.`:`Docs/wiki/calendar/task/bitable OAPI tools are not advertised here.`,status:s?`available`:`missing`},{title:`Doctor`,message:c?`Gateway exposes Feishu doctor diagnostics.`:`Doctor status is not exposed to this panel; use Gateway or /feishu doctor when available.`,status:c?`available`:`missing`}].map(t=>e`
+            <div class="list-item">
+              <div class="list-main">
+                <div class="list-title">${t.title} ${t.status}</div>
+                <div class="list-sub">${t.message}</div>
+              </div>
+              <div class="list-meta"><span class="badge">${t.status}</span></div>
+            </div>
+          `)}
+      </div>
+    </div>
+  `}function tt(t,r,i){let a=ct(t,r,i);return e`
     <section class="card">
       <div class="row" style="justify-content: space-between;">
         <div>
@@ -1219,17 +1353,17 @@ ${e}
           `)}
       </div>
     </section>
-  `}function K(t,n,r){return e`
+  `}function U(t,n,r){return e`
     <label class="field agent-file-field" style="margin-top: 12px;">
       <span>${t}</span>
       <textarea
         class="agent-file-textarea"
         rows="6"
         .value=${n}
-        @input=${e=>r($(e))}
+        @input=${e=>r(lt(e))}
       ></textarea>
     </label>
-  `}function q(e){return e.displayName?.trim()||e.id}function J(e,t){if(!e)return`first configured member`;let n=t.find(t=>t.agentId===e);return n?`${n.name?.trim()||n.role?.trim()||n.agentId} (${n.agentId})`:e}function Ue(e){let t=[e.added?.length?`${e.added.length} added`:``,e.removed?.length?`${e.removed.length} removed`:``,e.skipped?.length?`${e.skipped.length} skipped`:``,e.missing?.length?`${e.missing.length} missing`:``,e.conflicts?.length?`${e.conflicts.length} conflicts`:``].filter(Boolean);return t.length?t.join(`, `):`Gateway accepted the binding request.`}function We(e){try{let t=JSON.parse(e||`[]`);return Array.isArray(t)?t:[]}catch{return[]}}function Ge(e){let t=Y(Y(e.configForm?.gateway)?.feishu??e.configForm?.feishu),n=Y(t?.accounts),r=Y(t?.groups),i=e.channelsSnapshot?.channelAccounts?.feishu??[],a=n?Object.keys(n):[],o=X(t?.defaultAccount)||e.channelsSnapshot?.channelDefaultAccountId?.feishu||i[0]?.accountId||a[0]||``,s=i.length>0?i:a.map(e=>({accountId:e,configured:!0}));return{defaultAccount:o,threadSession:X(t?.threadSession)||X(t?.groupSessionScope)||`not configured`,groupCount:r?Object.keys(r).length:0,accounts:s}}function Ke(e,t,n){return[{title:`Teams list`,message:t.length>0?`${t.length} team definitions loaded.`:`No team definitions loaded.`,status:t.length>0?`ok`:`info`},{title:`Members`,message:n.length>0?`${n.length} members available for edit.`:`No members selected.`,status:n.length>0?`ok`:`warn`},{title:`Binding preview`,message:e.bindingPreview?.applyPayload?`Apply payload is ready.`:`Preview a binding before applying.`,status:e.bindingPreview?.applyPayload?`ok`:`info`},{title:`Workspace profiles`,message:e.workspace.workspace?`Workspace loaded: ${e.workspace.workspace}`:`Choose a member and list files.`,status:e.workspace.workspace?`ok`:`info`},{title:`Model profile`,message:e.modelResult?.models?.path?`models.json: ${e.modelResult.models.path}`:`Load a member model.`,status:e.modelResult?.models?.path?`ok`:`info`},{title:`Feishu accounts`,message:(e.channelsSnapshot?.channelAccounts?.feishu??[]).length>0?`Feishu account status is visible.`:`No Feishu account status in channels.status.`,status:(e.channelsSnapshot?.channelAccounts?.feishu??[]).length>0?`ok`:`info`}]}function Y(e){return e&&typeof e==`object`&&!Array.isArray(e)?e:null}function X(e){return typeof e==`string`?e:``}function Z(e){return e.target.value}function Q(e){return e.target.value}function $(e){return e.target.value}function qe(t){let i=t.agentsList?.agents??[],a=t.agentsList?.defaultId??null,o=t.selectedAgentId??a??i[0]?.id??null,s=o?i.find(e=>e.id===o)??null:null,c=o&&t.agentSkills.agentId===o?t.agentSkills.report?.skills?.length??null:null,l=t.channels.snapshot?Object.keys(t.channels.snapshot.channelAccounts??{}).length:null,u=o?t.cron.jobs.filter(e=>e.agentId===o).length:null,d={files:t.agentFiles.list?.files?.length??null,skills:c,channels:l,cron:u||null,teams:t.agentTeams.list?.count??null};return e`
+  `}function W(e){return e.displayName?.trim()||e.id}function G(e,t){if(!e)return`first configured member`;let n=t.find(t=>t.agentId===e);return n?`${n.name?.trim()||n.role?.trim()||n.agentId} (${n.agentId})`:e}function nt(e){let t=[e.added?.length?`${e.added.length} added`:``,e.removed?.length?`${e.removed.length} removed`:``,e.skipped?.length?`${e.skipped.length} skipped`:``,e.missing?.length?`${e.missing.length} missing`:``,e.conflicts?.length?`${e.conflicts.length} conflicts`:``].filter(Boolean);return t.length?t.join(`, `):`Gateway accepted the binding request.`}function rt(e){try{let t=JSON.parse(e||`[]`);return Array.isArray(t)?t:[]}catch{return[]}}function K(e){try{let t=JSON.parse(e||`[]`);return Array.isArray(t)?t.map(e=>X(e)).filter(e=>!!e).map(e=>({alias:Z(e.alias),agentId:Z(e.agentId)})).filter(e=>e.alias||e.agentId):[]}catch{return[]}}function it(e){return Array.isArray(e?.aliases)?e.aliases.map(e=>X(e)).filter(e=>!!e).map(e=>({alias:Z(e.alias),agentId:Z(e.agentId)})).filter(e=>e.alias||e.agentId):[]}function at(e,t){try{return X(JSON.parse(e||`{}`))??t??{enabled:!1}}catch{return t??{enabled:!1}}}function q(e){return X(e)?.enabled===!0}function ot(e){try{let t=JSON.parse(e||`[]`);return Array.isArray(t)?t.length:0}catch{return 0}}function J(e,t){return`${e} ${t}${e===1?``:`s`}`}function Y(e){return Array.isArray(e)?e.filter(e=>typeof e==`string`).map(e=>e.trim()).filter(Boolean):[]}function st(e){let t=X(X(e.configForm?.gateway)?.feishu??e.configForm?.feishu),n=X(t?.accounts),r=X(t?.groups),i=e.channelsSnapshot?.channelAccounts?.feishu??[],a=n?Object.keys(n):[],o=Z(t?.defaultAccount)||e.channelsSnapshot?.channelDefaultAccountId?.feishu||i[0]?.accountId||a[0]||``,s=i.length>0?i:a.map(e=>({accountId:e,configured:!0}));return{defaultAccount:o,threadSession:Z(t?.threadSession)||Z(t?.groupSessionScope)||`not configured`,groupCount:r?Object.keys(r).length:0,accounts:s}}function ct(e,t,n){return[{title:`Teams list`,message:t.length>0?`${t.length} team definitions loaded.`:`No team definitions loaded.`,status:t.length>0?`ok`:`info`},{title:`Members`,message:n.length>0?`${n.length} members available for edit.`:`No members selected.`,status:n.length>0?`ok`:`warn`},{title:`Binding preview`,message:e.bindingPreview?.applyPayload?`Apply payload is ready.`:`Preview a binding before applying.`,status:e.bindingPreview?.applyPayload?`ok`:`info`},{title:`Workspace profiles`,message:e.workspace.workspace?`Workspace loaded: ${e.workspace.workspace}`:`Choose a member and list files.`,status:e.workspace.workspace?`ok`:`info`},{title:`Model profile`,message:e.modelResult?.models?.path?`models.json: ${e.modelResult.models.path}`:`Load a member model.`,status:e.modelResult?.models?.path?`ok`:`info`},{title:`Feishu accounts`,message:(e.channelsSnapshot?.channelAccounts?.feishu??[]).length>0?`Feishu account status is visible.`:`No Feishu account status in channels.status.`,status:(e.channelsSnapshot?.channelAccounts?.feishu??[]).length>0?`ok`:`info`}]}function X(e){return e&&typeof e==`object`&&!Array.isArray(e)?e:null}function Z(e){return typeof e==`string`?e:``}function Q(e){return e.target.value}function $(e){return e.target.value}function lt(e){return e.target.value}function ut(e){return e.target.checked}function dt(t){let i=t.agentsList?.agents??[],a=t.agentsList?.defaultId??null,o=t.selectedAgentId??a??i[0]?.id??null,s=o?i.find(e=>e.id===o)??null:null,c=o&&t.agentSkills.agentId===o?t.agentSkills.report?.skills?.length??null:null,l=t.channels.snapshot?Object.keys(t.channels.snapshot.channelAccounts??{}).length:null,u=o?t.cron.jobs.filter(e=>e.agentId===o).length:null,d={files:t.agentFiles.list?.files?.length??null,skills:c,channels:l,cron:u||null,teams:t.agentTeams.list?.count??null};return e`
     <div class="agents-layout">
       <section class="agents-toolbar">
         <div class="agents-toolbar-row">
@@ -1242,7 +1376,7 @@ ${e}
             >
               ${i.length===0?e` <option value="">No agents</option> `:i.map(t=>e`
                       <option value=${t.id} ?selected=${t.id===o}>
-                        ${S(t)}${k(t.id,a)?` (${k(t.id,a)})`:``}
+                        ${T(t)}${te(t.id,a)?` (${te(t.id,a)})`:``}
                       </option>
                     `)}
             </select>
@@ -1279,24 +1413,24 @@ ${e}
         ${t.error?e`<div class="callout danger" style="margin-top: 8px;">${t.error}</div>`:r}
       </section>
       <section class="agents-main">
-        ${Je(t.activePanel,e=>t.onSelectPanel(e),d)}
+        ${ft(t.activePanel,e=>t.onSelectPanel(e),d)}
         ${!s&&t.activePanel!==`teams`?e`
               <div class="card">
                 <div class="card-title">Select an agent</div>
                 <div class="card-sub">Pick an agent to inspect its workspace and tools.</div>
               </div>
             `:e`
-              ${t.activePanel===`overview`?re({agent:s,basePath:t.basePath,defaultId:a,configForm:t.config.form,agentFilesList:t.agentFiles.list,agentIdentity:t.agentIdentityById[s.id]??null,agentIdentityError:t.agentIdentityError,agentIdentityLoading:t.agentIdentityLoading,configLoading:t.config.loading,configSaving:t.config.saving,configDirty:t.config.dirty,modelCatalog:t.modelCatalog,onConfigReload:t.onConfigReload,onConfigSave:t.onConfigSave,onModelChange:t.onModelChange,onModelFallbacksChange:t.onModelFallbacksChange,onSelectPanel:t.onSelectPanel}):r}
-              ${t.activePanel===`files`?W({agentId:s.id,agentFilesList:t.agentFiles.list,agentFilesLoading:t.agentFiles.loading,agentFilesError:t.agentFiles.error,agentFileActive:t.agentFiles.active,agentFileContents:t.agentFiles.contents,agentFileDrafts:t.agentFiles.drafts,agentFileSaving:t.agentFiles.saving,onLoadFiles:t.onLoadFiles,onSelectFile:t.onSelectFile,onFileDraftChange:t.onFileDraftChange,onFileReset:t.onFileReset,onFileSave:t.onFileSave}):r}
-              ${t.activePanel===`tools`?Ae({agentId:s.id,configForm:t.config.form,configLoading:t.config.loading,configSaving:t.config.saving,configDirty:t.config.dirty,toolsCatalogLoading:t.toolsCatalog.loading,toolsCatalogError:t.toolsCatalog.error,toolsCatalogResult:t.toolsCatalog.result,toolsEffectiveLoading:t.toolsEffective.loading,toolsEffectiveError:t.toolsEffective.error,toolsEffectiveResult:t.toolsEffective.result,runtimeSessionKey:t.runtimeSessionKey,runtimeSessionMatchesSelectedAgent:t.runtimeSessionMatchesSelectedAgent,onProfileChange:t.onToolsProfileChange,onOverridesChange:t.onToolsOverridesChange,onConfigReload:t.onConfigReload,onConfigSave:t.onConfigSave}):r}
-              ${t.activePanel===`skills`?je({agentId:s.id,report:t.agentSkills.report,loading:t.agentSkills.loading,error:t.agentSkills.error,activeAgentId:t.agentSkills.agentId,configForm:t.config.form,configLoading:t.config.loading,configSaving:t.config.saving,configDirty:t.config.dirty,filter:t.agentSkills.filter,onFilterChange:t.onSkillsFilterChange,onRefresh:t.onSkillsRefresh,onToggle:t.onAgentSkillToggle,onClear:t.onAgentSkillsClear,onDisableAll:t.onAgentSkillsDisableAll,onConfigReload:t.onConfigReload,onConfigSave:t.onConfigSave}):r}
-              ${t.activePanel===`channels`?Ee({context:y(s,t.config.form,t.agentFiles.list,a,t.agentIdentityById[s.id]??null),configForm:t.config.form,snapshot:t.channels.snapshot,loading:t.channels.loading,error:t.channels.error,lastSuccess:t.channels.lastSuccess,onRefresh:t.onChannelsRefresh,onSelectPanel:t.onSelectPanel}):r}
-              ${t.activePanel===`cron`?De({context:y(s,t.config.form,t.agentFiles.list,a,t.agentIdentityById[s.id]??null),agentId:s.id,jobs:t.cron.jobs,status:t.cron.status,loading:t.cron.loading,error:t.cron.error,onRefresh:t.onCronRefresh,onRunNow:t.onCronRunNow,onSelectPanel:t.onSelectPanel}):r}
-              ${t.activePanel===`teams`?Pe({...t.agentTeams,onRefresh:t.onTeamsRefresh,onSelectTeam:t.onSelectTeam,onNewTeam:t.onNewTeam,onDraftChange:t.onTeamDraftChange,onCreateTeam:t.onCreateTeam,onUpdateTeam:t.onUpdateTeam,onDeleteTeam:t.onDeleteTeam,onBindingChange:t.onTeamBindingChange,onPreviewBinding:t.onPreviewTeamBinding,onApplyBinding:t.onApplyTeamBinding,onModelDraftChange:t.onTeamModelDraftChange,onLoadModel:t.onLoadTeamModel,onSaveModel:t.onSaveTeamModel,onWorkspaceChange:t.onWorkspaceChange,onLoadWorkspaceFiles:t.onLoadWorkspaceFiles,onLoadWorkspaceFile:t.onLoadWorkspaceFile,onSaveWorkspaceFile:t.onSaveWorkspaceFile}):r}
+              ${t.activePanel===`overview`?le({agent:s,basePath:t.basePath,defaultId:a,configForm:t.config.form,agentFilesList:t.agentFiles.list,agentIdentity:t.agentIdentityById[s.id]??null,agentIdentityError:t.agentIdentityError,agentIdentityLoading:t.agentIdentityLoading,configLoading:t.config.loading,configSaving:t.config.saving,configDirty:t.config.dirty,modelCatalog:t.modelCatalog,onConfigReload:t.onConfigReload,onConfigSave:t.onConfigSave,onModelChange:t.onModelChange,onModelFallbacksChange:t.onModelFallbacksChange,onSelectPanel:t.onSelectPanel}):r}
+              ${t.activePanel===`files`?Fe({agentId:s.id,agentFilesList:t.agentFiles.list,agentFilesLoading:t.agentFiles.loading,agentFilesError:t.agentFiles.error,agentFileActive:t.agentFiles.active,agentFileContents:t.agentFiles.contents,agentFileDrafts:t.agentFiles.drafts,agentFileSaving:t.agentFiles.saving,onLoadFiles:t.onLoadFiles,onSelectFile:t.onSelectFile,onFileDraftChange:t.onFileDraftChange,onFileReset:t.onFileReset,onFileSave:t.onFileSave}):r}
+              ${t.activePanel===`tools`?Re({agentId:s.id,configForm:t.config.form,configLoading:t.config.loading,configSaving:t.config.saving,configDirty:t.config.dirty,toolsCatalogLoading:t.toolsCatalog.loading,toolsCatalogError:t.toolsCatalog.error,toolsCatalogResult:t.toolsCatalog.result,toolsEffectiveLoading:t.toolsEffective.loading,toolsEffectiveError:t.toolsEffective.error,toolsEffectiveResult:t.toolsEffective.result,runtimeSessionKey:t.runtimeSessionKey,runtimeSessionMatchesSelectedAgent:t.runtimeSessionMatchesSelectedAgent,onProfileChange:t.onToolsProfileChange,onOverridesChange:t.onToolsOverridesChange,onConfigReload:t.onConfigReload,onConfigSave:t.onConfigSave}):r}
+              ${t.activePanel===`skills`?ze({agentId:s.id,report:t.agentSkills.report,loading:t.agentSkills.loading,error:t.agentSkills.error,activeAgentId:t.agentSkills.agentId,configForm:t.config.form,configLoading:t.config.loading,configSaving:t.config.saving,configDirty:t.config.dirty,filter:t.agentSkills.filter,onFilterChange:t.onSkillsFilterChange,onRefresh:t.onSkillsRefresh,onToggle:t.onAgentSkillToggle,onClear:t.onAgentSkillsClear,onDisableAll:t.onAgentSkillsDisableAll,onConfigReload:t.onConfigReload,onConfigSave:t.onConfigSave}):r}
+              ${t.activePanel===`channels`?Ne({context:C(s,t.config.form,t.agentFiles.list,a,t.agentIdentityById[s.id]??null),configForm:t.config.form,snapshot:t.channels.snapshot,loading:t.channels.loading,error:t.channels.error,lastSuccess:t.channels.lastSuccess,onRefresh:t.onChannelsRefresh,onSelectPanel:t.onSelectPanel}):r}
+              ${t.activePanel===`cron`?Pe({context:C(s,t.config.form,t.agentFiles.list,a,t.agentIdentityById[s.id]??null),agentId:s.id,jobs:t.cron.jobs,status:t.cron.status,loading:t.cron.loading,error:t.cron.error,onRefresh:t.onCronRefresh,onRunNow:t.onCronRunNow,onSelectPanel:t.onSelectPanel}):r}
+              ${t.activePanel===`teams`?He({...t.agentTeams,onRefresh:t.onTeamsRefresh,onSelectTeam:t.onSelectTeam,onNewTeam:t.onNewTeam,onDraftChange:t.onTeamDraftChange,onCreateTeam:t.onCreateTeam,onUpdateTeam:t.onUpdateTeam,onDeleteTeam:t.onDeleteTeam,onBindingChange:t.onTeamBindingChange,onPreviewBinding:t.onPreviewTeamBinding,onApplyBinding:t.onApplyTeamBinding,onModelDraftChange:t.onTeamModelDraftChange,onLoadModel:t.onLoadTeamModel,onSaveModel:t.onSaveTeamModel,onWorkspaceChange:t.onWorkspaceChange,onLoadWorkspaceFiles:t.onLoadWorkspaceFiles,onLoadWorkspaceFile:t.onLoadWorkspaceFile,onSaveWorkspaceFile:t.onSaveWorkspaceFile}):r}
             `}
       </section>
     </div>
-  `}function Je(t,n,i){return e`
+  `}function ft(t,n,i){return e`
     <div class="agent-tabs">
       ${[{id:`overview`,label:`Overview`},{id:`files`,label:`Files`},{id:`tools`,label:`Tools`},{id:`skills`,label:`Skills`},{id:`channels`,label:`Channels`},{id:`cron`,label:`Cron Jobs`},{id:`teams`,label:`Teams`}].map(a=>e`
           <button
@@ -1308,5 +1442,5 @@ ${e}
           </button>
         `)}
     </div>
-  `}export{qe as renderAgents};
+  `}export{dt as renderAgents};
 //# sourceMappingURL=agents.js.map

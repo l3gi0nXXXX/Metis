@@ -307,7 +307,9 @@ Hard requirements:
 - `files` must be an array.
 - UI checks `list.files.some(...)`.
 - Teams workspace profile editor filters the returned files to `SOUL.md`,
-  `AGENTS.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, and `MEMORY.md`.
+  `AGENTS.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`,
+  `BOOTSTRAP.md`, and `MEMORY.md`. `BOOTSTRAP.md` is supported but not
+  auto-created; it can appear with `missing: true` until written explicitly.
 
 ### 9. `agents.files.get`
 

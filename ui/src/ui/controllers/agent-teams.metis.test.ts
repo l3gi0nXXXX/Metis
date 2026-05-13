@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  addAgentTeamAlias,
+  AGENT_TEAM_PROFILE_FILES,
   applyAgentTeamBinding,
   buildAgentTeamBindingPreview,
   changeAgentTeamMember,
+  changeAgentTeamAlias,
   createAgentTeam,
   createEmptyAgentTeamBindingDraft,
   createEmptyAgentTeamDraft,
@@ -12,7 +15,10 @@ import {
   loadAgentTeamWorkspaceFiles,
   loadAgentTeamModel,
   previewAgentTeamBinding,
+  removeAgentTeamAlias,
   saveAgentTeamWorkspaceFile,
+  setAgentTeamBroadcastEnabled,
+  setAgentTeamBroadcastMember,
   loadAgentTeams,
   saveAgentTeamModel,
   updateAgentTeam,
@@ -90,6 +96,33 @@ describe("team mutations", () => {
     ]);
   });
 
+  it("edits aliases and broadcast without requiring raw JSON textarea changes", () => {
+    const draft = {
+      ...createEmptyAgentTeamDraft(),
+      aliasesJson: '[{"alias":"@writer","agentId":"content-writer"}]',
+      broadcastJson: '{\n  "enabled": false\n}',
+    };
+
+    const withAlias = changeAgentTeamAlias(addAgentTeamAlias(draft), 1, {
+      alias: "/agent review",
+      agentId: "content-reviewer",
+    });
+    const withRemovedAlias = removeAgentTeamAlias(withAlias, 0);
+    const withBroadcast = setAgentTeamBroadcastMember(
+      setAgentTeamBroadcastEnabled(withRemovedAlias, true),
+      "content-reviewer",
+      true,
+    );
+
+    expect(JSON.parse(withBroadcast.aliasesJson)).toEqual([
+      { alias: "/agent review", agentId: "content-reviewer" },
+    ]);
+    expect(JSON.parse(withBroadcast.broadcastJson)).toEqual({
+      enabled: true,
+      members: ["content-reviewer"],
+    });
+  });
+
   it("creates a template-backed team when members are empty", async () => {
     const { state, request } = createState();
     state.agentTeamDraft = {
@@ -111,6 +144,7 @@ describe("team mutations", () => {
       template: "pm-writer-reviewer",
       aliases: [],
       bindings: [],
+      broadcast: { enabled: false },
     });
     expect(state.agentTeamsSuccess).toBe("Team created.");
   });
@@ -138,10 +172,11 @@ describe("team mutations", () => {
       members: [{ agentId: "content-reviewer", role: "reviewer" }],
       aliases: [],
       bindings: [],
+      broadcast: { enabled: false },
     });
   });
 
-  it("updates team members, aliases, and bindings through agents.teams.update", async () => {
+  it("updates team members, aliases, bindings, and broadcast through agents.teams.update", async () => {
     const { state, request } = createState();
     state.agentTeamDraft = {
       id: "content",
@@ -149,8 +184,9 @@ describe("team mutations", () => {
       template: "",
       defaultAgentId: "content-reviewer",
       membersJson: '[{"agentId":"content-reviewer","role":"reviewer"}]',
-      aliasesJson: '[{"agentId":"content-reviewer","patterns":["review"]}]',
+      aliasesJson: '[{"agentId":"content-reviewer","alias":"@review"}]',
       bindingsJson: '[{"agentId":"content-reviewer","match":{"channel":"telegram"}}]',
+      broadcastJson: '{"enabled":true,"members":["content-reviewer"]}',
     };
     request
       .mockResolvedValueOnce({ team: { id: "content" } })
@@ -164,8 +200,9 @@ describe("team mutations", () => {
       displayName: "Content Team",
       defaultAgentId: "content-reviewer",
       members: [{ agentId: "content-reviewer", role: "reviewer" }],
-      aliases: [{ agentId: "content-reviewer", patterns: ["review"] }],
+      aliases: [{ agentId: "content-reviewer", alias: "@review" }],
       bindings: [{ agentId: "content-reviewer", match: { channel: "telegram" } }],
+      broadcast: { enabled: true, members: ["content-reviewer"] },
     });
   });
 });
@@ -315,6 +352,19 @@ describe("team binding and models", () => {
 });
 
 describe("team workspace profiles", () => {
+  it("matches the Gateway Control UI supported profile file contract", () => {
+    expect([...AGENT_TEAM_PROFILE_FILES]).toEqual([
+      "AGENTS.md",
+      "SOUL.md",
+      "TOOLS.md",
+      "IDENTITY.md",
+      "USER.md",
+      "HEARTBEAT.md",
+      "BOOTSTRAP.md",
+      "MEMORY.md",
+    ]);
+  });
+
   it("lists, loads, and saves supported workspace profile files through agents.files RPC", async () => {
     const { state, request } = createState();
     request
@@ -366,11 +416,13 @@ describe("team workspace profiles", () => {
       content: "Be direct.",
     });
     expect(state.agentTeamWorkspace.files.map((file) => file.name)).toEqual([
-      "SOUL.md",
       "AGENTS.md",
+      "SOUL.md",
+      "TOOLS.md",
       "IDENTITY.md",
       "USER.md",
-      "TOOLS.md",
+      "HEARTBEAT.md",
+      "BOOTSTRAP.md",
       "MEMORY.md",
     ]);
     expect(state.agentTeamWorkspace.content).toBe("Be direct.");

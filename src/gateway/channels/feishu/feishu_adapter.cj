@@ -32,6 +32,9 @@ import stdx.net.tls.*
 public interface FeishuApiClient {
     func isThreadCapableGroup(chatId: String): Bool
     func fetchMessageResource(accountId: String, messageId: String, fileKey: String, resourceType: String): FeishuResourceDownloadResult
+    func sendTextMessage(accountId: String, rawPeerId: String, receiveId: String, receiveIdType: String, text: String, replyToMessageId: Option<String>, replyInThread: Bool): FeishuApiSendResult
+    func sendInteractiveCard(accountId: String, rawPeerId: String, receiveId: String, receiveIdType: String, card: FeishuInteractiveCard, replyToMessageId: Option<String>, replyInThread: Bool): FeishuApiSendResult
+    func patchInteractiveCard(accountId: String, messageId: String, card: FeishuInteractiveCard): FeishuApiSendResult
 }
 
 public class FeishuResourceDownloadResult {
@@ -74,11 +77,42 @@ public class FeishuNoopApiClient <: FeishuApiClient {
     ): FeishuResourceDownloadResult {
         FeishuResourceDownloadResult(status: "not_configured", error: "feishu api client is not configured")
     }
+
+    public func sendTextMessage(
+        _accountId: String,
+        _rawPeerId: String,
+        _receiveId: String,
+        _receiveIdType: String,
+        _text: String,
+        _replyToMessageId: Option<String>,
+        _replyInThread: Bool
+    ): FeishuApiSendResult {
+        FeishuApiSendResult(status: "not_configured", error: "feishu api client is not configured")
+    }
+
+    public func sendInteractiveCard(
+        _accountId: String,
+        _rawPeerId: String,
+        _receiveId: String,
+        _receiveIdType: String,
+        _card: FeishuInteractiveCard,
+        _replyToMessageId: Option<String>,
+        _replyInThread: Bool
+    ): FeishuApiSendResult {
+        FeishuApiSendResult(status: "not_configured", error: "feishu api client is not configured")
+    }
+
+    public func patchInteractiveCard(_accountId: String, _messageId: String, _card: FeishuInteractiveCard): FeishuApiSendResult {
+        FeishuApiSendResult(status: "not_configured", error: "feishu api client is not configured")
+    }
 }
 
 public class FeishuFakeApiClient <: FeishuApiClient {
     private let threadCapable = HashMap<String, Bool>()
     private let resources = HashMap<String, FeishuResourceDownloadResult>()
+    private let textMessages = ArrayList<String>()
+    private let sentCards = ArrayList<FeishuInteractiveCard>()
+    private let patchedCards = ArrayList<FeishuInteractiveCard>()
 
     public init() {}
 
@@ -131,6 +165,53 @@ public class FeishuFakeApiClient <: FeishuApiClient {
             FeishuResourceDownloadResult(status: "not_found", error: "fake resource not registered")
     }
 
+    public func sendTextMessage(
+        accountId: String,
+        rawPeerId: String,
+        receiveId: String,
+        receiveIdType: String,
+        text: String,
+        _replyToMessageId: Option<String>,
+        _replyInThread: Bool
+    ): FeishuApiSendResult {
+        this.textMessages.add("${this.normalize(accountId)}|${rawPeerId.trimAscii()}|${receiveId.trimAscii()}|${receiveIdType.trimAscii()}|${text}")
+        FeishuApiSendResult(ok: true, status: "ok", messageId: "fake-feishu-text-${this.textMessages.size}")
+    }
+
+    public func sendInteractiveCard(
+        _accountId: String,
+        _rawPeerId: String,
+        _receiveId: String,
+        _receiveIdType: String,
+        card: FeishuInteractiveCard,
+        _replyToMessageId: Option<String>,
+        _replyInThread: Bool
+    ): FeishuApiSendResult {
+        this.sentCards.add(card)
+        FeishuApiSendResult(ok: true, status: "ok", messageId: "fake-feishu-card-${this.sentCards.size}")
+    }
+
+    public func patchInteractiveCard(_accountId: String, _messageId: String, card: FeishuInteractiveCard): FeishuApiSendResult {
+        this.patchedCards.add(card)
+        FeishuApiSendResult(ok: true, status: "ok", messageId: _messageId.trimAscii())
+    }
+
+    public func cardSendCount(): Int64 {
+        this.sentCards.size
+    }
+
+    public func cardPatchCount(): Int64 {
+        this.patchedCards.size
+    }
+
+    public func sentCard(index: Int64): FeishuInteractiveCard {
+        this.sentCards.get(index) ?? FeishuInteractiveCard()
+    }
+
+    public func patchedCard(index: Int64): FeishuInteractiveCard {
+        this.patchedCards.get(index) ?? FeishuInteractiveCard()
+    }
+
     private func resourceKey(accountId: String, messageId: String, fileKey: String, resourceType: String): String {
         "${this.normalize(accountId)}|${messageId.trimAscii()}|${fileKey.trimAscii()}|${resourceType.trimAscii().toAsciiLower()}"
     }
@@ -146,10 +227,13 @@ public class FeishuAdapter <: ChannelAdapter {
     private let queueMutex = Mutex()
     private let inboundQueue = ArrayList<InboundMessage>()
     private let outboundLog = ArrayList<OutboundMessage>()
+    private let baseConfig: FeishuConfig
     private let config: FeishuConfig
     private var webhookServer: Option<Server> = None
     private var tenantAccessToken: String = ""
     private var tokenExpireAtNano: Int64 = 0
+    private let tenantAccessTokens = HashMap<String, String>()
+    private let tenantAccessTokenExpiries = HashMap<String, Int64>()
     private var lastSendError: String = ""
     private let feishuMonitorLock = Mutex()
     private var feishuMonitorProcess: Option<SubProcess> = None
@@ -168,9 +252,12 @@ public class FeishuAdapter <: ChannelAdapter {
         accountId!: String = "default",
         apiClient!: FeishuApiClient = FeishuNoopApiClient()
     ) {
-        this.config = config
         let trimmedAccountId = accountId.trimAscii()
-        this.accountId = if (trimmedAccountId.isEmpty()) { config.accountId } else { trimmedAccountId }
+        let requestedAccountId = if (trimmedAccountId.isEmpty()) { config.accountId } else { trimmedAccountId }
+        let resolved = gatewayFeishuResolveAccount(config, requestedAccountId)
+        this.baseConfig = config
+        this.config = resolved.config
+        this.accountId = resolved.accountId
         this.apiClient = apiClient
     }
 
@@ -182,11 +269,11 @@ public class FeishuAdapter <: ChannelAdapter {
         if (this.running) {
             return
         }
-        this.running = true
         if (!this.config.enabled) {
-            PrintUtils.printLine("Feishu adapter: disabled (gateway.feishu.enabled=false).")
+            PrintUtils.printLine("Feishu adapter: disabled (account=${this.accountId}).")
             return
         }
+        this.running = true
         if (this.config.receiveMode == "webhook") {
             this.startWebhookServer()
             return
@@ -265,7 +352,8 @@ public class FeishuAdapter <: ChannelAdapter {
         if (!this.running) {
             return SendResult.Failed("feishu adapter is not running")
         }
-        let sentMessageId = this.sendTextToFeishuWithMessageId(
+        let sentMessageId = this.sendTextToFeishuWithMessageIdForAccount(
+            this.outboundAccountId(message),
             message.peerId,
             message.text,
             replyToMessageId: message.replyToMessageId,
@@ -285,7 +373,8 @@ public class FeishuAdapter <: ChannelAdapter {
         if (!this.running) {
             return ""
         }
-        let sentMessageId = this.sendTextToFeishuWithMessageId(
+        let sentMessageId = this.sendTextToFeishuWithMessageIdForAccount(
+            this.outboundAccountId(message),
             message.peerId,
             message.text,
             replyToMessageId: message.replyToMessageId,
@@ -295,6 +384,55 @@ public class FeishuAdapter <: ChannelAdapter {
             this.outboundLog.add(message)
         }
         sentMessageId
+    }
+
+    public func sendInteractiveCardToFeishu(
+        chatId: String,
+        card: FeishuInteractiveCard,
+        replyToMessageId!: Option<String> = None,
+        replyInThread!: Bool = false
+    ): String {
+        if (!this.running) {
+            return ""
+        }
+        let accountId = this.effectiveAccountId()
+        let receiveId = this.normalizeSendTarget(chatId)
+        if (receiveId.isEmpty()) {
+            this.lastSendError = "chatId is empty"
+            return ""
+        }
+        let result = this.apiClient.sendInteractiveCard(
+            accountId,
+            chatId,
+            receiveId,
+            this.resolveReceiveIdType(chatId),
+            card,
+            replyToMessageId,
+            replyInThread
+        )
+        if (result.ok && !result.messageId.isEmpty()) {
+            this.lastSendError = ""
+            return result.messageId
+        }
+        if (result.status != "not_configured") {
+            this.lastSendError = if (result.error.isEmpty()) { result.status } else { result.error }
+        }
+        this.sendTextToFeishuWithMessageIdForAccount(accountId, chatId, card.fallbackText(), replyToMessageId: replyToMessageId, replyInThread: replyInThread)
+    }
+
+    public func patchInteractiveCardInFeishu(messageId: String, card: FeishuInteractiveCard): Bool {
+        if (!this.running) {
+            return false
+        }
+        let result = this.apiClient.patchInteractiveCard(this.effectiveAccountId(), messageId, card)
+        if (result.ok) {
+            this.lastSendError = ""
+            return true
+        }
+        if (result.status != "not_configured") {
+            this.lastSendError = if (result.error.isEmpty()) { result.status } else { result.error }
+        }
+        false
     }
 
     /**
@@ -336,6 +474,15 @@ public class FeishuAdapter <: ChannelAdapter {
      */
     private func feishuDispatchEventRoot(root: JsonObject): String {
         let headerEventType = this.readHeaderEventType(root)
+        if (headerEventType == "card.action.trigger") {
+            if (let Some(inbound) <- this.mapCardActionToInbound(root)) {
+                synchronized(this.queueMutex) {
+                    this.inboundQueue.add(inbound)
+                }
+                return "{\"ok\":true}"
+            }
+            return "{\"ok\":true,\"ignored\":true}"
+        }
         if (!headerEventType.isEmpty() && headerEventType != "im.message.receive_v1") {
             PrintUtils.printLine("Feishu ingest: ignore event_type=${headerEventType}")
             return "{\"ok\":true,\"ignored\":true}"
@@ -356,6 +503,102 @@ public class FeishuAdapter <: ChannelAdapter {
         return "{\"ok\":true,\"ignored\":true}"
     }
 
+    private func mapCardActionToInbound(root: JsonObject): Option<InboundMessage> {
+        let event = match (root.get("event")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let context = match (event.get("context")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let actionObj = match (event.get("action")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let valueObj = match (actionObj.get("value")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let operatorObj = match (event.get("operator")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let action = this.firstNonEmpty([
+            this.readStringField(valueObj, "action"),
+            this.readStringField(valueObj, "actionId"),
+            this.readStringField(valueObj, "key"),
+            this.readStringField(actionObj, "tag")
+        ])
+        if (action.isEmpty()) {
+            return None<InboundMessage>
+        }
+        let accountId = this.resolveFeishuAccountId(root)
+        let messageId = this.firstNonEmpty([
+            this.readStringField(context, "open_message_id"),
+            this.readStringField(context, "message_id"),
+            this.readStringField(context, "messageId")
+        ])
+        let peerId = this.firstNonEmpty([
+            this.readStringField(context, "open_chat_id"),
+            this.readStringField(context, "chat_id"),
+            this.readStringField(context, "chatId")
+        ])
+        let operatorId = this.firstNonEmpty([
+            this.readStringField(operatorObj, "open_id"),
+            this.readStringField(operatorObj, "openId"),
+            this.readStringField(operatorObj, "user_id"),
+            this.readStringField(operatorObj, "userId")
+        ])
+        let effectivePeerId = if (peerId.isEmpty()) { operatorId } else { peerId }
+        if (effectivePeerId.isEmpty()) {
+            return None<InboundMessage>
+        }
+        let mediaContext = JsonObject()
+        mediaContext.put("channel", JsonString("feishu"))
+        mediaContext.put("accountId", JsonString(accountId))
+        mediaContext.put("peerId", JsonString(effectivePeerId))
+        mediaContext.put("messageId", JsonString(messageId))
+        let contextObj = JsonObject()
+        let actionContext = JsonObject()
+        actionContext.put("action", JsonString(action))
+        actionContext.put("operatorId", JsonString(operatorId))
+        actionContext.put("messageId", JsonString(messageId))
+        actionContext.put("peerId", JsonString(effectivePeerId))
+        actionContext.put("status", JsonString("accepted"))
+        contextObj.put("feishuCardAction", actionContext)
+        mediaContext.put("context", contextObj)
+        let inboundId = "card:${if (messageId.isEmpty()) { "unknown-message" } else { messageId }}:${if (operatorId.isEmpty()) { "unknown-operator" } else { operatorId }}:${action}"
+        let chatType = if (effectivePeerId.startsWith("oc_")) { ChatType.Group } else { ChatType.Direct }
+        Some(InboundMessage(
+            ChannelType.Feishu,
+            inboundId,
+            effectivePeerId,
+            operatorId,
+            chatType,
+            "[feishu-card-action]\naction=${action}\nmessageId=${messageId}\nby=${operatorId}",
+            true,
+            DateTime.now(),
+            conversationId: Some(effectivePeerId),
+            replyTargetMessageId: if (messageId.isEmpty()) { None<String> } else { Some(messageId) },
+            raw: Some(root.toJsonString()),
+            accountId: accountId,
+            mediaContext: mediaContext,
+            systemEvent: true,
+            systemEventKind: "feishu.card_action"
+        ))
+    }
+
+    private func firstNonEmpty(values: Array<String>): String {
+        for (value in values) {
+            let trimmed = value.trimAscii()
+            if (!trimmed.isEmpty()) {
+                return trimmed
+            }
+        }
+        ""
+    }
+
     /**
      * P0 测试入口：模拟飞书收到文本消息。
      * 在没有真实网关事件接入之前，可用该方法验证整条链路。
@@ -368,10 +611,14 @@ public class FeishuAdapter <: ChannelAdapter {
         chatType!: ChatType = ChatType.Direct,
         mentioned!: Bool = true
     ): Unit {
+        if (!this.running) {
+            return
+        }
         let mediaContext = JsonObject()
         let accountId = this.effectiveAccountId()
-        this.attachFeishuImRouteContext(mediaContext, accountId, peerId, chatType, senderId, messageId, "", "")
-        this.attachFeishuGateContext(mediaContext, chatType, mentioned, peerId, senderId)
+        let cfg = this.feishuConfigForAccount(accountId)
+        this.attachFeishuImRouteContext(mediaContext, cfg, accountId, peerId, chatType, senderId, messageId, "", "")
+        this.attachFeishuGateContext(mediaContext, cfg, chatType, mentioned, peerId, senderId)
         let msg = InboundMessage(
             ChannelType.Feishu,
             messageId,
@@ -397,6 +644,21 @@ public class FeishuAdapter <: ChannelAdapter {
         synchronized(this.queueMutex) {
             return this.outboundLog.toArray()
         }
+    }
+
+    private func outboundAccountId(message: OutboundMessage): String {
+        if (!message.accountId.trimAscii().isEmpty()) {
+            return gatewayFeishuNormalizeAccountId(message.accountId)
+        }
+        this.effectiveAccountId()
+    }
+
+    private func feishuConfigForAccount(accountId: String): FeishuConfig {
+        let normalized = gatewayFeishuNormalizeAccountId(accountId)
+        if (normalized == this.accountId) {
+            return this.config
+        }
+        gatewayFeishuResolveAccount(this.baseConfig, normalized).config
     }
 
     /**
@@ -471,6 +733,7 @@ public class FeishuAdapter <: ChannelAdapter {
         let rootId = this.readStringField(messageObj, "root_id")
         let threadId = this.readStringField(messageObj, "thread_id")
         let accountId = this.resolveFeishuAccountId(root)
+        let accountConfig = this.feishuConfigForAccount(accountId)
 
         let senderIdObj = match (senderObj.get("sender_id")) {
             case Some(v) => v.asObject()
@@ -492,13 +755,13 @@ public class FeishuAdapter <: ChannelAdapter {
         }
         // 群聊：优先用 mentions 判断是否 @ 机器人；未配置 FEISHU_BOT_OPEN_ID 时退回文本里是否含 @。
         let mentioned = isDirect ||
-            this.messageMentionsBotOpenId(messageObj) ||
-            (this.config.botOpenId.isEmpty() && (text.contains("@") || text.contains("<at ")))
+            this.messageMentionsBotOpenId(messageObj, accountConfig) ||
+            (accountConfig.botOpenId.isEmpty() && (text.contains("@") || text.contains("<at ")))
         let mediaContext = JsonObject()
-        this.attachFeishuImRouteContext(mediaContext, accountId, chatId, chatType, senderId, messageId, rootId, threadId)
-        this.attachFeishuGateContext(mediaContext, chatType, mentioned, chatId, senderId)
-        this.attachFeishuAliasCandidates(mediaContext, messageObj)
-        this.attachFeishuAttachmentContext(mediaContext, accountId, chatId, messageId, messageType, contentJsonString)
+        this.attachFeishuImRouteContext(mediaContext, accountConfig, accountId, chatId, chatType, senderId, messageId, rootId, threadId)
+        this.attachFeishuGateContext(mediaContext, accountConfig, chatType, mentioned, chatId, senderId)
+        this.attachFeishuAliasCandidates(mediaContext, accountConfig, messageObj)
+        this.attachFeishuAttachmentContext(mediaContext, accountConfig, accountId, chatId, messageId, messageType, contentJsonString)
 
         return InboundMessage(
             ChannelType.Feishu,
@@ -509,7 +772,7 @@ public class FeishuAdapter <: ChannelAdapter {
             text,
             mentioned,
             DateTime.now(),
-            conversationId: this.resolveConversationId(chatId, chatType, senderId, messageId, rootId, threadId),
+            conversationId: this.resolveConversationId(accountConfig, chatId, chatType, senderId, messageId, rootId, threadId),
             threadId: if (threadId.trimAscii().isEmpty()) { None<String> } else { Some(threadId.trimAscii()) },
             replyTargetMessageId: this.resolveReplyTargetMessageId(messageId, rootId, threadId),
             replyInThread: this.shouldReplyInThread(chatType, rootId, threadId),
@@ -521,6 +784,7 @@ public class FeishuAdapter <: ChannelAdapter {
 
     private func attachFeishuImRouteContext(
         mediaContext: JsonObject,
+        cfg: FeishuConfig,
         accountId: String,
         chatId: String,
         chatType: ChatType,
@@ -554,7 +818,7 @@ public class FeishuAdapter <: ChannelAdapter {
                     route.put("parentPeerKind", JsonString("group"))
                     route.put("parentPeerId", JsonString(chatId.trimAscii()))
                     route.put("threadId", JsonString(topicId))
-                    if (this.feishuThreadSessionEnabled(chatId, topicId)) {
+                    if (this.feishuThreadSessionEnabled(cfg, chatId, topicId)) {
                         route.put("threadSessionKey", JsonString(this.buildTopicConversationId(chatId.trimAscii(), topicId)))
                     }
                 } else {
@@ -566,7 +830,7 @@ public class FeishuAdapter <: ChannelAdapter {
         route.put("messageId", JsonString(messageId.trimAscii()))
         match (chatType) {
             case ChatType.Group =>
-                let groupPolicy = this.feishuGroupPolicyContext(chatId)
+                let groupPolicy = this.feishuGroupPolicyContext(cfg, chatId)
                 if (groupPolicy.size() > 0) {
                     route.put("groupPolicy", groupPolicy)
                 }
@@ -580,6 +844,7 @@ public class FeishuAdapter <: ChannelAdapter {
 
     private func attachFeishuGateContext(
         mediaContext: JsonObject,
+        cfg: FeishuConfig,
         chatType: ChatType,
         mentioned: Bool,
         chatId: String,
@@ -595,15 +860,15 @@ public class FeishuAdapter <: ChannelAdapter {
         match (chatType) {
             case ChatType.Direct => ()
             case ChatType.Group =>
-                let groupConfig = this.feishuGroupConfig(chatId)
+                let groupConfig = this.feishuGroupConfig(cfg, chatId)
                 let groupEnabled = this.feishuGroupBool(groupConfig, "enabled", true)
-                let groupAllowBots = this.feishuGroupBool(groupConfig, "allowBots", this.config.allowBots)
-                let groupRequireMention = this.feishuGroupBool(groupConfig, "requireMention", this.config.policy.requireMentionInGroup)
+                let groupAllowBots = this.feishuGroupBool(groupConfig, "allowBots", cfg.allowBots)
+                let groupRequireMention = this.feishuGroupBool(groupConfig, "requireMention", cfg.policy.requireMentionInGroup)
                 let groupAllowFrom = this.feishuGroupStringArray(groupConfig, "allowFrom")
                 if (!groupEnabled) {
                     accepted = false
                     reason = "group_disabled"
-                } else if (!this.feishuGroupAllowed(chatId)) {
+                } else if (!this.feishuGroupAllowed(cfg, chatId)) {
                     accepted = false
                     reason = "group_not_allowed"
                 } else if (!this.feishuSenderAllowedByGroup(groupAllowFrom, senderId)) {
@@ -619,16 +884,16 @@ public class FeishuAdapter <: ChannelAdapter {
         }
         gate.put("triggerAgent", JsonBool(accepted))
         gate.put("mentioned", JsonBool(mentioned))
-        gate.put("requireMentionInGroup", JsonBool(this.feishuGroupBool(this.feishuGroupConfig(chatId), "requireMention", this.config.policy.requireMentionInGroup)))
-        gate.put("groupPolicy", JsonString(this.config.groupPolicy))
-        gate.put("allowBots", JsonBool(this.config.allowBots))
+        gate.put("requireMentionInGroup", JsonBool(this.feishuGroupBool(this.feishuGroupConfig(cfg, chatId), "requireMention", cfg.policy.requireMentionInGroup)))
+        gate.put("groupPolicy", JsonString(cfg.groupPolicy))
+        gate.put("allowBots", JsonBool(cfg.allowBots))
         gate.put("reason", JsonString(reason))
         context.put("feishuGate", gate)
         mediaContext.put("context", context)
     }
 
-    private func feishuGroupAllowed(chatId: String): Bool {
-        let policy = this.config.groupPolicy.trimAscii().toAsciiLower()
+    private func feishuGroupAllowed(cfg: FeishuConfig, chatId: String): Bool {
+        let policy = cfg.groupPolicy.trimAscii().toAsciiLower()
         if (policy == "open") {
             return true
         }
@@ -636,22 +901,22 @@ public class FeishuAdapter <: ChannelAdapter {
             return false
         }
         let normalized = chatId.trimAscii()
-        for (id in this.config.groupAllowFrom) {
+        for (id in cfg.groupAllowFrom) {
             let candidate = id.trimAscii()
             if (candidate == "*" || candidate == normalized) {
                 return true
             }
         }
-        match (this.config.groups) {
+        match (cfg.groups) {
             case Some(groups) =>
                 groups.getFields().contains(normalized) || groups.getFields().contains("*")
             case None => false
         }
     }
 
-    private func feishuGroupConfig(chatId: String): JsonObject {
+    private func feishuGroupConfig(cfg: FeishuConfig, chatId: String): JsonObject {
         let normalized = chatId.trimAscii()
-        match (this.config.groups) {
+        match (cfg.groups) {
             case Some(groups) =>
                 match (groups.get(normalized)) {
                     case Some(v) =>
@@ -668,13 +933,13 @@ public class FeishuAdapter <: ChannelAdapter {
         }
     }
 
-    private func feishuGroupPolicyContext(chatId: String): JsonObject {
-        let cfg = this.feishuGroupConfig(chatId)
+    private func feishuGroupPolicyContext(feishuConfig: FeishuConfig, chatId: String): JsonObject {
+        let cfg = this.feishuGroupConfig(feishuConfig, chatId)
         let out = JsonObject()
         out.put("groupId", JsonString(chatId.trimAscii()))
-        out.put("policy", JsonString(this.config.groupPolicy.trimAscii().toAsciiLower()))
-        out.put("requireMention", JsonBool(this.feishuGroupBool(cfg, "requireMention", this.config.policy.requireMentionInGroup)))
-        out.put("allowBots", JsonBool(this.feishuGroupBool(cfg, "allowBots", this.config.allowBots)))
+        out.put("policy", JsonString(feishuConfig.groupPolicy.trimAscii().toAsciiLower()))
+        out.put("requireMention", JsonBool(this.feishuGroupBool(cfg, "requireMention", feishuConfig.policy.requireMentionInGroup)))
+        out.put("allowBots", JsonBool(this.feishuGroupBool(cfg, "allowBots", feishuConfig.allowBots)))
         for (key in ["tools", "skills", "systemPrompt", "runtimePolicy", "policy"]) {
             match (cfg.get(key)) {
                 case Some(v) => out.put(key, v)
@@ -733,7 +998,7 @@ public class FeishuAdapter <: ChannelAdapter {
         senderId.trimAscii().toAsciiLower().contains("bot")
     }
 
-    private func attachFeishuAliasCandidates(mediaContext: JsonObject, messageObj: JsonObject): Unit {
+    private func attachFeishuAliasCandidates(mediaContext: JsonObject, cfg: FeishuConfig, messageObj: JsonObject): Unit {
         let mentions = match (messageObj.get("mentions")) {
             case Some(v) => try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
             case None => JsonArray([])
@@ -754,8 +1019,8 @@ public class FeishuAdapter <: ChannelAdapter {
             if (openId.isEmpty() && userId.isEmpty() && unionId.isEmpty()) {
                 continue
             }
-            if (!this.config.botOpenId.isEmpty() &&
-                (openId == this.config.botOpenId || userId == this.config.botOpenId || unionId == this.config.botOpenId)) {
+            if (!cfg.botOpenId.isEmpty() &&
+                (openId == cfg.botOpenId || userId == cfg.botOpenId || unionId == cfg.botOpenId)) {
                 continue
             }
             let row = JsonObject()
@@ -780,6 +1045,7 @@ public class FeishuAdapter <: ChannelAdapter {
 
     private func attachFeishuAttachmentContext(
         mediaContext: JsonObject,
+        cfg: FeishuConfig,
         accountId: String,
         chatId: String,
         messageId: String,
@@ -827,10 +1093,10 @@ public class FeishuAdapter <: ChannelAdapter {
         var effectiveMimeType = originalMimeType
         var effectiveFileName = originalFileName
         var effectiveFileSize = declaredSize
-        if (this.config.media.downloadEnabled) {
-            if (!this.feishuMediaMimeAllowed(originalMimeType)) {
+        if (cfg.media.downloadEnabled) {
+            if (!this.feishuMediaMimeAllowed(cfg, originalMimeType)) {
                 skippedReason = "mime_not_allowed"
-            } else if (declaredSize > 0 && this.feishuMediaSizeExceedsLimit(declaredSize)) {
+            } else if (declaredSize > 0 && this.feishuMediaSizeExceedsLimit(cfg, declaredSize)) {
                 skippedReason = "size_limit_exceeded"
             } else {
                 let result = this.fetchFeishuMessageResource(
@@ -843,12 +1109,13 @@ public class FeishuAdapter <: ChannelAdapter {
                     effectiveMimeType = if (!result.contentType.isEmpty()) { result.contentType } else { originalMimeType }
                     effectiveFileName = if (!result.fileName.isEmpty()) { result.fileName } else { originalFileName }
                     effectiveFileSize = Int64(result.bytes.size)
-                    if (this.feishuMediaSizeExceedsLimit(effectiveFileSize)) {
+                    if (this.feishuMediaSizeExceedsLimit(cfg, effectiveFileSize)) {
                         skippedReason = "download_size_limit_exceeded"
-                    } else if (!this.feishuMediaMimeAllowed(effectiveMimeType)) {
+                    } else if (!this.feishuMediaMimeAllowed(cfg, effectiveMimeType)) {
                         skippedReason = "mime_not_allowed"
                     } else {
                         let persisted = this.feishuPersistDownloadedResourceBytes(
+                            cfg,
                             result.bytes,
                             accountId: accountId,
                             chatId: chatId,
@@ -897,19 +1164,21 @@ public class FeishuAdapter <: ChannelAdapter {
         if (injected.ok || injected.status != "not_configured") {
             return injected
         }
-        this.fetchFeishuMessageResourceViaHttp(messageId, fileKey, resourceType)
+        this.fetchFeishuMessageResourceViaHttp(accountId, messageId, fileKey, resourceType)
     }
 
     private func fetchFeishuMessageResourceViaHttp(
+        accountId: String,
         messageId: String,
         fileKey: String,
         resourceType: String
     ): FeishuResourceDownloadResult {
-        let token = this.getTenantAccessToken()
+        let cfg = this.feishuConfigForAccount(accountId)
+        let token = this.getTenantAccessTokenForConfig(accountId, cfg)
         if (token.trimAscii().isEmpty()) {
             return FeishuResourceDownloadResult(status: "not_configured", error: "tenant_access_token is empty")
         }
-        let base = this.normalizeFeishuDomain()
+        let base = this.normalizeFeishuDomain(cfg)
         let url = "${base}/open-apis/im/v1/messages/${messageId.trimAscii()}/resources/${fileKey.trimAscii()}?type=${resourceType.trimAscii()}"
         let builder = ClientBuilder()
         builder.readTimeout(Duration.second * 30)
@@ -979,12 +1248,12 @@ public class FeishuAdapter <: ChannelAdapter {
         normalized
     }
 
-    private func feishuMediaMimeAllowed(mimeType: String): Bool {
+    private func feishuMediaMimeAllowed(cfg: FeishuConfig, mimeType: String): Bool {
         let mime = mimeType.trimAscii().toAsciiLower()
-        if (this.config.media.allowedMimes.isEmpty()) {
+        if (cfg.media.allowedMimes.isEmpty()) {
             return true
         }
-        for (raw in this.config.media.allowedMimes) {
+        for (raw in cfg.media.allowedMimes) {
             let allowed = raw.trimAscii().toAsciiLower()
             if (allowed == "*" || allowed == mime) {
                 return true
@@ -999,12 +1268,13 @@ public class FeishuAdapter <: ChannelAdapter {
         false
     }
 
-    private func feishuMediaSizeExceedsLimit(sizeBytes: Int64): Bool {
-        let limit = this.config.media.mediaMaxBytes
+    private func feishuMediaSizeExceedsLimit(cfg: FeishuConfig, sizeBytes: Int64): Bool {
+        let limit = cfg.media.mediaMaxBytes
         limit > 0 && sizeBytes > limit
     }
 
     private func feishuPersistDownloadedResourceBytes(
+        cfg: FeishuConfig,
         bytes: Array<Byte>,
         accountId!: String,
         chatId!: String,
@@ -1014,10 +1284,10 @@ public class FeishuAdapter <: ChannelAdapter {
         fileName!: String,
         mimeType!: String
     ): String {
-        let root = Path(if (this.config.media.downloadRoot.trimAscii().isEmpty()) {
+        let root = Path(if (cfg.media.downloadRoot.trimAscii().isEmpty()) {
             "/tmp/metis-feishu-media"
         } else {
-            this.config.media.downloadRoot.trimAscii()
+            cfg.media.downloadRoot.trimAscii()
         })
         let dir = root
             .join(this.feishuSafeMediaSegment(this.normalizeAccountId(accountId)))
@@ -1216,18 +1486,18 @@ public class FeishuAdapter <: ChannelAdapter {
     /**
      * 飞书 message.mentions 中与机器人 open_id 匹配则视为被 @。
      */
-    private func messageMentionsBotOpenId(messageObj: JsonObject): Bool {
-        if (this.config.botOpenId.isEmpty()) {
+    private func messageMentionsBotOpenId(messageObj: JsonObject, cfg: FeishuConfig): Bool {
+        if (cfg.botOpenId.isEmpty()) {
             return false
         }
         return match (messageObj.get("mentions")) {
-            case Some(mv) => this.jsonMentionsContainOpenId(mv)
+            case Some(mv) => this.jsonMentionsContainOpenId(mv, cfg)
             case None => false
         }
     }
 
     /** 解析 message.mentions 数组，是否与当前配置的机器人 open_id 匹配。 */
-    private func jsonMentionsContainOpenId(mv: JsonValue): Bool {
+    private func jsonMentionsContainOpenId(mv: JsonValue, cfg: FeishuConfig): Bool {
         let mentionsArr = mv as JsonArray
         if (let Some(arr) <- mentionsArr) {
             for (i in 0..arr.size()) {
@@ -1235,7 +1505,7 @@ public class FeishuAdapter <: ChannelAdapter {
                 let mo = item as JsonObject
                 if (let Some(o) <- mo) {
                     let id = this.readStringField(o, "id")
-                    if (id == this.config.botOpenId) {
+                    if (id == cfg.botOpenId) {
                         return true
                     }
                     if (let Some(idObjValue) <- o.get("id")) {
@@ -1243,7 +1513,7 @@ public class FeishuAdapter <: ChannelAdapter {
                         if (let Some(io) <- idObj) {
                             let openId = this.readStringField(io, "open_id")
                             let userId = this.readStringField(io, "user_id")
-                            if (openId == this.config.botOpenId || userId == this.config.botOpenId) {
+                            if (openId == cfg.botOpenId || userId == cfg.botOpenId) {
                                 return true
                             }
                         }
@@ -1251,13 +1521,13 @@ public class FeishuAdapter <: ChannelAdapter {
                     if (let Some(idObjValue) <- o.get("user_id")) {
                         let idObj = idObjValue as JsonString
                         if (let Some(uid) <- idObj) {
-                            if (uid.getValue() == this.config.botOpenId) {
+                            if (uid.getValue() == cfg.botOpenId) {
                                 return true
                             }
                         }
                     }
                     let key = this.readStringField(o, "key")
-                    if (!key.isEmpty() && key.contains(this.config.botOpenId)) {
+                    if (!key.isEmpty() && key.contains(cfg.botOpenId)) {
                         return true
                     }
                 }
@@ -1460,6 +1730,7 @@ public class FeishuAdapter <: ChannelAdapter {
     }
 
     private func resolveConversationId(
+        cfg: FeishuConfig,
         chatId: String,
         chatType: ChatType,
         senderId: String,
@@ -1479,15 +1750,15 @@ public class FeishuAdapter <: ChannelAdapter {
                     rootId.trimAscii()
                 } else if (!threadId.trimAscii().isEmpty()) {
                     threadId.trimAscii()
-                } else if (this.config.replyInThread == "enabled" && !normalizedMessageId.isEmpty()) {
+                } else if (cfg.replyInThread == "enabled" && !normalizedMessageId.isEmpty()) {
                     normalizedMessageId
                 } else {
                     ""
                 }
-                if (this.feishuThreadSessionEnabled(normalizedChatId, topicId)) {
+                if (this.feishuThreadSessionEnabled(cfg, normalizedChatId, topicId)) {
                     return Some(this.buildTopicConversationId(normalizedChatId, topicId))
                 }
-                let scope = this.config.groupSessionScope.trimAscii().toAsciiLower()
+                let scope = cfg.groupSessionScope.trimAscii().toAsciiLower()
                 if (scope == "group_sender") {
                     if (normalizedChatId.isEmpty() || normalizedSenderId.isEmpty()) {
                         return if (normalizedChatId.isEmpty()) { None } else { Some(normalizedChatId) }
@@ -1509,15 +1780,15 @@ public class FeishuAdapter <: ChannelAdapter {
                     }
                     return if (normalizedChatId.isEmpty()) { None } else { Some(normalizedChatId) }
                 }
-                if (!topicId.isEmpty() && this.config.groupSessionScope.trimAscii().toAsciiLower() == "group_topic") {
+                if (!topicId.isEmpty() && cfg.groupSessionScope.trimAscii().toAsciiLower() == "group_topic") {
                     return Some(this.buildTopicConversationId(normalizedChatId, topicId))
                 }
                 if (normalizedChatId.isEmpty()) { None } else { Some(normalizedChatId) }
         }
     }
 
-    private func feishuThreadSessionEnabled(chatId: String, topicId: String): Bool {
-        this.config.threadSession &&
+    private func feishuThreadSessionEnabled(cfg: FeishuConfig, chatId: String, topicId: String): Bool {
+        cfg.threadSession &&
             !chatId.trimAscii().isEmpty() &&
             !topicId.trimAscii().isEmpty() &&
             this.apiClient.isThreadCapableGroup(chatId.trimAscii())
@@ -1872,7 +2143,8 @@ public class FeishuAdapter <: ChannelAdapter {
         replyToMessageId!: Option<String> = None,
         replyInThread!: Bool = false
     ): Bool {
-        let result = this.sendTextToFeishuDetailed(
+        let result = this.sendTextToFeishuDetailedForAccount(
+            this.effectiveAccountId(),
             chatId,
             text,
             replyToMessageId: replyToMessageId,
@@ -1887,7 +2159,24 @@ public class FeishuAdapter <: ChannelAdapter {
         replyToMessageId!: Option<String> = None,
         replyInThread!: Bool = false
     ): String {
-        let result = this.sendTextToFeishuDetailed(
+        this.sendTextToFeishuWithMessageIdForAccount(
+            this.effectiveAccountId(),
+            chatId,
+            text,
+            replyToMessageId: replyToMessageId,
+            replyInThread: replyInThread
+        )
+    }
+
+    private func sendTextToFeishuWithMessageIdForAccount(
+        accountId: String,
+        chatId: String,
+        text: String,
+        replyToMessageId!: Option<String> = None,
+        replyInThread!: Bool = false
+    ): String {
+        let result = this.sendTextToFeishuDetailedForAccount(
+            accountId,
             chatId,
             text,
             replyToMessageId: replyToMessageId,
@@ -1896,7 +2185,8 @@ public class FeishuAdapter <: ChannelAdapter {
         result[1]
     }
 
-    private func sendTextToFeishuDetailed(
+    private func sendTextToFeishuDetailedForAccount(
+        accountId: String,
         chatId: String,
         text: String,
         replyToMessageId!: Option<String> = None,
@@ -1907,7 +2197,26 @@ public class FeishuAdapter <: ChannelAdapter {
             this.lastSendError = "chatId/text is empty"
             return (false, "")
         }
-        let token = this.getTenantAccessToken()
+        let cfg = this.feishuConfigForAccount(accountId)
+        let receiveIdType = this.resolveReceiveIdType(chatId)
+        let injected = this.apiClient.sendTextMessage(
+            gatewayFeishuNormalizeAccountId(accountId),
+            chatId,
+            receiveId,
+            receiveIdType,
+            text,
+            replyToMessageId,
+            replyInThread
+        )
+        if (injected.ok && !injected.messageId.isEmpty()) {
+            this.lastSendError = ""
+            return (true, injected.messageId)
+        }
+        if (injected.status != "not_configured") {
+            this.lastSendError = if (injected.error.isEmpty()) { injected.status } else { injected.error }
+            return (false, "")
+        }
+        let token = this.getTenantAccessTokenForConfig(accountId, cfg)
         if (token.isEmpty()) {
             this.lastSendError = "tenant_access_token is empty"
             return (false, "")
@@ -1925,12 +2234,12 @@ public class FeishuAdapter <: ChannelAdapter {
         let responseOpt = if (let Some(replyId) <- replyToMessageId) {
             let normalizedReplyId = replyId.trimAscii()
             if (normalizedReplyId.isEmpty()) {
-                this.sendCreateMessageRequest(chatId, receiveId, contentJson, header)
+                this.sendCreateMessageRequest(cfg, chatId, receiveId, contentJson, header)
             } else {
-                this.sendReplyMessageRequest(normalizedReplyId, contentJson, header, replyInThread: replyInThread)
+                this.sendReplyMessageRequest(cfg, normalizedReplyId, contentJson, header, replyInThread: replyInThread)
             }
         } else {
-            this.sendCreateMessageRequest(chatId, receiveId, contentJson, header)
+            this.sendCreateMessageRequest(cfg, chatId, receiveId, contentJson, header)
         }
         let responseRaw = match (responseOpt) {
             case Some(resp) => resp
@@ -1953,7 +2262,7 @@ public class FeishuAdapter <: ChannelAdapter {
         if (!this.shouldFallbackFromReplyFailure(responseRaw, replyToMessageId)) {
             return (false, "")
         }
-        let fallbackResponseOpt = this.sendCreateMessageRequest(chatId, receiveId, contentJson, header)
+        let fallbackResponseOpt = this.sendCreateMessageRequest(cfg, chatId, receiveId, contentJson, header)
         let fallbackResponseRaw = match (fallbackResponseOpt) {
             case Some(resp) => resp
             case None =>
@@ -1969,12 +2278,13 @@ public class FeishuAdapter <: ChannelAdapter {
     }
 
     private func sendCreateMessageRequest(
+        cfg: FeishuConfig,
         rawPeerId: String,
         receiveId: String,
         contentJson: String,
         header: HashMap<String, String>
     ): Option<String> {
-        let base = this.normalizeFeishuDomain()
+        let base = this.normalizeFeishuDomain(cfg)
         let receiveIdType = this.resolveReceiveIdType(rawPeerId)
         let url = "${base}/open-apis/im/v1/messages?receive_id_type=${receiveIdType}"
         let body = HashMap<String, JsonValue>()
@@ -1985,12 +2295,13 @@ public class FeishuAdapter <: ChannelAdapter {
     }
 
     private func sendReplyMessageRequest(
+        cfg: FeishuConfig,
         replyToMessageId: String,
         contentJson: String,
         header: HashMap<String, String>,
         replyInThread!: Bool = false
     ): Option<String> {
-        let base = this.normalizeFeishuDomain()
+        let base = this.normalizeFeishuDomain(cfg)
         let url = "${base}/open-apis/im/v1/messages/${replyToMessageId}/reply"
         let body = HashMap<String, JsonValue>()
         body["content"] = JsonString(contentJson)
@@ -2020,22 +2331,29 @@ public class FeishuAdapter <: ChannelAdapter {
      * 缓存策略：在过期前 60 秒刷新。
      */
     private func getTenantAccessToken(): String {
+        this.getTenantAccessTokenForConfig(this.effectiveAccountId(), this.config)
+    }
+
+    private func getTenantAccessTokenForConfig(accountId: String, cfg: FeishuConfig): String {
+        let normalizedAccountId = gatewayFeishuNormalizeAccountId(accountId)
         let nowNano = DateTime.now().toUnixTimeStamp().toNanoseconds()
-        if (!this.tenantAccessToken.isEmpty() && nowNano < this.tokenExpireAtNano - 60 * 1000000000) {
-            return this.tenantAccessToken
+        let cachedToken = this.tenantAccessTokens.get(normalizedAccountId) ?? ""
+        let cachedExpireAt = this.tenantAccessTokenExpiries.get(normalizedAccountId) ?? 0
+        if (!cachedToken.isEmpty() && nowNano < cachedExpireAt - 60 * 1000000000) {
+            return cachedToken
         }
-        if (this.config.appId.isEmpty() || this.config.appSecret.isEmpty()) {
+        if (cfg.appId.isEmpty() || cfg.appSecret.isEmpty()) {
             return ""
         }
 
-        let base = this.normalizeFeishuDomain()
+        let base = this.normalizeFeishuDomain(cfg)
         let url = "${base}/open-apis/auth/v3/tenant_access_token/internal"
         let header = HashMap<String, String>([
             ("Content-Type", "application/json; charset=utf-8")
         ])
         let body = HashMap<String, JsonValue>()
-        body["app_id"] = JsonString(this.config.appId)
-        body["app_secret"] = JsonString(this.config.appSecret)
+        body["app_id"] = JsonString(cfg.appId)
+        body["app_secret"] = JsonString(cfg.appSecret)
 
         let responseOpt = HttpUtils.post(url, header, JsonObject(body))
         let responseRaw = match (responseOpt) {
@@ -2050,9 +2368,9 @@ public class FeishuAdapter <: ChannelAdapter {
             let token = this.readStringField(jo, "tenant_access_token")
             let expire = this.readIntField(jo, "expire")
             if (!token.isEmpty()) {
-                this.tenantAccessToken = token
                 let ttlSeconds = if (expire > 0) { expire } else { 7200 }
-                this.tokenExpireAtNano = nowNano + ttlSeconds * 1000000000
+                this.tenantAccessTokens[normalizedAccountId] = token
+                this.tenantAccessTokenExpiries[normalizedAccountId] = nowNano + ttlSeconds * 1000000000
                 this.lastSendError = ""
             } else {
                 this.lastSendError = "tenant token api missing tenant_access_token"
@@ -2152,7 +2470,11 @@ public class FeishuAdapter <: ChannelAdapter {
     }
 
     private func normalizeFeishuDomain(): String {
-        var d = this.config.domain.trimAscii()
+        this.normalizeFeishuDomain(this.config)
+    }
+
+    private func normalizeFeishuDomain(cfg: FeishuConfig): String {
+        var d = cfg.domain.trimAscii()
         if (d.toAsciiLower() == "feishu") {
             d = "https://open.feishu.cn"
         } else if (d.toAsciiLower() == "lark") {

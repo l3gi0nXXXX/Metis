@@ -187,6 +187,19 @@ public func metisWorkspaceBootstrapFilenames(): Array<String> {
     ]
 }
 
+public func metisWorkspaceSupportedProfileFilenames(): Array<String> {
+    [
+        AGENTS_FILENAME,
+        SOUL_FILENAME,
+        TOOLS_FILENAME,
+        IDENTITY_FILENAME,
+        USER_FILENAME,
+        HEARTBEAT_FILENAME,
+        BOOTSTRAP_FILENAME,
+        MEMORY_FILENAME
+    ]
+}
+
 public func ensureMetisAgentWorkspace(workspaceDir: Path): MetisAgentWorkspaceBootstrapResult {
     metisEnsureDirectory(workspaceDir)
     let result = MetisAgentWorkspaceBootstrapResult()

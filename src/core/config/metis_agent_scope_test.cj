@@ -165,6 +165,7 @@ public class MetisAgentScopeTest {
         @Expect(scopeTestString(present, "authProfilesStatus"), "present")
         @Expect(scopeTestString(present, "legacyAuthStatus"), "present")
         @Expect(scopeTestArray(present, "risks").toJsonString().contains("legacy-auth-json"), true)
+        @Expect(present.get("profileCount").getOrThrow().asInt().getValue(), 1)
         @Expect(rendered.contains("fixture-api-key-value"), false)
         @Expect(rendered.contains("fixture-secret-value"), false)
     }

@@ -1,4 +1,4 @@
-import{f as e,r as t,u as n}from"./i18n.js";import{d as r,l as i}from"./format.js";import{R as a,c as o,l as s,z as c}from"./index.js";import{n as l,t as u}from"./channel-config-extras.js";function d(e,t){let n=e;for(let e of t){if(!n)return null;let t=c(n);if(t===`object`){let t=n.properties??{};if(typeof e==`string`&&t[e]){n=t[e];continue}let r=n.additionalProperties;if(typeof e==`string`&&r&&typeof r==`object`){n=r;continue}return null}if(t===`array`){if(typeof e!=`number`)return null;n=(Array.isArray(n.items)?n.items[0]:n.items)??null;continue}return null}return n}function f(e,t){return l(e,t)??{}}var p=[`groupPolicy`,`streamMode`,`dmPolicy`];function m(t){let n=p.flatMap(e=>e in t?[[e,t[e]]]:[]);return n.length===0?null:e`
+import{f as e,r as t,u as n}from"./i18n.js";import{d as r,l as i}from"./format.js";import{U as a,W as o,c as s,l as c}from"./index.js";import{n as l,t as u}from"./channel-config-extras.js";function d(e,t){let n=e;for(let e of t){if(!n)return null;let t=o(n);if(t===`object`){let t=n.properties??{};if(typeof e==`string`&&t[e]){n=t[e];continue}let r=n.additionalProperties;if(typeof e==`string`&&r&&typeof r==`object`){n=r;continue}return null}if(t===`array`){if(typeof e!=`number`)return null;n=(Array.isArray(n.items)?n.items[0]:n.items)??null;continue}return null}return n}function f(e,t){return l(e,t)??{}}var p=[`groupPolicy`,`streamMode`,`dmPolicy`];function m(t){let n=p.flatMap(e=>e in t?[[e,t[e]]]:[]);return n.length===0?null:e`
     <div class="status-list" style="margin-top: 12px;">
       ${n.map(([t,n])=>e`
           <div>
@@ -7,9 +7,9 @@ import{f as e,r as t,u as n}from"./i18n.js";import{d as r,l as i}from"./format.j
           </div>
         `)}
     </div>
-  `}function h(t){let n=o(t.schema),r=n.schema;if(!r)return e` <div class="callout danger">Schema unavailable. Use Raw.</div> `;let i=d(r,[`channels`,t.channelId]);if(!i)return e` <div class="callout danger">Channel config schema unavailable.</div> `;let a=f(t.configValue??{},t.channelId);return e`
+  `}function h(t){let n=s(t.schema),r=n.schema;if(!r)return e` <div class="callout danger">Schema unavailable. Use Raw.</div> `;let i=d(r,[`channels`,t.channelId]);if(!i)return e` <div class="callout danger">Channel config schema unavailable.</div> `;let a=f(t.configValue??{},t.channelId);return e`
     <div class="config-form">
-      ${s({schema:i,value:a,path:[`channels`,t.channelId],hints:t.uiHints,unsupported:new Set(n.unsupportedPaths),disabled:t.disabled,showLabel:!1,onPatch:t.onPatch})}
+      ${c({schema:i,value:a,path:[`channels`,t.channelId],hints:t.uiHints,unsupported:new Set(n.unsupportedPaths),disabled:t.disabled,showLabel:!1,onPatch:t.onPatch})}
     </div>
     ${m(a)}
   `}function g(n){let{channelId:r,props:i}=n,a=i.configSaving||i.configSchemaLoading;return e`

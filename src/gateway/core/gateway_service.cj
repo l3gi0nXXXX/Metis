@@ -4,7 +4,7 @@ import metis.core.{GatewayToolRuntimeContext, gatewaySpeechResolveDeliveryPrefs,
 import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager, MetisPaths, cliFindModelAuthChoicesForProvider, cliSetupVisibleModelProviders}
 import metis.core.skills.SkillsPrompt
 import metis.gateway.model.*
-import metis.gateway.session.{GatewaySessionContext, gatewayResolveSessionContext, gatewaySessionRequestFromInbound}
+import metis.gateway.session.{GatewaySessionContext, GatewaySessionRequest, gatewayResolveSessionContext, gatewaySessionRequestFromInbound}
 import metis.gateway.tools.{gatewayHandleNativeCommandLine, gatewayHandleSubagentsCommandLine}
 import magic.jsonable.*
 import magic.log.LogUtils
@@ -121,6 +121,79 @@ public class GatewayService {
         this.channelManager.processOnce({ message, accountId => this.handleInbound(message, accountId) })
     }
 
+    private func executeInboundSessionTurn(
+        user: GatewayUserSettings,
+        sessionUser: GatewayUserSettings,
+        request: GatewaySessionRequest,
+        message: InboundMessage,
+        effectiveAccountId: String,
+        telegramAutoVoiceReply: Bool
+    ): GatewayResolvedSessionTurnResult {
+        gatewayExecuteSessionRequestTurnForUser(
+            sessionUser,
+            request,
+            message.text,
+            deliver: true,
+            replyToMessageId: this.telegramReplyTargetOrMessageId(message),
+            replyInThread: message.replyInThread,
+            deliverHook: Some({ channelName, deliveryAccountId, peerId, text, replyToMessageId, replyInThread =>
+                let (effectiveReplyToMessageId, effectiveReplyInThread, degraded, policyReason) =
+                    gatewayApplyOutboundChannelPolicy(user, channelName, replyToMessageId, replyInThread)
+                if (degraded) {
+                    LogUtils.info("Gateway.send policy: channel=${channelName} peer=${peerId} degraded=true reason=${policyReason}")
+                }
+                let autoVoiceText = if (telegramAutoVoiceReply && this.telegramIsSilentReplyText(text)) {
+                    let fallback = this.telegramVoiceFallbackText(message)
+                    LogUtils.info("Telegram auto TTS reply fallback: silent_reply")
+                    fallback
+                } else {
+                    text
+                }
+                this.sendTextToPeerDetailed(
+                    channelName,
+                    peerId,
+                    if (telegramAutoVoiceReply) {
+                        this.telegramMaybeSynthesizeAutoVoiceReply(user, channelName, autoVoiceText)
+                    } else {
+                        autoVoiceText
+                    },
+                    replyToMessageId: effectiveReplyToMessageId,
+                    replyInThread: effectiveReplyInThread,
+                    accountId: if (!deliveryAccountId.trimAscii().isEmpty()) { deliveryAccountId } else { effectiveAccountId }
+                )
+            }),
+            transcriptHook: this.transcriptPublisher,
+            lifecycleHook: if (channelToString(message.channel) == "telegram") {
+                Some({ status: String =>
+                    this.maybeSendTelegramLifecycleSignal(user, message, effectiveAccountId, status)
+                })
+            } else {
+                None<(String) -> Unit>
+            }
+        )
+    }
+
+    private func logInboundTurnOutcome(conversationKey: String, message: InboundMessage, turn: GatewayResolvedSessionTurnResult): Unit {
+        let context = turn.context
+        let execution = turn.execution
+        LogUtils.info("Gateway.route: conversationKey=${conversationKey}, resolvedSession=${context.sessionKey}")
+        if (!context.matchedBy.isEmpty()) {
+            LogUtils.info(
+                "Gateway.route.resolve: channel=${context.channelName}, accountId=${context.accountId}, peer=${message.peerId}, matchedBy=${context.matchedBy}, agentId=${context.agentId}"
+            )
+        }
+        LogUtils.info("Gateway.reply: answerChars=${execution.answer.size}")
+        match (context.deliveryTarget) {
+            case Some(target) =>
+                LogUtils.info("Gateway.send: channel=${target.channelName} peer=${target.peerId} ok")
+            case None =>
+                LogUtils.info("Gateway.send: delivery target missing after execution")
+        }
+        if (!execution.delivered) {
+            LogUtils.error("Gateway.send: deliveryStatus=${execution.deliveryStatus} err=${execution.deliveryError}")
+        }
+    }
+
     private func handleInbound(message: InboundMessage, accountId: String): Unit {
         let effectiveAccountId = if (!message.accountId.trimAscii().isEmpty()) {
             message.accountId.trimAscii()
@@ -185,49 +258,41 @@ public class GatewayService {
         if (channelToString(message.channel) == "telegram") {
             this.maybeSendTelegramLifecycleSignal(user, message, effectiveAccountId, "typing")
         }
-        let turn = try {
-            gatewayExecuteSessionRequestTurnForUser(
-                sessionUser,
-                request,
-                message.text,
-                deliver: true,
-                replyToMessageId: this.telegramReplyTargetOrMessageId(message),
-                replyInThread: message.replyInThread,
-                deliverHook: Some({ channelName, deliveryAccountId, peerId, text, replyToMessageId, replyInThread =>
-                    let (effectiveReplyToMessageId, effectiveReplyInThread, degraded, policyReason) =
-                        gatewayApplyOutboundChannelPolicy(user, channelName, replyToMessageId, replyInThread)
-                    if (degraded) {
-                        LogUtils.info("Gateway.send policy: channel=${channelName} peer=${peerId} degraded=true reason=${policyReason}")
-                    }
-                    let autoVoiceText = if (telegramAutoVoiceReply && this.telegramIsSilentReplyText(text)) {
-                        let fallback = this.telegramVoiceFallbackText(message)
-                        LogUtils.info("Telegram auto TTS reply fallback: silent_reply")
-                        fallback
-                    } else {
-                        text
-                    }
-                    this.sendTextToPeerDetailed(
-                        channelName,
-                        peerId,
-                        if (telegramAutoVoiceReply) {
-                            this.telegramMaybeSynthesizeAutoVoiceReply(user, channelName, autoVoiceText)
-                        } else {
-                            autoVoiceText
-                        },
-                        replyToMessageId: effectiveReplyToMessageId,
-                        replyInThread: effectiveReplyInThread,
-                        accountId: if (!deliveryAccountId.trimAscii().isEmpty()) { deliveryAccountId } else { effectiveAccountId }
-                    )
-                }),
-                transcriptHook: this.transcriptPublisher,
-                lifecycleHook: if (channelToString(message.channel) == "telegram") {
-                    Some({ status: String =>
-                        this.maybeSendTelegramLifecycleSignal(user, message, effectiveAccountId, status)
-                    })
-                } else {
-                    None<(String) -> Unit>
-                }
+        let broadcastPlan = gatewayResolveAgentTeamBroadcastPlan(request)
+        if (broadcastPlan.enabled) {
+            LogUtils.info(
+                "Gateway.agentTeam.broadcast: team=${broadcastPlan.teamId}, turns=${broadcastPlan.turns.size}, agents=${String.join(broadcastPlan.selectedAgentIds, delimiter: ",")}"
             )
+            var delivered = false
+            for (broadcastTurn in broadcastPlan.turns) {
+                let turn = try {
+                    this.executeInboundSessionTurn(
+                        user,
+                        sessionUser,
+                        broadcastTurn.request,
+                        message,
+                        effectiveAccountId,
+                        telegramAutoVoiceReply
+                    )
+                } catch (e: Exception) {
+                    if (channelToString(message.channel) == "telegram") {
+                        this.handleTelegramInboundExecutionError(user, message, effectiveAccountId, e)
+                        return
+                    }
+                    throw e
+                }
+                this.logInboundTurnOutcome(conversationKey, message, turn)
+                if (turn.execution.delivered) {
+                    delivered = true
+                }
+            }
+            if (delivered && channelToString(message.channel) == "telegram") {
+                this.maybeAutoLabelTelegramTopic(user, message, effectiveAccountId)
+            }
+            return
+        }
+        let turn = try {
+            this.executeInboundSessionTurn(user, sessionUser, request, message, effectiveAccountId, telegramAutoVoiceReply)
         } catch (e: Exception) {
             if (channelToString(message.channel) == "telegram") {
                 this.handleTelegramInboundExecutionError(user, message, effectiveAccountId, e)
@@ -235,28 +300,13 @@ public class GatewayService {
             }
             throw e
         }
-        let context = turn.context
-        let execution = turn.execution
-        LogUtils.info("Gateway.route: conversationKey=${conversationKey}, resolvedSession=${context.sessionKey}")
-        if (!context.matchedBy.isEmpty()) {
-            LogUtils.info(
-                "Gateway.route.resolve: channel=${context.channelName}, accountId=${context.accountId}, peer=${message.peerId}, matchedBy=${context.matchedBy}, agentId=${context.agentId}"
-            )
-        }
-        LogUtils.info("Gateway.reply: answerChars=${execution.answer.size}")
-        match (context.deliveryTarget) {
-            case Some(target) =>
-                LogUtils.info("Gateway.send: channel=${target.channelName} peer=${target.peerId} ok")
-            case None =>
-                LogUtils.info("Gateway.send: delivery target missing after execution")
-        }
-        if (execution.delivered) {
+        this.logInboundTurnOutcome(conversationKey, message, turn)
+        if (turn.execution.delivered) {
             if (channelToString(message.channel) == "telegram") {
                 this.maybeAutoLabelTelegramTopic(user, message, effectiveAccountId)
             }
             return
         }
-        LogUtils.error("Gateway.send: deliveryStatus=${execution.deliveryStatus} err=${execution.deliveryError}")
     }
 
     private func telegramShouldAutoReplyVoice(user: GatewayUserSettings, message: InboundMessage): Bool {
@@ -529,12 +579,37 @@ public class GatewayService {
     }
 
     private func renderFeishuAuthCommand(accountId: String, user: GatewayUserSettings): String {
+        let auth = gatewayFeishuNativeAuthStart(this.feishuNativeAccountId(accountId, user), user)
+        let authStatus = this.feishuNativeJsonString(auth, "status")
+        let verificationUri = this.feishuNativeJsonString(auth, "verificationUri")
+        let userCode = this.feishuNativeJsonString(auth, "userCode")
+        let expiresInSeconds = this.feishuNativeJsonString(auth, "expiresInSeconds")
+        let message = this.feishuNativeJsonString(auth, "message")
         let lines = ArrayList<String>()
         lines.add("Metis Feishu auth")
         lines.add("accountId: ${this.feishuNativeAccountId(accountId, user)}")
         lines.add("app credentials: ${if (this.feishuNativeHasCredentials(accountId, user)) { "configured" } else { "missing appId/appSecret" }}")
-        lines.add("OAuth/user authorization: not completed by Metis native command.")
-        lines.add("Next step: configure Feishu app permissions in the Feishu developer console, then use Control UI or metis.json to bind accounts and agents.")
+        if (authStatus == "pending" || authStatus == "authorized" || authStatus == "authorization_pending") {
+            lines.add("OAuth/user authorization: ${authStatus}")
+        } else {
+            lines.add("OAuth/user authorization: not completed by Metis native command.")
+            if (!authStatus.isEmpty()) {
+                lines.add("authStatus: ${authStatus}")
+            }
+        }
+        if (!verificationUri.isEmpty()) {
+            lines.add("verificationUrl: ${verificationUri}")
+        }
+        if (!userCode.isEmpty()) {
+            lines.add("userCode: ${userCode}")
+        }
+        if (!expiresInSeconds.isEmpty()) {
+            lines.add("expiresInSeconds: ${expiresInSeconds}")
+        }
+        if (!message.isEmpty()) {
+            lines.add("message: ${message}")
+        }
+        lines.add("redaction: tokens and secrets are not displayed")
         String.join(lines.toArray(), delimiter: "\n")
     }
 
@@ -569,11 +644,10 @@ public class GatewayService {
     }
 
     private func feishuNativeHasCredentials(accountId: String, user: GatewayUserSettings): Bool {
-        if (!user.feishu.appId.trimAscii().isEmpty() && !user.feishu.appSecret.trimAscii().isEmpty()) {
-            return true
-        }
         let accountConfig = this.feishuNativeAccountConfig(accountId, user)
-        !this.feishuNativeJsonString(accountConfig, "appId").isEmpty() && !this.feishuNativeJsonString(accountConfig, "appSecret").isEmpty()
+        let appId = this.feishuNativeJsonStringFallback(accountConfig, ["appId", "app_id"], user.feishu.appId)
+        let appSecret = this.feishuNativeJsonStringFallback(accountConfig, ["appSecret", "app_secret"], user.feishu.appSecret)
+        !appId.isEmpty() && !appSecret.isEmpty()
     }
 
     private func feishuNativeAccountConfig(accountId: String, user: GatewayUserSettings): JsonObject {
@@ -627,6 +701,16 @@ public class GatewayService {
             case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
             case None => ""
         }
+    }
+
+    private func feishuNativeJsonStringFallback(obj: JsonObject, keys: Array<String>, fallback: String): String {
+        for (key in keys) {
+            match (obj.get(key)) {
+                case Some(v) => try { return v.asString().getValue().trimAscii() } catch (_e: Exception) { () }
+                case None => ()
+            }
+        }
+        fallback.trimAscii()
     }
 
     private func feishuNativeJsonArray(obj: JsonObject, key: String): JsonArray {

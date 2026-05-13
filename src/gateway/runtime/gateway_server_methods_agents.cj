@@ -5,7 +5,7 @@ import magic.jsonable.*
 import metis.core.{gatewayMainRuntimeExtendedToolNames, gatewayMainRuntimeRequiredToolNames, missingRuntimeToolNames, resolveRuntimeToolPolicyFromRoot, runtimeToolPolicyReportToJson}
 import metis.core.config.{CliConfig, CliModelRuntimeStateManager, CliModelRuntimeStateRefreshResult, CliSettingManager, MetisAgentScope, MetisConfigManager, MetisPaths, GatewayUserSettings}
 import metis.core.memory.MemoryRuntimeRegistry
-import metis.core.prompting.{MetisAgentWorkspaceBootstrapResult, ensureMetisAgentWorkspace, metisWorkspaceBootstrapFilenames, metisWorkspaceSafeRead, metisWorkspaceSafeWrite, validateMetisIdentityAvatar}
+import metis.core.prompting.{MetisAgentWorkspaceBootstrapResult, ensureMetisAgentWorkspace, metisWorkspaceBootstrapFilenames, metisWorkspaceSupportedProfileFilenames, metisWorkspaceSafeRead, metisWorkspaceSafeWrite, validateMetisIdentityAvatar}
 import metis.core.skills.resolveAgentSkillVisibility
 import metis.gateway.config.buildGatewayConfigFromUserSettings
 import metis.gateway.core.{GatewayAgentBindingApplyResult, GatewayAgentBindingConflict, GatewayAgentBindingRemoveResult, gatewayAgentTeamMigrationDryRun, gatewayApplyAgentRouteBindings, gatewayAuthorizedChatToolNames, gatewayBuildLegacyAgentRouteBinding, gatewayCorePromptRuntimeCapabilities, gatewayDefaultChatRuntimeHasUnifiedCoreTools, gatewayDefaultChatToolNames, gatewayMainRuntimePromptTemplateId, gatewayMainRuntimePromptVarianceFields, gatewayRemoveAgentRouteBindings, gatewaySanitizeAgentId}
@@ -1523,7 +1523,7 @@ private func gatewayAgentWorkspaceFilesListJson(request: GatewayRpcRequest): Gat
     let workspace = Path(workspaceText)
     let files = JsonArray([])
     let seen = ArrayList<String>()
-    for (name in metisWorkspaceBootstrapFilenames()) {
+    for (name in metisWorkspaceSupportedProfileFilenames()) {
         files.add(gatewayAgentWorkspaceFileRow(workspace, name))
         seen.add(name)
     }

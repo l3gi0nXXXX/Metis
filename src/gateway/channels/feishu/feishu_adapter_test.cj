@@ -6,7 +6,7 @@ import std.fs.{File, Path, exists, remove}
 import std.sync.Mutex
 import std.time.DateTime
 import std.unittest.testmacro.*
-import stdx.encoding.json.{JsonArray, JsonObject, JsonString}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 
 class FeishuQueueProbe {
     private let lock = Mutex()
@@ -87,6 +87,156 @@ public class FeishuAdapterTest {
             "}" +
             "}" +
             "}"
+    }
+
+    private func cardActionPayload(action: String, accountId!: String = "tenant-a"): String {
+        "{" +
+            "\"header\":{\"event_type\":\"card.action.trigger\",\"account_id\":\"${accountId}\"}," +
+            "\"event\":{" +
+            "\"operator\":{\"open_id\":\"ou_operator\"}," +
+            "\"context\":{\"open_message_id\":\"om_card\",\"open_chat_id\":\"oc_card\"}," +
+            "\"action\":{\"value\":{\"action\":\"${action}\",\"nonce\":\"n-1\"}}" +
+            "}" +
+            "}"
+    }
+
+    @TestCase
+    public func accountResolverMergesDefaultAndAccountOverridesWithRedaction(): Unit {
+        let accounts = JsonObject()
+        let tenant = JsonObject()
+        tenant.put("enabled", JsonBool(false))
+        tenant.put("appId", JsonString("tenant-app"))
+        tenant.put("receiveMode", JsonString("webhook"))
+        tenant.put("groupPolicy", JsonString("open"))
+        tenant.put("requireMention", JsonBool(false))
+        let accountGroups = JsonObject()
+        accountGroups.put("oc_account", JsonObject())
+        tenant.put("groups", accountGroups)
+        accounts.put("tenant-a", tenant)
+
+        let baseGroups = JsonObject()
+        baseGroups.put("oc_base", JsonObject())
+        let config = FeishuConfig(
+            enabled: true,
+            defaultAccount: "tenant-a",
+            appId: "base-app",
+            appSecret: "base-secret-never-visible",
+            accounts: Some(accounts),
+            receiveMode: "long_connect",
+            groups: Some(baseGroups),
+            groupPolicy: "allowlist",
+            requireMention: true
+        )
+
+        let resolved = gatewayFeishuResolveAccount(config, "tenant-a")
+        @Expect(resolved.accountId, "tenant-a")
+        @Expect(resolved.explicitAccount, true)
+        @Expect(resolved.config.enabled, false)
+        @Expect(resolved.config.appId, "tenant-app")
+        @Expect(resolved.config.appSecret, "base-secret-never-visible")
+        @Expect(resolved.config.receiveMode, "webhook")
+        @Expect(resolved.config.groupPolicy, "open")
+        @Expect(resolved.config.requireMention, false)
+        @Expect(resolved.config.groups.getOrThrow().getFields().contains("oc_account"), true)
+
+        let descriptions = gatewayFeishuDescribeAccounts(config)
+        let raw = descriptions.toJsonString()
+        @Expect(raw.contains("tenant-a"), true)
+        @Expect(raw.contains("base-secret-never-visible"), false)
+        @Expect(raw.contains("tenant-app"), false)
+        let firstDescription = descriptions.get("accounts").getOrThrow().asArray().getItems()[0].asObject()
+        @Expect(firstDescription.get("credentialSource").getOrThrow().asString().getValue(), "account")
+    }
+
+    @TestCase
+    public func disabledAccountOverrideDoesNotRunAdapterTransport(): Unit {
+        let accounts = JsonObject()
+        let disabled = JsonObject()
+        disabled.put("enabled", JsonBool(false))
+        accounts.put("tenant-off", disabled)
+        let adapter = FeishuAdapter(
+            config: FeishuConfig(enabled: true, accounts: Some(accounts)),
+            accountId: "tenant-off"
+        )
+        adapter.start()
+        adapter.simulateIncomingText("om_disabled", "oc_group", "ou_1", "hello")
+        @Expect(adapter.pullInbound().size, 0)
+    }
+
+    @TestCase
+    public func adapterUsesAccountScopedGroupPolicyForInboundGate(): Unit {
+        let accounts = JsonObject()
+        let tenant = JsonObject()
+        tenant.put("groupPolicy", JsonString("open"))
+        tenant.put("requireMention", JsonBool(false))
+        tenant.put("botOpenId", JsonString("bot-open"))
+        accounts.put("tenant-a", tenant)
+        let adapter = FeishuAdapter(
+            config: FeishuConfig(
+                enabled: true,
+                accounts: Some(accounts),
+                groupPolicy: "allowlist",
+                requireMention: true
+            ),
+            accountId: "tenant-a"
+        )
+        adapter.start()
+        @Expect(adapter.ingestWebhookPayload(
+            this.webhookPayload(
+                "om_account_gate",
+                "oc_not_in_base_allowlist",
+                "ou_1",
+                "{\\\"text\\\":\\\"plain group message\\\"}"
+            )
+        ).contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 1)
+        let gate = inbound[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("feishuGate").getOrThrow().asObject()
+        @Expect(gate.get("triggerAgent").getOrThrow().asBool().getValue(), true)
+        @Expect(gate.get("reason").getOrThrow().asString().getValue(), "accepted")
+    }
+
+    @TestCase
+    public func fakeClientRecordsInteractiveCardSendAndPatch(): Unit {
+        let client = FeishuFakeApiClient()
+        let adapter = FeishuAdapter(config: FeishuConfig(enabled: true), apiClient: client)
+        adapter.start()
+        let card = FeishuInteractiveCard(
+            title: "Metis Feishu auth",
+            text: "Open the verification URL and enter the user code.",
+            actionId: "feishu.auth.start"
+        )
+
+        let messageId = adapter.sendInteractiveCardToFeishu("oc_card", card)
+        @Expect(messageId, "fake-feishu-card-1")
+        @Expect(client.cardSendCount(), 1)
+        @Expect(client.sentCard(0).fallbackText().contains("Metis Feishu auth"), true)
+
+        let patched = adapter.patchInteractiveCardInFeishu(messageId, FeishuInteractiveCard(title: "Done", text: "Authorized"))
+        @Expect(patched, true)
+        @Expect(client.cardPatchCount(), 1)
+        @Expect(client.patchedCard(0).fallbackText().contains("Authorized"), true)
+    }
+
+    @TestCase
+    public func cardActionTriggerBecomesSafeSystemEvent(): Unit {
+        let adapter = FeishuAdapter(config: FeishuConfig(enabled: true), accountId: "tenant-a")
+        adapter.start()
+        @Expect(adapter.ingestWebhookPayload(this.cardActionPayload("feishu.auth.confirm")).contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 1)
+        @Expect(inbound[0].systemEvent, true)
+        @Expect(inbound[0].systemEventKind, "feishu.card_action")
+        @Expect(inbound[0].accountId, "tenant-a")
+        @Expect(inbound[0].peerId, "oc_card")
+        @Expect(inbound[0].text.contains("[feishu-card-action]"), true)
+        let action = inbound[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("feishuCardAction").getOrThrow().asObject()
+        @Expect(action.get("action").getOrThrow().asString().getValue(), "feishu.auth.confirm")
+        @Expect(action.get("operatorId").getOrThrow().asString().getValue(), "ou_operator")
     }
 
     @TestCase

@@ -444,6 +444,27 @@ private func teamScanAgentFilesAndPolicies(findings: JsonArray, summary: JsonObj
                 "Keep tool allow/deny restrictive and mark sandbox as pending until tool runtime consumes this policy.",
                 agentId: agentId)
         }
+        if (teamObject(raw, "heartbeat").size() > 0) {
+            teamAddFinding(findings, "agent-team-runtime-heartbeat-not-enforced", "warning", "agents.list[].heartbeat",
+                "heartbeat is parsed into agent scope but no per-agent heartbeat scheduler consumes it yet.",
+                "Operators may assume a configured heartbeat is actively running for this agent.",
+                "Treat heartbeat as declarative metadata until a Gateway heartbeat runtime enforces it.",
+                agentId: agentId)
+        }
+        if (teamObject(raw, "groupChat").size() > 0) {
+            teamAddFinding(findings, "agent-team-runtime-groupchat-partial", "warning", "agents.list[].groupChat",
+                "groupChat is parsed into agent scope but only alias and mention matching consume part of it today.",
+                "Unconsumed group chat settings can make routing behavior look broader than the runtime actually supports.",
+                "Keep groupChat settings limited to documented mention patterns until the full policy is enforced.",
+                agentId: agentId)
+        }
+        if (teamObject(raw, "tools").size() > 0) {
+            teamAddFinding(findings, "agent-team-runtime-tools-policy-active", "warning", "agents.list[].tools",
+                "tools is parsed into agent scope and applied by the Gateway turn tool filter, but external tool paths may not consume it.",
+                "Workspace TOOLS.md guidance and non-Gateway integrations are not an enforcement boundary.",
+                "Use explicit allow/deny lists and verify every entry point that can invoke tools for this agent.",
+                agentId: agentId)
+        }
     }
 }
 

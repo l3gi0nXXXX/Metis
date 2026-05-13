@@ -10,11 +10,17 @@ import type {
   ChannelsStatusSnapshot,
 } from "../types.ts";
 import {
+  addAgentTeamAlias,
   addAgentTeamMember,
   AGENT_TEAM_PROFILE_FILES,
   buildAgentTeamBindingPreview,
+  changeAgentTeamAlias,
   changeAgentTeamMember,
+  removeAgentTeamAlias,
   removeAgentTeamMember,
+  setAgentTeamBroadcastEnabled,
+  setAgentTeamBroadcastMember,
+  type AgentTeamAliasDraft,
   type AgentTeamBindingDraft,
   type AgentTeamBindingPreview,
   type AgentTeamEditorDraft,
@@ -70,6 +76,9 @@ export function renderAgentTeamsPanel(props: AgentTeamsPanelProps) {
   const teams = props.list?.teams ?? [];
   const draftMembers = safeMembersFromJson(props.draft.membersJson);
   const activeMembers = draftMembers.length > 0 ? draftMembers : (props.detail?.members ?? []);
+  const draftAliases = safeAliasesFromJson(props.draft.aliasesJson);
+  const activeAliases = draftAliases.length > 0 ? draftAliases : teamAliases(props.detail);
+  const activeBroadcast = safeBroadcastFromJson(props.draft.broadcastJson, props.detail?.broadcast);
   const selectedTeamLabel = props.detail
     ? teamDisplayName(props.detail)
     : props.selectedId
@@ -78,7 +87,14 @@ export function renderAgentTeamsPanel(props: AgentTeamsPanelProps) {
   return html`
     <section class="grid grid-cols-2">
       ${renderTeamsList(props, teams)}
-      ${renderTeamEditor(props, selectedTeamLabel, draftMembers, activeMembers)}
+      ${renderTeamEditor(
+        props,
+        selectedTeamLabel,
+        draftMembers,
+        activeMembers,
+        activeAliases,
+        activeBroadcast,
+      )}
     </section>
 
     <section class="grid grid-cols-2" style="margin-top: 16px;">
@@ -132,12 +148,14 @@ function renderTeamsList(props: AgentTeamsPanelProps, teams: AgentTeam[]) {
                     <div class="list-main">
                       <div class="list-title">${teamDisplayName(team)}</div>
                       <div class="list-sub">
-                        ${team.members?.length ?? 0} members · default
+                        ${formatCount(team.members?.length ?? 0, "member")} ·
+                        ${formatCount(team.aliases?.length ?? 0, "alias")} · default
                         ${memberDisplayName(team.defaultAgentId, team.members ?? [])}
                       </div>
                     </div>
                     <div class="list-meta">
-                      <span class="badge">${team.bindings?.length ?? 0} bindings</span>
+                      <span class="badge">${formatCount(team.bindings?.length ?? 0, "binding")}</span>
+                      <span class="badge">${broadcastEnabled(team.broadcast) ? "broadcast on" : "broadcast off"}</span>
                     </div>
                   </button>
                 `,
@@ -153,11 +171,14 @@ function renderTeamEditor(
   selectedTeamLabel: string,
   draftMembers: AgentTeamMember[],
   activeMembers: AgentTeamMember[],
+  activeAliases: AgentTeamAliasDraft[],
+  activeBroadcast: Record<string, unknown>,
 ) {
   return html`
     <section class="card">
       <div class="card-title">${selectedTeamLabel}</div>
       <div class="card-sub">Create teams, edit members, and keep JSON metadata available for compatibility.</div>
+      ${renderTeamSummary(activeMembers, activeAliases, props.draft.bindingsJson, activeBroadcast)}
       <div class="grid grid-cols-2" style="margin-top: 14px;">
         <label class="field">
           <span>Team key</span>
@@ -224,6 +245,9 @@ function renderTeamEditor(
             </div>
           `}
 
+      ${renderAliasEditor(props, activeMembers)}
+      ${renderBroadcastEditor(props, activeMembers, activeBroadcast)}
+
       <details style="margin-top: 14px;">
         <summary class="muted">Advanced metadata JSON</summary>
         ${renderJsonField("Aliases JSON", props.draft.aliasesJson, (aliasesJson) =>
@@ -231,6 +255,9 @@ function renderTeamEditor(
         )}
         ${renderJsonField("Team bindings JSON", props.draft.bindingsJson, (bindingsJson) =>
           props.onDraftChange({ bindingsJson }),
+        )}
+        ${renderJsonField("Broadcast JSON", props.draft.broadcastJson, (broadcastJson) =>
+          props.onDraftChange({ broadcastJson }),
         )}
       </details>
 
@@ -306,6 +333,160 @@ function renderMemberRow(props: AgentTeamsPanelProps, member: AgentTeamMember, i
         >
           Remove
         </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderTeamSummary(
+  members: AgentTeamMember[],
+  aliases: AgentTeamAliasDraft[],
+  bindingsJson: string,
+  broadcast: Record<string, unknown>,
+) {
+  return html`
+    <div class="agents-overview-grid" style="margin-top: 14px;">
+      <div class="agent-kv">
+        <div class="label">Members</div>
+        <div>${formatCount(members.length, "member")}</div>
+      </div>
+      <div class="agent-kv">
+        <div class="label">Aliases</div>
+        <div>${formatCount(aliases.length, "alias")}</div>
+      </div>
+      <div class="agent-kv">
+        <div class="label">Bindings</div>
+        <div>${formatCount(safeJsonArrayLength(bindingsJson), "binding")}</div>
+      </div>
+      <div class="agent-kv">
+        <div class="label">Broadcast</div>
+        <div>${broadcastEnabled(broadcast) ? "Broadcast enabled" : "Broadcast disabled"}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderAliasEditor(props: AgentTeamsPanelProps, members: AgentTeamMember[]) {
+  const aliases = safeAliasesFromJson(props.draft.aliasesJson);
+  return html`
+    <div class="row" style="justify-content: space-between; margin-top: 16px;">
+      <div>
+        <div class="list-title">Aliases</div>
+        <div class="muted">Map mention text such as @writer or /agent writer to a member.</div>
+      </div>
+      <button
+        type="button"
+        class="btn btn--sm"
+        @click=${() => props.onDraftChange(addAgentTeamAlias(props.draft))}
+      >
+        Add Alias
+      </button>
+    </div>
+    ${aliases.length === 0
+      ? html`<div class="callout info" style="margin-top: 12px;">No aliases are configured.</div>`
+      : html`
+          <div class="list" style="margin-top: 12px;">
+            ${aliases.map((alias, index) => renderAliasRow(props, members, alias, index))}
+          </div>
+        `}
+  `;
+}
+
+function renderAliasRow(
+  props: AgentTeamsPanelProps,
+  members: AgentTeamMember[],
+  alias: AgentTeamAliasDraft,
+  index: number,
+) {
+  return html`
+    <div class="list-item">
+      <div class="list-main">
+        <div class="grid grid-cols-2">
+          <label class="field">
+            <span>Alias</span>
+            <input
+              .value=${alias.alias ?? ""}
+              placeholder="@writer"
+              @input=${(e: Event) =>
+                props.onDraftChange(changeAgentTeamAlias(props.draft, index, { alias: inputValue(e) }))}
+            />
+          </label>
+          <label class="field">
+            <span>Member</span>
+            <select
+              .value=${alias.agentId ?? ""}
+              @change=${(e: Event) =>
+                props.onDraftChange(changeAgentTeamAlias(props.draft, index, { agentId: selectValue(e) }))}
+            >
+              <option value="">Choose member</option>
+              ${members.map(
+                (member) =>
+                  html`<option value=${member.agentId}>${memberDisplayName(member.agentId, members)}</option>`,
+              )}
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="list-meta">
+        <button
+          type="button"
+          class="btn btn--sm btn--ghost"
+          @click=${() => props.onDraftChange(removeAgentTeamAlias(props.draft, index))}
+        >
+          Remove
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderBroadcastEditor(
+  props: AgentTeamsPanelProps,
+  members: AgentTeamMember[],
+  broadcast: Record<string, unknown>,
+) {
+  const enabled = broadcastEnabled(broadcast);
+  const selectedMembers = stringArrayFromUnknown(broadcast.members);
+  return html`
+    <div style="margin-top: 16px;">
+      <div class="row" style="justify-content: space-between; align-items: flex-start;">
+        <div>
+          <div class="list-title">Broadcast</div>
+          <div class="muted">Gateway persists this team fan-out plan; runtime fan-out remains a partial capability.</div>
+        </div>
+        <label class="row" style="gap: 8px;">
+          <input
+            type="checkbox"
+            ?checked=${enabled}
+            @change=${(e: Event) =>
+              props.onDraftChange(setAgentTeamBroadcastEnabled(props.draft, checkedValue(e)))}
+          />
+          <span>${enabled ? "Broadcast enabled" : "Broadcast disabled"}</span>
+        </label>
+      </div>
+      <div class="list" style="margin-top: 12px;">
+        ${members.map((member) => {
+          const selected = selectedMembers.includes(member.agentId);
+          return html`
+            <label class="list-item" style="cursor: pointer;">
+              <div class="list-main">
+                <div class="list-title">${memberDisplayName(member.agentId, members)}</div>
+                <div class="list-sub">${selected ? "Included in broadcast" : "Not included"}</div>
+              </div>
+              <div class="list-meta">
+                <input
+                  type="checkbox"
+                  ?checked=${selected}
+                  ?disabled=${!enabled}
+                  @change=${(e: Event) =>
+                    props.onDraftChange(
+                      setAgentTeamBroadcastMember(props.draft, member.agentId, checkedValue(e)),
+                    )}
+                />
+              </div>
+            </label>
+          `;
+        })}
       </div>
     </div>
   `;
@@ -415,7 +596,7 @@ function renderWorkspaceProfileCard(props: AgentTeamsPanelProps, members: AgentT
   return html`
     <section class="card">
       <div class="card-title">Workspace Profiles</div>
-      <div class="card-sub">Edit SOUL, AGENTS, IDENTITY, USER, TOOLS, and MEMORY via agents.files RPC.</div>
+      <div class="card-sub">Edit Gateway-supported workspace files via agents.files RPC.</div>
       ${props.workspaceError
         ? html`<div class="callout danger" style="margin-top: 12px;">${props.workspaceError}</div>`
         : nothing}
@@ -584,6 +765,10 @@ function renderFeishuSettingsCard(props: AgentTeamsPanelProps) {
     <section class="card">
       <div class="card-title">Feishu Settings</div>
       <div class="card-sub">Non-secret channel settings and account runtime snapshot.</div>
+      <div class="callout info" style="margin-top: 12px;">
+        Team-agent parity is partial. This panel reports Gateway status and explicit missing
+        capabilities without implying OAuth, OAPI tools, or interactive cards are complete.
+      </div>
       <div class="agents-overview-grid" style="margin-top: 14px;">
         <div class="agent-kv">
           <div class="label">Default Account</div>
@@ -622,7 +807,66 @@ function renderFeishuSettingsCard(props: AgentTeamsPanelProps) {
               )}
             </div>
           `}
+      ${renderFeishuCapabilityGaps(props)}
     </section>
+  `;
+}
+
+function renderFeishuCapabilityGaps(props: AgentTeamsPanelProps) {
+  const status = objectValue(props.channelsSnapshot?.channels?.feishu);
+  const capabilities = stringArrayFromUnknown(status?.capabilities);
+  const authState = objectValue(status?.auth) ?? objectValue(status?.oauth);
+  const doctorState = objectValue(status?.doctor) ?? objectValue(status?.diagnostics);
+  const hasOauth = Boolean(authState) || capabilities.some((item) => item.includes("oauth"));
+  const hasOapi = capabilities.some((item) => item.includes("oapi") || item.includes("openapi"));
+  const hasDoctor = Boolean(doctorState) || capabilities.some((item) => item.includes("doctor"));
+  const rows = [
+    {
+      title: "Account status",
+      message: (props.channelsSnapshot?.channelAccounts?.feishu ?? []).length
+        ? "channels.status exposes redacted Feishu account state."
+        : "No Feishu accounts are visible in channels.status.",
+      status: (props.channelsSnapshot?.channelAccounts?.feishu ?? []).length ? "available" : "missing",
+    },
+    {
+      title: "OAuth",
+      message: hasOauth
+        ? "Gateway exposes Feishu auth status."
+        : "OAuth missing from the current status contract.",
+      status: hasOauth ? "available" : "missing",
+    },
+    {
+      title: "OAPI tools",
+      message: hasOapi
+        ? "Gateway advertises Feishu OAPI tool capability."
+        : "Docs/wiki/calendar/task/bitable OAPI tools are not advertised here.",
+      status: hasOapi ? "available" : "missing",
+    },
+    {
+      title: "Doctor",
+      message: hasDoctor
+        ? "Gateway exposes Feishu doctor diagnostics."
+        : "Doctor status is not exposed to this panel; use Gateway or /feishu doctor when available.",
+      status: hasDoctor ? "available" : "missing",
+    },
+  ];
+  return html`
+    <div style="margin-top: 14px;">
+      <div class="list-title">Capability gaps</div>
+      <div class="list" style="margin-top: 8px;">
+        ${rows.map(
+          (row) => html`
+            <div class="list-item">
+              <div class="list-main">
+                <div class="list-title">${row.title} ${row.status}</div>
+                <div class="list-sub">${row.message}</div>
+              </div>
+              <div class="list-meta"><span class="badge">${row.status}</span></div>
+            </div>
+          `,
+        )}
+      </div>
+    </div>
   `;
 }
 
@@ -708,6 +952,74 @@ function safeMembersFromJson(text: string): AgentTeamMember[] {
   } catch (_err) {
     return [];
   }
+}
+
+function safeAliasesFromJson(text: string): AgentTeamAliasDraft[] {
+  try {
+    const parsed = JSON.parse(text || "[]") as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .map((item) => objectValue(item))
+      .filter((item): item is Record<string, unknown> => Boolean(item))
+      .map((item) => ({
+        alias: stringOrEmpty(item.alias),
+        agentId: stringOrEmpty(item.agentId),
+      }))
+      .filter((item) => item.alias || item.agentId);
+  } catch (_err) {
+    return [];
+  }
+}
+
+function teamAliases(team: AgentTeam | null): AgentTeamAliasDraft[] {
+  if (!Array.isArray(team?.aliases)) {
+    return [];
+  }
+  return team.aliases
+    .map((item) => objectValue(item))
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .map((item) => ({
+      alias: stringOrEmpty(item.alias),
+      agentId: stringOrEmpty(item.agentId),
+    }))
+    .filter((item) => item.alias || item.agentId);
+}
+
+function safeBroadcastFromJson(
+  text: string,
+  fallback?: Record<string, unknown>,
+): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(text || "{}") as unknown;
+    return objectValue(parsed) ?? fallback ?? { enabled: false };
+  } catch (_err) {
+    return fallback ?? { enabled: false };
+  }
+}
+
+function broadcastEnabled(value: unknown): boolean {
+  return objectValue(value)?.enabled === true;
+}
+
+function safeJsonArrayLength(text: string): number {
+  try {
+    const parsed = JSON.parse(text || "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch (_err) {
+    return 0;
+  }
+}
+
+function formatCount(count: number, label: string): string {
+  return `${count} ${label}${count === 1 ? "" : "s"}`;
+}
+
+function stringArrayFromUnknown(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+    : [];
 }
 
 function resolveFeishuSettings(props: AgentTeamsPanelProps): {
@@ -804,4 +1116,8 @@ function selectValue(event: Event): string {
 
 function textareaValue(event: Event): string {
   return (event.target as HTMLTextAreaElement).value;
+}
+
+function checkedValue(event: Event): boolean {
+  return (event.target as HTMLInputElement).checked;
 }

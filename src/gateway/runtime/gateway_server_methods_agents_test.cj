@@ -972,6 +972,10 @@ public class GatewayServerMethodsAgentsTest {
             addParams.put("id", JsonString("pm"))
             let addResponse = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: addParams))).getOrThrow()
             @Expect(addResponse.ok, true)
+            let criticParams = JsonObject()
+            criticParams.put("id", JsonString("critic"))
+            let criticResponse = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: criticParams))).getOrThrow()
+            @Expect(criticResponse.ok, true)
 
             let listParams = JsonObject()
             listParams.put("agentId", JsonString("pm"))
@@ -980,18 +984,48 @@ public class GatewayServerMethodsAgentsTest {
             let listResult = listResponse.result.asObject()
             @Expect(agentsTestString(listResult, "workspace"), home.join("workspaces").join("pm").toString())
             let files = listResult.get("files").getOrThrow().asArray()
-            let soulRow = agentsTestFindObjectById(files, "SOUL.md")
-            @Expect(agentsTestString(soulRow, "name"), "SOUL.md")
-            @Expect(agentsTestBool(soulRow, "missing"), false)
+            for (name in ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md", "MEMORY.md"]) {
+                let row = agentsTestFindObjectById(files, name)
+                @Expect(agentsTestString(row, "name"), name)
+                if (name != "BOOTSTRAP.md") {
+                    @Expect(agentsTestBool(row, "missing"), false)
+                }
+            }
+            let bootstrapRow = agentsTestFindObjectById(files, "BOOTSTRAP.md")
+            @Expect(agentsTestBool(bootstrapRow, "missing"), true)
 
-            let setParams = JsonObject()
-            setParams.put("agentId", JsonString("pm"))
-            setParams.put("name", JsonString("SOUL.md"))
-            setParams.put("content", JsonString("# Soul\n\ncustom soul\n"))
-            let setResponse = handleGatewayAgentsFamily("agents.files.set", request: Some(GatewayRpcRequest("agents.files.set", params: setParams))).getOrThrow()
-            @Expect(setResponse.ok, true)
-            let file = setResponse.result.asObject().get("file").getOrThrow().asObject()
-            @Expect(agentsTestString(file, "content"), "# Soul\n\ncustom soul\n")
+            for (name in ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md", "MEMORY.md"]) {
+                let setParams = JsonObject()
+                setParams.put("agentId", JsonString("pm"))
+                setParams.put("name", JsonString(name))
+                setParams.put("content", JsonString("# ${name}\n\npm-only-${name}\n"))
+                let setResponse = handleGatewayAgentsFamily("agents.files.set", request: Some(GatewayRpcRequest("agents.files.set", params: setParams))).getOrThrow()
+                @Expect(setResponse.ok, true)
+                let file = setResponse.result.asObject().get("file").getOrThrow().asObject()
+                @Expect(agentsTestString(file, "content").contains("pm-only-${name}"), true)
+
+                let getParams = JsonObject()
+                getParams.put("agentId", JsonString("pm"))
+                getParams.put("name", JsonString(name))
+                let getResponse = handleGatewayAgentsFamily("agents.files.get", request: Some(GatewayRpcRequest("agents.files.get", params: getParams))).getOrThrow()
+                @Expect(getResponse.ok, true)
+                let readFile = getResponse.result.asObject().get("file").getOrThrow().asObject()
+                @Expect(agentsTestString(readFile, "content").contains("pm-only-${name}"), true)
+            }
+
+            let crossReadParams = JsonObject()
+            crossReadParams.put("agentId", JsonString("critic"))
+            crossReadParams.put("name", JsonString("../pm/SOUL.md"))
+            let crossRead = handleGatewayAgentsFamily("agents.files.get", request: Some(GatewayRpcRequest("agents.files.get", params: crossReadParams))).getOrThrow()
+            @Expect(crossRead.ok, false)
+
+            let crossWriteParams = JsonObject()
+            crossWriteParams.put("agentId", JsonString("critic"))
+            crossWriteParams.put("name", JsonString("../pm/SOUL.md"))
+            crossWriteParams.put("content", JsonString("overwrite"))
+            let crossWrite = handleGatewayAgentsFamily("agents.files.set", request: Some(GatewayRpcRequest("agents.files.set", params: crossWriteParams))).getOrThrow()
+            @Expect(crossWrite.ok, false)
+            @Expect(String.fromUtf8(File.readFrom(home.join("workspaces").join("pm").join("SOUL.md"))).contains("pm-only-SOUL.md"), true)
 
             let escapeParams = JsonObject()
             escapeParams.put("agentId", JsonString("pm"))

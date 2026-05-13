@@ -25,6 +25,12 @@ export type AgentTeamEditorDraft = {
   membersJson: string;
   aliasesJson: string;
   bindingsJson: string;
+  broadcastJson: string;
+};
+
+export type AgentTeamAliasDraft = {
+  alias: string;
+  agentId: string;
 };
 
 export type AgentTeamBindingDraft = {
@@ -92,11 +98,13 @@ export type AgentTeamsState = {
 };
 
 export const AGENT_TEAM_PROFILE_FILES = [
-  "SOUL.md",
   "AGENTS.md",
+  "SOUL.md",
+  "TOOLS.md",
   "IDENTITY.md",
   "USER.md",
-  "TOOLS.md",
+  "HEARTBEAT.md",
+  "BOOTSTRAP.md",
   "MEMORY.md",
 ] as const;
 
@@ -109,6 +117,7 @@ export function createEmptyAgentTeamDraft(): AgentTeamEditorDraft {
     membersJson: "[]",
     aliasesJson: "[]",
     bindingsJson: "[]",
+    broadcastJson: "{\n  \"enabled\": false\n}",
   };
 }
 
@@ -163,6 +172,7 @@ export function draftFromTeam(team: AgentTeam | null): AgentTeamEditorDraft {
     membersJson: stringifyPretty(team.members ?? []),
     aliasesJson: stringifyPretty(team.aliases ?? []),
     bindingsJson: stringifyPretty(team.bindings ?? []),
+    broadcastJson: stringifyPretty(team.broadcast ?? { enabled: false }),
   };
 }
 
@@ -211,6 +221,84 @@ export function removeAgentTeamMember(
   }
   members.splice(index, 1);
   return { ...draft, membersJson: stringifyPretty(members) };
+}
+
+export function aliasesFromDraft(draft: AgentTeamEditorDraft): AgentTeamAliasDraft[] {
+  return parseJsonArray<AgentTeamAliasDraft>(draft.aliasesJson, "aliases");
+}
+
+export function changeAgentTeamAlias(
+  draft: AgentTeamEditorDraft,
+  index: number,
+  patch: Partial<AgentTeamAliasDraft>,
+): AgentTeamEditorDraft {
+  const aliases = aliasesFromDraft(draft);
+  if (index < 0 || index >= aliases.length) {
+    return draft;
+  }
+  const current = aliases[index] ?? { alias: "", agentId: "" };
+  const next = {
+    ...current,
+    ...patch,
+  };
+  aliases[index] = {
+    alias: next.alias?.trim() ?? "",
+    agentId: next.agentId?.trim() ?? "",
+  };
+  return { ...draft, aliasesJson: stringifyPretty(aliases) };
+}
+
+export function addAgentTeamAlias(draft: AgentTeamEditorDraft): AgentTeamEditorDraft {
+  const aliases = aliasesFromDraft(draft);
+  aliases.push({ alias: "", agentId: "" });
+  return { ...draft, aliasesJson: stringifyPretty(aliases) };
+}
+
+export function removeAgentTeamAlias(
+  draft: AgentTeamEditorDraft,
+  index: number,
+): AgentTeamEditorDraft {
+  const aliases = aliasesFromDraft(draft);
+  if (index < 0 || index >= aliases.length) {
+    return draft;
+  }
+  aliases.splice(index, 1);
+  return { ...draft, aliasesJson: stringifyPretty(aliases) };
+}
+
+export function broadcastFromDraft(draft: AgentTeamEditorDraft): Record<string, unknown> {
+  return parseJsonObject(draft.broadcastJson, "broadcast");
+}
+
+export function setAgentTeamBroadcastEnabled(
+  draft: AgentTeamEditorDraft,
+  enabled: boolean,
+): AgentTeamEditorDraft {
+  const broadcast = broadcastFromDraft(draft);
+  broadcast.enabled = enabled;
+  return { ...draft, broadcastJson: stringifyPretty(broadcast) };
+}
+
+export function setAgentTeamBroadcastMember(
+  draft: AgentTeamEditorDraft,
+  agentId: string,
+  selected: boolean,
+): AgentTeamEditorDraft {
+  const normalized = agentId.trim();
+  if (!normalized) {
+    return draft;
+  }
+  const broadcast = broadcastFromDraft(draft);
+  const members = stringArrayValue(broadcast.members);
+  const hasMember = members.includes(normalized);
+  if (selected && !hasMember) {
+    members.push(normalized);
+  }
+  if (!selected && hasMember) {
+    members.splice(members.indexOf(normalized), 1);
+  }
+  broadcast.members = members;
+  return { ...draft, broadcastJson: stringifyPretty(broadcast) };
 }
 
 export async function loadAgentTeams(state: AgentTeamsState) {
@@ -621,6 +709,7 @@ function teamPayloadFromDraft(
   }
   payload.aliases = parseJsonArray(draft.aliasesJson, "aliases");
   payload.bindings = parseJsonArray(draft.bindingsJson, "bindings");
+  payload.broadcast = parseJsonObject(draft.broadcastJson, "broadcast");
   return payload;
 }
 
@@ -671,6 +760,12 @@ function splitCsv(text: string): string[] {
     .split(",")
     .map((part) => part.trim())
     .filter(Boolean);
+}
+
+function stringArrayValue(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+    : [];
 }
 
 function stringValue(value: string | undefined): string {

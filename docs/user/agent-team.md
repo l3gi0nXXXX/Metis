@@ -105,7 +105,7 @@ Deleting a team removes the team entry. It does not delete the member agent dire
 
 ## Edit Agent Workspace Files
 
-Each managed agent has a workspace with these bootstrapped files:
+Each managed agent has a workspace with these auto-created profile files:
 
 ```text
 AGENTS.md
@@ -116,6 +116,8 @@ USER.md
 HEARTBEAT.md
 MEMORY.md
 ```
+
+Metis also supports `BOOTSTRAP.md` as an explicit setup-state file. It is not auto-created, but `agents.files.list` returns it as a missing supported profile file until the operator creates it with `agents.files.set`.
 
 Use `agents.files.*` RPC to list, read, and write files safely inside the selected agent workspace:
 
@@ -134,6 +136,8 @@ Common file roles:
 | `IDENTITY.md` | Human-facing name, theme, avatar note, and identity details. |
 | `USER.md` | User preferences that are safe to share with this agent. Do not store credentials. |
 | `TOOLS.md` | Workspace-specific tool expectations, allowed workflows, and local caveats. |
+| `HEARTBEAT.md` | Lightweight status, recurring check notes, and continuity hints. |
+| `BOOTSTRAP.md` | Optional explicit setup state loaded for full non-IM prompts when present. |
 | `MEMORY.md` | Durable facts, goals, and decisions for future sessions. |
 
 The RPC path rejects absolute paths, `~`, URI schemes, and `..` traversal. Keep file names workspace-relative.
@@ -230,4 +234,5 @@ After editing `~/.metis/metis.json`, restart Gateway so the running process load
 - `metis agents bind` intentionally exposes the simple `channel[:account]` form. Use Gateway RPC JSON payloads for peer/thread/team/role binding matches.
 - Migration dry-run is read-only. It previews diagnostics and route-binding application but does not rewrite `session.dmScope`, model state, auth profiles, or workspace files automatically.
 - Feishu AgentTeam routing is not the same as the full OpenClaw Lark plugin surface. Message routing and dry-run diagnostics exist; plugin-level Feishu tools, resource downloads, native commands, and auth flows are still planned work unless a later release note says otherwise.
+- Source-backed AgentTeam parity tracking lives in `develop_steps/metis-agent-team-series-06-openclaw-lark-source-gap-and-landing-plan-2026-05-14.md`; that matrix is the baseline for Phase 0 and Phase 1 core hardening.
 - Live Telegram and Feishu operation still depends on the normal channel credentials and account setup. This guide does not require real Telegram or Feishu network access.

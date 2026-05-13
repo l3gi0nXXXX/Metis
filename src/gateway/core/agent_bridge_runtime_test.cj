@@ -158,6 +158,42 @@ public class AgentBridgeRuntimeTest {
     }
 
     @TestCase
+    public func gatewayDefaultChatRuntimeIncludesFeishuOapiToolsAndFiltersByName(): Unit {
+        let names = gatewayDefaultChatToolNames()
+        @Expect(names.contains("feishu_fetch_doc"), true)
+        @Expect(names.contains("feishu_drive_file"), true)
+        @Expect(names.contains("feishu_search_doc_wiki"), true)
+        @Expect(names.contains("feishu_bitable_app"), true)
+        @Expect(names.contains("feishu_calendar_event"), true)
+        @Expect(names.contains("feishu_task_task"), true)
+        @Expect(names.contains("feishu_sheet"), true)
+        @Expect(names.contains("feishu_chat"), true)
+        @Expect(names.contains("feishu_get_user"), true)
+        @Expect(names.contains("feishu_im_user_fetch_resource"), true)
+
+        let original = CliSettingManager.setting.gateway
+        try {
+            var updated = original
+            updated.tools.allow = []
+            updated.tools.deny = ["feishu_drive_file", "feishu_calendar_event"]
+            CliSettingManager.setting.gateway = updated
+            let filtered = gatewayPolicyFilteredChatToolNames()
+            @Expect(filtered.contains("feishu_fetch_doc"), true)
+            @Expect(filtered.contains("feishu_drive_file"), false)
+            @Expect(filtered.contains("feishu_calendar_event"), false)
+
+            updated.tools.allow = ["feishu_fetch_doc"]
+            updated.tools.deny = []
+            CliSettingManager.setting.gateway = updated
+            let allowed = gatewayPolicyFilteredChatToolNames()
+            @Expect(allowed.contains("feishu_fetch_doc"), true)
+            @Expect(allowed.contains("feishu_drive_file"), false)
+        } finally {
+            CliSettingManager.setting.gateway = original
+        }
+    }
+
+    @TestCase
     public func gatewayDefaultChatRuntimeNowIncludesSessionsSpawnTool(): Unit {
         let names = gatewayDefaultChatToolNames()
         var found = false

@@ -17,7 +17,7 @@ import metis.core.skills.SkillsPrompt
 import metis.core.skills.tryHandleSkillsCommand
 import metis.cron.{executeGatewayCronCommand, parseSlashCronLine}
 import metis.gateway.session.GatewayTurnContext
-import metis.gateway.tools.{GatewayCronToolset, GatewayFeishuMediaToolset, GatewayFSToolset, GatewayGatewayToolset, GatewayImageGenerationToolset, GatewayManagedSessionsToolset, GatewayMemoryToolset, GatewayMessageToolset, GatewayPlanToolset, GatewaySessionTranscriptToolset, GatewayShellToolset, GatewayTelegramMediaToolset, GatewayTtsToolset, GatewayVideoGenerationToolset, GatewayWeatherToolset, gatewayHandleNativeCommandLine, gatewayHandleSubagentsCommandLine}
+import metis.gateway.tools.{GatewayCronToolset, GatewayFeishuMediaToolset, GatewayFeishuOapiToolset, GatewayFSToolset, GatewayGatewayToolset, GatewayImageGenerationToolset, GatewayManagedSessionsToolset, GatewayMemoryToolset, GatewayMessageToolset, GatewayPlanToolset, GatewaySessionTranscriptToolset, GatewayShellToolset, GatewayTelegramMediaToolset, GatewayTtsToolset, GatewayVideoGenerationToolset, GatewayWeatherToolset, gatewayHandleNativeCommandLine, gatewayHandleSubagentsCommandLine}
 import metis.io.{PrintUtils, AnsiColor, WithColor}
 
 import std.collection.{HashMap, ArrayList, enumerate}
@@ -45,6 +45,7 @@ import magic.core.model.ChatModel
         GatewayImageGenerationToolset(),
         GatewayTelegramMediaToolset(),
         GatewayFeishuMediaToolset(),
+        GatewayFeishuOapiToolset(),
         GatewayManagedSessionsToolset(),
         GatewaySessionTranscriptToolset()
     ]
