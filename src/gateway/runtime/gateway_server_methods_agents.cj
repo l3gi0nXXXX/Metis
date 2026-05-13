@@ -8,7 +8,7 @@ import metis.core.memory.MemoryRuntimeRegistry
 import metis.core.prompting.{MetisAgentWorkspaceBootstrapResult, ensureMetisAgentWorkspace, metisWorkspaceBootstrapFilenames, metisWorkspaceSafeRead, metisWorkspaceSafeWrite, validateMetisIdentityAvatar}
 import metis.core.skills.resolveAgentSkillVisibility
 import metis.gateway.config.buildGatewayConfigFromUserSettings
-import metis.gateway.core.{GatewayAgentBindingApplyResult, GatewayAgentBindingConflict, GatewayAgentBindingRemoveResult, gatewayApplyAgentRouteBindings, gatewayAuthorizedChatToolNames, gatewayBuildLegacyAgentRouteBinding, gatewayCorePromptRuntimeCapabilities, gatewayDefaultChatRuntimeHasUnifiedCoreTools, gatewayDefaultChatToolNames, gatewayMainRuntimePromptTemplateId, gatewayMainRuntimePromptVarianceFields, gatewayRemoveAgentRouteBindings, gatewaySanitizeAgentId}
+import metis.gateway.core.{GatewayAgentBindingApplyResult, GatewayAgentBindingConflict, GatewayAgentBindingRemoveResult, gatewayAgentTeamMigrationDryRun, gatewayApplyAgentRouteBindings, gatewayAuthorizedChatToolNames, gatewayBuildLegacyAgentRouteBinding, gatewayCorePromptRuntimeCapabilities, gatewayDefaultChatRuntimeHasUnifiedCoreTools, gatewayDefaultChatToolNames, gatewayMainRuntimePromptTemplateId, gatewayMainRuntimePromptVarianceFields, gatewayRemoveAgentRouteBindings, gatewaySanitizeAgentId}
 import metis.gateway.session.{GatewayIngressSource, GatewaySessionRequest, gatewayBuildSessionRpcParams, gatewayIngressSourceFromString, gatewayResolveSessionContext, gatewaySessionRequestFromRpcParams}
 
 import std.collection.{ArrayList, HashMap}
@@ -3007,6 +3007,19 @@ public func handleGatewayAgentsFamily(method: String, request!: Option<GatewayRp
         }
         let response = gatewayAgentBindingsRemoveJson(requestValue)
         return Some(GatewayRpcResponse(response.ok, method, result: response.result, error: response.error))
+    }
+    if (method == "agents.migration.dryRun" || method == "agents.migration.dry-run") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let root = gatewayAgentScopeRootFromRequest(requestValue)
+        let proposedBindings = gatewayAgentJsonArray(requestValue.params, "proposedBindings")
+        let homeRoot = gatewayAgentScopePathParam(requestValue, "homeRoot", MetisPaths.homeRootReadOnly())
+        let defaultWorkspace = gatewayAgentScopePathParam(requestValue, "defaultWorkspace", MetisPaths.workspaceRootReadOnly())
+        let result = gatewayAgentTeamMigrationDryRun(root, proposedBindings: proposedBindings,
+            homeRoot: homeRoot, defaultWorkspace: defaultWorkspace)
+        return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "agents.add") {
         let requestValue = match (request) {

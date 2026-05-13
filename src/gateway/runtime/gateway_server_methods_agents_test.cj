@@ -1175,6 +1175,49 @@ public class GatewayServerMethodsAgentsTest {
     }
 
     @TestCase
+    public func agentTeamMigrationDryRunRpcReportsPreviewWithoutWritingConfig(): Unit {
+        withAgentsTempHome("metis-agent-team-migration-rpc-home", { home: Path =>
+            @Expect(agentsTestAddAgent("main").ok, false)
+            @Expect(agentsTestAddAgent("ops").ok, true)
+            let before = MetisConfigManager.rawConfig().getOrThrow().toJsonString()
+
+            let oldRoot = JsonObject()
+            let agents = JsonObject()
+            let list = JsonArray([])
+            let mainAgent = JsonObject()
+            mainAgent.put("id", JsonString("main"))
+            mainAgent.put("workspace", JsonString(home.join("legacy-main-workspace").toString()))
+            mainAgent.put("default", JsonBool(true))
+            list.add(mainAgent)
+            let reviewer = JsonObject()
+            reviewer.put("id", JsonString("reviewer"))
+            reviewer.put("workspace", JsonString(home.join("legacy-reviewer-workspace").toString()))
+            list.add(reviewer)
+            agents.put("list", list)
+            oldRoot.put("agents", agents)
+
+            let proposed = JsonArray([])
+            proposed.add(agentsTestRouteBinding("reviewer", "telegram", accountId: "bot-a"))
+            let params = JsonObject()
+            params.put("configRoot", oldRoot)
+            params.put("proposedBindings", proposed)
+            params.put("homeRoot", JsonString(home.toString()))
+            params.put("defaultWorkspace", JsonString(home.join("workspace").toString()))
+
+            let response = handleGatewayAgentsFamily("agents.migration.dryRun",
+                request: Some(GatewayRpcRequest("agents.migration.dryRun", params: params))).getOrThrow()
+            @Expect(response.ok, true)
+            let result = response.result.asObject()
+            @Expect(agentsTestString(result, "kind"), "agent-team-migration")
+            @Expect(agentsTestString(result, "mode"), "dry-run")
+            @Expect(agentsTestBool(result, "readOnly"), true)
+            let bindingApply = agentsTestObject(result, "bindingApply")
+            @Expect(bindingApply.get("added").getOrThrow().asArray().size(), 1)
+            @Expect(MetisConfigManager.rawConfig().getOrThrow().toJsonString(), before)
+        })
+    }
+
+    @TestCase
     public func agentTeamsCreateBindingConflictDoesNotWritePartialConfig(): Unit {
         withAgentsTempHome("metis-agent-teams-create-conflict-home", { home: Path =>
             @Expect(agentsTestAddAgent("ops").ok, true)

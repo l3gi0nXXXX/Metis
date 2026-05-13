@@ -241,6 +241,107 @@ public class CliAgentsTeamRpcSpec {
     }
 }
 
+public class CliAgentsMigrationRpcSpec {
+    public let method: String
+    public let params: JsonObject
+    public let json: Bool
+    public let action: String
+
+    public init(method: String, params: JsonObject, json: Bool, action: String) {
+        this.method = method
+        this.params = params
+        this.json = json
+        this.action = action
+    }
+}
+
+private func cliAgentsJsonObjectFromText(raw: String): Option<JsonObject> {
+    try {
+        return Some(JsonValue.fromStr(raw).asObject())
+    } catch (_: Exception) {
+        return None<JsonObject>
+    }
+}
+
+private func cliAgentsMigrationPutConfigRoot(params: JsonObject, raw: String): Bool {
+    match (cliAgentsJsonObjectFromText(raw)) {
+        case Some(obj) =>
+            params.put("configRoot", obj)
+            true
+        case None => false
+    }
+}
+
+private func cliAgentsMigrationAddBinding(bindings: ArrayList<JsonValue>, raw: String): Bool {
+    match (cliAgentsJsonObjectFromText(raw)) {
+        case Some(obj) =>
+            bindings.add(obj)
+            true
+        case None => false
+    }
+}
+
+public func cliBuildAgentsMigrationRpcSpec(args: Array<String>): Option<CliAgentsMigrationRpcSpec> {
+    if (args.size < 1 || args[0].trimAscii().toAsciiLower() != "migrate") {
+        return None<CliAgentsMigrationRpcSpec>
+    }
+    var json = false
+    var dryRun = false
+    let params = JsonObject()
+    let proposedBindings = ArrayList<JsonValue>()
+    var i: Int64 = 1
+    while (i < args.size) {
+        let token = args[i].trimAscii()
+        let low = token.toAsciiLower()
+        if (low == "--json") {
+            json = true
+            i += 1
+            continue
+        }
+        if (low == "--dry-run" || low == "dry-run") {
+            dryRun = true
+            i += 1
+            continue
+        }
+        if (low == "--config-json") {
+            if (i + 1 >= args.size || !cliAgentsMigrationPutConfigRoot(params, args[i + 1])) {
+                return None<CliAgentsMigrationRpcSpec>
+            }
+            i += 2
+            continue
+        }
+        if (low == "--config" || low == "--config-file") {
+            if (i + 1 >= args.size) {
+                return None<CliAgentsMigrationRpcSpec>
+            }
+            try {
+                if (!cliAgentsMigrationPutConfigRoot(params, readFile(Path(args[i + 1].trimAscii())))) {
+                    return None<CliAgentsMigrationRpcSpec>
+                }
+            } catch (_: Exception) {
+                return None<CliAgentsMigrationRpcSpec>
+            }
+            i += 2
+            continue
+        }
+        if (low == "--binding-json" || low == "--proposed-binding") {
+            if (i + 1 >= args.size || !cliAgentsMigrationAddBinding(proposedBindings, args[i + 1])) {
+                return None<CliAgentsMigrationRpcSpec>
+            }
+            i += 2
+            continue
+        }
+        return None<CliAgentsMigrationRpcSpec>
+    }
+    if (!dryRun) {
+        return None<CliAgentsMigrationRpcSpec>
+    }
+    if (proposedBindings.size > 0) {
+        params.put("proposedBindings", JsonArray(proposedBindings))
+    }
+    Some(CliAgentsMigrationRpcSpec("agents.migration.dryRun", params, json, "dry-run"))
+}
+
 private func cliAgentsTeamMemberParam(raw: String): JsonObject {
     let parts = raw.split(":")
     let obj = JsonObject()
@@ -473,6 +574,58 @@ private func cliRunAgentsTeamFlow(args: Array<String>): Int64 {
         JsonObject()
     }
     printGatewayAgentTeamResult(spec.action, result)
+}
+
+private func printGatewayAgentMigrationDryRun(result: JsonObject): Int64 {
+    let findings = gatewayAgentsJsonArray(result, "findings")
+    let bindingApply = match (result.get("bindingApply")) {
+        case Some(v) =>
+            try { v.asObject() } catch (_: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    PrintUtils.printLine("AgentTeam migration dry-run")
+    PrintUtils.printLine("  mode: ${gatewayAgentsJsonString(result, "mode", "")}")
+    PrintUtils.printLine("  readOnly: true")
+    PrintUtils.printLine("  findings: ${findings.size()}")
+    PrintUtils.printLine("  binding added: ${gatewayAgentsJsonArray(bindingApply, "added").size()}")
+    PrintUtils.printLine("  binding updated: ${gatewayAgentsJsonArray(bindingApply, "updated").size()}")
+    PrintUtils.printLine("  binding skipped: ${gatewayAgentsJsonArray(bindingApply, "skipped").size()}")
+    PrintUtils.printLine("  binding conflicts: ${gatewayAgentsJsonArray(bindingApply, "conflicts").size()}")
+    CLI_EXIT_OK
+}
+
+private func cliRunAgentsMigrateFlow(args: Array<String>): Int64 {
+    if (args.size == 1 || args[1].trimAscii().toAsciiLower() == "help") {
+        return printLocalFlowUsage(
+            "agents migrate",
+            "Preview AgentTeam migration diagnostics and route binding changes without writing config",
+            [
+                "metis agents migrate --dry-run",
+                "metis agents migrate --dry-run --config ./legacy-metis.json --json",
+                "metis agents migrate --dry-run --binding-json '{\"type\":\"route\",\"agentId\":\"main\",\"match\":{\"channel\":\"telegram\",\"accountId\":\"bot-a\"}}'"
+            ],
+            "--dry-run [--config <path> | --config-json <json>] [--binding-json <json> ...] [--json]"
+        )
+    }
+    let spec = match (cliBuildAgentsMigrationRpcSpec(args)) {
+        case Some(v) => v
+        case None =>
+            printUnknownLocalSubcommand("agents migrate", firstArg(args[1..]), "--dry-run [--config <path> | --config-json <json>] [--binding-json <json> ...] [--json]")
+            return CLI_EXIT_USAGE_ERROR
+    }
+    let res = gatewayCliClient().call(spec.method, params: spec.params)
+    if (!res.ok) {
+        return printGatewayRpcFailure("agents", "metis agents migrate", res.error)
+    }
+    if (spec.json) {
+        return printJsonObject(res.toJson())
+    }
+    let result = try {
+        res.result.asObject()
+    } catch (_e: Exception) {
+        JsonObject()
+    }
+    printGatewayAgentMigrationDryRun(result)
 }
 
 private func printAgentCatalogRows(title: String, rows: JsonArray): Unit {
@@ -1487,16 +1640,20 @@ public func cliRunAgentsFlow(args: Array<String>): Int64 {
                 "metis agents unbind --agent reviewer --bind qq:default",
                 "metis agents team create --team content --template pm-writer-reviewer",
                 "metis agents team list --json",
+                "metis agents migrate --dry-run --json",
                 "metis agents add --agent reviewer --name Reviewer",
                 "metis agents set-identity --agent reviewer --name Reviewer --emoji 🔎",
                 "metis agents delete --agent reviewer",
                 "metis agents list --json"
             ],
-            "list [--json] | summary [--json] | health [--json] | capabilities [--json] | bindings [--agent <id>] [--json] | bind --agent <id> --bind <channel[:account]> [--bind ...] [--json] | unbind --agent <id> (--bind <channel[:account]> [--bind ...] | --all) [--json] | team list|get|create|update|delete [--team <id>] [--json] | add --agent <id> [--name <text>] [--workspace <path>] [--model <ref>] [--json] | set-identity --agent <id> [--name <text>] [--emoji <text>] [--theme <text>] [--avatar <path>] [--json] | delete --agent <id> [--json] | help"
+            "list [--json] | summary [--json] | health [--json] | capabilities [--json] | bindings [--agent <id>] [--json] | bind --agent <id> --bind <channel[:account]> [--bind ...] [--json] | unbind --agent <id> (--bind <channel[:account]> [--bind ...] | --all) [--json] | team list|get|create|update|delete [--team <id>] [--json] | migrate --dry-run [--json] | add --agent <id> [--name <text>] [--workspace <path>] [--model <ref>] [--json] | set-identity --agent <id> [--name <text>] [--emoji <text>] [--theme <text>] [--avatar <path>] [--json] | delete --agent <id> [--json] | help"
         )
     }
     if (sub == "team") {
         return cliRunAgentsTeamFlow(args)
+    }
+    if (sub == "migrate") {
+        return cliRunAgentsMigrateFlow(args)
     }
     var json = false
     var agentId = ""
@@ -1940,7 +2097,7 @@ public func cliRunAgentsFlow(args: Array<String>): Int64 {
         PrintUtils.printLine("Deleted agent: ${gatewayAgentsJsonString(result, "agentId", agentId)}")
         return CLI_EXIT_OK
     }
-    printUnknownLocalSubcommand("agents", sub, "list [--json] | summary [--json] | health [--json] | capabilities [--json] | bindings [--agent <id>] [--json] | bind --agent <id> --bind <channel[:account]> [--bind ...] [--json] | unbind --agent <id> (--bind <channel[:account]> [--bind ...] | --all) [--json] | add --agent <id> [--name <text>] [--workspace <path>] [--model <ref>] [--json] | set-identity --agent <id> [--name <text>] [--emoji <text>] [--theme <text>] [--avatar <path>] [--json] | delete --agent <id> [--json] | help")
+    printUnknownLocalSubcommand("agents", sub, "list [--json] | summary [--json] | health [--json] | capabilities [--json] | bindings [--agent <id>] [--json] | bind --agent <id> --bind <channel[:account]> [--bind ...] [--json] | unbind --agent <id> (--bind <channel[:account]> [--bind ...] | --all) [--json] | team list|get|create|update|delete [--team <id>] [--json] | migrate --dry-run [--json] | add --agent <id> [--name <text>] [--workspace <path>] [--model <ref>] [--json] | set-identity --agent <id> [--name <text>] [--emoji <text>] [--theme <text>] [--avatar <path>] [--json] | delete --agent <id> [--json] | help")
 }
 
 public func cliRunTasksFlow(args: Array<String>): Int64 {

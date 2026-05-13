@@ -49,13 +49,11 @@ metis agents set-identity --agent content-writer --name "Content Writer" --theme
 
 ## Create A Team
 
-Team creation currently uses Gateway RPC. There is no `metis agents team ...` CLI command yet.
-
 Create a PM/writer/reviewer team from the built-in template:
 
 ```bash
-metis gateway call agents.teams.create '{"id":"content","displayName":"Content Team","template":"pm-writer-reviewer"}'
-metis gateway call agents.teams.list
+metis agents team create --team content --name "Content Team" --template pm-writer-reviewer
+metis agents team list
 ```
 
 The template creates these member agents if they do not already exist:
@@ -75,6 +73,16 @@ metis gateway call agents.teams.create '{"id":"support","displayName":"Support T
 Inspect, update, or delete teams with RPC:
 
 ```bash
+metis agents team get --team content
+metis agents team update --team content --name "Content Ops Team"
+metis agents team delete --team content
+```
+
+The same operations are also available through Gateway RPC for automation:
+
+```bash
+metis gateway call agents.teams.create '{"id":"content","displayName":"Content Team","template":"pm-writer-reviewer"}'
+metis gateway call agents.teams.list
 metis gateway call agents.teams.get '{"id":"content"}'
 metis gateway call agents.teams.update '{"id":"content","displayName":"Content Ops Team"}'
 metis gateway call agents.teams.delete '{"id":"content"}'
@@ -157,7 +165,34 @@ Unbind a route when needed:
 metis agents unbind --agent content-writer --bind telegram:bot-a
 ```
 
-The binding CLI currently covers channel/account routing only. More specific route matches such as peer, thread, team, or role matches are understood by the resolver but do not yet have a complete friendly CLI.
+The binding CLI covers channel/account routing. More specific route matches such as peer, thread, team, or role matches are supported by the resolver and by Gateway RPC payloads. Use `agents.teams.create`, `agents.teams.update`, or `agents.bind` through `metis gateway call` when you need those richer JSON binding objects.
+
+Team-level `bindings` are compiled into global runtime route bindings during team create/update. If a proposed route conflicts with an existing agent route, Metis rejects the team change without writing a partial config.
+
+Team aliases can route group messages by text mention patterns, for example `/agent writer` or `@writer`, when the channel inbound event reaches Gateway with mention metadata.
+
+## Migration Dry Run
+
+Preview AgentTeam diagnostics and proposed route-binding changes without writing config:
+
+```bash
+metis agents migrate --dry-run
+metis agents migrate --dry-run --json
+```
+
+To inspect an older config file without changing the active config:
+
+```bash
+metis agents migrate --dry-run --config ./legacy-metis.json --json
+```
+
+To preview route binding changes, pass one or more JSON binding objects:
+
+```bash
+metis agents migrate --dry-run --binding-json '{"type":"route","agentId":"content-writer","match":{"channel":"telegram","accountId":"bot-a"}}'
+```
+
+The underlying RPC is `agents.migration.dryRun`. It accepts `configRoot` and `proposedBindings` and returns a read-only report with doctor findings, summary, and binding apply preview.
 
 ## Recommended Session Scope
 
@@ -177,8 +212,6 @@ After editing `~/.metis/metis.json`, restart Gateway so the running process load
 
 ## Current Limits
 
-- `agents.teams.*` exists as Gateway RPC today. A dedicated `metis agents team ...` CLI and Control UI panel are planned in later phases.
-- `agentTeams[].bindings` is stored on the team object today, but it is not automatically compiled into global `bindings[]` runtime routing yet.
-- `agentTeams[].aliases` can update member `groupChat.mentionPatterns`, but IM inbound alias or mention based member selection depends on later runtime work.
-- `metis agents bind` currently exposes only `channel[:account]` binding. Use it for Telegram and Feishu account routing, and treat finer-grained team binding as a later phase.
-- This guide does not require real Telegram or Feishu network access. Configure credentials and accounts through the normal channel setup docs for live operation.
+- `metis agents bind` intentionally exposes the simple `channel[:account]` form. Use Gateway RPC JSON payloads for peer/thread/team/role binding matches.
+- Migration dry-run is read-only. It previews diagnostics and route-binding application but does not rewrite `session.dmScope`, model state, auth profiles, or workspace files automatically.
+- Live Telegram and Feishu operation still depends on the normal channel credentials and account setup. This guide does not require real Telegram or Feishu network access.

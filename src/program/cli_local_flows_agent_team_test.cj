@@ -82,4 +82,24 @@ public class CliLocalFlowsAgentTeamTest {
         @Expect(spec.json, true)
         @Expect(spec.params.size(), 0)
     }
+
+    @TestCase
+    public func buildsMigrationDryRunRpcParamsFromInlineConfigAndBinding(): Unit {
+        let spec = cliBuildAgentsMigrationRpcSpec([
+            "migrate",
+            "--dry-run",
+            "--config-json",
+            "{\"agents\":{\"list\":[{\"id\":\"main\",\"default\":true}]}}",
+            "--binding-json",
+            "{\"type\":\"route\",\"agentId\":\"main\",\"match\":{\"channel\":\"telegram\",\"accountId\":\"bot-a\"}}",
+            "--json"
+        ]).getOrThrow()
+
+        @Expect(spec.method, "agents.migration.dryRun")
+        @Expect(spec.json, true)
+        @Expect(spec.params.get("configRoot").getOrThrow().asObject().get("agents").isSome(), true)
+        let proposed = spec.params.get("proposedBindings").getOrThrow().asArray()
+        @Expect(proposed.size(), 1)
+        @Expect(proposed[0].asObject().get("agentId").getOrThrow().asString().getValue(), "main")
+    }
 }
