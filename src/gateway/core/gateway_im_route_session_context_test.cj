@@ -1,7 +1,10 @@
 package metis.gateway.core
 
+import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager, MetisProcessEnvironmentLock}
 import metis.gateway.model.{ChannelType, ChatType, InboundMessage}
 import metis.gateway.session.gatewaySessionRequestFromInbound
+import std.env.{getVariable, setVariable}
+import std.fs.{Directory, Path, remove}
 import std.time.DateTime
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
@@ -92,6 +95,35 @@ private func imRouteMediaContext(
     context.put("imRoute", route)
     media.put("context", context)
     media
+}
+
+private func imRouteSessionBindingForAccount(agentId: String, accountId: String): JsonObject {
+    imRouteSessionBinding(agentId, "telegram", "topic", "42", accountId: accountId)
+}
+
+private func withImRouteSessionTempHome<T>(label: String, block: (Path) -> T): T {
+    synchronized(MetisProcessEnvironmentLock) {
+        let home = Path("/tmp/metis-im-route-session-${label}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        try { remove(home, recursive: true) } catch (_: Exception) { () }
+        Directory.create(home, recursive: true)
+        let oldHome = getVariable("METIS_HOME")
+        setVariable("METIS_HOME", home.toString())
+        CliConfig.invalidatePathCache()
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+        try {
+            return block(home)
+        } finally {
+            match (oldHome) {
+                case Some(value) => setVariable("METIS_HOME", value)
+                case None => setVariable("METIS_HOME", "")
+            }
+            CliConfig.invalidatePathCache()
+            MetisConfigManager.invalidate()
+            CliSettingManager.invalidate()
+            try { remove(home, recursive: true) } catch (_: Exception) { () }
+        }
+    }
 }
 
 @Test
@@ -214,5 +246,81 @@ public class GatewayImRouteSessionContextTest {
         @Expect(resolved.agentId, "main")
         @Expect(resolved.sessionKey, "agent:main:telegram:group:-1001234567890")
         @Expect(resolved.matchedBy, "default")
+    }
+
+    @TestCase
+    public func sameThreadOnDifferentAccountsKeepsDistinctAgentSessionAndScope(): Unit {
+        withImRouteSessionTempHome("account-scope", { _home: Path =>
+            let root = imRouteSessionRoot([
+                imRouteSessionBindingForAccount("reviewer", "bot-a"),
+                imRouteSessionBindingForAccount("writer", "bot-b")
+            ])
+            let channels = JsonObject()
+            channels.put("telegram", imRouteSessionChannel("bot-a"))
+            let telegram = channels.get("telegram").getOrThrow().asObject()
+            telegram.put("accountIds", JsonArray([JsonString("bot-a"), JsonString("bot-b")]))
+            root.put("channels", channels)
+
+            let requestA = gatewaySessionRequestFromInbound(
+                InboundMessage(
+                    ChannelType.Telegram,
+                    "msg-a",
+                    "group:-1001234567890:topic:42",
+                    "8734062810",
+                    ChatType.Group,
+                    "same input",
+                    true,
+                    DateTime.now(),
+                    conversationId: Some("group:-1001234567890:topic:42"),
+                    threadId: Some("42"),
+                    accountId: "bot-a",
+                    mediaContext: imRouteMediaContext(
+                        "bot-a",
+                        "bot-a",
+                        "topic",
+                        "42",
+                        parentPeerKind: "group",
+                        parentPeerId: "-1001234567890"
+                    )
+                ),
+                routeRoot: root
+            )
+            let requestB = gatewaySessionRequestFromInbound(
+                InboundMessage(
+                    ChannelType.Telegram,
+                    "msg-b",
+                    "group:-1001234567890:topic:42",
+                    "8734062810",
+                    ChatType.Group,
+                    "same input",
+                    true,
+                    DateTime.now(),
+                    conversationId: Some("group:-1001234567890:topic:42"),
+                    threadId: Some("42"),
+                    accountId: "bot-b",
+                    mediaContext: imRouteMediaContext(
+                        "bot-b",
+                        "bot-a",
+                        "topic",
+                        "42",
+                        parentPeerKind: "group",
+                        parentPeerId: "-1001234567890"
+                    )
+                ),
+                routeRoot: root
+            )
+
+            let resolvedA = gatewayResolveSessionContextWithAgentRoute(requestA)
+            let resolvedB = gatewayResolveSessionContextWithAgentRoute(requestB)
+
+            @Expect(resolvedA.agentId, "reviewer")
+            @Expect(resolvedB.agentId, "writer")
+            @Expect(resolvedA.sessionKey != resolvedB.sessionKey, true)
+            @Expect(resolvedA.turnContext.workspaceDir != resolvedB.turnContext.workspaceDir, true)
+            @Expect(resolvedA.turnContext.modelsJsonPath != resolvedB.turnContext.modelsJsonPath, true)
+            @Expect(resolvedA.turnContext.authProfilesPath != resolvedB.turnContext.authProfilesPath, true)
+            @Expect(resolvedA.turnContext.accountId, "bot-a")
+            @Expect(resolvedB.turnContext.accountId, "bot-b")
+        })
     }
 }

@@ -1,7 +1,7 @@
 package metis.gateway.core
 
 import metis.core.config.{MetisAgentScope, MetisPaths}
-import metis.gateway.session.{GatewaySessionContext, GatewaySessionRequest, GatewayTurnContext, gatewayResolveDeliveryTarget, gatewayResolveSessionContext}
+import metis.gateway.session.{GatewaySessionContext, GatewaySessionRequest, GatewayTurnContext, gatewayResolveDeliveryTarget, gatewayResolveSessionContext, gatewayRuntimeRouteContextFromMediaContext}
 import stdx.encoding.json.{JsonObject, JsonString}
 
 private func gatewayImRouteScopeString(scope: JsonObject, key: String): String {
@@ -11,7 +11,18 @@ private func gatewayImRouteScopeString(scope: JsonObject, key: String): String {
     }
 }
 
-private func gatewayImRouteTurnRoute(route: GatewayAgentRoute): JsonObject {
+private func gatewayImRouteMergePolicyFields(target: JsonObject, raw: JsonObject): Unit {
+    for (key in ["systemPrompt", "skills", "tools", "groupPolicy", "policy", "runtimePolicy", "disableAudioPreflight"]) {
+        if (target.get(key).isNone()) {
+            match (raw.get(key)) {
+                case Some(value) => target.put(key, value)
+                case None => ()
+            }
+        }
+    }
+}
+
+private func gatewayImRouteTurnRoute(route: GatewayAgentRoute, rawRoute!: JsonObject = JsonObject()): JsonObject {
     let out = JsonObject()
     out.put("agentId", JsonString(route.agentId))
     out.put("channel", JsonString(route.channel))
@@ -25,6 +36,7 @@ private func gatewayImRouteTurnRoute(route: GatewayAgentRoute): JsonObject {
     if (!route.lastRoutePolicy.trimAscii().isEmpty()) {
         out.put("lastRoutePolicy", JsonString(route.lastRoutePolicy))
     }
+    gatewayImRouteMergePolicyFields(out, rawRoute)
     return out
 }
 
@@ -76,7 +88,7 @@ public func gatewayResolveSessionContextWithAgentRoute(request: GatewaySessionRe
         accountId: route.accountId,
         peerId: request.peerId,
         threadId: request.threadId,
-        route: gatewayImRouteTurnRoute(route),
+        route: gatewayImRouteTurnRoute(route, rawRoute: gatewayRuntimeRouteContextFromMediaContext(request.mediaContext)),
         agentScope: scope
     )
     GatewaySessionContext(

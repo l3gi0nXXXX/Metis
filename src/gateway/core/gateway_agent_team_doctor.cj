@@ -366,11 +366,32 @@ private func teamScanAgentFilesAndPolicies(findings: JsonArray, summary: JsonObj
                 "Add explicit per-agent memory collections or mark the sharing decision in config.",
                 agentId: agentId)
         }
+        if (teamObject(raw, "memorySearch").size() > 0) {
+            teamAddFinding(findings, "agent-team-runtime-memorysearch-not-enforced", "warning", "agents.list[].memorySearch",
+                "memorySearch is parsed into agent scope but is not fully enforced by Gateway turn memory tools.",
+                "Users may assume per-agent memory search boundaries are active when the runtime still depends on tool implementation details.",
+                "Treat memorySearch as diagnostic-only until the memory tool runtime consumes this policy.",
+                agentId: agentId)
+        }
         if (teamSubagentsWide(raw)) {
             teamAddFinding(findings, "agent-team-subagent-wide", "warning", "agents.list[].subagents",
                 "subagents is configured without allowAgents.",
                 "The agent can delegate more broadly than the AgentTeam boundary expects.",
                 "Set subagents.allowAgents to the intended member agents.",
+                agentId: agentId)
+        }
+        if (teamObject(raw, "subagents").size() > 0) {
+            teamAddFinding(findings, "agent-team-runtime-subagents-partial", "warning", "agents.list[].subagents",
+                "subagents is parsed into agent scope, but only the current managed-session tool path applies a boundary check.",
+                "Other delegation paths may not yet consume the per-agent subagents policy.",
+                "Keep subagents.allowAgents explicit and verify all delegation entry points before relying on it as a hard boundary.",
+                agentId: agentId)
+        }
+        if (teamObject(raw, "sandbox").size() > 0) {
+            teamAddFinding(findings, "agent-team-runtime-sandbox-not-enforced", "warning", "agents.list[].sandbox",
+                "sandbox is parsed into agent scope but is not enforced for Gateway turn tool execution.",
+                "Configured sandbox mode can be mistaken for an active per-agent execution boundary.",
+                "Keep tool allow/deny restrictive and mark sandbox as pending until tool runtime consumes this policy.",
                 agentId: agentId)
         }
     }

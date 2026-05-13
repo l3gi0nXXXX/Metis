@@ -303,6 +303,13 @@ private func runtimeToolPolicyScopes(root: JsonObject, agentId: String, provider
             runtimeToolAddProviderScopes(scopes, agentSandboxTools, provider, "agents.list[${runtimeToolNormalizeName(agentId)}].tools.sandbox.tools")
         case None => ()
     }
+    match (runtimeToolJsonObject(root, "runtimeTurn")) {
+        case Some(turn) =>
+            let turnTools = runtimeToolJsonObject(turn, "tools")
+            runtimeToolAddScope(scopes, turnTools, "runtimeTurn.tools")
+            runtimeToolAddProviderScopes(scopes, turnTools, provider, "runtimeTurn.tools")
+        case None => ()
+    }
     scopes
 }
 

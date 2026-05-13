@@ -1,7 +1,7 @@
 package metis.gateway.core
 
 import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager, MetisProcessEnvironmentLock}
-import metis.gateway.session.{GatewayIngressSource, GatewaySessionRequest, gatewayResolveSessionContext}
+import metis.gateway.session.{GatewayIngressSource, GatewaySessionRequest, GatewayTurnContext, gatewayResolveSessionContext}
 
 import std.collection.ArrayList
 import std.env.{getVariable, setVariable}
@@ -263,6 +263,28 @@ public class AgentBridgeRuntimeTest {
         } finally {
             CliSettingManager.setting.gateway = original
         }
+    }
+
+    @TestCase
+    public func gatewayTurnRouteToolPolicyNarrowsLiveToolManager(): Unit {
+        let route = JsonObject()
+        let tools = JsonObject()
+        tools.put("allow", JsonArray([JsonString("weather")]))
+        route.put("tools", tools)
+        let context = GatewayTurnContext(
+            "writer",
+            sessionKey: "agent:writer:telegram:group:-100",
+            channelName: "telegram",
+            accountId: "bot-a",
+            peerId: "group:-100",
+            route: route
+        )
+
+        let names = gatewayPolicyFilteredChatToolNamesForTurnContext(context)
+
+        @Expect(names.contains("weather"), true)
+        @Expect(names.contains("shellExecute"), false)
+        @Expect(names.contains("sessions_spawn"), false)
     }
 
     @TestCase

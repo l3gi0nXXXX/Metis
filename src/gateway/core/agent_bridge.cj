@@ -125,6 +125,102 @@ private func gatewayRuntimePolicyRoot(user: GatewayUserSettings): JsonObject {
     root
 }
 
+private func gatewayCloneJsonObject(obj: JsonObject): JsonObject {
+    try {
+        JsonValue.fromStr(obj.toJsonString()).asObject()
+    } catch (_: Exception) {
+        JsonObject()
+    }
+}
+
+private func gatewayRouteObject(route: JsonObject, key: String): Option<JsonObject> {
+    match (route.get(key)) {
+        case Some(value) =>
+            try { Some(value.asObject()) } catch (_: Exception) { None<JsonObject> }
+        case None => None<JsonObject>
+    }
+}
+
+private func gatewayRoutePolicyObject(route: JsonObject, key: String): Option<JsonObject> {
+    match (gatewayRouteObject(route, key)) {
+        case Some(value) => return Some(value)
+        case None => ()
+    }
+    for (container in ["groupPolicy", "policy", "runtimePolicy"]) {
+        match (gatewayRouteObject(route, container)) {
+            case Some(obj) =>
+                match (gatewayRouteObject(obj, key)) {
+                    case Some(value) => return Some(value)
+                    case None => ()
+                }
+            case None => ()
+        }
+    }
+    None<JsonObject>
+}
+
+private func gatewayRouteStringArray(route: JsonObject, key: String): Array<String> {
+    let out = ArrayList<String>()
+    match (route.get(key)) {
+        case Some(value) =>
+            try {
+                let arr = value.asArray()
+                for (i in 0..arr.size()) {
+                    try {
+                        let text = arr[i].asString().getValue().trimAscii()
+                        if (!text.isEmpty()) {
+                            out.add(text)
+                        }
+                    } catch (_: Exception) {
+                        ()
+                    }
+                }
+            } catch (_: Exception) {
+                ()
+            }
+        case None => ()
+    }
+    out.toArray()
+}
+
+private func gatewayRouteRuntimeSkillNames(turnContext: Option<GatewayTurnContext>): Array<String> {
+    match (turnContext) {
+        case Some(ctx) =>
+            let direct = gatewayRouteStringArray(ctx.route, "skills")
+            if (!direct.isEmpty()) {
+                return direct
+            }
+            for (container in ["groupPolicy", "policy", "runtimePolicy"]) {
+                match (gatewayRouteObject(ctx.route, container)) {
+                    case Some(obj) =>
+                        let names = gatewayRouteStringArray(obj, "skills")
+                        if (!names.isEmpty()) {
+                            return names
+                        }
+                    case None => ()
+                }
+            }
+        case None => ()
+    }
+    []
+}
+
+private func gatewayRuntimePolicyRootForTurn(user: GatewayUserSettings, turnContext: Option<GatewayTurnContext>): JsonObject {
+    let root = gatewayRuntimePolicyRoot(user)
+    match (turnContext) {
+        case Some(ctx) =>
+            match (gatewayRoutePolicyObject(ctx.route, "tools")) {
+                case Some(tools) =>
+                    let turn = JsonObject()
+                    turn.put("tools", gatewayCloneJsonObject(tools))
+                    root.put("runtimeTurn", turn)
+                case None => ()
+            }
+        case None => ()
+    }
+    root
+}
+
 private func gatewayToolPolicyState(user: GatewayUserSettings): (HashMap<String, Bool>, HashMap<String, Bool>, Bool) {
     let allow = HashMap<String, Bool>()
     let deny = HashMap<String, Bool>()
@@ -327,14 +423,25 @@ public func gatewayPolicyFilteredChatToolNames(agentId!: String = "", provider!:
     MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
 }
 
+public func gatewayPolicyFilteredChatToolNamesForTurnContext(
+    turnContext: GatewayTurnContext,
+    provider!: String = ""
+): Array<String> {
+    let user = CliSettingManager.readGatewaySettings()
+    let agent = GatewayP1ChatAgent()
+    gatewayApplyToolPolicy(agent, user, agentId: turnContext.agentId, provider: provider, turnContext: Some(turnContext))
+    MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
+}
+
 private func gatewayApplyToolPolicy(
     agent: GatewayP1ChatAgent,
     user: GatewayUserSettings,
     agentId!: String = "",
-    provider!: String = ""
+    provider!: String = "",
+    turnContext!: Option<GatewayTurnContext> = None<GatewayTurnContext>
 ): Array<String> {
     let inventory = MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
-    let policyRoot = gatewayRuntimePolicyRoot(user)
+    let policyRoot = gatewayRuntimePolicyRootForTurn(user, turnContext)
     let report = resolveRuntimeToolPolicyFromRoot(
         policyRoot,
         inventory,
@@ -418,6 +525,7 @@ private func buildGatewaySystemPrompt(
     let gatewayUser = CliSettingManager.readGatewaySettings()
     let effectiveAgentId = gatewayTurnEffectiveAgentId(agentId, turnContext)
     let workspacePath = gatewayTurnWorkspacePath(turnContext)
+    let runtimeSkillNames = gatewayRouteRuntimeSkillNames(turnContext)
     let params = MetisSystemPromptParams()
     params.workspaceDir = workspacePath.toString()
     params.toolNames = MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
@@ -436,7 +544,10 @@ private func buildGatewaySystemPrompt(
         }
     }
     params.runtimeInfo.nativeApprovalUiAvailable = nativeApprovalUiAvailable
-    params.skillsPrompt = SkillsPrompt.buildAvailableSkillsMetadataForPrompt(agentId: effectiveAgentId)
+    params.skillsPrompt = SkillsPrompt.buildAvailableSkillsMetadataForPrompt(
+        agentId: effectiveAgentId,
+        runtimeSkillNames: runtimeSkillNames
+    )
     let bootstrap = MetisWorkspaceBootstrap.resolveContextFilesDetailed(
         workspacePath,
         runtimeChannel: channelName
@@ -474,7 +585,7 @@ public func gatewayPolicyFilteredSystemPromptForTurnContext(
     gatewayEnsureTurnRuntimeState(turnContext)
     let gatewayUser = CliSettingManager.readGatewaySettings()
     let agent = GatewayP1ChatAgent()
-    gatewayApplyToolPolicy(agent, gatewayUser, agentId: turnContext.agentId, provider: modelName)
+    gatewayApplyToolPolicy(agent, gatewayUser, agentId: turnContext.agentId, provider: modelName, turnContext: Some(turnContext))
     buildGatewaySystemPrompt(
         agent,
         channelName,
@@ -634,7 +745,8 @@ public class AgentBridge {
                         return out
                     }
                 }
-                let forcedSkillCheck = parseForcedSkillFromSlash(trimmedPrompt, agentId: effectiveAgentId)
+                let forcedSkillCheck = parseForcedSkillFromSlash(trimmedPrompt, agentId: effectiveAgentId,
+                    runtimeSkillNames: gatewayRouteRuntimeSkillNames(turnContext))
                 if (forcedSkillCheck.isNone()) {
                     LogUtils.info("Gateway.reply: unknown slash command, bypass LLM and history")
                     return "这不是一个有效的命令。可用 /cron 管理定时任务，/subagents 管理后台 subagent，或使用 /skills list 查看可用技能，或使用 /<skillName> 参数（例如 /weather 上海）。"
@@ -661,8 +773,11 @@ public class AgentBridge {
             let channelBoundModelOpt = resolveChannelBoundModelName(channelName, sessionKey: conversationKey)
             allModels = applyChannelModelBinding(channelBoundModelOpt, allModels)
             let skillsEnabled = CliSettingManager.readSkillsEnabled()
-            let forcedSkillName: Option<String> = parseForcedSkillFromSlash(prompt, agentId: effectiveAgentId)
-            let decision = SkillsPrompt.decideForInput(prompt, forcedSkillName, agentId: effectiveAgentId)
+            let runtimeSkillNames = gatewayRouteRuntimeSkillNames(turnContext)
+            let forcedSkillName: Option<String> = parseForcedSkillFromSlash(prompt, agentId: effectiveAgentId,
+                runtimeSkillNames: runtimeSkillNames)
+            let decision = SkillsPrompt.decideForInput(prompt, forcedSkillName, agentId: effectiveAgentId,
+                runtimeSkillNames: runtimeSkillNames)
             let selectedSkillNameOpt = decision.selectedSkillName
             let enabledSelectedSkillNameOpt: Option<String> = match (selectedSkillNameOpt) {
                 case Some(skillName) => if (decision.selectedSkillEnabled) { Some(skillName) } else { None }
@@ -753,9 +868,10 @@ public class AgentBridge {
                     }
                     try {
                     let agent = GatewayP1ChatAgent()
-                    let invocationPolicyRoot = gatewayRuntimePolicyRoot(gatewayUser)
+                    let invocationPolicyRoot = gatewayRuntimePolicyRootForTurn(gatewayUser, turnContext)
                     let invocationPolicyInventory = MetisSystemPromptBuilder.collectToolNames(agent.toolManager.tools)
-                    let restrictedTools = gatewayApplyToolPolicy(agent, gatewayUser, agentId: effectiveAgentId, provider: currModel.fullName)
+                    let restrictedTools = gatewayApplyToolPolicy(agent, gatewayUser, agentId: effectiveAgentId,
+                        provider: currModel.fullName, turnContext: turnContext)
                     agent.model = currModel
                     let promptBuild = buildGatewaySystemPrompt(
                         agent,
@@ -1022,7 +1138,7 @@ public class AgentBridge {
         }
     }
 
-    private func parseForcedSkillFromSlash(prompt: String, agentId!: String = ""): Option<String> {
+    private func parseForcedSkillFromSlash(prompt: String, agentId!: String = "", runtimeSkillNames!: Array<String> = []): Option<String> {
         let t = prompt.trimAscii()
         if (!t.startsWith("/")) {
             return None
@@ -1039,7 +1155,7 @@ public class AgentBridge {
         if (cmd.isEmpty()) {
             return None
         }
-        if (SkillsPrompt.hasSkillName(cmd, agentId: agentId)) {
+        if (SkillsPrompt.hasSkillName(cmd, agentId: agentId, runtimeSkillNames: runtimeSkillNames)) {
             return Some(cmd)
         }
         None

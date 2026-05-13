@@ -344,12 +344,12 @@ public class SkillsPrompt {
      * Check whether a skill exists by exact name (case-insensitive).
      * Used by slash-style command routing, e.g. `/weather Shanghai`.
      */
-    public static func hasSkillName(skillName: String, agentId!: String = ""): Bool {
+    public static func hasSkillName(skillName: String, agentId!: String = "", runtimeSkillNames!: Array<String> = []): Bool {
         let name = skillName.trimAscii().toAsciiLower()
         if (name.isEmpty()) {
             return false
         }
-        let skills = userInvocableSkillsForAgent(ensureSkillsAll(), agentId)
+        let skills = userInvocableSkillsForAgent(ensureSkillsAll(), agentId, runtimeSkillNames: runtimeSkillNames)
         for (sk in skills) {
             if (sk.name.toAsciiLower() == name) {
                 return true
@@ -376,8 +376,8 @@ public class SkillsPrompt {
         out.toArray()
     }
 
-    public static func listSkillDescriptors(agentId!: String = ""): Array<SkillDescriptor> {
-        listSkillDescriptorsFromSkills(visibleSkillsForAgent(ensureSkillsAll(), agentId))
+    public static func listSkillDescriptors(agentId!: String = "", runtimeSkillNames!: Array<String> = []): Array<SkillDescriptor> {
+        listSkillDescriptorsFromSkills(visibleSkillsForAgent(ensureSkillsAll(), agentId, runtimeSkillNames: runtimeSkillNames))
     }
 
     public static func listAllSkillDescriptors(): Array<SkillDescriptor> {
@@ -454,7 +454,12 @@ public class SkillsPrompt {
         out.toArray()
     }
 
-    public static func decideForInput(input: String, forcedSkillName: Option<String>, agentId!: String = ""): SkillSelectionDecision {
+    public static func decideForInput(
+        input: String,
+        forcedSkillName: Option<String>,
+        agentId!: String = "",
+        runtimeSkillNames!: Array<String> = []
+    ): SkillSelectionDecision {
         let st = CliSettingManager.setting.skills
         if (!st.enabled) {
             return SkillSelectionDecision(None, false, false, "skills_disabled", "none")
@@ -465,7 +470,7 @@ public class SkillsPrompt {
                 if (name.isEmpty()) {
                     return SkillSelectionDecision(None, false, false, "forced_empty", "none")
                 }
-                if (!hasSkillName(name, agentId: agentId)) {
+                if (!hasSkillName(name, agentId: agentId, runtimeSkillNames: runtimeSkillNames)) {
                     return SkillSelectionDecision(None, false, true, "forced_unavailable", "none")
                 }
                 let enabled = isSkillEnabledByName(name)
@@ -473,7 +478,7 @@ public class SkillsPrompt {
             case None => ()
         }
 
-        match (selectSkillNameForInput(input, agentId: agentId)) {
+        match (selectSkillNameForInput(input, agentId: agentId, runtimeSkillNames: runtimeSkillNames)) {
             case Some(name) =>
                 let enabled = isSkillEnabledByName(name)
                 let confidence = if (input.toAsciiLower().contains(name.toAsciiLower())) {
@@ -487,12 +492,12 @@ public class SkillsPrompt {
         }
     }
 
-    public static func buildAvailableSkillsMetadataForPrompt(agentId!: String = ""): String {
+    public static func buildAvailableSkillsMetadataForPrompt(agentId!: String = "", runtimeSkillNames!: Array<String> = []): String {
         let st = CliSettingManager.setting.skills
         if (!st.enabled) {
             return ""
         }
-        let skills = listSkillDescriptors(agentId: agentId)
+        let skills = listSkillDescriptors(agentId: agentId, runtimeSkillNames: runtimeSkillNames)
         if (skills.isEmpty()) {
             return ""
         }
@@ -524,7 +529,7 @@ public class SkillsPrompt {
      * - Only explicit skill-name mentions are considered a match.
      * - Generic/semantic similarity must not trigger a pre-reply LLM classification pass.
      */
-    public static func selectSkillNameForInput(input: String, agentId!: String = ""): Option<String> {
+    public static func selectSkillNameForInput(input: String, agentId!: String = "", runtimeSkillNames!: Array<String> = []): Option<String> {
         let st = CliSettingManager.setting.skills
         if (!st.enabled) {
             LogUtils.info("Skills.select: skills disabled -> none")
@@ -537,7 +542,7 @@ public class SkillsPrompt {
             LogUtils.info("Skills.select: slash-like input -> none")
             return None
         }
-        let skills = modelInvocableSkillsForAgent(ensureSkillsAll(), agentId)
+        let skills = modelInvocableSkillsForAgent(ensureSkillsAll(), agentId, runtimeSkillNames: runtimeSkillNames)
         if (skills.isEmpty()) {
             LogUtils.info("Skills.select: no discovered skills -> none")
             return None
@@ -575,12 +580,12 @@ public class SkillsPrompt {
      * 只解析“当前输入最可能匹配的 skill name”（最佳努力）。
      * 根据 input 是否包含 skill 的 name（不区分大小写），选择最长匹配。
      */
-    public static func resolveSkillNameForInput(input: String, agentId!: String = ""): Option<String> {
+    public static func resolveSkillNameForInput(input: String, agentId!: String = "", runtimeSkillNames!: Array<String> = []): Option<String> {
         let st = CliSettingManager.setting.skills
         if (!st.enabled) {
             return None
         }
-        let skills = modelInvocableSkillsForAgent(ensureSkills(), agentId)
+        let skills = modelInvocableSkillsForAgent(ensureSkills(), agentId, runtimeSkillNames: runtimeSkillNames)
         if (skills.isEmpty()) {
             return None
         }
@@ -623,12 +628,12 @@ public class SkillsPrompt {
      * 返回“当前输入最佳匹配的 skill name”以及它在 metis.json 中是否 enabled。
      * 即使 `settings.skills.entries.<name>.enabled=false`，也会被视为“匹配到该 skill（但禁用）”。
      */
-    public static func resolveSkillMatchStateForInput(input: String, agentId!: String = ""): Option<SkillMatchState> {
+    public static func resolveSkillMatchStateForInput(input: String, agentId!: String = "", runtimeSkillNames!: Array<String> = []): Option<SkillMatchState> {
         let st = CliSettingManager.setting.skills
         if (!st.enabled) {
             return None
         }
-        let skills = modelInvocableSkillsForAgent(ensureSkillsAll(), agentId)
+        let skills = modelInvocableSkillsForAgent(ensureSkillsAll(), agentId, runtimeSkillNames: runtimeSkillNames)
         if (skills.isEmpty()) {
             return None
         }
@@ -752,9 +757,26 @@ public func resolveAgentSkillVisibility(agentId: String): SkillVisibilityResolut
     SkillVisibilityResolution(scope, names)
 }
 
-private func visibleSkillsForAgent(skills: ArrayList<LoadedSkill>, agentId: String): ArrayList<LoadedSkill> {
+private func runtimeSkillFilterSet(runtimeSkillNames: Array<String>): Option<HashMap<String, Bool>> {
+    if (runtimeSkillNames.isEmpty()) {
+        return None<HashMap<String, Bool>>
+    }
+    let allowed = HashMap<String, Bool>()
+    for (name in runtimeSkillNames) {
+        let normalized = normalizeVisibleSkillName(name)
+        if (!normalized.isEmpty()) {
+            allowed[normalized] = true
+        }
+    }
+    if (allowed.size == 0) {
+        return None<HashMap<String, Bool>>
+    }
+    Some(allowed)
+}
+
+private func visibleSkillsForAgent(skills: ArrayList<LoadedSkill>, agentId: String, runtimeSkillNames!: Array<String> = []): ArrayList<LoadedSkill> {
     let resolution = resolveAgentSkillVisibility(agentId)
-    match (resolution.names) {
+    var visible = match (resolution.names) {
         case Some(names) =>
             let allowed = HashMap<String, Bool>()
             for (name in names) {
@@ -772,10 +794,22 @@ private func visibleSkillsForAgent(skills: ArrayList<LoadedSkill>, agentId: Stri
             filtered
         case None => skills
     }
+    match (runtimeSkillFilterSet(runtimeSkillNames)) {
+        case Some(runtimeAllowed) =>
+            let filtered = ArrayList<LoadedSkill>()
+            for (sk in visible) {
+                if (runtimeAllowed.contains(normalizeVisibleSkillName(sk.name))) {
+                    filtered.add(sk)
+                }
+            }
+            visible = filtered
+        case None => ()
+    }
+    visible
 }
 
-private func userInvocableSkillsForAgent(skills: ArrayList<LoadedSkill>, agentId: String): ArrayList<LoadedSkill> {
-    let visible = visibleSkillsForAgent(skills, agentId)
+private func userInvocableSkillsForAgent(skills: ArrayList<LoadedSkill>, agentId: String, runtimeSkillNames!: Array<String> = []): ArrayList<LoadedSkill> {
+    let visible = visibleSkillsForAgent(skills, agentId, runtimeSkillNames: runtimeSkillNames)
     let filtered = ArrayList<LoadedSkill>()
     for (sk in visible) {
         if (sk.metadata.userInvocable) {
@@ -785,8 +819,8 @@ private func userInvocableSkillsForAgent(skills: ArrayList<LoadedSkill>, agentId
     filtered
 }
 
-private func modelInvocableSkillsForAgent(skills: ArrayList<LoadedSkill>, agentId: String): ArrayList<LoadedSkill> {
-    let visible = visibleSkillsForAgent(skills, agentId)
+private func modelInvocableSkillsForAgent(skills: ArrayList<LoadedSkill>, agentId: String, runtimeSkillNames!: Array<String> = []): ArrayList<LoadedSkill> {
+    let visible = visibleSkillsForAgent(skills, agentId, runtimeSkillNames: runtimeSkillNames)
     let filtered = ArrayList<LoadedSkill>()
     for (sk in visible) {
         if (!sk.metadata.disableModelInvocation) {

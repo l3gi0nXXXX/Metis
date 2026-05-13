@@ -130,6 +130,59 @@ public class SkillsRuntimeParityTest {
     }
 
     @TestCase
+    public func promptMetadataAppliesRuntimeSkillFilterAfterAgentFilter(): Unit {
+        let allowedDir = skillsWorkspaceDir().join("skills-runtime-route-allowed")
+        let deniedDir = skillsWorkspaceDir().join("skills-runtime-route-denied")
+        try {
+            clearTestSkill(allowedDir)
+            clearTestSkill(deniedDir)
+            Directory.create(allowedDir, recursive: true)
+            Directory.create(deniedDir, recursive: true)
+            File.writeTo(
+                allowedDir.join("SKILL.md"),
+                ("---\n" +
+                    "name: route-allowed\n" +
+                    "description: runtime route allowed skill\n" +
+                    "---\n# route-allowed\n").toArray()
+            )
+            File.writeTo(
+                deniedDir.join("SKILL.md"),
+                ("---\n" +
+                    "name: route-denied\n" +
+                    "description: runtime route denied skill\n" +
+                    "---\n# route-denied\n").toArray()
+            )
+            let root = JsonObject()
+            let agents = JsonObject()
+            let entry = JsonObject()
+            entry.put("id", JsonString("writer"))
+            entry.put("skills", JsonArray([JsonString("route-allowed"), JsonString("route-denied")]))
+            agents.put("list", JsonArray([entry]))
+            root.put("agents", agents)
+            File.writeTo(MetisConfigManager.configPath(), root.toJsonString().toArray())
+            MetisConfigManager.invalidate()
+            CliSettingManager.invalidate()
+            SkillsPrompt.invalidate()
+
+            let txt = SkillsPrompt.buildAvailableSkillsMetadataForPrompt(
+                agentId: "writer",
+                runtimeSkillNames: ["route-allowed"]
+            )
+            @Expect(txt.contains("route-allowed"), true)
+            @Expect(txt.contains("route-denied"), false)
+            @Expect(SkillsPrompt.decideForInput("please use route-denied", None<String>, agentId: "writer",
+                runtimeSkillNames: ["route-allowed"]).selectedSkillName.isNone(), true)
+        } finally {
+            clearTestSkill(allowedDir)
+            clearTestSkill(deniedDir)
+            try { remove(MetisConfigManager.configPath()) } catch (_: Exception) { () }
+            MetisConfigManager.invalidate()
+            CliSettingManager.invalidate()
+            SkillsPrompt.invalidate()
+        }
+    }
+
+    @TestCase
     public func metadataControlsSlashAndPromptVisibility(): Unit {
         let hiddenSlashDir = skillsWorkspaceDir().join("skills-runtime-hidden-slash")
         let hiddenPromptDir = skillsWorkspaceDir().join("skills-runtime-hidden-prompt")

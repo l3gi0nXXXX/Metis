@@ -37,13 +37,51 @@ private func gatewayRouteFromMediaContext(mediaContext: JsonObject): JsonObject 
         case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
         case None => JsonObject()
     }
-    match (context.get("imRoute")) {
+    let route = match (context.get("imRoute")) {
         case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
-        case None =>
-            match (context.get("telegramRoute")) {
-                case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
-                case None => JsonObject()
+        case None => JsonObject()
+    }
+    let channelRoute = gatewayChannelPolicyRouteFromContext(context)
+    gatewayMergeRoutePolicyFields(route, channelRoute)
+    if (route.size() > 0) {
+        return route
+    }
+    channelRoute
+}
+
+public func gatewayRuntimeRouteContextFromMediaContext(mediaContext: JsonObject): JsonObject {
+    gatewayRouteFromMediaContext(mediaContext)
+}
+
+private func gatewayChannelPolicyRouteFromContext(context: JsonObject): JsonObject {
+    match (context.get("imRoute")) {
+        case Some(_) => ()
+        case None => ()
+    }
+    for (key in ["telegramRoute", "feishuRoute", "larkRoute", "routePolicy", "groupPolicy"]) {
+        match (context.get(key)) {
+            case Some(v) =>
+                let obj = try { v.asObject() } catch (_e: Exception) { JsonObject() }
+                if (obj.size() > 0) {
+                    return obj
+                }
+            case None => ()
+        }
+    }
+    JsonObject()
+}
+
+private func gatewayMergeRoutePolicyFields(target: JsonObject, source: JsonObject): Unit {
+    if (source.size() == 0) {
+        return
+    }
+    for (key in ["agentId", "systemPrompt", "skills", "tools", "groupPolicy", "policy", "runtimePolicy", "disableAudioPreflight"]) {
+        if (target.get(key).isNone()) {
+            match (source.get(key)) {
+                case Some(value) => target.put(key, value)
+                case None => ()
             }
+        }
     }
 }
 

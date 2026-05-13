@@ -127,6 +127,9 @@ private func doctorRiskConfig(home: Path): JsonObject {
     let subagents = JsonObject()
     subagents.put("enabled", JsonBool(true))
     mainAgent.put("subagents", subagents)
+    let sandbox = JsonObject()
+    sandbox.put("mode", JsonString("workspace-write"))
+    mainAgent.put("sandbox", sandbox)
     list.add(mainAgent)
     list.add(doctorAgent("Ops Agent", sharedWorkspace, isDefault: true, agentDir: home.join("agents").join("ops-agent").toString()))
     agents.put("list", list)
@@ -188,6 +191,9 @@ public class GatewayAgentTeamDoctorTest {
         @Expect(doctorHasCode(findings, "agent-team-team-unknown-agent"), true)
         @Expect(doctorHasCode(findings, "agent-team-memory-cross-agent"), true)
         @Expect(doctorHasCode(findings, "agent-team-subagent-wide"), true)
+        @Expect(doctorHasCode(findings, "agent-team-runtime-memorysearch-not-enforced"), true)
+        @Expect(doctorHasCode(findings, "agent-team-runtime-subagents-partial"), true)
+        @Expect(doctorHasCode(findings, "agent-team-runtime-sandbox-not-enforced"), true)
     }
 
     @TestCase
