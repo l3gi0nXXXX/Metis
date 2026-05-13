@@ -227,6 +227,254 @@ private func gatewayAgentsJsonString(obj: JsonObject, key: String, defaultValue:
     }
 }
 
+public class CliAgentsTeamRpcSpec {
+    public let method: String
+    public let params: JsonObject
+    public let json: Bool
+    public let action: String
+
+    public init(method: String, params: JsonObject, json: Bool, action: String) {
+        this.method = method
+        this.params = params
+        this.json = json
+        this.action = action
+    }
+}
+
+private func cliAgentsTeamMemberParam(raw: String): JsonObject {
+    let parts = raw.split(":")
+    let obj = JsonObject()
+    if (parts.size > 0) {
+        obj.put("agentId", JsonString(parts[0].trimAscii()))
+    }
+    if (parts.size > 1 && !parts[1].trimAscii().isEmpty()) {
+        obj.put("role", JsonString(parts[1].trimAscii()))
+    }
+    if (parts.size > 2 && !parts[2].trimAscii().isEmpty()) {
+        obj.put("displayName", JsonString(parts[2].trimAscii()))
+    }
+    obj
+}
+
+private func cliAgentsTeamAliasParam(raw: String): JsonObject {
+    let parts = raw.split("=")
+    let obj = JsonObject()
+    if (parts.size > 0) {
+        obj.put("alias", JsonString(parts[0].trimAscii()))
+    }
+    if (parts.size > 1) {
+        obj.put("agentId", JsonString(parts[1].trimAscii()))
+    }
+    obj
+}
+
+public func cliBuildAgentsTeamRpcSpec(args: Array<String>): Option<CliAgentsTeamRpcSpec> {
+    if (args.size < 2 || args[0].trimAscii().toAsciiLower() != "team") {
+        return None<CliAgentsTeamRpcSpec>
+    }
+    let action = args[1].trimAscii().toAsciiLower()
+    var method = ""
+    if (action == "list") { method = "agents.teams.list" }
+    if (action == "get") { method = "agents.teams.get" }
+    if (action == "create") { method = "agents.teams.create" }
+    if (action == "update") { method = "agents.teams.update" }
+    if (action == "delete") { method = "agents.teams.delete" }
+    if (method.isEmpty()) {
+        return None<CliAgentsTeamRpcSpec>
+    }
+
+    var json = false
+    var teamId = ""
+    var name = ""
+    var template = ""
+    let members = ArrayList<JsonValue>()
+    let aliases = ArrayList<JsonValue>()
+    var i: Int64 = 2
+    while (i < args.size) {
+        let token = args[i].trimAscii()
+        let low = token.toAsciiLower()
+        if (low == "--json") {
+            json = true
+            i += 1
+            continue
+        }
+        if (low == "--team") {
+            if (i + 1 >= args.size) { return None<CliAgentsTeamRpcSpec> }
+            teamId = args[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        if (low == "--name") {
+            if (i + 1 >= args.size) { return None<CliAgentsTeamRpcSpec> }
+            name = args[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        if (low == "--template") {
+            if (i + 1 >= args.size) { return None<CliAgentsTeamRpcSpec> }
+            template = args[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        if (low == "--member") {
+            if (i + 1 >= args.size) { return None<CliAgentsTeamRpcSpec> }
+            members.add(cliAgentsTeamMemberParam(args[i + 1]))
+            i += 2
+            continue
+        }
+        if (low == "--alias") {
+            if (i + 1 >= args.size) { return None<CliAgentsTeamRpcSpec> }
+            aliases.add(cliAgentsTeamAliasParam(args[i + 1]))
+            i += 2
+            continue
+        }
+        return None<CliAgentsTeamRpcSpec>
+    }
+
+    let params = JsonObject()
+    if (!teamId.isEmpty()) { params.put("id", JsonString(teamId)) }
+    if (!name.isEmpty()) { params.put("displayName", JsonString(name)) }
+    if (!template.isEmpty()) { params.put("template", JsonString(template)) }
+    if (members.size > 0) { params.put("members", JsonArray(members)) }
+    if (aliases.size > 0) { params.put("aliases", JsonArray(aliases)) }
+    Some(CliAgentsTeamRpcSpec(method, params, json, action))
+}
+
+private func gatewayAgentsJsonArray(obj: JsonObject, key: String): JsonArray {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
+        case None => JsonArray([])
+    }
+}
+
+private func gatewayAgentsTeamValueSummary(value: JsonValue): String {
+    try {
+        return value.asString().getValue()
+    } catch (_e: Exception) {
+        ()
+    }
+    let obj = try {
+        value.asObject()
+    } catch (_e: Exception) {
+        return value.toJsonString()
+    }
+    let alias = gatewayAgentsJsonString(obj, "alias", "")
+    let agentId = gatewayAgentsJsonString(obj, "agentId", "")
+    if (!alias.isEmpty() && !agentId.isEmpty()) {
+        return "${alias}=${agentId}"
+    }
+    let role = gatewayAgentsJsonString(obj, "role", "")
+    let displayName = gatewayAgentsJsonString(obj, "displayName", "")
+    var text = agentId
+    if (!role.isEmpty()) { text += ":${role}" }
+    if (!displayName.isEmpty()) { text += " (${displayName})" }
+    if (!text.isEmpty()) {
+        return text
+    }
+    value.toJsonString()
+}
+
+private func gatewayAgentsTeamArraySummary(arr: JsonArray): String {
+    if (arr.size() == 0) {
+        return "(none)"
+    }
+    let out = ArrayList<String>()
+    for (idx in 0..arr.size()) {
+        out.add(gatewayAgentsTeamValueSummary(arr[idx]))
+    }
+    String.join(out.toArray(), delimiter: ", ")
+}
+
+private func printGatewayAgentTeam(team: JsonObject): Unit {
+    let id = gatewayAgentsJsonString(team, "id", gatewayAgentsJsonString(team, "teamId", ""))
+    let displayName = gatewayAgentsJsonString(team, "displayName", gatewayAgentsJsonString(team, "name", ""))
+    PrintUtils.printLine("  - team id: ${id}")
+    PrintUtils.printLine("    displayName: ${displayName}")
+    PrintUtils.printLine("    defaultAgentId: ${gatewayAgentsJsonString(team, "defaultAgentId", "")}")
+    PrintUtils.printLine("    members: ${gatewayAgentsTeamArraySummary(gatewayAgentsJsonArray(team, "members"))}")
+    PrintUtils.printLine("    aliases: ${gatewayAgentsTeamArraySummary(gatewayAgentsJsonArray(team, "aliases"))}")
+}
+
+private func printGatewayAgentTeamResult(action: String, result: JsonObject): Int64 {
+    if (action == "list") {
+        let teams = gatewayAgentsJsonArray(result, "teams")
+        PrintUtils.printLine("Agent teams: ${teams.size()}")
+        for (idx in 0..teams.size()) {
+            let team = try { teams[idx].asObject() } catch (_e: Exception) { JsonObject() }
+            printGatewayAgentTeam(team)
+        }
+        return CLI_EXIT_OK
+    }
+    let team = match (result.get("team")) {
+        case Some(v) =>
+            try { v.asObject() } catch (_e: Exception) { result }
+        case None => result
+    }
+    if (action == "delete") {
+        PrintUtils.printLine("Deleted agent team:")
+    } else if (action == "create") {
+        PrintUtils.printLine("Created agent team:")
+    } else if (action == "update") {
+        PrintUtils.printLine("Updated agent team:")
+    } else {
+        PrintUtils.printLine("Agent team:")
+    }
+    printGatewayAgentTeam(team)
+    CLI_EXIT_OK
+}
+
+private func cliAgentsTeamHasAnyUpdateField(params: JsonObject): Bool {
+    match (params.get("displayName")) { case Some(_) => return true case None => () }
+    match (params.get("members")) { case Some(_) => return true case None => () }
+    match (params.get("aliases")) { case Some(_) => return true case None => () }
+    false
+}
+
+private func cliRunAgentsTeamFlow(args: Array<String>): Int64 {
+    let action = if (args.size > 1) { args[1].trimAscii().toAsciiLower() } else { "" }
+    if (action.isEmpty() || action == "help") {
+        return printLocalFlowUsage(
+            "agents team",
+            "Manage AgentTeam definitions through the unified Gateway main runtime",
+            [
+                "metis agents team list",
+                "metis agents team get --team content",
+                "metis agents team create --team content --template pm-writer-reviewer",
+                "metis agents team update --team content --name Editorial --member content-writer:writer:Writer",
+                "metis agents team delete --team content",
+                "metis agents team list --json"
+            ],
+            "list [--json] | get --team <id> [--json] | create --team <id> [--name <displayName>] [--template pm-writer-reviewer] [--member <agentId[:role[:name]]>] [--alias <alias=agentId>] [--json] | update --team <id> [--name <displayName>] [--member <agentId[:role[:name]]>] [--alias <alias=agentId>] [--json] | delete --team <id> [--json]"
+        )
+    }
+    let spec = match (cliBuildAgentsTeamRpcSpec(args)) {
+        case Some(v) => v
+        case None =>
+            printUnknownLocalSubcommand("agents team", action, "list|get|create|update|delete [--team <id>] [--name <displayName>] [--template pm-writer-reviewer] [--member <agentId[:role[:name]]>] [--alias <alias=agentId>] [--json]")
+            return CLI_EXIT_USAGE_ERROR
+    }
+    if ((spec.action == "get" || spec.action == "create" || spec.action == "update" || spec.action == "delete") && gatewayAgentsJsonString(spec.params, "id", "").isEmpty()) {
+        return cliReturnMissingArgument("agents", "team ${spec.action}", "--team <id>")
+    }
+    if (spec.action == "update" && !cliAgentsTeamHasAnyUpdateField(spec.params)) {
+        return cliReturnMissingArgument("agents", "team update", "--name/--member/--alias")
+    }
+    let res = gatewayCliClient().call(spec.method, params: spec.params)
+    if (!res.ok) {
+        return printGatewayRpcFailure("agents", "metis agents team ${spec.action}", res.error)
+    }
+    if (spec.json) {
+        return printJsonObject(res.toJson())
+    }
+    let result = try {
+        res.result.asObject()
+    } catch (_e: Exception) {
+        JsonObject()
+    }
+    printGatewayAgentTeamResult(spec.action, result)
+}
+
 private func printAgentCatalogRows(title: String, rows: JsonArray): Unit {
     if (rows.size() == 0) {
         return
@@ -1237,13 +1485,18 @@ public func cliRunAgentsFlow(args: Array<String>): Int64 {
                 "metis agents bindings --agent reviewer",
                 "metis agents bind --agent reviewer --bind qq:default",
                 "metis agents unbind --agent reviewer --bind qq:default",
+                "metis agents team create --team content --template pm-writer-reviewer",
+                "metis agents team list --json",
                 "metis agents add --agent reviewer --name Reviewer",
                 "metis agents set-identity --agent reviewer --name Reviewer --emoji 🔎",
                 "metis agents delete --agent reviewer",
                 "metis agents list --json"
             ],
-            "list [--json] | summary [--json] | health [--json] | capabilities [--json] | bindings [--agent <id>] [--json] | bind --agent <id> --bind <channel[:account]> [--bind ...] [--json] | unbind --agent <id> (--bind <channel[:account]> [--bind ...] | --all) [--json] | add --agent <id> [--name <text>] [--workspace <path>] [--model <ref>] [--json] | set-identity --agent <id> [--name <text>] [--emoji <text>] [--theme <text>] [--avatar <path>] [--json] | delete --agent <id> [--json] | help"
+            "list [--json] | summary [--json] | health [--json] | capabilities [--json] | bindings [--agent <id>] [--json] | bind --agent <id> --bind <channel[:account]> [--bind ...] [--json] | unbind --agent <id> (--bind <channel[:account]> [--bind ...] | --all) [--json] | team list|get|create|update|delete [--team <id>] [--json] | add --agent <id> [--name <text>] [--workspace <path>] [--model <ref>] [--json] | set-identity --agent <id> [--name <text>] [--emoji <text>] [--theme <text>] [--avatar <path>] [--json] | delete --agent <id> [--json] | help"
         )
+    }
+    if (sub == "team") {
+        return cliRunAgentsTeamFlow(args)
     }
     var json = false
     var agentId = ""
