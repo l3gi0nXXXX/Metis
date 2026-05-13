@@ -82,6 +82,49 @@ public class GatewayConfigBuilderTest {
     }
 
     @TestCase
+    public func feishuTypedOpenClawParityConfigMapsIntoRuntimeConfig(): Unit {
+        var user = GatewayUserSettings()
+        user.feishu.enabled = true
+        user.feishu.defaultAccount = "tenant-a"
+        user.feishu.appId = "legacy-app"
+        user.feishu.appSecret = "legacy-secret"
+        user.feishu.threadSession = true
+        user.feishu.groupPolicy = "allowlist"
+        user.feishu.groupAllowFrom = ["oc_team"]
+        user.feishu.requireMention = true
+        user.feishu.allowBots = false
+        user.feishu.media.downloadEnabled = true
+        user.feishu.media.mediaMaxBytes = 1024
+        let groups = JsonObject()
+        let groupRule = JsonObject()
+        groupRule.put("requireMention", true.toJsonValue())
+        groups.put("oc_team", groupRule)
+        user.feishu.groups = Some(groups)
+        let accounts = JsonObject()
+        let tenantAccount = JsonObject()
+        tenantAccount.put("appId", JsonString("tenant-app"))
+        tenantAccount.put("appSecret", JsonString("tenant-secret"))
+        tenantAccount.put("enabled", true.toJsonValue())
+        accounts.put("tenant-a", tenantAccount)
+        user.feishu.accounts = Some(accounts)
+
+        let (feishu, _, _) = mergeGatewayUserSettings(user)
+        @Expect(feishu.accountId, "tenant-a")
+        @Expect(feishu.defaultAccount, "tenant-a")
+        @Expect(feishu.appId, "legacy-app")
+        @Expect(feishu.appSecret, "legacy-secret")
+        @Expect(feishu.threadSession, true)
+        @Expect(feishu.groupPolicy, "allowlist")
+        @Expect(feishu.groupAllowFrom[0], "oc_team")
+        @Expect(feishu.requireMention, true)
+        @Expect(feishu.allowBots, false)
+        @Expect(feishu.groups.isSome(), true)
+        @Expect(feishu.accounts.isSome(), true)
+        @Expect(feishu.media.downloadEnabled, true)
+        @Expect(feishu.media.mediaMaxBytes, 1024)
+    }
+
+    @TestCase
     public func pluginConfigPresenceUsesSharedGatewayConfigHelper(): Unit {
         var user = GatewayUserSettings()
         let root = JsonObject(HashMap<String, JsonValue>())

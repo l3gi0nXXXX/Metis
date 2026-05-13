@@ -271,12 +271,21 @@ private func mergeFeishu(fs: FeishuUserSettings): FeishuConfig {
     }
     let replyInThreadRaw = fs.replyInThread.toAsciiLower()
     let replyInThread = if (replyInThreadRaw == "enabled") { "enabled" } else { "disabled" }
+    let defaultAccount = if (fs.defaultAccount.trimAscii().isEmpty()) { "default" } else { fs.defaultAccount.trimAscii() }
+    let groupPolicy = match (fs.groupPolicy.trimAscii().toAsciiLower()) {
+        case "open" => "open"
+        case "disabled" => "disabled"
+        case _ => "allowlist"
+    }
     FeishuConfig(
+        accountId: defaultAccount,
+        defaultAccount: defaultAccount,
         enabled: fs.enabled,
         streaming: fs.streaming.trimAscii(),
         blockStreaming: fs.blockStreaming,
         appId: fs.appId,
         appSecret: fs.appSecret,
+        accounts: fs.accounts,
         receiveMode: receiveMode,
         domain: fs.domain,
         botOpenId: fs.botOpenId,
@@ -286,10 +295,26 @@ private func mergeFeishu(fs: FeishuUserSettings): FeishuConfig {
         verificationToken: fs.verificationToken,
         encryptKey: fs.encryptKey,
         groupSessionScope: groupSessionScope,
+        threadSession: fs.threadSession,
+        groups: fs.groups,
+        groupPolicy: groupPolicy,
+        groupAllowFrom: fs.groupAllowFrom,
+        requireMention: fs.requireMention,
+        allowBots: fs.allowBots,
         replyInThread: replyInThread,
         requireSignatureHeaders: fs.requireSignatureHeaders,
         requestMaxSkewSeconds: fs.requestMaxSkewSeconds,
-        policy: ChannelPolicyConfig()
+        media: FeishuMediaConfig(
+            downloadEnabled: fs.media.downloadEnabled,
+            mediaMaxBytes: fs.media.mediaMaxBytes,
+            allowedMimes: fs.media.allowedMimes
+        ),
+        policy: ChannelPolicyConfig(
+            allowFrom: [],
+            requireMentionInGroup: fs.requireMention,
+            enableDirect: true,
+            enableGroup: groupPolicy != "disabled"
+        )
     )
 }
 
@@ -493,7 +518,7 @@ public func buildGatewayConfigFromUserSettings(user: GatewayUserSettings): Gatew
         enableDirect: true,
         enableGroup: true
     )
-    policyByChannel["feishu"] = defaultPolicy
+    policyByChannel["feishu"] = feishuCfg.policy
     policyByChannel["qq"] = defaultPolicy
     policyByChannel["telegram"] = defaultPolicy
     policyByChannel["slack"] = defaultPolicy

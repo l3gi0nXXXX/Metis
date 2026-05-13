@@ -493,6 +493,101 @@ private func gatewayApplyPluginSetup(user: GatewayUserSettings, pluginId: String
     result
 }
 
+private func gatewayFeishuDefaultAccountId(user: GatewayUserSettings): String {
+    if (user.feishu.defaultAccount.trimAscii().isEmpty()) { "default" } else { user.feishu.defaultAccount.trimAscii() }
+}
+
+private func gatewayFeishuGroupsJson(user: GatewayUserSettings): JsonArray {
+    gatewayTelegramObjectKeysJson(user.feishu.groups)
+}
+
+private func gatewayFeishuAccountInspectRow(user: GatewayUserSettings, accountId: String, accountConfig: JsonObject, defaultAccountId: String): JsonObject {
+    let row = JsonObject()
+    let accountAppId = gatewayBindingStringParam(accountConfig, ["appId", "app_id"], "")
+    let accountSecret = gatewayBindingStringParam(accountConfig, ["appSecret", "app_secret"], "")
+    let accountEnabled = gatewayJsonBool(accountConfig, "enabled", true)
+    let globalConfigured = !user.feishu.appId.trimAscii().isEmpty() || !user.feishu.appSecret.trimAscii().isEmpty()
+    let credentialSource = if (!accountSecret.isEmpty() || !accountAppId.isEmpty()) {
+        "account"
+    } else if (globalConfigured) {
+        "global-inherited"
+    } else {
+        "missing"
+    }
+    row.put("accountId", JsonString(accountId))
+    row.put("defaultAccount", (accountId == defaultAccountId).toJsonValue())
+    row.put("enabled", accountEnabled.toJsonValue())
+    row.put("configured", (credentialSource != "missing").toJsonValue())
+    row.put("credentialSource", JsonString(credentialSource))
+    row.put("hasAppId", (!accountAppId.isEmpty()).toJsonValue())
+    row.put("hasAppSecret", (!accountSecret.isEmpty()).toJsonValue())
+    row.put("redacted", true.toJsonValue())
+    row.put("hasGroupsOverride", gatewayTelegramConfigHasObject(accountConfig, "groups").toJsonValue())
+    row.put("groupAllowFromCount", gatewayTelegramConfigArraySize(accountConfig, "groupAllowFrom").toJsonValue())
+    return row
+}
+
+private func gatewayFeishuAccountInspectJson(user: GatewayUserSettings): JsonObject {
+    let out = JsonObject()
+    let defaultAccountId = gatewayFeishuDefaultAccountId(user)
+    out.put("defaultAccountId", JsonString(defaultAccountId))
+    out.put("tokenRedacted", true.toJsonValue())
+    let rows = JsonArray([])
+    let seen = HashMap<String, Bool>()
+    match (user.feishu.accounts) {
+        case Some(accounts) =>
+            for (accountId in accounts.getFields().keys()) {
+                let trimmed = accountId.trimAscii()
+                if (trimmed.isEmpty()) {
+                    continue
+                }
+                let accountConfig = try { accounts.getFields()[accountId].asObject() } catch (_e: Exception) { JsonObject() }
+                rows.add(gatewayFeishuAccountInspectRow(user, trimmed, accountConfig, defaultAccountId))
+                seen[trimmed] = true
+            }
+        case None => ()
+    }
+    if (!seen.contains(defaultAccountId)) {
+        rows.add(gatewayFeishuAccountInspectRow(user, defaultAccountId, JsonObject(), defaultAccountId))
+    }
+    out.put("accounts", rows)
+    out.put("count", rows.size().toJsonValue())
+    return out
+}
+
+private func gatewayFeishuDirectoryJson(user: GatewayUserSettings): JsonObject {
+    let out = JsonObject()
+    out.put("groups", gatewayFeishuGroupsJson(user))
+    out.put("accounts", gatewayTelegramObjectKeysJson(user.feishu.accounts))
+    out.put("targets", gatewayFeishuGroupsJson(user))
+    out.put("rows", JsonArray([]))
+    out.put("aggregationSources", JsonArray([JsonString("config")]))
+    return out
+}
+
+private func gatewayFeishuAccountOpsJson(): JsonObject {
+    let out = JsonObject()
+    out.put("list", true.toJsonValue())
+    out.put("describe", true.toJsonValue())
+    out.put("enable", true.toJsonValue())
+    out.put("disable", true.toJsonValue())
+    out.put("validate", true.toJsonValue())
+    out.put("mutationRequiresGatewayRpc", true.toJsonValue())
+    return out
+}
+
+private func gatewayFeishuMediaJson(user: GatewayUserSettings): JsonObject {
+    let media = JsonObject()
+    media.put("downloadEnabled", user.feishu.media.downloadEnabled.toJsonValue())
+    media.put("mediaMaxBytes", user.feishu.media.mediaMaxBytes.toJsonValue())
+    let allowedMimes = JsonArray([])
+    for (mime in user.feishu.media.allowedMimes) {
+        allowedMimes.add(JsonString(mime))
+    }
+    media.put("allowedMimes", allowedMimes)
+    return media
+}
+
 public func gatewayChannelGetJson(user: GatewayUserSettings, channelId: String): JsonObject {
     let normalized = normalizeGatewayChannelId(channelId)
     let result = JsonObject()
@@ -507,9 +602,18 @@ public func gatewayChannelGetJson(user: GatewayUserSettings, channelId: String):
         result.put("enabled", user.feishu.enabled.toJsonValue())
         result.put("mode", JsonString(user.feishu.receiveMode))
         result.put("webhookPath", JsonString(user.feishu.webhookPath))
+        result.put("defaultAccountId", JsonString(gatewayFeishuDefaultAccountId(user)))
         result.put("groupSessionScope", JsonString(user.feishu.groupSessionScope))
+        result.put("threadSession", user.feishu.threadSession.toJsonValue())
+        result.put("groupPolicy", JsonString(user.feishu.groupPolicy))
+        result.put("requireMention", user.feishu.requireMention.toJsonValue())
+        result.put("allowBots", user.feishu.allowBots.toJsonValue())
         result.put("replyInThread", JsonString(user.feishu.replyInThread))
         result.put("configured", (!user.feishu.appId.trimAscii().isEmpty()).toJsonValue())
+        result.put("media", gatewayFeishuMediaJson(user))
+        result.put("directory", gatewayFeishuDirectoryJson(user))
+        result.put("accountInspect", gatewayFeishuAccountInspectJson(user))
+        result.put("accountOps", gatewayFeishuAccountOpsJson())
         result.put("supports", gatewayChannelSupportsJson(user, normalized))
         return result
     }

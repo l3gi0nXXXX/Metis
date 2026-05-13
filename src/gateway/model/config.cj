@@ -918,12 +918,31 @@ public class TelegramConfig {
 /**
  * 渠道账号配置（以飞书为例，P0 只保留最小凭据字段）。
  */
+public class FeishuMediaConfig {
+    public let downloadEnabled: Bool
+    public let mediaMaxBytes: Int64
+    public let allowedMimes: Array<String>
+
+    public init(
+        downloadEnabled!: Bool = false,
+        mediaMaxBytes!: Int64 = 20 * 1024 * 1024,
+        allowedMimes!: Array<String> = []
+    ) {
+        this.downloadEnabled = downloadEnabled
+        this.mediaMaxBytes = mediaMaxBytes
+        this.allowedMimes = allowedMimes
+    }
+}
+
 public class FeishuConfig {
+    public let accountId: String
+    public let defaultAccount: String
     public let enabled: Bool
     public let streaming: String
     public let blockStreaming: Bool
     public let appId: String
     public let appSecret: String
+    public let accounts: Option<JsonObject>
     /**
      * 事件接收方式：`long_connect`（官方长连接 WebSocket，无需配置请求 URL）；
      * `webhook`（HTTP 回调，需公网地址或内网穿透）。
@@ -939,17 +958,27 @@ public class FeishuConfig {
     public let verificationToken: String
     public let encryptKey: String
     public let groupSessionScope: String
+    public let threadSession: Bool
+    public let groups: Option<JsonObject>
+    public let groupPolicy: String
+    public let groupAllowFrom: Array<String>
+    public let requireMention: Bool
+    public let allowBots: Bool
     public let replyInThread: String
     public let requireSignatureHeaders: Bool
     public let requestMaxSkewSeconds: Int64
+    public let media: FeishuMediaConfig
     public let policy: ChannelPolicyConfig
 
     public init(
+        accountId!: String = "default",
+        defaultAccount!: String = "default",
         enabled!: Bool = false,
         streaming!: String = "partial",
         blockStreaming!: Bool = false,
         appId!: String = "",
         appSecret!: String = "",
+        accounts!: Option<JsonObject> = None,
         receiveMode!: String = "long_connect",
         domain!: String = "https://open.feishu.cn",
         botOpenId!: String = "",
@@ -959,16 +988,26 @@ public class FeishuConfig {
         verificationToken!: String = "",
         encryptKey!: String = "",
         groupSessionScope!: String = "group",
+        threadSession!: Bool = false,
+        groups!: Option<JsonObject> = None,
+        groupPolicy!: String = "allowlist",
+        groupAllowFrom!: Array<String> = [],
+        requireMention!: Bool = true,
+        allowBots!: Bool = false,
         replyInThread!: String = "disabled",
         requireSignatureHeaders!: Bool = true,
         requestMaxSkewSeconds!: Int64 = 300,
+        media!: FeishuMediaConfig = FeishuMediaConfig(),
         policy!: ChannelPolicyConfig = ChannelPolicyConfig()
     ) {
+        this.accountId = if (accountId.trimAscii().isEmpty()) { "default" } else { accountId.trimAscii() }
+        this.defaultAccount = if (defaultAccount.trimAscii().isEmpty()) { this.accountId } else { defaultAccount.trimAscii() }
         this.enabled = enabled
         this.streaming = streaming
         this.blockStreaming = blockStreaming
         this.appId = appId
         this.appSecret = appSecret
+        this.accounts = accounts
         this.receiveMode = receiveMode
         this.domain = domain
         this.botOpenId = botOpenId
@@ -978,9 +1017,16 @@ public class FeishuConfig {
         this.verificationToken = verificationToken
         this.encryptKey = encryptKey
         this.groupSessionScope = groupSessionScope
+        this.threadSession = threadSession
+        this.groups = groups
+        this.groupPolicy = groupPolicy
+        this.groupAllowFrom = groupAllowFrom
+        this.requireMention = requireMention
+        this.allowBots = allowBots
         this.replyInThread = replyInThread
         this.requireSignatureHeaders = requireSignatureHeaders
         this.requestMaxSkewSeconds = requestMaxSkewSeconds
+        this.media = media
         this.policy = policy
     }
 }

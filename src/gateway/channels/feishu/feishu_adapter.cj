@@ -27,6 +27,32 @@ import stdx.net.http.*
  * - 后续你可以将 simulateIncomingText 替换为真实事件来源（WebSocket 或 webhook）；
  * - send() 当前仅记录已发送消息，后续替换为 Feishu API 调用。
  */
+public interface FeishuApiClient {
+    func isThreadCapableGroup(chatId: String): Bool
+}
+
+public class FeishuNoopApiClient <: FeishuApiClient {
+    public init() {}
+
+    public func isThreadCapableGroup(_chatId: String): Bool {
+        false
+    }
+}
+
+public class FeishuFakeApiClient <: FeishuApiClient {
+    private let threadCapable = HashMap<String, Bool>()
+
+    public init() {}
+
+    public func setThreadCapable(chatId: String, capable: Bool): Unit {
+        this.threadCapable[chatId.trimAscii()] = capable
+    }
+
+    public func isThreadCapableGroup(chatId: String): Bool {
+        this.threadCapable.get(chatId.trimAscii()) ?? false
+    }
+}
+
 public class FeishuAdapter <: ChannelAdapter {
     private var running = false
     private let queueMutex = Mutex()
@@ -47,11 +73,17 @@ public class FeishuAdapter <: ChannelAdapter {
     private var feishuMonitorLastError: String = ""
     private let accountId: String
     private let chatQueue = FeishuChatQueue()
+    private let apiClient: FeishuApiClient
 
-    public init(config!: FeishuConfig = FeishuConfig(), accountId!: String = "default") {
+    public init(
+        config!: FeishuConfig = FeishuConfig(),
+        accountId!: String = "default",
+        apiClient!: FeishuApiClient = FeishuNoopApiClient()
+    ) {
         this.config = config
         let trimmedAccountId = accountId.trimAscii()
-        this.accountId = if (trimmedAccountId.isEmpty()) { "default" } else { trimmedAccountId }
+        this.accountId = if (trimmedAccountId.isEmpty()) { config.accountId } else { trimmedAccountId }
+        this.apiClient = apiClient
     }
 
     public prop name: String {
@@ -251,7 +283,7 @@ public class FeishuAdapter <: ChannelAdapter {
         let mediaContext = JsonObject()
         let accountId = this.effectiveAccountId()
         this.attachFeishuImRouteContext(mediaContext, accountId, peerId, chatType, senderId, messageId, "", "")
-        this.attachFeishuGateContext(mediaContext, chatType, mentioned)
+        this.attachFeishuGateContext(mediaContext, chatType, mentioned, peerId, senderId)
         let msg = InboundMessage(
             ChannelType.Feishu,
             messageId,
@@ -376,7 +408,8 @@ public class FeishuAdapter <: ChannelAdapter {
             (this.config.botOpenId.isEmpty() && (text.contains("@") || text.contains("<at ")))
         let mediaContext = JsonObject()
         this.attachFeishuImRouteContext(mediaContext, accountId, chatId, chatType, senderId, messageId, rootId, threadId)
-        this.attachFeishuGateContext(mediaContext, chatType, mentioned)
+        this.attachFeishuGateContext(mediaContext, chatType, mentioned, chatId, senderId)
+        this.attachFeishuAliasCandidates(mediaContext, messageObj)
         this.attachFeishuAttachmentContext(mediaContext, accountId, chatId, messageId, messageType, contentJsonString)
 
         return InboundMessage(
@@ -433,6 +466,9 @@ public class FeishuAdapter <: ChannelAdapter {
                     route.put("parentPeerKind", JsonString("group"))
                     route.put("parentPeerId", JsonString(chatId.trimAscii()))
                     route.put("threadId", JsonString(topicId))
+                    if (this.feishuThreadSessionEnabled(chatId, topicId)) {
+                        route.put("threadSessionKey", JsonString(this.buildTopicConversationId(chatId.trimAscii(), topicId)))
+                    }
                 } else {
                     route.put("peerKind", JsonString("group"))
                     route.put("peerId", JsonString(chatId.trimAscii()))
@@ -446,21 +482,112 @@ public class FeishuAdapter <: ChannelAdapter {
         mediaContext.put("context", context)
     }
 
-    private func attachFeishuGateContext(mediaContext: JsonObject, chatType: ChatType, mentioned: Bool): Unit {
+    private func attachFeishuGateContext(
+        mediaContext: JsonObject,
+        chatType: ChatType,
+        mentioned: Bool,
+        chatId: String,
+        senderId: String
+    ): Unit {
         let context = match (mediaContext.get("context")) {
             case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
             case None => JsonObject()
         }
         let gate = JsonObject()
-        let groupMentionRequired = match (chatType) {
-            case ChatType.Direct => false
-            case ChatType.Group => this.config.policy.requireMentionInGroup && !mentioned
+        var accepted = true
+        var reason = "accepted"
+        match (chatType) {
+            case ChatType.Direct => ()
+            case ChatType.Group =>
+                if (!this.feishuGroupAllowed(chatId)) {
+                    accepted = false
+                    reason = "group_not_allowed"
+                } else if (!this.config.allowBots && this.feishuSenderLooksBot(senderId)) {
+                    accepted = false
+                    reason = "bot_sender_not_allowed"
+                } else if (this.config.policy.requireMentionInGroup && !mentioned) {
+                    accepted = false
+                    reason = "group_mention_required"
+                }
         }
-        gate.put("triggerAgent", JsonBool(!groupMentionRequired))
+        gate.put("triggerAgent", JsonBool(accepted))
         gate.put("mentioned", JsonBool(mentioned))
         gate.put("requireMentionInGroup", JsonBool(this.config.policy.requireMentionInGroup))
-        gate.put("reason", JsonString(if (groupMentionRequired) { "group_mention_required" } else { "accepted" }))
+        gate.put("groupPolicy", JsonString(this.config.groupPolicy))
+        gate.put("allowBots", JsonBool(this.config.allowBots))
+        gate.put("reason", JsonString(reason))
         context.put("feishuGate", gate)
+        mediaContext.put("context", context)
+    }
+
+    private func feishuGroupAllowed(chatId: String): Bool {
+        let policy = this.config.groupPolicy.trimAscii().toAsciiLower()
+        if (policy == "open") {
+            return true
+        }
+        if (policy == "disabled") {
+            return false
+        }
+        let normalized = chatId.trimAscii()
+        for (id in this.config.groupAllowFrom) {
+            let candidate = id.trimAscii()
+            if (candidate == "*" || candidate == normalized) {
+                return true
+            }
+        }
+        match (this.config.groups) {
+            case Some(groups) =>
+                groups.getFields().contains(normalized) || groups.getFields().contains("*")
+            case None => false
+        }
+    }
+
+    private func feishuSenderLooksBot(senderId: String): Bool {
+        senderId.trimAscii().toAsciiLower().contains("bot")
+    }
+
+    private func attachFeishuAliasCandidates(mediaContext: JsonObject, messageObj: JsonObject): Unit {
+        let mentions = match (messageObj.get("mentions")) {
+            case Some(v) => try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
+            case None => JsonArray([])
+        }
+        if (mentions.size() == 0) {
+            return
+        }
+        let candidates = JsonArray([])
+        for (i in 0..mentions.size()) {
+            let mention = try { mentions[i].asObject() } catch (_e: Exception) { JsonObject() }
+            let idObj = match (mention.get("id")) {
+                case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+                case None => JsonObject()
+            }
+            let openId = this.readStringField(idObj, "open_id")
+            let userId = this.readStringField(idObj, "user_id")
+            let unionId = this.readStringField(idObj, "union_id")
+            if (openId.isEmpty() && userId.isEmpty() && unionId.isEmpty()) {
+                continue
+            }
+            if (!this.config.botOpenId.isEmpty() &&
+                (openId == this.config.botOpenId || userId == this.config.botOpenId || unionId == this.config.botOpenId)) {
+                continue
+            }
+            let row = JsonObject()
+            row.put("platform", JsonString("feishu"))
+            row.put("openId", JsonString(openId))
+            row.put("userId", JsonString(userId))
+            row.put("unionId", JsonString(unionId))
+            row.put("name", JsonString(this.readStringField(mention, "name")))
+            row.put("key", JsonString(this.readStringField(mention, "key")))
+            candidates.add(row)
+        }
+        if (candidates.size() == 0) {
+            return
+        }
+        let context = match (mediaContext.get("context")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        context.put("aliasCandidates", candidates)
         mediaContext.put("context", context)
     }
 
@@ -882,6 +1009,9 @@ public class FeishuAdapter <: ChannelAdapter {
                 } else {
                     ""
                 }
+                if (this.feishuThreadSessionEnabled(normalizedChatId, topicId)) {
+                    return Some(this.buildTopicConversationId(normalizedChatId, topicId))
+                }
                 let scope = this.config.groupSessionScope.trimAscii().toAsciiLower()
                 if (scope == "group_sender") {
                     if (normalizedChatId.isEmpty() || normalizedSenderId.isEmpty()) {
@@ -909,6 +1039,13 @@ public class FeishuAdapter <: ChannelAdapter {
                 }
                 if (normalizedChatId.isEmpty()) { None } else { Some(normalizedChatId) }
         }
+    }
+
+    private func feishuThreadSessionEnabled(chatId: String, topicId: String): Bool {
+        this.config.threadSession &&
+            !chatId.trimAscii().isEmpty() &&
+            !topicId.trimAscii().isEmpty() &&
+            this.apiClient.isThreadCapableGroup(chatId.trimAscii())
     }
 
     private func resolveReplyTargetMessageId(messageId: String, rootId: String, threadId: String): Option<String> {

@@ -5,6 +5,7 @@ import metis.gateway.model.ChannelPolicyConfig
 import metis.gateway.session.gatewayBuildChannelSessionKey
 
 import std.collection.HashMap
+import stdx.encoding.json.JsonObject
 
 /**
  * Gateway 最小路由器（P0）。
@@ -28,6 +29,10 @@ public class GatewayRouter {
         // 1. 文本为空直接拒绝，避免无效调用模型。
         if (message.text.trimAscii().isEmpty()) {
             return RouteDecision(false, "empty text")
+        }
+        let channelGateReason = gatewayChannelGateRejectionReason(message)
+        if (!channelGateReason.isEmpty()) {
+            return RouteDecision(false, channelGateReason)
         }
 
         let channelName = channelToString(message.channel)
@@ -81,6 +86,31 @@ public class GatewayRouter {
             conversationId: message.conversationId ?? "",
             dmScope: this.dmScope
         )
+    }
+}
+
+private func gatewayChannelGateRejectionReason(message: InboundMessage): String {
+    let context = match (message.mediaContext.get("context")) {
+        case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    let gate = match (context.get("feishuGate")) {
+        case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    if (gate.size() == 0) {
+        return ""
+    }
+    let trigger = match (gate.get("triggerAgent")) {
+        case Some(v) => try { v.asBool().getValue() } catch (_e: Exception) { true }
+        case None => true
+    }
+    if (trigger) {
+        return ""
+    }
+    match (gate.get("reason")) {
+        case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "channel gate rejected" }
+        case None => "channel gate rejected"
     }
 }
 

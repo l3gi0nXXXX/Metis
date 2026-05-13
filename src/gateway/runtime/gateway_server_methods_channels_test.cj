@@ -306,6 +306,50 @@ public class GatewayServerMethodsChannelsTest {
     }
 
     @TestCase
+    public func feishuChannelGetExposesAccountsPolicyAndRedactedSecrets(): Unit {
+        var user = GatewayUserSettings()
+        user.feishu.enabled = true
+        user.feishu.defaultAccount = "tenant-a"
+        user.feishu.appId = "legacy-app"
+        user.feishu.appSecret = "legacy-secret"
+        user.feishu.groupPolicy = "allowlist"
+        user.feishu.groupAllowFrom = ["oc_team"]
+        user.feishu.threadSession = true
+        user.feishu.requireMention = true
+        user.feishu.media.downloadEnabled = true
+        let accounts = JsonObject()
+        let tenantAccount = JsonObject()
+        tenantAccount.put("appId", JsonString("tenant-app"))
+        tenantAccount.put("appSecret", JsonString("tenant-secret"))
+        tenantAccount.put("enabled", true.toJsonValue())
+        accounts.put("tenant-a", tenantAccount)
+        accounts.put("tenant-b", JsonObject())
+        user.feishu.accounts = Some(accounts)
+        let groups = JsonObject()
+        groups.put("oc_team", JsonObject())
+        user.feishu.groups = Some(groups)
+
+        let channel = gatewayChannelGetJson(user, "feishu")
+        @Expect(channelsTestString(channel, "defaultAccountId"), "tenant-a")
+        @Expect(channelsTestString(channel, "groupPolicy"), "allowlist")
+        @Expect(channelsTestBool(channel, "threadSession"), true)
+        let directory = channel.get("directory").getOrThrow().asObject()
+        @Expect(directory.get("accounts").getOrThrow().asArray().toJsonString().contains("tenant-a"), true)
+        @Expect(directory.get("groups").getOrThrow().asArray().toJsonString().contains("oc_team"), true)
+        let inspect = channel.get("accountInspect").getOrThrow().asObject()
+        @Expect(channelsTestString(inspect, "defaultAccountId"), "tenant-a")
+        @Expect(inspect.get("tokenRedacted").getOrThrow().asBool().getValue(), true)
+        @Expect(inspect.get("accounts").getOrThrow().asArray().toJsonString().contains("tenant-b"), true)
+        @Expect(inspect.toJsonString().contains("tenant-secret"), false)
+        let accountOps = channel.get("accountOps").getOrThrow().asObject()
+        @Expect(channelsTestBool(accountOps, "list"), true)
+        @Expect(channelsTestBool(accountOps, "describe"), true)
+        @Expect(channelsTestBool(accountOps, "enable"), true)
+        @Expect(channelsTestBool(accountOps, "disable"), true)
+        @Expect(channelsTestBool(accountOps, "validate"), true)
+    }
+
+    @TestCase
     public func telegramChannelsRuntimeExposesNativeRuntimeView(): Unit {
         var user = GatewayUserSettings()
         user.telegram.enabled = true

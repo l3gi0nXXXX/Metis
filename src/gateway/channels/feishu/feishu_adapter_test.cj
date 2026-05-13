@@ -210,6 +210,7 @@ public class FeishuAdapterTest {
             config: FeishuConfig(
                 enabled: true,
                 botOpenId: "bot-open",
+                groupPolicy: "open",
                 policy: ChannelPolicyConfig(requireMentionInGroup: true)
             )
         )
@@ -289,4 +290,92 @@ public class FeishuAdapterTest {
         @Expect(media.get("mediaKind").getOrThrow().asString().getValue(), "media")
         @Expect(audio.get("mediaKind").getOrThrow().asString().getValue(), "audio")
     }
+
+    @TestCase
+    public func groupPolicyAllowlistAndBotSenderGateAreStructured(): Unit {
+        let adapter = FeishuAdapter(
+            config: FeishuConfig(
+                enabled: true,
+                groupPolicy: "allowlist",
+                groupAllowFrom: ["oc_allowed"],
+                allowBots: false
+            )
+        )
+        adapter.start()
+        @Expect(adapter.ingestWebhookPayload(
+            this.webhookPayload("om_blocked_group", "oc_blocked", "ou_1", "{\\\"text\\\":\\\"@bot hello\\\"}")
+        ).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(
+            this.webhookPayload("om_bot", "oc_allowed", "ou_bot", "{\\\"text\\\":\\\"@bot hello\\\"}")
+        ).contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 2)
+        let blockedGate = inbound[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("feishuGate").getOrThrow().asObject()
+        @Expect(blockedGate.get("triggerAgent").getOrThrow().asBool().getValue(), false)
+        @Expect(blockedGate.get("reason").getOrThrow().asString().getValue(), "group_not_allowed")
+        let botGate = inbound[1].mediaContext.get("context").getOrThrow().asObject()
+            .get("feishuGate").getOrThrow().asObject()
+        @Expect(botGate.get("triggerAgent").getOrThrow().asBool().getValue(), false)
+        @Expect(botGate.get("reason").getOrThrow().asString().getValue(), "bot_sender_not_allowed")
+    }
+
+    @TestCase
+    public func nativeMentionEntitiesBecomeAliasCandidates(): Unit {
+        let adapter = FeishuAdapter(config: FeishuConfig(enabled: true, botOpenId: "bot-open"))
+        adapter.start()
+        let mentions =
+            "[" +
+            "{\"id\":{\"open_id\":\"ou_writer\",\"user_id\":\"writer-user\"},\"name\":\"Writer\",\"key\":\"@_user_1\"}," +
+            "{\"id\":{\"open_id\":\"bot-open\"},\"name\":\"Metis\",\"key\":\"@_user_bot\"}" +
+            "]"
+        @Expect(adapter.ingestWebhookPayload(
+            this.webhookPayload(
+                "om_mentions",
+                "oc_group",
+                "ou_1",
+                "{\\\"text\\\":\\\"please review\\\"}",
+                mentions: mentions
+            )
+        ).contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 1)
+        @Expect(inbound[0].mentioned, true)
+        let aliasCandidates = inbound[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("aliasCandidates").getOrThrow().asArray()
+        @Expect(aliasCandidates.size(), 1)
+        let candidate = aliasCandidates[0].asObject()
+        @Expect(candidate.get("platform").getOrThrow().asString().getValue(), "feishu")
+        @Expect(candidate.get("openId").getOrThrow().asString().getValue(), "ou_writer")
+        @Expect(candidate.get("name").getOrThrow().asString().getValue(), "Writer")
+    }
+
+    @TestCase
+    public func threadSessionRequiresFakeThreadCapableGroup(): Unit {
+        let client = FeishuFakeApiClient()
+        client.setThreadCapable("oc_threads", true)
+        client.setThreadCapable("oc_plain", false)
+        let adapter = FeishuAdapter(
+            config: FeishuConfig(enabled: true, threadSession: true),
+            apiClient: client
+        )
+        adapter.start()
+        @Expect(adapter.ingestWebhookPayload(
+            this.webhookPayload("om_thread_ok", "oc_threads", "ou_1", "{\\\"text\\\":\\\"topic\\\"}", threadId: "omt_1")
+        ).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(
+            this.webhookPayload("om_thread_no", "oc_plain", "ou_1", "{\\\"text\\\":\\\"topic\\\"}", threadId: "omt_2")
+        ).contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 2)
+        @Expect(inbound[0].conversationId.getOrThrow(), "oc_threads:topic:omt_1")
+        @Expect(inbound[1].conversationId.getOrThrow(), "oc_plain")
+        let route = inbound[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("imRoute").getOrThrow().asObject()
+        @Expect(route.get("threadSessionKey").getOrThrow().asString().getValue(), "oc_threads:topic:omt_1")
+    }
+
 }

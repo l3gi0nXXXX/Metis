@@ -438,13 +438,22 @@ public struct TelegramUserSettings {
  * 运行态只读取配置文件，不再使用 `.env` 对这些字段做覆盖。
  */
 @jsonable
+public struct FeishuMediaUserSettings {
+    public var downloadEnabled: Bool = false
+    public var mediaMaxBytes: Int64 = 20 * 1024 * 1024
+    public var allowedMimes: Array<String> = []
+}
+
+@jsonable
 public struct FeishuUserSettings {
     /** 默认 true，与原先未设置 FEISHU_ENABLED 时视为开启的行为对齐；可用 `gateway channel disable feishu` 关闭。 */
     public var enabled: Bool = true
+    public var defaultAccount: String = "default"
     public var streaming: String = "partial"
     public var blockStreaming: Bool = false
     public var appId: String = ""
     public var appSecret: String = ""
+    public var accounts: Option<JsonObject> = None
     public var receiveMode: String = "long_connect"
     public var domain: String = "https://open.feishu.cn"
     public var botOpenId: String = ""
@@ -454,9 +463,16 @@ public struct FeishuUserSettings {
     public var verificationToken: String = ""
     public var encryptKey: String = ""
     public var groupSessionScope: String = "group"
+    public var threadSession: Bool = false
+    public var groups: Option<JsonObject> = None
+    public var groupPolicy: String = "allowlist"
+    public var groupAllowFrom: Array<String> = []
+    public var requireMention: Bool = true
+    public var allowBots: Bool = false
     public var replyInThread: String = "disabled"
     public var requireSignatureHeaders: Bool = true
     public var requestMaxSkewSeconds: Int64 = 300
+    public var media: FeishuMediaUserSettings = FeishuMediaUserSettings()
     public var speech: GatewayChannelSpeechUserSettings = GatewayChannelSpeechUserSettings()
     public var video: JsonObject = JsonObject()
     public var videoGeneration: JsonObject = JsonObject()
