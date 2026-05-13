@@ -28,6 +28,15 @@ private func bootstrapHasFileWithSuffix(files: Array<MetisContextFile>, suffix: 
     false
 }
 
+private func bootstrapStateHasName(files: Array<MetisAgentWorkspaceBootstrapFileState>, name: String): Bool {
+    for (file in files) {
+        if (file.name == name) {
+            return true
+        }
+    }
+    false
+}
+
 @Test
 public class MetisWorkspaceBootstrapTest {
     /*
@@ -110,6 +119,27 @@ public class MetisWorkspaceBootstrapTest {
             @Expect(files.size, 2)
             @Expect(files[0].path.endsWith("AGENTS.md"), true)
             @Expect(files[1].path.endsWith("TOOLS.md"), true)
+        } finally {
+            cleanupWorkspaceBootstrapTestDir(root)
+        }
+    }
+
+    @TestCase
+    public func bootstrapPolicyDoesNotAutoCreateBootstrapButLoadsExistingInFullMode(): Unit {
+        let root = Path("/tmp/metis-workspace-bootstrap-policy")
+        try {
+            cleanupWorkspaceBootstrapTestDir(root)
+            Directory.create(root, recursive: true)
+            File.writeTo(root.join("BOOTSTRAP.md"), "# Setup State\n".toArray())
+
+            @Expect(METIS_WORKSPACE_BOOTSTRAP_AUTOCREATES_BOOTSTRAP_FILE, false)
+            @Expect(metisWorkspaceBootstrapFilenames().contains("BOOTSTRAP.md"), false)
+            let ensure = ensureMetisAgentWorkspace(root)
+            @Expect(ensure.createdCount >= 6, true)
+            @Expect(bootstrapStateHasName(ensure.files, "BOOTSTRAP.md"), false)
+
+            let bootstrap = MetisWorkspaceBootstrap.resolveContextFilesDetailed(root)
+            @Expect(bootstrapHasFileWithSuffix(bootstrap.files, "BOOTSTRAP.md"), true)
         } finally {
             cleanupWorkspaceBootstrapTestDir(root)
         }

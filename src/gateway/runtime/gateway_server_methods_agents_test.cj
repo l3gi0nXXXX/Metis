@@ -4,6 +4,7 @@ import magic.jsonable.*
 
 import metis.core.gatewaySubagentResolveAgent
 import metis.core.config.{CliConfig, CliModelRuntimeStateManager, CliSettingManager, MetisConfigManager, MetisProcessEnvironmentLock}
+import metis.gateway.core.{GatewayAgentRouteInput, gatewayResolveAgentRoute}
 
 import std.collection.ArrayList
 import std.env.{getVariable, setVariable}
@@ -72,6 +73,53 @@ private func agentsTestFindObjectById(rows: JsonArray, id: String): JsonObject {
         }
     }
     JsonObject()
+}
+
+private func agentsTestRouteBinding(
+    agentId: String,
+    channel: String,
+    accountId!: String = "",
+    peerKind!: String = "",
+    peerId!: String = "",
+    guildId!: String = "",
+    teamId!: String = "",
+    roles!: Array<String> = []
+): JsonObject {
+    let binding = JsonObject()
+    binding.put("type", JsonString("route"))
+    binding.put("agentId", JsonString(agentId))
+    let matchObj = JsonObject()
+    matchObj.put("channel", JsonString(channel))
+    if (!accountId.trimAscii().isEmpty()) {
+        matchObj.put("accountId", JsonString(accountId))
+    }
+    if (!peerKind.trimAscii().isEmpty() || !peerId.trimAscii().isEmpty()) {
+        let peer = JsonObject()
+        peer.put("kind", JsonString(peerKind))
+        peer.put("id", JsonString(peerId))
+        matchObj.put("peer", peer)
+    }
+    if (!guildId.trimAscii().isEmpty()) {
+        matchObj.put("guildId", JsonString(guildId))
+    }
+    if (!teamId.trimAscii().isEmpty()) {
+        matchObj.put("teamId", JsonString(teamId))
+    }
+    if (roles.size > 0) {
+        matchObj.put("roles", agentsTestStringArray(roles))
+    }
+    binding.put("match", matchObj)
+    binding
+}
+
+private func agentsTestAddAgent(agentId: String): GatewayRpcResponse {
+    let params = JsonObject()
+    params.put("id", JsonString(agentId))
+    handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: params))).getOrThrow()
+}
+
+private func agentsTestRawBindings(): JsonArray {
+    MetisConfigManager.rawConfig().getOrThrow().get("bindings").getOrThrow().asArray()
 }
 
 private func agentsTestClean(path: Path): Unit {
@@ -628,6 +676,107 @@ public class GatewayServerMethodsAgentsTest {
     }
 
     @TestCase
+    public func agentsBindAppliesFullRouteBindingsAndPreservesNonRouteRows(): Unit {
+        withAgentsTempHome("metis-agents-bind-route-apply-home", { _home: Path =>
+            @Expect(agentsTestAddAgent("assistant-a").ok, true)
+            @Expect(agentsTestAddAgent("critic").ok, true)
+
+            let root = MetisConfigManager.rawConfig().getOrThrow()
+            let seedBindings = JsonArray([])
+            let nonRoute = JsonObject()
+            nonRoute.put("type", JsonString("token"))
+            nonRoute.put("name", JsonString("preserve-me"))
+            seedBindings.add(nonRoute)
+            root.put("bindings", seedBindings)
+            MetisConfigManager.writeRoot(root)
+
+            let legacyParams = JsonObject()
+            legacyParams.put("agentId", JsonString("assistant-a"))
+            legacyParams.put("bind", JsonString("telegram"))
+            let legacyResponse = handleGatewayAgentsFamily("agents.bind", request: Some(GatewayRpcRequest("agents.bind", params: legacyParams))).getOrThrow()
+            @Expect(legacyResponse.ok, true)
+            @Expect(legacyResponse.result.asObject().get("added").getOrThrow().asArray().size(), 1)
+
+            let upgradeParams = JsonObject()
+            upgradeParams.put("agentId", JsonString("assistant-a"))
+            upgradeParams.put("bind", JsonString("telegram:bot-a"))
+            let upgradeResponse = handleGatewayAgentsFamily("agents.bind", request: Some(GatewayRpcRequest("agents.bind", params: upgradeParams))).getOrThrow()
+            @Expect(upgradeResponse.ok, true)
+            let upgradeResult = upgradeResponse.result.asObject()
+            @Expect(upgradeResult.get("updated").getOrThrow().asArray().size(), 1)
+            @Expect(upgradeResult.get("added").getOrThrow().asArray().size(), 0)
+
+            let conflictBindings = JsonArray([])
+            conflictBindings.add(agentsTestRouteBinding("critic", "telegram", accountId: "bot-a"))
+            let conflictParams = JsonObject()
+            conflictParams.put("agentId", JsonString("critic"))
+            conflictParams.put("bindings", conflictBindings)
+            let conflictResponse = handleGatewayAgentsFamily("agents.bind", request: Some(GatewayRpcRequest("agents.bind", params: conflictParams))).getOrThrow()
+            @Expect(conflictResponse.ok, true)
+            let conflictResult = conflictResponse.result.asObject()
+            @Expect(conflictResult.get("conflicts").getOrThrow().asArray().size(), 1)
+            @Expect(conflictResult.get("added").getOrThrow().asArray().size(), 0)
+
+            let persisted = agentsTestRawBindings()
+            @Expect(persisted.size(), 2)
+            @Expect(persisted[0].asObject().get("type").getOrThrow().asString().getValue(), "token")
+            @Expect(persisted.toJsonString().contains("\"agentId\":\"critic\""), false)
+        })
+    }
+
+    @TestCase
+    public func agentsBindAndUnbindSupportThreadPeerMatch(): Unit {
+        withAgentsTempHome("metis-agents-thread-binding-home", { _home: Path =>
+            @Expect(agentsTestAddAgent("writer").ok, true)
+            @Expect(agentsTestAddAgent("critic").ok, true)
+
+            let bindings = JsonArray([])
+            bindings.add(agentsTestRouteBinding("writer", "feishu", accountId: "tenant-a", peerKind: "thread", peerId: "thread-42"))
+            let bindParams = JsonObject()
+            bindParams.put("agentId", JsonString("writer"))
+            bindParams.put("bindings", bindings)
+            let bindResponse = handleGatewayAgentsFamily("agents.bind", request: Some(GatewayRpcRequest("agents.bind", params: bindParams))).getOrThrow()
+            @Expect(bindResponse.ok, true)
+            @Expect(bindResponse.result.asObject().get("added").getOrThrow().asArray().size(), 1)
+
+            let route = gatewayResolveAgentRoute(GatewayAgentRouteInput(
+                MetisConfigManager.rawConfig().getOrThrow(),
+                "feishu",
+                accountId: "tenant-a",
+                peerKind: "thread",
+                peerId: "thread-42",
+                parentPeerKind: "group",
+                parentPeerId: "chat-1"
+            ))
+            @Expect(route.agentId, "writer")
+            @Expect(route.matchedBy, "binding.peer.exact")
+
+            let conflictParams = JsonObject()
+            conflictParams.put("agentId", JsonString("critic"))
+            let conflictBindings = JsonArray([])
+            conflictBindings.add(agentsTestRouteBinding("critic", "feishu", accountId: "tenant-a", peerKind: "thread", peerId: "thread-42"))
+            conflictParams.put("bindings", conflictBindings)
+            let conflictResponse = handleGatewayAgentsFamily("agents.unbind", request: Some(GatewayRpcRequest("agents.unbind", params: conflictParams))).getOrThrow()
+            @Expect(conflictResponse.ok, true)
+            @Expect(conflictResponse.result.asObject().get("conflicts").getOrThrow().asArray().size(), 1)
+            @Expect(agentsTestRawBindings().size(), 1)
+
+            let unbindParams = JsonObject()
+            unbindParams.put("agentId", JsonString("writer"))
+            unbindParams.put("bindings", bindings)
+            let unbindResponse = handleGatewayAgentsFamily("agents.unbind", request: Some(GatewayRpcRequest("agents.unbind", params: unbindParams))).getOrThrow()
+            @Expect(unbindResponse.ok, true)
+            @Expect(unbindResponse.result.asObject().get("removed").getOrThrow().asArray().size(), 1)
+            @Expect(unbindResponse.result.asObject().get("missing").getOrThrow().asArray().size(), 0)
+
+            let missingResponse = handleGatewayAgentsFamily("agents.unbind", request: Some(GatewayRpcRequest("agents.unbind", params: unbindParams))).getOrThrow()
+            @Expect(missingResponse.ok, true)
+            @Expect(missingResponse.result.asObject().get("removed").getOrThrow().asArray().size(), 0)
+            @Expect(missingResponse.result.asObject().get("missing").getOrThrow().asArray().size(), 1)
+        })
+    }
+
+    @TestCase
     public func managedAgentDirIsDiscoverableBySummaryAndSubagentResolver(): Unit {
         withAgentsTempHome("metis-agents-add-phase5-discovery-home", { home: Path =>
             let params = JsonObject()
@@ -894,6 +1043,198 @@ public class GatewayServerMethodsAgentsTest {
             let modelState = getResponse.result.asObject().get("models").getOrThrow().asObject().get("state").getOrThrow().asObject()
             @Expect(agentsTestString(modelState, "primaryModelRef"), "openai:gpt-4o-mini")
             @Expect(String.fromUtf8(File.readFrom(modelsPath)).contains("token"), false)
+        })
+    }
+
+    @TestCase
+    public func agentUpdateRefreshesGeneratedModelsJsonButPreservesManualState(): Unit {
+        withAgentsTempHome("metis-agents-models-refresh-hook-home", { home: Path =>
+            let addParams = JsonObject()
+            addParams.put("id", JsonString("pm"))
+            addParams.put("model", JsonString("qwen:qwen-plus"))
+            let addResponse = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: addParams))).getOrThrow()
+            @Expect(addResponse.ok, true)
+
+            let statusParams = JsonObject()
+            statusParams.put("agentId", JsonString("pm"))
+            let statusResponse = handleGatewayAgentsFamily("agents.models.status", request: Some(GatewayRpcRequest("agents.models.status", params: statusParams))).getOrThrow()
+            @Expect(statusResponse.ok, true)
+            let modelsPath = home.join("agents").join("pm").join("agent").join("models.json")
+            let initialState = statusResponse.result.asObject().get("models").getOrThrow().asObject().get("state").getOrThrow().asObject()
+            @Expect(agentsTestString(initialState, "runtimePrimaryModelRef").contains("qwen-plus"), true)
+            @Expect(agentsTestBool(initialState, "generated"), true)
+
+            let updateParams = JsonObject()
+            updateParams.put("id", JsonString("pm"))
+            updateParams.put("model", JsonString("openai:gpt-4o-mini"))
+            let updateResponse = handleGatewayAgentsFamily("agents.update", request: Some(GatewayRpcRequest("agents.update", params: updateParams))).getOrThrow()
+            @Expect(updateResponse.ok, true)
+            let refresh = updateResponse.result.asObject().get("modelsRefresh").getOrThrow().asObject()
+            @Expect(agentsTestString(refresh, "status"), "refreshed")
+            @Expect(agentsTestBool(refresh, "refreshed"), true)
+            let generatedGet = handleGatewayAgentsFamily("agents.models.get", request: Some(GatewayRpcRequest("agents.models.get", params: statusParams))).getOrThrow()
+            let generatedState = generatedGet.result.asObject().get("models").getOrThrow().asObject().get("state").getOrThrow().asObject()
+            @Expect(agentsTestString(generatedState, "runtimePrimaryModelRef"), "openai:gpt-4o-mini")
+
+            let manualState = JsonObject()
+            manualState.put("primaryModelRef", JsonString("manual:model"))
+            manualState.put("runtimePrimaryModelRef", JsonString("manual:model"))
+            manualState.put("providers", JsonArray([]))
+            let setParams = JsonObject()
+            setParams.put("agentId", JsonString("pm"))
+            setParams.put("state", manualState)
+            let setResponse = handleGatewayAgentsFamily("agents.models.set", request: Some(GatewayRpcRequest("agents.models.set", params: setParams))).getOrThrow()
+            @Expect(setResponse.ok, true)
+
+            let manualUpdateParams = JsonObject()
+            manualUpdateParams.put("id", JsonString("pm"))
+            manualUpdateParams.put("model", JsonString("anthropic:claude-3-5-sonnet"))
+            let manualUpdate = handleGatewayAgentsFamily("agents.update", request: Some(GatewayRpcRequest("agents.update", params: manualUpdateParams))).getOrThrow()
+            @Expect(manualUpdate.ok, true)
+            let manualRefresh = manualUpdate.result.asObject().get("modelsRefresh").getOrThrow().asObject()
+            @Expect(agentsTestString(manualRefresh, "status"), "skipped")
+            @Expect(agentsTestString(manualRefresh, "reason"), "manual-runtime-state")
+            @Expect(agentsTestBool(manualRefresh, "refreshed"), false)
+            let manualContent = String.fromUtf8(File.readFrom(modelsPath))
+            @Expect(manualContent.contains("manual:model"), true)
+            @Expect(manualContent.contains("anthropic:claude-3-5-sonnet"), false)
+        })
+    }
+
+    @TestCase
+    public func agentTeamsCreateUpdateCompileBindingsAndDeletePreservesRoutes(): Unit {
+        withAgentsTempHome("metis-agent-teams-bindings-compile-home", { _home: Path =>
+            let createBindings = JsonArray([])
+            createBindings.add(agentsTestRouteBinding("content-writer", "telegram", accountId: "bot-a", peerKind: "group", peerId: "-100_content"))
+            let createParams = JsonObject()
+            createParams.put("id", JsonString("content"))
+            createParams.put("template", JsonString("pm-writer-reviewer"))
+            createParams.put("bindings", createBindings)
+            let createResponse = handleGatewayAgentsFamily("agents.teams.create", request: Some(GatewayRpcRequest("agents.teams.create", params: createParams))).getOrThrow()
+            @Expect(createResponse.ok, true)
+            let createResult = createResponse.result.asObject()
+            @Expect(createResult.get("bindingApply").getOrThrow().asObject().get("added").getOrThrow().asArray().size(), 1)
+
+            let telegramRoute = gatewayResolveAgentRoute(GatewayAgentRouteInput(
+                MetisConfigManager.rawConfig().getOrThrow(),
+                "telegram",
+                accountId: "bot-a",
+                peerKind: "group",
+                peerId: "-100_content"
+            ))
+            @Expect(telegramRoute.agentId, "content-writer")
+            @Expect(telegramRoute.matchedBy, "binding.peer.exact")
+
+            let updateBindings = JsonArray([])
+            updateBindings.add(agentsTestRouteBinding("content-reviewer", "feishu", accountId: "tenant-a", peerKind: "thread", peerId: "thread-review"))
+            let updateParams = JsonObject()
+            updateParams.put("id", JsonString("content"))
+            updateParams.put("bindings", updateBindings)
+            let updateResponse = handleGatewayAgentsFamily("agents.teams.update", request: Some(GatewayRpcRequest("agents.teams.update", params: updateParams))).getOrThrow()
+            @Expect(updateResponse.ok, true)
+            @Expect(updateResponse.result.asObject().get("bindingApply").getOrThrow().asObject().get("added").getOrThrow().asArray().size(), 1)
+
+            let rootAfterUpdate = MetisConfigManager.rawConfig().getOrThrow()
+            let telegramAfterUpdate = gatewayResolveAgentRoute(GatewayAgentRouteInput(
+                rootAfterUpdate,
+                "telegram",
+                accountId: "bot-a",
+                peerKind: "group",
+                peerId: "-100_content"
+            ))
+            let feishuAfterUpdate = gatewayResolveAgentRoute(GatewayAgentRouteInput(
+                rootAfterUpdate,
+                "feishu",
+                accountId: "tenant-a",
+                peerKind: "thread",
+                peerId: "thread-review"
+            ))
+            @Expect(telegramAfterUpdate.agentId, "content-writer")
+            @Expect(feishuAfterUpdate.agentId, "content-reviewer")
+
+            let deleteParams = JsonObject()
+            deleteParams.put("id", JsonString("content"))
+            let deleteResponse = handleGatewayAgentsFamily("agents.teams.delete", request: Some(GatewayRpcRequest("agents.teams.delete", params: deleteParams))).getOrThrow()
+            @Expect(deleteResponse.ok, true)
+            let rootAfterDelete = MetisConfigManager.rawConfig().getOrThrow()
+            @Expect(gatewayResolveAgentRoute(GatewayAgentRouteInput(
+                rootAfterDelete,
+                "telegram",
+                accountId: "bot-a",
+                peerKind: "group",
+                peerId: "-100_content"
+            )).agentId, "content-writer")
+            @Expect(gatewayResolveAgentRoute(GatewayAgentRouteInput(
+                rootAfterDelete,
+                "feishu",
+                accountId: "tenant-a",
+                peerKind: "thread",
+                peerId: "thread-review"
+            )).agentId, "content-reviewer")
+        })
+    }
+
+    @TestCase
+    public func agentTeamsCreateBindingConflictDoesNotWritePartialConfig(): Unit {
+        withAgentsTempHome("metis-agent-teams-create-conflict-home", { home: Path =>
+            @Expect(agentsTestAddAgent("ops").ok, true)
+            let bindParams = JsonObject()
+            bindParams.put("agentId", JsonString("ops"))
+            bindParams.put("bind", JsonString("telegram:bot-a"))
+            let bindResponse = handleGatewayAgentsFamily("agents.bind", request: Some(GatewayRpcRequest("agents.bind", params: bindParams))).getOrThrow()
+            @Expect(bindResponse.ok, true)
+
+            let teamBindings = JsonArray([])
+            teamBindings.add(agentsTestRouteBinding("content-writer", "telegram", accountId: "bot-a"))
+            let createParams = JsonObject()
+            createParams.put("id", JsonString("content"))
+            createParams.put("template", JsonString("pm-writer-reviewer"))
+            createParams.put("bindings", teamBindings)
+            let createResponse = handleGatewayAgentsFamily("agents.teams.create", request: Some(GatewayRpcRequest("agents.teams.create", params: createParams))).getOrThrow()
+            @Expect(createResponse.ok, false)
+            @Expect(createResponse.error.contains("conflict"), true)
+
+            let listResponse = handleGatewayAgentsFamily("agents.teams.list").getOrThrow()
+            @Expect(listResponse.result.asObject().get("teams").getOrThrow().asArray().size(), 0)
+            let persisted = MetisConfigManager.rawConfig().getOrThrow()
+            @Expect(gatewayResolveAgentRoute(GatewayAgentRouteInput(persisted, "telegram", accountId: "bot-a")).agentId, "ops")
+            @Expect(persisted.toJsonString().contains("content-writer"), false)
+            @Expect(exists(home.join("agents").join("content-writer")), false)
+        })
+    }
+
+    @TestCase
+    public func agentTeamsUpdateBindingConflictDoesNotPersistDraftBindings(): Unit {
+        withAgentsTempHome("metis-agent-teams-update-conflict-home", { _home: Path =>
+            let createParams = JsonObject()
+            createParams.put("id", JsonString("content"))
+            createParams.put("template", JsonString("pm-writer-reviewer"))
+            let createResponse = handleGatewayAgentsFamily("agents.teams.create", request: Some(GatewayRpcRequest("agents.teams.create", params: createParams))).getOrThrow()
+            @Expect(createResponse.ok, true)
+            @Expect(agentsTestAddAgent("ops").ok, true)
+
+            let bindParams = JsonObject()
+            bindParams.put("agentId", JsonString("ops"))
+            bindParams.put("bind", JsonString("telegram:bot-a"))
+            let bindResponse = handleGatewayAgentsFamily("agents.bind", request: Some(GatewayRpcRequest("agents.bind", params: bindParams))).getOrThrow()
+            @Expect(bindResponse.ok, true)
+
+            let updateBindings = JsonArray([])
+            updateBindings.add(agentsTestRouteBinding("content-writer", "telegram", accountId: "bot-a"))
+            let updateParams = JsonObject()
+            updateParams.put("id", JsonString("content"))
+            updateParams.put("bindings", updateBindings)
+            let updateResponse = handleGatewayAgentsFamily("agents.teams.update", request: Some(GatewayRpcRequest("agents.teams.update", params: updateParams))).getOrThrow()
+            @Expect(updateResponse.ok, false)
+            @Expect(updateResponse.error.contains("conflict"), true)
+
+            let getParams = JsonObject()
+            getParams.put("id", JsonString("content"))
+            let getResponse = handleGatewayAgentsFamily("agents.teams.get", request: Some(GatewayRpcRequest("agents.teams.get", params: getParams))).getOrThrow()
+            @Expect(getResponse.ok, true)
+            let team = getResponse.result.asObject().get("team").getOrThrow().asObject()
+            @Expect(team.get("bindings").getOrThrow().asArray().size(), 0)
+            @Expect(agentsTestRawBindings().toJsonString().contains("\"agentId\":\"content-writer\""), false)
         })
     }
 

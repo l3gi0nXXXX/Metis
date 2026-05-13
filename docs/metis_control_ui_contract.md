@@ -134,7 +134,92 @@ Minimum response:
 }
 ```
 
-### 4. `agents.files.list`
+### 4. `agents.teams.*`
+
+Used by:
+- Agents page `Teams` panel
+
+Control UI calls:
+- `agents.teams.list` with `{}`
+- `agents.teams.get` with `{ "id": "<teamId>" }`
+- `agents.teams.create` with `id`, `displayName`, and either `template` or `members`
+- `agents.teams.update` with `id` plus changed `displayName`, `defaultAgentId`, `members`, `aliases`, or `bindings`
+- `agents.teams.delete` with `{ "id": "<teamId>" }`
+
+Minimum list response:
+
+```json
+{
+  "teams": [
+    {
+      "id": "content",
+      "displayName": "Content Team",
+      "defaultAgentId": "content-writer",
+      "members": [{ "agentId": "content-writer", "role": "writer", "name": "Writer" }],
+      "aliases": [],
+      "bindings": []
+    }
+  ],
+  "count": 1
+}
+```
+
+Hard requirements:
+- `teams` must be an array.
+- Team mutation responses must include `team`.
+- Control UI treats `bindings` on the team as editable team metadata; applying an executable route uses `agents.bind` / `agents.unbind`.
+
+### 5. `agents.models.get` / `agents.models.set`
+
+Used by:
+- Agents page `Teams` panel member model editor
+
+Control UI calls:
+- `agents.models.get` with `{ "agentId": "<memberAgentId>" }`
+- `agents.models.set` with `{ "agentId": "<memberAgentId>", "state": { ... } }`
+
+Minimum response:
+
+```json
+{
+  "models": {
+    "agentId": "content-writer",
+    "path": "/abs/agentDir/models.json",
+    "present": true,
+    "primaryModelRef": "openai:gpt-5-mini",
+    "runtimePrimaryModelRef": "openai:gpt-5-mini",
+    "providerCount": 0,
+    "diagnostics": [],
+    "state": { "providers": [] }
+  }
+}
+```
+
+Hard requirements:
+- `models.state` must be redacted before returning to the browser.
+- Control UI sends the edited state back through Gateway only; it must not read or write agent directories directly.
+
+### 6. `agents.bind` / `agents.unbind`
+
+Used by:
+- Agents page `Teams` panel binding action
+
+Control UI calls:
+- `agents.bind` with `{ "agentId": "<memberAgentId>", "bind": "channel[:accountId]" }`
+- `agents.unbind` with `{ "agentId": "<memberAgentId>", "bind": "channel[:accountId]" }`
+
+Minimum response:
+
+```json
+{
+  "agentId": "content-writer",
+  "added": ["telegram accountId=bot-a"],
+  "skipped": [],
+  "conflicts": []
+}
+```
+
+### 7. `agents.files.list`
 
 Used by:
 - upstream UI agent file controller sources
@@ -160,7 +245,7 @@ Hard requirements:
 - `files` must be an array.
 - UI checks `list.files.some(...)`.
 
-### 5. `agents.files.get`
+### 8. `agents.files.get`
 
 Minimum response:
 
@@ -175,7 +260,7 @@ Minimum response:
 }
 ```
 
-### 6. `agents.files.set`
+### 9. `agents.files.set`
 
 Minimum response:
 
@@ -190,7 +275,7 @@ Minimum response:
 }
 ```
 
-### 7. `cron.status`
+### 10. `cron.status`
 
 Used by:
 - upstream UI cron controller sources
@@ -205,7 +290,7 @@ Minimum response:
 }
 ```
 
-### 8. `cron.list`
+### 11. `cron.list`
 
 Minimum response:
 
@@ -364,6 +449,10 @@ Minimum response:
 Stable enough:
 - `agents.list`
 - `agent.identity.get`
+- `agents.teams.*`
+- `agents.models.*`
+- `agents.bind`
+- `agents.unbind`
 - `agents.files.*`
 - `cron.status`
 - `cron.list`

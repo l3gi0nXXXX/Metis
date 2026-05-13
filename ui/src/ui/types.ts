@@ -332,6 +332,67 @@ export type AgentsListResult = {
   agents: GatewayAgentRow[];
 };
 
+export type AgentTeamMember = {
+  agentId: string;
+  role?: string;
+  name?: string;
+};
+
+export type AgentRouteBinding = {
+  agentId?: string;
+  match?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type AgentTeam = {
+  id: string;
+  displayName?: string;
+  defaultAgentId?: string;
+  members?: AgentTeamMember[];
+  aliases?: unknown[];
+  bindings?: AgentRouteBinding[];
+  broadcast?: Record<string, unknown>;
+};
+
+export type AgentTeamsListResult = {
+  teams: AgentTeam[];
+  count: number;
+};
+
+export type AgentTeamGetResult = {
+  team: AgentTeam;
+};
+
+export type AgentTeamMutationResult = {
+  team: AgentTeam;
+  agents?: GatewayAgentRow[];
+  removed?: boolean;
+};
+
+export type AgentBindingsResult = {
+  agentId?: string;
+  added?: string[];
+  skipped?: string[];
+  removed?: string[];
+  missing?: string[];
+  conflicts?: Array<Record<string, unknown>>;
+  bindings?: AgentRouteBinding[];
+};
+
+export type AgentModelsResult = {
+  models: {
+    agentId: string;
+    agentDir?: string;
+    path?: string;
+    present?: boolean;
+    primaryModelRef?: string;
+    runtimePrimaryModelRef?: string;
+    providerCount?: number;
+    diagnostics?: string[];
+    state?: Record<string, unknown>;
+  };
+};
+
 export type AgentIdentityResult = {
   agentId: string;
   name: string;

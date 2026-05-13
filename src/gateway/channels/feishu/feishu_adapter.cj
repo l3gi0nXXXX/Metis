@@ -45,9 +45,13 @@ public class FeishuAdapter <: ChannelAdapter {
     private var feishuMonitorWaitFuture: Option<Future<Unit>> = None
     private var feishuMonitorReady: Bool = false
     private var feishuMonitorLastError: String = ""
+    private let accountId: String
+    private let chatQueue = FeishuChatQueue()
 
-    public init(config!: FeishuConfig = FeishuConfig()) {
+    public init(config!: FeishuConfig = FeishuConfig(), accountId!: String = "default") {
         this.config = config
+        let trimmedAccountId = accountId.trimAscii()
+        this.accountId = if (trimmedAccountId.isEmpty()) { "default" } else { trimmedAccountId }
     }
 
     public prop name: String {
@@ -221,9 +225,11 @@ public class FeishuAdapter <: ChannelAdapter {
             PrintUtils.printLine(
                 "Feishu ingest: mapped messageId=${inbound.messageId}, chat=${inbound.peerId}, sender=${inbound.senderId}, mentioned=${inbound.mentioned}"
             )
-            synchronized(this.queueMutex) {
-                this.inboundQueue.add(inbound)
-            }
+            this.chatQueue.runExclusive(inbound.accountId, inbound.peerId, inbound.threadId ?? "", { =>
+                synchronized(this.queueMutex) {
+                    this.inboundQueue.add(inbound)
+                }
+            })
             return "{\"ok\":true}"
         }
         PrintUtils.printLine("Feishu ingest: no text message mapped (non-text or missing fields), event_type=${headerEventType}")
@@ -243,7 +249,9 @@ public class FeishuAdapter <: ChannelAdapter {
         mentioned!: Bool = true
     ): Unit {
         let mediaContext = JsonObject()
-        this.attachFeishuImRouteContext(mediaContext, peerId, chatType, senderId, messageId, "", "")
+        let accountId = this.effectiveAccountId()
+        this.attachFeishuImRouteContext(mediaContext, accountId, peerId, chatType, senderId, messageId, "", "")
+        this.attachFeishuGateContext(mediaContext, chatType, mentioned)
         let msg = InboundMessage(
             ChannelType.Feishu,
             messageId,
@@ -254,6 +262,7 @@ public class FeishuAdapter <: ChannelAdapter {
             mentioned,
             DateTime.now(),
             raw: None,
+            accountId: accountId,
             mediaContext: mediaContext
         )
         synchronized(this.queueMutex) {
@@ -341,6 +350,7 @@ public class FeishuAdapter <: ChannelAdapter {
         let chatTypeRaw = this.readStringField(messageObj, "chat_type")
         let rootId = this.readStringField(messageObj, "root_id")
         let threadId = this.readStringField(messageObj, "thread_id")
+        let accountId = this.resolveFeishuAccountId(root)
 
         let senderIdObj = match (senderObj.get("sender_id")) {
             case Some(v) => v.asObject()
@@ -365,7 +375,9 @@ public class FeishuAdapter <: ChannelAdapter {
             this.messageMentionsBotOpenId(messageObj) ||
             (this.config.botOpenId.isEmpty() && (text.contains("@") || text.contains("<at ")))
         let mediaContext = JsonObject()
-        this.attachFeishuImRouteContext(mediaContext, chatId, chatType, senderId, messageId, rootId, threadId)
+        this.attachFeishuImRouteContext(mediaContext, accountId, chatId, chatType, senderId, messageId, rootId, threadId)
+        this.attachFeishuGateContext(mediaContext, chatType, mentioned)
+        this.attachFeishuAttachmentContext(mediaContext, accountId, chatId, messageId, messageType, contentJsonString)
 
         return InboundMessage(
             ChannelType.Feishu,
@@ -381,12 +393,14 @@ public class FeishuAdapter <: ChannelAdapter {
             replyTargetMessageId: this.resolveReplyTargetMessageId(messageId, rootId, threadId),
             replyInThread: this.shouldReplyInThread(chatType, rootId, threadId),
             raw: Some(root.toJsonString()),
+            accountId: accountId,
             mediaContext: mediaContext
         )
     }
 
     private func attachFeishuImRouteContext(
         mediaContext: JsonObject,
+        accountId: String,
         chatId: String,
         chatType: ChatType,
         senderId: String,
@@ -399,9 +413,10 @@ public class FeishuAdapter <: ChannelAdapter {
             case None => JsonObject()
         }
         let route = JsonObject()
+        let normalizedAccountId = this.normalizeAccountId(accountId)
         route.put("channel", JsonString("feishu"))
-        route.put("accountId", JsonString("default"))
-        route.put("defaultAccountId", JsonString("default"))
+        route.put("accountId", JsonString(normalizedAccountId))
+        route.put("defaultAccountId", JsonString(this.effectiveAccountId()))
         match (chatType) {
             case ChatType.Direct =>
                 route.put("peerKind", JsonString("direct"))
@@ -427,8 +442,154 @@ public class FeishuAdapter <: ChannelAdapter {
         route.put("messageId", JsonString(messageId.trimAscii()))
         context.put("imRoute", route)
         mediaContext.put("channel", JsonString("feishu"))
-        mediaContext.put("accountId", JsonString("default"))
+        mediaContext.put("accountId", JsonString(normalizedAccountId))
         mediaContext.put("context", context)
+    }
+
+    private func attachFeishuGateContext(mediaContext: JsonObject, chatType: ChatType, mentioned: Bool): Unit {
+        let context = match (mediaContext.get("context")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let gate = JsonObject()
+        let groupMentionRequired = match (chatType) {
+            case ChatType.Direct => false
+            case ChatType.Group => this.config.policy.requireMentionInGroup && !mentioned
+        }
+        gate.put("triggerAgent", JsonBool(!groupMentionRequired))
+        gate.put("mentioned", JsonBool(mentioned))
+        gate.put("requireMentionInGroup", JsonBool(this.config.policy.requireMentionInGroup))
+        gate.put("reason", JsonString(if (groupMentionRequired) { "group_mention_required" } else { "accepted" }))
+        context.put("feishuGate", gate)
+        mediaContext.put("context", context)
+    }
+
+    private func attachFeishuAttachmentContext(
+        mediaContext: JsonObject,
+        accountId: String,
+        chatId: String,
+        messageId: String,
+        messageType: String,
+        contentJsonString: String
+    ): Unit {
+        let normalizedType = messageType.trimAscii().toAsciiLower()
+        if (!(normalizedType == "image" || normalizedType == "file" || normalizedType == "media" || normalizedType == "audio")) {
+            return
+        }
+        let content = try {
+            JsonValue.fromStr(contentJsonString).asObject()
+        } catch (_e: Exception) {
+            JsonObject()
+        }
+        let fileId = this.feishuAttachmentFileId(normalizedType, content)
+        if (fileId.isEmpty()) {
+            return
+        }
+        let record = JsonObject()
+        record.put("mediaId", JsonString("${this.normalizeAccountId(accountId)}:${chatId.trimAscii()}:${messageId.trimAscii()}:${normalizedType}:${fileId}"))
+        record.put("channel", JsonString("feishu"))
+        record.put("accountId", JsonString(this.normalizeAccountId(accountId)))
+        record.put("peerId", JsonString(chatId.trimAscii()))
+        record.put("messageId", JsonString(messageId.trimAscii()))
+        record.put("relation", JsonString("current"))
+        record.put("mediaKind", JsonString(normalizedType))
+        record.put("kind", JsonString(normalizedType))
+        record.put("fileId", JsonString(fileId))
+        record.put("fileKey", JsonString(fileId))
+        record.put("originalFileName", JsonString(this.feishuAttachmentFileName(content)))
+        record.put("fileName", JsonString(this.feishuAttachmentFileName(content)))
+        record.put("mimeType", JsonString(this.feishuAttachmentMimeType(normalizedType, content)))
+        record.put("fileSize", JsonInt(this.feishuAttachmentFileSize(content)))
+        record.put("downloaded", JsonBool(false))
+        record.put("skippedReason", JsonString("metadata_only"))
+        record.put("eligibleFor", JsonString(this.feishuAttachmentEligibility(normalizedType)))
+        record.put("localPath", JsonString(""))
+        record.put("downloadPath", JsonString(""))
+        record.put("createdAtMs", JsonInt(DateTime.now().toUnixTimeStamp().toMilliseconds()))
+        let records = JsonArray([])
+        records.add(record)
+        mediaContext.put("records", records)
+    }
+
+    private func resolveFeishuAccountId(root: JsonObject): String {
+        let header = match (root.get("header")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        for (key in ["account_id", "accountId", "tenant_key", "tenantKey", "app_id", "appId"]) {
+            let value = this.readStringField(header, key).trimAscii()
+            if (!value.isEmpty()) {
+                return this.normalizeAccountId(value)
+            }
+        }
+        let event = match (root.get("event")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        for (key in ["account_id", "accountId", "tenant_key", "tenantKey", "app_id", "appId"]) {
+            let value = this.readStringField(event, key).trimAscii()
+            if (!value.isEmpty()) {
+                return this.normalizeAccountId(value)
+            }
+        }
+        this.effectiveAccountId()
+    }
+
+    private func effectiveAccountId(): String {
+        this.accountId
+    }
+
+    private func normalizeAccountId(raw: String): String {
+        let trimmed = raw.trimAscii()
+        if (trimmed.isEmpty()) { "default" } else { trimmed }
+    }
+
+    private func feishuAttachmentFileId(kind: String, content: JsonObject): String {
+        if (kind == "image") {
+            let imageKey = this.readStringField(content, "image_key").trimAscii()
+            if (!imageKey.isEmpty()) { return imageKey }
+        }
+        for (key in ["file_key", "fileKey", "media_key", "mediaKey", "audio_key", "audioKey"]) {
+            let value = this.readStringField(content, key).trimAscii()
+            if (!value.isEmpty()) { return value }
+        }
+        ""
+    }
+
+    private func feishuAttachmentFileName(content: JsonObject): String {
+        for (key in ["file_name", "fileName", "name"]) {
+            let value = this.readStringField(content, key).trimAscii()
+            if (!value.isEmpty()) { return value }
+        }
+        ""
+    }
+
+    private func feishuAttachmentMimeType(kind: String, content: JsonObject): String {
+        for (key in ["mime_type", "mimeType"]) {
+            let value = this.readStringField(content, key).trimAscii().toAsciiLower()
+            if (!value.isEmpty()) { return value }
+        }
+        if (kind == "image") { return "image/*" }
+        if (kind == "audio") { return "audio/*" }
+        if (kind == "media") { return "video/*" }
+        ""
+    }
+
+    private func feishuAttachmentFileSize(content: JsonObject): Int64 {
+        for (key in ["size", "file_size", "fileSize"]) {
+            let value = this.readStringField(content, key).trimAscii()
+            if (!value.isEmpty()) {
+                return try { Int64.parse(value) } catch (_e: Exception) { 0 }
+            }
+        }
+        0
+    }
+
+    private func feishuAttachmentEligibility(kind: String): String {
+        if (kind == "image") { return "image" }
+        if (kind == "audio") { return "audio" }
+        if (kind == "media") { return "video" }
+        "document"
     }
 
     private func readHeaderEventType(root: JsonObject): String {

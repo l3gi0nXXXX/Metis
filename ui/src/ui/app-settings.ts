@@ -13,6 +13,7 @@ import type { MetisApp } from "./app.ts";
 import { loadAgentFiles } from "./controllers/agent-files.ts";
 import { loadAgentIdentities, loadAgentIdentity } from "./controllers/agent-identity.ts";
 import { loadAgentSkills } from "./controllers/agent-skills.ts";
+import { loadAgentTeams } from "./controllers/agent-teams.ts";
 import { loadAgents } from "./controllers/agents.ts";
 import { loadChannels } from "./controllers/channels.ts";
 import { loadConfig, loadConfigSchema } from "./controllers/config.ts";
@@ -58,7 +59,7 @@ type SettingsHost = {
   basePath: string;
   agentsList?: AgentsListResult | null;
   agentsSelectedId?: string | null;
-  agentsPanel?: "overview" | "files" | "tools" | "skills" | "channels" | "cron";
+  agentsPanel?: "overview" | "files" | "tools" | "skills" | "channels" | "cron" | "teams";
   pendingGatewayUrl?: string | null;
   systemThemeCleanup?: (() => void) | null;
   pendingGatewayToken?: string | null;
@@ -270,6 +271,9 @@ export async function refreshActiveTab(host: SettingsHost) {
       if (host.agentsPanel === "cron") {
         void loadCron(host);
       }
+    }
+    if (host.agentsPanel === "teams") {
+      void loadAgentTeams(host as unknown as MetisApp);
     }
   }
   if (host.tab === "nodes") {

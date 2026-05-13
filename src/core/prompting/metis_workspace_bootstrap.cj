@@ -15,6 +15,10 @@ private const BOOTSTRAP_FILENAME = "BOOTSTRAP.md"
 private const MEMORY_FILENAME = "MEMORY.md"
 private const MEMORY_ALT_FILENAME = "memory.md"
 
+// BOOTSTRAP.md is an explicit, user-created setup-state file: load it in full prompt mode
+// when present, but do not auto-create it as durable workspace memory for every agent.
+public const METIS_WORKSPACE_BOOTSTRAP_AUTOCREATES_BOOTSTRAP_FILE: Bool = false
+
 public class MetisAgentWorkspaceBootstrapFileState {
     public var name: String = ""
     public var path: String = ""

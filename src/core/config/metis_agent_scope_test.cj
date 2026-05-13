@@ -103,6 +103,73 @@ public class MetisAgentScopeTest {
     }
 
     @TestCase
+    public func generalAliasUsesDefaultAgentSessionsDirWithoutCrossingIntoMain(): Unit {
+        let home = scopeTestHome("general-alias-sessions")
+        let workspace = home.join("workspace")
+        let writer = JsonObject()
+        writer.put("id", JsonString("writer"))
+        writer.put("default", JsonBool(true))
+        let list = JsonArray([])
+        list.add(writer)
+        let root = scopeAgentConfigRoot(list: list)
+
+        let scope = MetisAgentScope.resolve(root, agentId: "general", homeRoot: home, defaultWorkspace: workspace)
+
+        @Expect(scopeTestString(scope, "agentId"), "writer")
+        @Expect(scopeTestString(scope, "agentIdSource"), "alias")
+        @Expect(scopeTestString(scope, "sessionsDir"), home.join("agents").join("writer").join("sessions").toString())
+        @Expect(scopeTestString(scope, "sessionsDir").contains("/agents/main/"), false)
+        @Expect(scopeTestString(scope, "sessionsDir").contains("/agents/general/"), false)
+    }
+
+    @TestCase
+    public func configuredGeneralAgentKeepsOwnSessionsDir(): Unit {
+        let home = scopeTestHome("configured-general-sessions")
+        let workspace = home.join("workspace")
+        let mainEntry = JsonObject()
+        mainEntry.put("id", JsonString("main"))
+        mainEntry.put("default", JsonBool(true))
+        let general = JsonObject()
+        general.put("id", JsonString("general"))
+        let list = JsonArray([])
+        list.add(mainEntry)
+        list.add(general)
+        let root = scopeAgentConfigRoot(list: list)
+
+        let scope = MetisAgentScope.resolve(root, agentId: "general", homeRoot: home, defaultWorkspace: workspace)
+
+        @Expect(scopeTestString(scope, "agentId"), "general")
+        @Expect(scopeTestString(scope, "agentIdSource"), "request")
+        @Expect(scopeTestString(scope, "sessionsDir"), home.join("agents").join("general").join("sessions").toString())
+    }
+
+    @TestCase
+    public func authProfileDiagnosticsReportMissingLegacyAndCopyPolicyWithoutLeakingSecrets(): Unit {
+        let home = scopeTestHome("auth-profile-diagnostics")
+        let workspace = home.join("workspace")
+        let scope = MetisAgentScope.resolve(JsonObject(), homeRoot: home, defaultWorkspace: workspace)
+        let missing = MetisAgentScope.authProfileDiagnostics(scope)
+
+        @Expect(scopeTestString(missing, "authProfilesStatus"), "missing")
+        @Expect(scopeTestBool(missing, "copyDefaultProfiles"), false)
+        @Expect(scopeTestBool(missing, "copyRequiresExplicitConfirmation"), true)
+        @Expect(scopeTestArray(missing, "risks").toJsonString().contains("auth-profiles-missing"), true)
+
+        let agentDir = Path(scopeTestString(scope, "agentDir"))
+        scopePrepareDir(agentDir)
+        File.writeTo(agentDir.join("auth-profiles.json"), "{\"profiles\":[{\"id\":\"fixture\",\"apiKey\":\"fixture-api-key-value\"}]}".toArray())
+        File.writeTo(agentDir.join("auth.json"), "{\"secret\":\"fixture-secret-value\"}".toArray())
+        let present = MetisAgentScope.authProfileDiagnostics(scope)
+        let rendered = present.toJsonString()
+
+        @Expect(scopeTestString(present, "authProfilesStatus"), "present")
+        @Expect(scopeTestString(present, "legacyAuthStatus"), "present")
+        @Expect(scopeTestArray(present, "risks").toJsonString().contains("legacy-auth-json"), true)
+        @Expect(rendered.contains("fixture-api-key-value"), false)
+        @Expect(rendered.contains("fixture-secret-value"), false)
+    }
+
+    @TestCase
     public func singleAgentPreservesExplicitPathsAndRawPolicies(): Unit {
         let home = scopeTestHome("single")
         let defaults = JsonObject()

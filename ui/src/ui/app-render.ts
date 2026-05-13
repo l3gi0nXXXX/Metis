@@ -17,6 +17,19 @@ import { loadAgentFileContent, loadAgentFiles, saveAgentFile } from "./controlle
 import { loadAgentIdentities, loadAgentIdentity } from "./controllers/agent-identity.ts";
 import { loadAgentSkills } from "./controllers/agent-skills.ts";
 import {
+  applyAgentTeamBinding,
+  createAgentTeam,
+  createEmptyAgentTeamBindingDraft,
+  createEmptyAgentTeamDraft,
+  createEmptyAgentTeamModelDraft,
+  deleteAgentTeam,
+  loadAgentTeamDetail,
+  loadAgentTeamModel,
+  loadAgentTeams,
+  saveAgentTeamModel,
+  updateAgentTeam,
+} from "./controllers/agent-teams.ts";
+import {
   buildToolsEffectiveRequestKey,
   loadAgents,
   loadToolsCatalog,
@@ -1062,6 +1075,22 @@ export function renderApp(state: AppViewState) {
                   error: state.toolsEffectiveError,
                   result: state.toolsEffectiveResult,
                 },
+                agentTeams: {
+                  loading: state.agentTeamsLoading,
+                  saving: state.agentTeamsSaving,
+                  error: state.agentTeamsError,
+                  success: state.agentTeamsSuccess,
+                  list: state.agentTeamsList,
+                  selectedId: state.agentTeamsSelectedId,
+                  detail: state.agentTeamsDetail,
+                  draft: state.agentTeamDraft,
+                  binding: state.agentTeamBinding,
+                  bindingResult: state.agentTeamBindingResult,
+                  modelLoading: state.agentTeamModelLoading,
+                  modelError: state.agentTeamModelError,
+                  modelResult: state.agentTeamModelResult,
+                  modelDraft: state.agentTeamModelDraft,
+                },
                 runtimeSessionKey: state.sessionKey,
                 runtimeSessionMatchesSelectedAgent: toolsPanelUsesActiveSession,
                 modelCatalog: state.chatModelCatalog ?? [],
@@ -1096,6 +1125,9 @@ export function renderApp(state: AppViewState) {
                   }
                   if (state.agentsPanel === "cron") {
                     void state.loadCron();
+                  }
+                  if (state.agentsPanel === "teams") {
+                    void loadAgentTeams(state);
                   }
                 },
                 onSelectAgent: (agentId) => {
@@ -1189,6 +1221,9 @@ export function renderApp(state: AppViewState) {
                   if (panel === "cron") {
                     void state.loadCron();
                   }
+                  if (panel === "teams") {
+                    void loadAgentTeams(state);
+                  }
                 },
                 onLoadFiles: (agentId) => loadAgentFiles(state, agentId),
                 onSelectFile: (name) => {
@@ -1260,6 +1295,39 @@ export function renderApp(state: AppViewState) {
                   }
                   void runCronJob(state, job, "force");
                 },
+                onTeamsRefresh: () => loadAgentTeams(state),
+                onSelectTeam: (teamId) => loadAgentTeamDetail(state, teamId),
+                onNewTeam: () => {
+                  state.agentTeamsSelectedId = null;
+                  state.agentTeamsDetail = null;
+                  state.agentTeamDraft = createEmptyAgentTeamDraft();
+                  state.agentTeamBinding = createEmptyAgentTeamBindingDraft();
+                  state.agentTeamBindingResult = null;
+                  state.agentTeamModelDraft = createEmptyAgentTeamModelDraft();
+                  state.agentTeamModelResult = null;
+                  state.agentTeamModelError = null;
+                  state.agentTeamsError = null;
+                  state.agentTeamsSuccess = null;
+                },
+                onTeamDraftChange: (patch) => {
+                  state.agentTeamDraft = { ...state.agentTeamDraft, ...patch };
+                },
+                onCreateTeam: () => createAgentTeam(state),
+                onUpdateTeam: () => updateAgentTeam(state),
+                onDeleteTeam: () => deleteAgentTeam(state),
+                onTeamBindingChange: (patch) => {
+                  state.agentTeamBinding = { ...state.agentTeamBinding, ...patch };
+                },
+                onApplyTeamBinding: () => applyAgentTeamBinding(state),
+                onTeamModelDraftChange: (patch) => {
+                  state.agentTeamModelDraft = { ...state.agentTeamModelDraft, ...patch };
+                  if (patch.agentId) {
+                    state.agentTeamModelResult = null;
+                    state.agentTeamModelError = null;
+                  }
+                },
+                onLoadTeamModel: () => loadAgentTeamModel(state),
+                onSaveTeamModel: () => saveAgentTeamModel(state),
                 onSkillsFilterChange: (next) => (state.skillsFilter = next),
                 onSkillsRefresh: () => {
                   if (resolvedAgentId) {

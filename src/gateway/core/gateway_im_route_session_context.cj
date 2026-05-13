@@ -34,6 +34,7 @@ public func gatewayResolveSessionContextWithAgentRoute(request: GatewaySessionRe
         return base
     }
 
+    let aliasRoute = gatewayResolveAgentAliasRoute(request.routeRoot, [request.text])
     let route = gatewayResolveAgentRoute(
         GatewayAgentRouteInput(
             request.routeRoot,
@@ -45,7 +46,10 @@ public func gatewayResolveSessionContextWithAgentRoute(request: GatewaySessionRe
             parentPeerKind: request.routeParentPeerKind,
             parentPeerId: request.routeParentPeerId,
             senderId: request.senderId,
-            dmScope: request.dmScope
+            dmScope: request.dmScope,
+            explicitAgentId: aliasRoute.agentId,
+            explicitMatchedBy: aliasRoute.matchedBy,
+            diagnostics: aliasRoute.diagnostics
         )
     )
     let deliveryTarget = gatewayResolveDeliveryTarget(request, route.sessionKey, preferredAccountId: route.preferredAccountId)

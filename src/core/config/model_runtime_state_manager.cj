@@ -5,7 +5,10 @@ import magic.log.LogUtils
 
 import std.collection.ArrayList
 import std.fs.{Directory, File, exists, Path}
-import stdx.encoding.json.{JsonArray, JsonInt, JsonObject, JsonString, JsonValue}
+import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
+
+private const RUNTIME_STATE_GENERATED_BY = "metis"
+private const RUNTIME_STATE_MATERIALIZED_SOURCE = "agent-scope"
 
 private func runtimeStateGetString(root: JsonObject, key: String): Option<String> {
     match (root.get(key)) {
@@ -24,6 +27,18 @@ private func runtimeStateGetObject(root: JsonObject, key: String): Option<JsonOb
         case Some(value) =>
             try {
                 Some(value.asObject())
+            } catch (_: Exception) {
+                None
+            }
+        case None => None
+    }
+}
+
+private func runtimeStateGetBool(root: JsonObject, key: String): Option<Bool> {
+    match (root.get(key)) {
+        case Some(value) =>
+            try {
+                Some(value.asBool().getValue())
             } catch (_: Exception) {
                 None
             }
@@ -140,6 +155,36 @@ private func jsonArrayFromStrings(items: Array<String>): JsonArray {
     JsonArray(out)
 }
 
+private func runtimeStateScopeFingerprint(scope: JsonObject): String {
+    let agentId = runtimeStateGetString(scope, "agentId").getOrDefault { "" }.trimAscii()
+    let primary = MetisConfigManager.normalizeModelRef(runtimeStateScopePrimary(scope)).trimAscii()
+    let fallbackConfigured = runtimeStateScopeFallbacksConfigured(scope)
+    let fallbacks = normalizeModelArray(runtimeStateScopeFallbacks(scope))
+    "agentId=${agentId};primary=${primary};fallbacksConfigured=${fallbackConfigured};fallbacks=${String.join(fallbacks, delimiter: ",")}"
+}
+
+private func runtimeStateMarkGeneratedForScope(root: JsonObject, scope: JsonObject): JsonObject {
+    root.put("generated", true.toJsonValue())
+    root.put("generatedBy", JsonString(RUNTIME_STATE_GENERATED_BY))
+    root.put("materializedSource", JsonString(RUNTIME_STATE_MATERIALIZED_SOURCE))
+    root.put("scopeFingerprint", JsonString(runtimeStateScopeFingerprint(scope)))
+    root
+}
+
+private func runtimeStateIsGenerated(root: JsonObject): Bool {
+    (runtimeStateGetBool(root, "generated").getOrDefault { false }) &&
+        runtimeStateGetString(root, "generatedBy").getOrDefault { "" }.trimAscii() == RUNTIME_STATE_GENERATED_BY &&
+        runtimeStateGetString(root, "materializedSource").getOrDefault { "" }.trimAscii() == RUNTIME_STATE_MATERIALIZED_SOURCE
+}
+
+public class CliModelRuntimeStateRefreshResult {
+    public var status: String = ""
+    public var reason: String = ""
+    public var path: String = ""
+    public var refreshed: Bool = false
+    public init() {}
+}
+
 public class CliModelRuntimeStateManager {
     public static func runtimePath(): Path {
         MetisPaths.modelsRuntimePath()
@@ -202,7 +247,7 @@ public class CliModelRuntimeStateManager {
             root.put("fallbackModelRefs", jsonArrayFromStrings(canonicalModelArray(scopedFallbacks)))
             root.put("runtimeFallbackModelRefs", jsonArrayFromStrings(scopedFallbacks))
         }
-        root
+        runtimeStateMarkGeneratedForScope(root, scope)
     }
 
     private static func writeRuntimeStateTo(path: Path, root: JsonObject): Unit {
@@ -239,6 +284,35 @@ public class CliModelRuntimeStateManager {
             writeRuntimeStateTo(path, buildMaterializedRuntimeStateForScope(scope))
         }
         path
+    }
+
+    public static func refreshAgentRuntimeStateForScope(agentDir: Path, scope: JsonObject): CliModelRuntimeStateRefreshResult {
+        let result = CliModelRuntimeStateRefreshResult()
+        let path = agentRuntimePath(agentDir)
+        result.path = path.toString()
+        if (!exists(path)) {
+            writeRuntimeStateTo(path, buildMaterializedRuntimeStateForScope(scope))
+            result.status = "created"
+            result.reason = "missing-runtime-state"
+            result.refreshed = true
+            return result
+        }
+        match (readRuntimeStateFrom(path)) {
+            case Some(current) =>
+                if (runtimeStateIsGenerated(current)) {
+                    writeRuntimeStateTo(path, buildMaterializedRuntimeStateForScope(scope))
+                    result.status = "refreshed"
+                    result.reason = "generated-runtime-state"
+                    result.refreshed = true
+                } else {
+                    result.status = "skipped"
+                    result.reason = "manual-runtime-state"
+                }
+            case None =>
+                result.status = "skipped"
+                result.reason = "invalid-runtime-state"
+        }
+        result
     }
 
     public static func readRuntimeState(): Option<JsonObject> {

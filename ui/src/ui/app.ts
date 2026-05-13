@@ -56,6 +56,14 @@ import type { AppViewState } from "./app-view-state.ts";
 import { normalizeAssistantIdentity } from "./assistant-identity.ts";
 import { exportChatMarkdown } from "./chat/export.ts";
 import {
+  createEmptyAgentTeamBindingDraft,
+  createEmptyAgentTeamDraft,
+  createEmptyAgentTeamModelDraft,
+  type AgentTeamBindingDraft,
+  type AgentTeamEditorDraft,
+  type AgentTeamModelDraft,
+} from "./controllers/agent-teams.ts";
+import {
   loadToolsEffective as loadToolsEffectiveInternal,
   refreshVisibleToolsEffectiveForCurrentSession as refreshVisibleToolsEffectiveForCurrentSessionInternal,
 } from "./controllers/agents.ts";
@@ -76,6 +84,10 @@ import { loadSettings, type UiSettings } from "./storage.ts";
 import { VALID_THEME_NAMES, type ResolvedTheme, type ThemeMode, type ThemeName } from "./theme.ts";
 import type {
   AgentsListResult,
+  AgentBindingsResult,
+  AgentModelsResult,
+  AgentTeam,
+  AgentTeamsListResult,
   AgentsFilesListResult,
   AgentIdentityResult,
   ConfigSnapshot,
@@ -284,7 +296,21 @@ export class MetisApp extends LitElement {
   @state() toolsEffectiveResultKey: string | null = null;
   @state() toolsEffectiveError: string | null = null;
   @state() toolsEffectiveResult: ToolsEffectiveResult | null = null;
-  @state() agentsPanel: "overview" | "files" | "tools" | "skills" | "channels" | "cron" = "files";
+  @state() agentsPanel: "overview" | "files" | "tools" | "skills" | "channels" | "cron" | "teams" = "files";
+  @state() agentTeamsLoading = false;
+  @state() agentTeamsSaving = false;
+  @state() agentTeamsError: string | null = null;
+  @state() agentTeamsSuccess: string | null = null;
+  @state() agentTeamsList: AgentTeamsListResult | null = null;
+  @state() agentTeamsSelectedId: string | null = null;
+  @state() agentTeamsDetail: AgentTeam | null = null;
+  @state() agentTeamDraft: AgentTeamEditorDraft = createEmptyAgentTeamDraft();
+  @state() agentTeamBinding: AgentTeamBindingDraft = createEmptyAgentTeamBindingDraft();
+  @state() agentTeamBindingResult: AgentBindingsResult | null = null;
+  @state() agentTeamModelLoading = false;
+  @state() agentTeamModelError: string | null = null;
+  @state() agentTeamModelResult: AgentModelsResult | null = null;
+  @state() agentTeamModelDraft: AgentTeamModelDraft = createEmptyAgentTeamModelDraft();
   @state() agentFilesLoading = false;
   @state() agentFilesError: string | null = null;
   @state() agentFilesList: AgentsFilesListResult | null = null;

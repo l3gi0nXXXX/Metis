@@ -4,7 +4,7 @@ import magic.jsonable.*
 
 import std.env.getVariable
 import std.collection.{ArrayList, HashMap}
-import std.fs.{File, Path, exists}
+import std.fs.{File, FileInfo, Path, exists}
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString, JsonValue}
 
 private func scopeJsonObject(root: JsonObject, key: String): Option<JsonObject> {
@@ -761,6 +761,32 @@ private func scopeAccountSummary(root: JsonObject, modelRef: String): JsonObject
     out
 }
 
+private func scopeFileIsSymlink(path: Path): Bool {
+    try {
+        FileInfo(path).isSymbolicLink()
+    } catch (_: Exception) {
+        false
+    }
+}
+
+private func scopeAuthProfilesStatus(path: Path, out: JsonObject): String {
+    if (!exists(path)) {
+        return "missing"
+    }
+    try {
+        let root = JsonValue.fromStr(String.fromUtf8(File.readFrom(path))).asObject()
+        let profiles = scopeJsonArray(root, "profiles").getOrDefault { JsonArray([]) }
+        out.put("profileCount", profiles.size().toJsonValue())
+        "present"
+    } catch (_: Exception) {
+        "invalid-json"
+    }
+}
+
+private func scopeAddRisk(risks: JsonArray, code: String): Unit {
+    risks.add(JsonString(code))
+}
+
 public class MetisAgentScope {
     public static func normalizeAgentId(raw: String): String {
         let lower = raw.trimAscii().toAsciiLower()
@@ -887,6 +913,59 @@ public class MetisAgentScope {
         }
         out.put("raw", raw)
         out.put("diagnostics", diagnostics)
+        out
+    }
+
+    public static func authProfileDiagnostics(scope: JsonObject): JsonObject {
+        let out = JsonObject()
+        let risks = JsonArray([])
+        let authProfilesPath = scopeJsonString(scope, "authProfilesPath").getOrDefault { "" }.trimAscii()
+        let legacyAuthPath = scopeJsonString(scope, "legacyAuthPath").getOrDefault { "" }.trimAscii()
+        out.put("authProfilesPath", JsonString(authProfilesPath))
+        out.put("legacyAuthPath", JsonString(legacyAuthPath))
+        out.put("copyDefaultProfiles", false.toJsonValue())
+        out.put("copyRequiresExplicitConfirmation", true.toJsonValue())
+        scopeAddRisk(risks, "credential-copy-requires-explicit-confirmation")
+
+        if (authProfilesPath.isEmpty()) {
+            out.put("authProfilesStatus", JsonString("missing"))
+            scopeAddRisk(risks, "auth-profiles-missing")
+        } else {
+            let path = Path(authProfilesPath)
+            let status = scopeAuthProfilesStatus(path, out)
+            out.put("authProfilesStatus", JsonString(status))
+            if (status == "missing") {
+                scopeAddRisk(risks, "auth-profiles-missing")
+            } else if (status == "invalid-json") {
+                scopeAddRisk(risks, "auth-profiles-invalid")
+            }
+            if (scopeFileIsSymlink(path)) {
+                out.put("authProfilesSymlink", true.toJsonValue())
+                scopeAddRisk(risks, "auth-profiles-symlink")
+            } else {
+                out.put("authProfilesSymlink", false.toJsonValue())
+            }
+        }
+
+        if (legacyAuthPath.isEmpty()) {
+            out.put("legacyAuthStatus", JsonString("absent"))
+        } else {
+            let legacyPath = Path(legacyAuthPath)
+            if (exists(legacyPath)) {
+                out.put("legacyAuthStatus", JsonString("present"))
+                scopeAddRisk(risks, "legacy-auth-json")
+                if (scopeFileIsSymlink(legacyPath)) {
+                    out.put("legacyAuthSymlink", true.toJsonValue())
+                    scopeAddRisk(risks, "legacy-auth-symlink")
+                } else {
+                    out.put("legacyAuthSymlink", false.toJsonValue())
+                }
+            } else {
+                out.put("legacyAuthStatus", JsonString("absent"))
+                out.put("legacyAuthSymlink", false.toJsonValue())
+            }
+        }
+        out.put("risks", risks)
         out
     }
 

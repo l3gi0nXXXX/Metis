@@ -2,8 +2,9 @@ package metis.gateway.channels.telegram
 
 import metis.core.{GatewayToolRuntimeContext, gatewayWithToolRuntimeContext, setGatewayMediaAsrRunnerForTest, setGatewayMediaVisionRunnerForTest}
 import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager}
-import metis.gateway.core.{gatewayBuildMediaContextPrompt, setGatewayOpenClawPluginSidecarRunnerForTest}
+import metis.gateway.core.{gatewayBuildMediaContextPrompt, gatewayResolveSessionContextWithAgentRoute, setGatewayOpenClawPluginSidecarRunnerForTest}
 import metis.gateway.model.*
+import metis.gateway.session.gatewaySessionRequestFromInbound
 import metis.gateway.tools.{GatewayTelegramMediaToolset, setGatewayTelegramStickerCacheRootForTest}
 
 import magic.jsonable.*
@@ -216,6 +217,45 @@ private class TelegramFakeBotApi {
     }
 }
 
+private func telegramAliasRouteStringArray(values: Array<String>): JsonArray {
+    let out = JsonArray([])
+    for (value in values) {
+        out.add(JsonString(value))
+    }
+    out
+}
+
+private func telegramAliasRouteAgent(id: String, isDefault!: Bool = false, mentionPatterns!: Array<String> = []): JsonObject {
+    let agent = JsonObject()
+    agent.put("id", JsonString(id))
+    if (isDefault) {
+        agent.put("default", JsonBool(true))
+    }
+    if (mentionPatterns.size > 0) {
+        let groupChat = JsonObject()
+        groupChat.put("mentionPatterns", telegramAliasRouteStringArray(mentionPatterns))
+        agent.put("groupChat", groupChat)
+    }
+    return agent
+}
+
+private func telegramAliasRouteRoot(): JsonObject {
+    let root = JsonObject()
+    let agents = JsonObject()
+    let list = JsonArray([])
+    list.add(telegramAliasRouteAgent("main", isDefault: true))
+    list.add(telegramAliasRouteAgent("writer", mentionPatterns: ["@writer", "/agent writer"]))
+    list.add(telegramAliasRouteAgent("broken", mentionPatterns: ["("]))
+    agents.put("list", list)
+    root.put("agents", agents)
+    let channels = JsonObject()
+    let telegram = JsonObject()
+    telegram.put("defaultAccountId", JsonString("default"))
+    channels.put("telegram", telegram)
+    root.put("channels", channels)
+    return root
+}
+
 private func telegramBytesContain(body: Array<Byte>, needle: Array<Byte>): Bool {
     if (needle.isEmpty()) {
         return true
@@ -395,6 +435,44 @@ public class TelegramAdapterTest {
         @Expect(imRoute.get("peerId").getOrThrow().asString().getValue(), "42")
         @Expect(imRoute.get("parentPeerKind").getOrThrow().asString().getValue(), "group")
         @Expect(imRoute.get("parentPeerId").getOrThrow().asString().getValue(), "-100123")
+    }
+
+    @TestCase
+    public func fakeInboundTelegramAliasMentionRoutesWriterAndDefaultsOtherwise(): Unit {
+        let root = telegramAliasRouteRoot()
+        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
+        adapter.start()
+        adapter.simulateIncomingText("msg-default", "group:-100123", "8734062810", "hello team", chatType: ChatType.Group, mentioned: true)
+        adapter.simulateIncomingText("msg-slash", "group:-100123", "8734062810", "/agent writer draft this", chatType: ChatType.Group, mentioned: true)
+        adapter.simulateIncomingText("msg-mention", "group:-100123", "8734062810", "@writer draft this", chatType: ChatType.Group, mentioned: true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 3)
+        let defaultContext = gatewayResolveSessionContextWithAgentRoute(gatewaySessionRequestFromInbound(inbound[0], routeRoot: root))
+        let slashContext = gatewayResolveSessionContextWithAgentRoute(gatewaySessionRequestFromInbound(inbound[1], routeRoot: root))
+        let mentionContext = gatewayResolveSessionContextWithAgentRoute(gatewaySessionRequestFromInbound(inbound[2], routeRoot: root))
+
+        @Expect(defaultContext.agentId, "main")
+        @Expect(defaultContext.matchedBy, "default")
+        @Expect(slashContext.agentId, "writer")
+        @Expect(slashContext.matchedBy, "alias.mention")
+        @Expect(mentionContext.agentId, "writer")
+        @Expect(mentionContext.matchedBy, "alias.mention")
+    }
+
+    @TestCase
+    public func fakeInboundTelegramInvalidAliasPatternDoesNotCrashOrOverrideDefault(): Unit {
+        let root = telegramAliasRouteRoot()
+        let adapter = TelegramAdapter(config: TelegramConfig(enabled: true, botToken: "telegram-token"))
+        adapter.start()
+        adapter.simulateIncomingText("msg-invalid", "group:-100123", "8734062810", "plain message (with invalid literal", chatType: ChatType.Group, mentioned: true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 1)
+        let context = gatewayResolveSessionContextWithAgentRoute(gatewaySessionRequestFromInbound(inbound[0], routeRoot: root))
+
+        @Expect(context.agentId, "main")
+        @Expect(context.matchedBy, "default")
     }
 
     @TestCase
