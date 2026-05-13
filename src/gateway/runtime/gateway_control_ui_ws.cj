@@ -827,6 +827,14 @@ private func gatewayControlUiWsAgentsRuntimeAuditResult(params: JsonObject): Jso
     }
 }
 
+private func gatewayControlUiWsAgentsFamilyCompatResponse(method: String, params: JsonObject): GatewayProtocolResponse {
+    let request = GatewayRpcRequest(method, params: params)
+    match (handleGatewayAgentsFamily(method, request: Some(request))) {
+        case Some(response) => GatewayProtocolResponse(response.ok, method, result: response.result, error: response.error)
+        case None => GatewayProtocolResponse(false, method, error: "Unsupported agents method.", errorCode: "UNSUPPORTED")
+    }
+}
+
 private func gatewayControlUiWsSkillSourceLabel(location: String): String {
     skillsSourceTagForLocation(location)
 }
@@ -2723,6 +2731,18 @@ public func gatewayControlUiWsCompatResponse(method: String, params: JsonObject,
     }
     if (normalized == "agents.runtime.audit") {
         return Some(GatewayProtocolResponse(true, method, result: gatewayControlUiWsAgentsRuntimeAuditResult(params)))
+    }
+    if (
+        normalized == "agents.models.status" ||
+        normalized == "agents.models.get" ||
+        normalized == "agents.models.set" ||
+        normalized == "agents.teams.list" ||
+        normalized == "agents.teams.get" ||
+        normalized == "agents.teams.create" ||
+        normalized == "agents.teams.update" ||
+        normalized == "agents.teams.delete"
+    ) {
+        return Some(gatewayControlUiWsAgentsFamilyCompatResponse(normalized, params))
     }
     if (normalized == "agent.identity.get") {
         return Some(GatewayProtocolResponse(true, method, result: gatewayControlUiWsAgentIdentityResult(params)))

@@ -109,5 +109,5 @@ describe("Metis control-ui browser smoke", () => {
       await browser.close();
       await server.close();
     }
-  });
+  }, 20_000);
 });

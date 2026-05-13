@@ -240,6 +240,26 @@ public class GatewayControlUiWsTest {
     }
 
     @TestCase
+    public func agentsTeamsCompatResponsePassesThroughGatewayAgentsFamily(): Unit {
+        withGatewayControlUiWsTestHome {
+            let cfg = buildGatewayConfigFromUserSettings(CliSettingManager.readGatewaySettings())
+            let createParams = JsonObject()
+            createParams.put("id", JsonString("content"))
+            createParams.put("displayName", JsonString("Content Team"))
+            createParams.put("template", JsonString("pm-writer-reviewer"))
+
+            let createResponse = gatewayControlUiWsCompatResponse("agents.teams.create", createParams, cfg)
+            @Expect(createResponse.isSome(), true)
+            @Expect(createResponse.getOrThrow().ok, true)
+
+            let listResponse = gatewayControlUiWsCompatResponse("agents.teams.list", JsonObject(), cfg)
+            @Expect(listResponse.isSome(), true)
+            let result = listResponse.getOrThrow().result.asObject()
+            @Expect(result.get("teams").getOrThrow().asArray().size(), 1)
+        }
+    }
+
+    @TestCase
     public func channelsRuntimeCompatResponseExposesTelegramNativeRuntimeView(): Unit {
         let cfg = buildGatewayConfigFromUserSettings(CliSettingManager.readGatewaySettings())
         let params = JsonObject()

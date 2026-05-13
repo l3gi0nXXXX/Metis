@@ -19,9 +19,10 @@ import {
   renderAgentCron,
 } from "./agents-panels-status-files.ts";
 import { renderAgentTools, renderAgentSkills } from "./agents-panels-tools-skills.ts";
+import { renderAgentTeamsPanel, type AgentTeamsPanelState } from "./agents-panel-teams.ts";
 import { agentBadgeText, buildAgentContext, normalizeAgentLabel } from "./agents-utils.ts";
 
-export type AgentsPanel = "overview" | "files" | "tools" | "skills" | "channels" | "cron";
+export type AgentsPanel = "overview" | "files" | "tools" | "skills" | "channels" | "cron" | "teams";
 
 export type ConfigState = {
   form: Record<string, unknown> | null;
@@ -91,6 +92,7 @@ export type AgentsProps = {
   agentSkills: AgentSkillsState;
   toolsCatalog: ToolsCatalogState;
   toolsEffective: ToolsEffectiveState;
+  agentTeams: AgentTeamsPanelState;
   runtimeSessionKey: string;
   runtimeSessionMatchesSelectedAgent: boolean;
   modelCatalog: ModelCatalogEntry[];
@@ -111,6 +113,18 @@ export type AgentsProps = {
   onChannelsRefresh: () => void;
   onCronRefresh: () => void;
   onCronRunNow: (jobId: string) => void;
+  onTeamsRefresh: () => void;
+  onSelectTeam: (teamId: string) => void;
+  onNewTeam: () => void;
+  onTeamDraftChange: (patch: Partial<AgentTeamsPanelState["draft"]>) => void;
+  onCreateTeam: () => void;
+  onUpdateTeam: () => void;
+  onDeleteTeam: () => void;
+  onTeamBindingChange: (patch: Partial<AgentTeamsPanelState["binding"]>) => void;
+  onApplyTeamBinding: () => void;
+  onTeamModelDraftChange: (patch: Partial<AgentTeamsPanelState["modelDraft"]>) => void;
+  onLoadTeamModel: () => void;
+  onSaveTeamModel: () => void;
   onSkillsFilterChange: (next: string) => void;
   onSkillsRefresh: () => void;
   onAgentSkillToggle: (agentId: string, skillName: string, enabled: boolean) => void;
@@ -142,6 +156,7 @@ export function renderAgents(props: AgentsProps) {
     skills: selectedSkillCount,
     channels: channelEntryCount,
     cron: cronJobCount || null,
+    teams: props.agentTeams.list?.count ?? null,
   };
 
   return html`
@@ -206,7 +221,12 @@ export function renderAgents(props: AgentsProps) {
           : nothing}
       </section>
       <section class="agents-main">
-        ${!selectedAgent
+        ${renderAgentTabs(
+          props.activePanel,
+          (panel) => props.onSelectPanel(panel),
+          tabCounts,
+        )}
+        ${!selectedAgent && props.activePanel !== "teams"
           ? html`
               <div class="card">
                 <div class="card-title">Select an agent</div>
@@ -214,19 +234,14 @@ export function renderAgents(props: AgentsProps) {
               </div>
             `
           : html`
-              ${renderAgentTabs(
-                props.activePanel,
-                (panel) => props.onSelectPanel(panel),
-                tabCounts,
-              )}
               ${props.activePanel === "overview"
                 ? renderAgentOverview({
-                    agent: selectedAgent,
+                    agent: selectedAgent!,
                     basePath: props.basePath,
                     defaultId,
                     configForm: props.config.form,
                     agentFilesList: props.agentFiles.list,
-                    agentIdentity: props.agentIdentityById[selectedAgent.id] ?? null,
+                    agentIdentity: props.agentIdentityById[selectedAgent!.id] ?? null,
                     agentIdentityError: props.agentIdentityError,
                     agentIdentityLoading: props.agentIdentityLoading,
                     configLoading: props.config.loading,
@@ -242,7 +257,7 @@ export function renderAgents(props: AgentsProps) {
                 : nothing}
               ${props.activePanel === "files"
                 ? renderAgentFiles({
-                    agentId: selectedAgent.id,
+                    agentId: selectedAgent!.id,
                     agentFilesList: props.agentFiles.list,
                     agentFilesLoading: props.agentFiles.loading,
                     agentFilesError: props.agentFiles.error,
@@ -259,7 +274,7 @@ export function renderAgents(props: AgentsProps) {
                 : nothing}
               ${props.activePanel === "tools"
                 ? renderAgentTools({
-                    agentId: selectedAgent.id,
+                    agentId: selectedAgent!.id,
                     configForm: props.config.form,
                     configLoading: props.config.loading,
                     configSaving: props.config.saving,
@@ -280,7 +295,7 @@ export function renderAgents(props: AgentsProps) {
                 : nothing}
               ${props.activePanel === "skills"
                 ? renderAgentSkills({
-                    agentId: selectedAgent.id,
+                    agentId: selectedAgent!.id,
                     report: props.agentSkills.report,
                     loading: props.agentSkills.loading,
                     error: props.agentSkills.error,
@@ -302,11 +317,11 @@ export function renderAgents(props: AgentsProps) {
               ${props.activePanel === "channels"
                 ? renderAgentChannels({
                     context: buildAgentContext(
-                      selectedAgent,
+                      selectedAgent!,
                       props.config.form,
                       props.agentFiles.list,
                       defaultId,
-                      props.agentIdentityById[selectedAgent.id] ?? null,
+                      props.agentIdentityById[selectedAgent!.id] ?? null,
                     ),
                     configForm: props.config.form,
                     snapshot: props.channels.snapshot,
@@ -320,13 +335,13 @@ export function renderAgents(props: AgentsProps) {
               ${props.activePanel === "cron"
                 ? renderAgentCron({
                     context: buildAgentContext(
-                      selectedAgent,
+                      selectedAgent!,
                       props.config.form,
                       props.agentFiles.list,
                       defaultId,
-                      props.agentIdentityById[selectedAgent.id] ?? null,
+                      props.agentIdentityById[selectedAgent!.id] ?? null,
                     ),
-                    agentId: selectedAgent.id,
+                    agentId: selectedAgent!.id,
                     jobs: props.cron.jobs,
                     status: props.cron.status,
                     loading: props.cron.loading,
@@ -334,6 +349,23 @@ export function renderAgents(props: AgentsProps) {
                     onRefresh: props.onCronRefresh,
                     onRunNow: props.onCronRunNow,
                     onSelectPanel: props.onSelectPanel,
+                  })
+                : nothing}
+              ${props.activePanel === "teams"
+                ? renderAgentTeamsPanel({
+                    ...props.agentTeams,
+                    onRefresh: props.onTeamsRefresh,
+                    onSelectTeam: props.onSelectTeam,
+                    onNewTeam: props.onNewTeam,
+                    onDraftChange: props.onTeamDraftChange,
+                    onCreateTeam: props.onCreateTeam,
+                    onUpdateTeam: props.onUpdateTeam,
+                    onDeleteTeam: props.onDeleteTeam,
+                    onBindingChange: props.onTeamBindingChange,
+                    onApplyBinding: props.onApplyTeamBinding,
+                    onModelDraftChange: props.onTeamModelDraftChange,
+                    onLoadModel: props.onLoadTeamModel,
+                    onSaveModel: props.onSaveTeamModel,
                   })
                 : nothing}
             `}
@@ -354,6 +386,7 @@ function renderAgentTabs(
     { id: "skills", label: "Skills" },
     { id: "channels", label: "Channels" },
     { id: "cron", label: "Cron Jobs" },
+    { id: "teams", label: "Teams" },
   ];
   return html`
     <div class="agent-tabs">
