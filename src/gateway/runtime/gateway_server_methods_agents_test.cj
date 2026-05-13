@@ -1047,6 +1047,61 @@ public class GatewayServerMethodsAgentsTest {
     }
 
     @TestCase
+    public func agentUpdateRefreshesGeneratedModelsJsonButPreservesManualState(): Unit {
+        withAgentsTempHome("metis-agents-models-refresh-hook-home", { home: Path =>
+            let addParams = JsonObject()
+            addParams.put("id", JsonString("pm"))
+            addParams.put("model", JsonString("qwen:qwen-plus"))
+            let addResponse = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: addParams))).getOrThrow()
+            @Expect(addResponse.ok, true)
+
+            let statusParams = JsonObject()
+            statusParams.put("agentId", JsonString("pm"))
+            let statusResponse = handleGatewayAgentsFamily("agents.models.status", request: Some(GatewayRpcRequest("agents.models.status", params: statusParams))).getOrThrow()
+            @Expect(statusResponse.ok, true)
+            let modelsPath = home.join("agents").join("pm").join("agent").join("models.json")
+            let initialState = statusResponse.result.asObject().get("models").getOrThrow().asObject().get("state").getOrThrow().asObject()
+            @Expect(agentsTestString(initialState, "runtimePrimaryModelRef").contains("qwen-plus"), true)
+            @Expect(agentsTestBool(initialState, "generated"), true)
+
+            let updateParams = JsonObject()
+            updateParams.put("id", JsonString("pm"))
+            updateParams.put("model", JsonString("openai:gpt-4o-mini"))
+            let updateResponse = handleGatewayAgentsFamily("agents.update", request: Some(GatewayRpcRequest("agents.update", params: updateParams))).getOrThrow()
+            @Expect(updateResponse.ok, true)
+            let refresh = updateResponse.result.asObject().get("modelsRefresh").getOrThrow().asObject()
+            @Expect(agentsTestString(refresh, "status"), "refreshed")
+            @Expect(agentsTestBool(refresh, "refreshed"), true)
+            let generatedGet = handleGatewayAgentsFamily("agents.models.get", request: Some(GatewayRpcRequest("agents.models.get", params: statusParams))).getOrThrow()
+            let generatedState = generatedGet.result.asObject().get("models").getOrThrow().asObject().get("state").getOrThrow().asObject()
+            @Expect(agentsTestString(generatedState, "runtimePrimaryModelRef"), "openai:gpt-4o-mini")
+
+            let manualState = JsonObject()
+            manualState.put("primaryModelRef", JsonString("manual:model"))
+            manualState.put("runtimePrimaryModelRef", JsonString("manual:model"))
+            manualState.put("providers", JsonArray([]))
+            let setParams = JsonObject()
+            setParams.put("agentId", JsonString("pm"))
+            setParams.put("state", manualState)
+            let setResponse = handleGatewayAgentsFamily("agents.models.set", request: Some(GatewayRpcRequest("agents.models.set", params: setParams))).getOrThrow()
+            @Expect(setResponse.ok, true)
+
+            let manualUpdateParams = JsonObject()
+            manualUpdateParams.put("id", JsonString("pm"))
+            manualUpdateParams.put("model", JsonString("anthropic:claude-3-5-sonnet"))
+            let manualUpdate = handleGatewayAgentsFamily("agents.update", request: Some(GatewayRpcRequest("agents.update", params: manualUpdateParams))).getOrThrow()
+            @Expect(manualUpdate.ok, true)
+            let manualRefresh = manualUpdate.result.asObject().get("modelsRefresh").getOrThrow().asObject()
+            @Expect(agentsTestString(manualRefresh, "status"), "skipped")
+            @Expect(agentsTestString(manualRefresh, "reason"), "manual-runtime-state")
+            @Expect(agentsTestBool(manualRefresh, "refreshed"), false)
+            let manualContent = String.fromUtf8(File.readFrom(modelsPath))
+            @Expect(manualContent.contains("manual:model"), true)
+            @Expect(manualContent.contains("anthropic:claude-3-5-sonnet"), false)
+        })
+    }
+
+    @TestCase
     public func agentTeamsCreateUpdateCompileBindingsAndDeletePreservesRoutes(): Unit {
         withAgentsTempHome("metis-agent-teams-bindings-compile-home", { _home: Path =>
             let createBindings = JsonArray([])

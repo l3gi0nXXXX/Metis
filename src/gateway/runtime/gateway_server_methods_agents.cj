@@ -3,7 +3,7 @@ package metis.gateway.runtime
 import magic.jsonable.*
 
 import metis.core.{gatewayMainRuntimeExtendedToolNames, gatewayMainRuntimeRequiredToolNames, missingRuntimeToolNames, resolveRuntimeToolPolicyFromRoot, runtimeToolPolicyReportToJson}
-import metis.core.config.{CliConfig, CliModelRuntimeStateManager, CliSettingManager, MetisAgentScope, MetisConfigManager, MetisPaths, GatewayUserSettings}
+import metis.core.config.{CliConfig, CliModelRuntimeStateManager, CliModelRuntimeStateRefreshResult, CliSettingManager, MetisAgentScope, MetisConfigManager, MetisPaths, GatewayUserSettings}
 import metis.core.memory.MemoryRuntimeRegistry
 import metis.core.prompting.{MetisAgentWorkspaceBootstrapResult, ensureMetisAgentWorkspace, metisWorkspaceBootstrapFilenames, metisWorkspaceSafeRead, metisWorkspaceSafeWrite, validateMetisIdentityAvatar}
 import metis.core.skills.resolveAgentSkillVisibility
@@ -1399,6 +1399,7 @@ private func gatewayAgentUpdateJson(request: GatewayRpcRequest): GatewayRpcRespo
     }
     let existing = try { entries[index].asObject() } catch (_e: Exception) { JsonObject() }
     let updated = gatewayAgentCloneObject(existing)
+    let shouldRefreshModels = gatewayAgentRequestHasAny(request, ["model", "workspace", "agentDir"])
     gatewayAgentPutRequestString(updated, request, ["name"], "name")
     gatewayAgentPutRequestString(updated, request, ["workspace"], "workspace")
     gatewayAgentPutRequestString(updated, request, ["agentDir"], "agentDir")
@@ -1446,6 +1447,17 @@ private func gatewayAgentUpdateJson(request: GatewayRpcRequest): GatewayRpcRespo
     let result = JsonObject()
     result.put("agentId", JsonString(agentId))
     result.put("agent", gatewayAgentGetJson(agentId))
+    if (shouldRefreshModels) {
+        let scope = MetisAgentScope.resolve(
+            root,
+            agentId: agentId,
+            homeRoot: MetisPaths.homeRootReadOnly(),
+            defaultWorkspace: MetisPaths.workspaceRootReadOnly()
+        )
+        result.put("modelsRefresh", gatewayAgentModelsRefreshResultJson(
+            CliModelRuntimeStateManager.refreshAgentRuntimeStateForScope(Path(agentDir), scope)
+        ))
+    }
     let bootstrapJson = JsonObject()
     bootstrapJson.put("workspaceDir", JsonString(bootstrap.workspaceDir))
     bootstrapJson.put("createdCount", bootstrap.createdCount.toJsonValue())
@@ -1649,13 +1661,22 @@ private func gatewayAgentModelsResponse(agentId: String, agentDir: Path, path: P
     result
 }
 
+private func gatewayAgentModelsRefreshResultJson(refresh: CliModelRuntimeStateRefreshResult): JsonObject {
+    let out = JsonObject()
+    out.put("status", JsonString(refresh.status))
+    out.put("reason", JsonString(refresh.reason))
+    out.put("path", JsonString(refresh.path))
+    out.put("refreshed", refresh.refreshed.toJsonValue())
+    out
+}
+
 private func gatewayAgentModelsGetJson(request: GatewayRpcRequest): GatewayRpcResponse {
     let (agentId, scope) = gatewayAgentScopeForManagementRequest(request)
     if (!gatewayAgentJsonBool(gatewayAgentGetJson(agentId), "configured", false)) {
         return GatewayRpcResponse(false, request.method, error: "Agent \"${agentId}\" not found.")
     }
     let agentDir = Path(gatewayAgentJsonString(scope, "agentDir", gatewayAgentDefaultAgentDir(agentId).toString()))
-    let path = CliModelRuntimeStateManager.ensureAgentRuntimeState(agentDir)
+    let path = CliModelRuntimeStateManager.ensureAgentRuntimeStateForScope(agentDir, scope)
     let diagnostics = JsonArray([])
     let state = gatewayAgentModelsReadState(path, diagnostics)
     GatewayRpcResponse(true, request.method, result: gatewayAgentModelsResponse(agentId, agentDir, path, state, diagnostics))
