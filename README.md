@@ -174,6 +174,16 @@ metis sessions list
 metis subagents list
 ```
 
+AgentTeam can be managed today with agent CLI commands plus Gateway RPC team calls:
+
+```bash
+metis agents add --agent content-writer --name "Content Writer" --model openai:gpt-4o-mini
+metis gateway call agents.teams.create '{"id":"content","displayName":"Content Team","template":"pm-writer-reviewer"}'
+metis agents bind --agent content-writer --bind telegram:bot-a
+```
+
+See `docs/user/agent-team.md` for Gateway startup, team RPC usage, per-agent files/models, IM account binding, and current limitations.
+
 Background subagents can be started from CLI or IM sessions without blocking the current conversation:
 
 ```text
