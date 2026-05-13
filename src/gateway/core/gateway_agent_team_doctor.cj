@@ -49,6 +49,56 @@ private func teamCloneObject(obj: JsonObject): JsonObject {
     }
 }
 
+private func teamCloneValue(value: JsonValue): JsonValue {
+    try {
+        JsonValue.fromStr(value.toJsonString())
+    } catch (_: Exception) {
+        JsonString("")
+    }
+}
+
+private func teamSecretKey(key: String): Bool {
+    let lower = key.trimAscii().toAsciiLower()
+    lower.contains("secret") || lower.contains("token") || lower.contains("password") ||
+        lower == "authorization" || lower == "auth"
+}
+
+private func teamRedactArray(arr: JsonArray): JsonArray {
+    let out = JsonArray([])
+    for (item in arr.getItems()) {
+        try {
+            out.add(teamRedactObject(item.asObject()))
+        } catch (_: Exception) {
+            try {
+                out.add(teamRedactArray(item.asArray()))
+            } catch (_: Exception) {
+                out.add(teamCloneValue(item))
+            }
+        }
+    }
+    out
+}
+
+private func teamRedactObject(obj: JsonObject): JsonObject {
+    let out = JsonObject()
+    for ((key, value) in obj.getFields()) {
+        if (teamSecretKey(key)) {
+            out.put(key, JsonString("<redacted>"))
+            continue
+        }
+        try {
+            out.put(key, teamRedactObject(value.asObject()))
+        } catch (_: Exception) {
+            try {
+                out.put(key, teamRedactArray(value.asArray()))
+            } catch (_: Exception) {
+                out.put(key, teamCloneValue(value))
+            }
+        }
+    }
+    out
+}
+
 private func teamPathText(raw: String): String {
     let trimmed = raw.trimAscii()
     if (trimmed.isEmpty()) {
@@ -700,8 +750,179 @@ private func teamBindingApplyJson(result: GatewayAgentBindingApplyResult): JsonO
     out.put("updated", teamObjectArrayJson(result.updated))
     out.put("skipped", teamObjectArrayJson(result.skipped))
     out.put("conflicts", teamConflictArrayJson(result.conflicts))
-    out.put("configPreview", teamCloneObject(result.config))
+    out.put("configPreview", teamRedactObject(result.config))
     return out
+}
+
+private func teamNestedObject(root: JsonObject, first: String, second: String): JsonObject {
+    teamObject(teamObject(root, first), second)
+}
+
+private func teamGroupCount(groups: JsonObject): Int64 {
+    var count: Int64 = 0
+    for (_key in groups.getFields().keys()) {
+        count += 1
+    }
+    count
+}
+
+private func teamGroupIds(groups: JsonObject): JsonArray {
+    let out = JsonArray([])
+    for (key in groups.getFields().keys()) {
+        out.add(JsonString(key))
+    }
+    out
+}
+
+private func teamFeishuSourceConfig(root: JsonObject): JsonObject {
+    let gatewayFeishu = teamNestedObject(root, "gateway", "feishu")
+    if (gatewayFeishu.size() > 0) {
+        return gatewayFeishu
+    }
+    let topLevelFeishu = teamObject(root, "feishu")
+    if (topLevelFeishu.size() > 0) {
+        return topLevelFeishu
+    }
+    teamChannelObject(root, "feishu")
+}
+
+private func teamFeishuCurrentShape(source: JsonObject, channel: JsonObject, accounts: ArrayList<String>): String {
+    if (source.size() == 0 && channel.size() == 0) {
+        return "absent"
+    }
+    if (accounts.size > 1 || teamArray(channel, "accounts").size() > 0) {
+        return "multi-account"
+    }
+    "single-account"
+}
+
+private func teamFeishuDefaultAccount(source: JsonObject, channel: JsonObject): String {
+    let fromChannel = teamString(channel, "defaultAccountId")
+    if (!fromChannel.isEmpty()) {
+        return teamNormalizeAccountId(fromChannel)
+    }
+    let defaultAccount = teamString(source, "defaultAccount")
+    if (!defaultAccount.isEmpty()) {
+        return teamNormalizeAccountId(defaultAccount)
+    }
+    let defaultAccountId = teamString(source, "defaultAccountId")
+    if (!defaultAccountId.isEmpty()) {
+        return teamNormalizeAccountId(defaultAccountId)
+    }
+    "default"
+}
+
+private func teamFeishuSuggestedAccounts(source: JsonObject, channel: JsonObject, defaultAccount: String): JsonArray {
+    let out = JsonArray([])
+    let seen = ArrayList<String>()
+    let accountIds = teamArray(channel, "accountIds")
+    for (i in 0..accountIds.size()) {
+        try {
+            let id = teamNormalizeAccountId(accountIds[i].asString().getValue())
+            if (!teamHasString(seen, id)) {
+                let row = JsonObject()
+                row.put("accountId", JsonString(id))
+                row.put("source", JsonString("channels.feishu.accountIds"))
+                row.put("targetPath", JsonString("channels.feishu.accounts.${id}"))
+                out.add(row)
+                seen.add(id)
+            }
+        } catch (_: Exception) {
+            ()
+        }
+    }
+    let accounts = teamArray(channel, "accounts")
+    for (i in 0..accounts.size()) {
+        let account = try { accounts[i].asObject() } catch (_: Exception) { JsonObject() }
+        let id = teamNormalizeAccountId(if (!teamString(account, "accountId").isEmpty()) {
+            teamString(account, "accountId")
+        } else {
+            teamString(account, "id")
+        })
+        if (!teamHasString(seen, id)) {
+            let row = JsonObject()
+            row.put("accountId", JsonString(id))
+            row.put("source", JsonString("channels.feishu.accounts"))
+            row.put("targetPath", JsonString("channels.feishu.accounts.${id}"))
+            out.add(row)
+            seen.add(id)
+        }
+    }
+    if (out.size() == 0 && (source.size() > 0 || channel.size() > 0)) {
+        let row = JsonObject()
+        row.put("accountId", JsonString(defaultAccount))
+        row.put("source", JsonString("gateway.feishu"))
+        row.put("targetPath", JsonString("channels.feishu.accounts.${defaultAccount}"))
+        out.add(row)
+    }
+    out
+}
+
+private func teamFeishuThreadSessionSuggested(source: JsonObject, channel: JsonObject): String {
+    let explicit = teamString(channel, "threadSession")
+    if (!explicit.isEmpty()) {
+        return explicit
+    }
+    let sourceExplicit = teamString(source, "threadSession")
+    if (!sourceExplicit.isEmpty()) {
+        return sourceExplicit
+    }
+    let groupSessionScope = teamString(source, "groupSessionScope").toAsciiLower()
+    let replyInThread = teamString(source, "replyInThread").toAsciiLower()
+    if (groupSessionScope.contains("topic") || groupSessionScope.contains("thread") || replyInThread == "enabled") {
+        return "enabled"
+    }
+    "disabled"
+}
+
+private func teamFeishuMigrationPreview(root: JsonObject): JsonObject {
+    let source = teamFeishuSourceConfig(root)
+    let channel = teamChannelObject(root, "feishu")
+    let defaultAccount = teamFeishuDefaultAccount(source, channel)
+    let accounts = teamChannelAccounts(root, "feishu")
+    let sourceGroups = teamObject(source, "groups")
+    let channelGroups = teamObject(channel, "groups")
+    let groups = if (channelGroups.size() > 0) { channelGroups } else { sourceGroups }
+
+    let defaultAccountPreview = JsonObject()
+    defaultAccountPreview.put("current", JsonString(teamString(channel, "defaultAccountId")))
+    defaultAccountPreview.put("suggested", JsonString(defaultAccount))
+    defaultAccountPreview.put("targetPath", JsonString("channels.feishu.defaultAccountId"))
+
+    let accountsPreview = JsonObject()
+    accountsPreview.put("suggested", teamFeishuSuggestedAccounts(source, channel, defaultAccount))
+    accountsPreview.put("targetPath", JsonString("channels.feishu.accounts"))
+
+    let threadPreview = JsonObject()
+    threadPreview.put("current", channel.get("threadSession") ?? source.get("threadSession") ?? JsonString(""))
+    threadPreview.put("suggested", JsonString(teamFeishuThreadSessionSuggested(source, channel)))
+    threadPreview.put("targetPath", JsonString("channels.feishu.threadSession"))
+    threadPreview.put("sourceGroupSessionScope", JsonString(teamString(source, "groupSessionScope")))
+    threadPreview.put("sourceReplyInThread", JsonString(teamString(source, "replyInThread")))
+
+    let groupsPreview = JsonObject()
+    groupsPreview.put("currentCount", teamGroupCount(groups).toJsonValue())
+    groupsPreview.put("groupIds", teamGroupIds(groups))
+    groupsPreview.put("suggestedPath", JsonString("channels.feishu.groups"))
+
+    let actions = JsonArray([])
+    for (path in ["channels.feishu.defaultAccountId", "channels.feishu.accounts", "channels.feishu.threadSession", "channels.feishu.groups"]) {
+        let action = JsonObject()
+        action.put("path", JsonString(path))
+        action.put("mode", JsonString("preview-only"))
+        actions.add(action)
+    }
+
+    let out = JsonObject()
+    out.put("channel", JsonString("feishu"))
+    out.put("readOnly", JsonBool(true))
+    out.put("currentShape", JsonString(teamFeishuCurrentShape(source, channel, accounts)))
+    out.put("defaultAccount", defaultAccountPreview)
+    out.put("accounts", accountsPreview)
+    out.put("threadSession", threadPreview)
+    out.put("groups", groupsPreview)
+    out.put("actions", actions)
+    out
 }
 
 public func gatewayAgentTeamDoctorScan(
@@ -752,5 +973,6 @@ public func gatewayAgentTeamMigrationDryRun(
     out.put("findings", scan.get("findings") ?? JsonArray([]))
     out.put("summary", scan.get("summary") ?? JsonObject())
     out.put("bindingApply", teamBindingApplyJson(bindingApply))
+    out.put("feishuMigration", teamFeishuMigrationPreview(root))
     return out
 }

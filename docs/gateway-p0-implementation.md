@@ -305,6 +305,23 @@ FEISHU_APP_SECRET=xxx
 
 其它可选变量：`FEISHU_RECEIVE_MODE`、`FEISHU_DOMAIN`、`FEISHU_ENABLED`、`FEISHU_WEBHOOK_*`、`FEISHU_REQUIRE_SIGNATURE_HEADERS`、`FEISHU_REQUEST_MAX_SKEW_SECONDS`、`FEISHU_BOT_OPEN_ID`（详见上文 7.1 / 7.2）。
 
+### 7.3 AgentTeam 与飞书能力边界
+
+Telegram 和飞书是 AgentTeam 的第一优先级 IM 对象。飞书适配器的职责是把 webhook/long_connect 入站事件归一化为 `InboundMessage` 与 `mediaContext.context.imRoute`，再交给 Gateway 的统一 route/session/runtime 处理。其他 IM 适配器应沿用相同 `ChannelAdapter`、account、peer、thread、binding 语义扩展。
+
+当前飞书 AgentTeam 基线包括：
+
+- fake webhook 入站映射为 `channel=feishu` 的统一 route context；
+- accountId、group、thread/topic、sender、messageId 进入 route/session 上下文；
+- `agents.migration.dryRun` 只读预览单账号到多账号迁移建议，包括 `defaultAccountId`、`accounts`、`threadSession`、`groups`；
+- fake E2E 覆盖同一 Gateway 中 Telegram alias routing、Feishu 多账号 thread routing 和 team binding conflict。
+
+当前边界：
+
+- 这不是完整 OpenClaw Lark 插件能力声明；
+- `/feishu start/doctor/auth`、资源下载、云文档/wiki/drive/task/calendar/bittable 工具、真实 thread-capable 群检查、OAuth/auth flow 仍按 AgentTeam Series 后续阶段推进；
+- 测试必须继续使用 fake payload/fake clients 和临时目录，不访问真实飞书网络、真实 token 或真实 `~/.metis`。
+
 ---
 
 ## 八、QQ 接入进展（OneBot 最小链路）
@@ -957,4 +974,3 @@ Content-Type：`application/x-www-form-urlencoded`（或等价表单字段）。
 | `src/gateway/runtime/gateway_dashboard_api.cj` | Dashboard API：`gatewayDashboardHandleCronPost` 等 |
 | `src/gateway/runtime/gateway_control_ui_routes.cj` | 注册 `/api/cron` 等控制 UI 路由 |
 | `src/gateway/runtime/gateway_control_ui_content.cj` | 控制页 HTML 片段、`appendCronJson` 等 |
-
