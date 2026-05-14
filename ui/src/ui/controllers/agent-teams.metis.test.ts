@@ -19,6 +19,7 @@ import {
   saveAgentTeamWorkspaceFile,
   setAgentTeamBroadcastEnabled,
   setAgentTeamBroadcastMember,
+  setAgentTeamBroadcastMembers,
   loadAgentTeams,
   saveAgentTeamModel,
   updateAgentTeam,
@@ -123,6 +124,32 @@ describe("team mutations", () => {
     });
   });
 
+  it("bulk-selects and clears broadcast members from the visible team members", () => {
+    const draft = {
+      ...createEmptyAgentTeamDraft(),
+      broadcastJson: '{"enabled":true,"members":["content-reviewer"]}',
+    };
+
+    const selected = setAgentTeamBroadcastMembers(
+      draft,
+      [
+        { agentId: "content-writer", role: "writer" },
+        { agentId: "content-reviewer", role: "reviewer" },
+      ],
+      true,
+    );
+    const cleared = setAgentTeamBroadcastMembers(selected, [{ agentId: "content-writer" }], false);
+
+    expect(JSON.parse(selected.broadcastJson)).toEqual({
+      enabled: true,
+      members: ["content-writer", "content-reviewer"],
+    });
+    expect(JSON.parse(cleared.broadcastJson)).toEqual({
+      enabled: true,
+      members: [],
+    });
+  });
+
   it("creates a template-backed team when members are empty", async () => {
     const { state, request } = createState();
     state.agentTeamDraft = {
@@ -203,6 +230,38 @@ describe("team mutations", () => {
       aliases: [{ agentId: "content-reviewer", alias: "@review" }],
       bindings: [{ agentId: "content-reviewer", match: { channel: "telegram" } }],
       broadcast: { enabled: true, members: ["content-reviewer"] },
+    });
+  });
+
+  it("normalizes raw team JSON before calling Gateway mutations", async () => {
+    const { state, request } = createState();
+    state.agentTeamDraft = {
+      id: "content",
+      displayName: " Content Team ",
+      template: "",
+      defaultAgentId: "missing-member",
+      membersJson:
+        '[{"agentId":" content-writer ","role":" writer ","name":" Writer "},{"agentId":"","role":"ignored"}]',
+      aliasesJson:
+        '[{"alias":" @writer ","agentId":" content-writer "},{"alias":"@missing","agentId":""}]',
+      bindingsJson: '[{"agentId":"content-writer","match":{"channel":"feishu"}}]',
+      broadcastJson: '{"enabled":true,"members":["content-writer","missing-member","content-writer"]}',
+    };
+    request
+      .mockResolvedValueOnce({ team: { id: "content" } })
+      .mockResolvedValueOnce({ teams: [{ id: "content" }], count: 1 })
+      .mockResolvedValueOnce({ team: { id: "content" } });
+
+    await updateAgentTeam(state);
+
+    expect(request).toHaveBeenNthCalledWith(1, "agents.teams.update", {
+      id: "content",
+      displayName: "Content Team",
+      defaultAgentId: "content-writer",
+      members: [{ agentId: "content-writer", role: "writer", name: "Writer" }],
+      aliases: [{ alias: "@writer", agentId: "content-writer" }],
+      bindings: [{ agentId: "content-writer", match: { channel: "feishu" } }],
+      broadcast: { enabled: true, members: ["content-writer"] },
     });
   });
 });

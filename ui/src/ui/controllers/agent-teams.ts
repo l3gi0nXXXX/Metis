@@ -301,6 +301,16 @@ export function setAgentTeamBroadcastMember(
   return { ...draft, broadcastJson: stringifyPretty(broadcast) };
 }
 
+export function setAgentTeamBroadcastMembers(
+  draft: AgentTeamEditorDraft,
+  members: AgentTeamMember[],
+  selected: boolean,
+): AgentTeamEditorDraft {
+  const broadcast = broadcastFromDraft(draft);
+  broadcast.members = selected ? uniqueStrings(members.map((member) => member.agentId)) : [];
+  return { ...draft, broadcastJson: stringifyPretty(broadcast) };
+}
+
 export async function loadAgentTeams(state: AgentTeamsState) {
   if (!state.client || !state.connected || state.agentTeamsLoading) {
     return;
@@ -696,20 +706,19 @@ function teamPayloadFromDraft(
     id,
     displayName: draft.displayName.trim() || id,
   };
-  const members = parseJsonArray<AgentTeamMember>(draft.membersJson, "members").filter((member) =>
-    Boolean(member.agentId?.trim()),
-  );
+  const members = compactTeamMembers(parseJsonArray<AgentTeamMember>(draft.membersJson, "members"));
   if (members.length > 0) {
     payload.members = members;
   } else if (options.create && draft.template.trim()) {
     payload.template = draft.template.trim();
   }
-  if (draft.defaultAgentId.trim()) {
-    payload.defaultAgentId = draft.defaultAgentId.trim();
+  const defaultAgentId = normalizeDefaultAgentId(draft.defaultAgentId, members);
+  if (defaultAgentId) {
+    payload.defaultAgentId = defaultAgentId;
   }
-  payload.aliases = parseJsonArray(draft.aliasesJson, "aliases");
+  payload.aliases = compactTeamAliases(parseJsonArray<AgentTeamAliasDraft>(draft.aliasesJson, "aliases"));
   payload.bindings = parseJsonArray(draft.bindingsJson, "bindings");
-  payload.broadcast = parseJsonObject(draft.broadcastJson, "broadcast");
+  payload.broadcast = compactBroadcast(parseJsonObject(draft.broadcastJson, "broadcast"), members);
   return payload;
 }
 
@@ -764,8 +773,22 @@ function splitCsv(text: string): string[] {
 
 function stringArrayValue(value: unknown): string[] {
   return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+    ? uniqueStrings(value.filter((item): item is string => typeof item === "string"))
     : [];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
 }
 
 function stringValue(value: string | undefined): string {
@@ -805,6 +828,59 @@ function parseJsonObject(text: string, label: string): Record<string, unknown> {
     throw new Error(`${label} must be a JSON object.`);
   }
   return parsed as Record<string, unknown>;
+}
+
+function compactTeamMembers(members: AgentTeamMember[]): AgentTeamMember[] {
+  return members
+    .map((member) => {
+      const agentId = member.agentId?.trim() ?? "";
+      const compact: AgentTeamMember = { agentId };
+      if (member.role?.trim()) {
+        compact.role = member.role.trim();
+      }
+      if (member.name?.trim()) {
+        compact.name = member.name.trim();
+      }
+      return compact;
+    })
+    .filter((member) => Boolean(member.agentId));
+}
+
+function compactTeamAliases(aliases: AgentTeamAliasDraft[]): AgentTeamAliasDraft[] {
+  return aliases
+    .map((alias) => ({
+      alias: alias.alias?.trim() ?? "",
+      agentId: alias.agentId?.trim() ?? "",
+    }))
+    .filter((alias) => Boolean(alias.alias && alias.agentId));
+}
+
+function normalizeDefaultAgentId(defaultAgentId: string, members: AgentTeamMember[]): string {
+  const normalized = defaultAgentId.trim();
+  if (!normalized) {
+    return "";
+  }
+  if (members.length === 0 || members.some((member) => member.agentId === normalized)) {
+    return normalized;
+  }
+  return members[0]?.agentId ?? "";
+}
+
+function compactBroadcast(
+  broadcast: Record<string, unknown>,
+  members: AgentTeamMember[],
+): Record<string, unknown> {
+  if (!Array.isArray(broadcast.members)) {
+    return broadcast;
+  }
+  const memberIds = new Set(members.map((member) => member.agentId));
+  const selected = stringArrayValue(broadcast.members).filter(
+    (agentId) => memberIds.size === 0 || memberIds.has(agentId),
+  );
+  return {
+    ...broadcast,
+    members: selected,
+  };
 }
 
 function stringifyPretty(value: unknown): string {

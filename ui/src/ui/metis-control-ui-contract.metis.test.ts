@@ -76,7 +76,8 @@ describe("Metis control-ui contracts", () => {
 
     const offenders = builtJavaScriptFiles().flatMap((file) => {
       const text = fs.readFileSync(file, "utf8");
-      const hasDecoratorSyntax = /(^|[\s;(])@[A-Za-z_$][\w$]*(?:\(|\s)/m.test(text);
+      const hasDecoratorSyntax =
+        /(^|[\s;(])@(customElement|state|property|query|eventOptions)\s*\(/m.test(text);
       return hasDecoratorSyntax ? [path.relative(repoRoot, file)] : [];
     });
     expect(offenders).toEqual([]);

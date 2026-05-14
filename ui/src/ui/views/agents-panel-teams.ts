@@ -20,6 +20,7 @@ import {
   removeAgentTeamMember,
   setAgentTeamBroadcastEnabled,
   setAgentTeamBroadcastMember,
+  setAgentTeamBroadcastMembers,
   type AgentTeamAliasDraft,
   type AgentTeamBindingDraft,
   type AgentTeamBindingPreview,
@@ -85,6 +86,8 @@ export function renderAgentTeamsPanel(props: AgentTeamsPanelProps) {
       ? props.selectedId
       : "New team";
   return html`
+    ${renderWorkflowStrip(props, activeMembers, activeBroadcast)}
+
     <section class="grid grid-cols-2">
       ${renderTeamsList(props, teams)}
       ${renderTeamEditor(
@@ -109,6 +112,60 @@ export function renderAgentTeamsPanel(props: AgentTeamsPanelProps) {
 
     <section style="margin-top: 16px;">
       ${renderDoctorPanel(props, teams, activeMembers)}
+    </section>
+  `;
+}
+
+function renderWorkflowStrip(
+  props: AgentTeamsPanelProps,
+  members: AgentTeamMember[],
+  broadcast: Record<string, unknown>,
+) {
+  const steps = [
+    {
+      label: props.detail ? "Edit team" : "Create team",
+      status: props.draft.id ? "ready" : "needs key",
+    },
+    { label: "Members", status: formatCount(members.length, "member") },
+    { label: "Default", status: memberDisplayName(props.draft.defaultAgentId, members) },
+    {
+      label: "Bindings",
+      status: formatCount(safeJsonArrayLength(props.draft.bindingsJson), "binding"),
+    },
+    { label: "Profiles", status: props.workspace.workspace ? "workspace loaded" : "choose member" },
+    { label: "Models", status: props.modelResult?.models?.path ? "models.json loaded" : "load model" },
+    {
+      label: "Feishu",
+      status: (props.channelsSnapshot?.channelAccounts?.feishu ?? []).length
+        ? "status visible"
+        : "status missing",
+    },
+    {
+      label: "Broadcast",
+      status: broadcastEnabled(broadcast)
+        ? `${stringArrayFromUnknown(broadcast.members).length} selected`
+        : "disabled",
+    },
+  ];
+  return html`
+    <section class="card" style="margin-bottom: 16px;">
+      <div class="row" style="justify-content: space-between; align-items: flex-start;">
+        <div>
+          <div class="card-title">Guided workflow</div>
+          <div class="card-sub">Create or edit a team, then walk through members, routing, profiles, model state, and Feishu status.</div>
+        </div>
+        <span class="badge">Gateway RPC only</span>
+      </div>
+      <div class="agents-overview-grid" style="margin-top: 14px;">
+        ${steps.map(
+          (step) => html`
+            <div class="agent-kv">
+              <div class="label">${step.label}</div>
+              <div>${step.status}</div>
+            </div>
+          `,
+        )}
+      </div>
     </section>
   `;
 }
@@ -454,15 +511,33 @@ function renderBroadcastEditor(
           <div class="list-title">Broadcast</div>
           <div class="muted">Gateway persists this team fan-out plan; runtime fan-out remains a partial capability.</div>
         </div>
-        <label class="row" style="gap: 8px;">
-          <input
-            type="checkbox"
-            ?checked=${enabled}
-            @change=${(e: Event) =>
-              props.onDraftChange(setAgentTeamBroadcastEnabled(props.draft, checkedValue(e)))}
-          />
-          <span>${enabled ? "Broadcast enabled" : "Broadcast disabled"}</span>
-        </label>
+        <div class="row" style="gap: 8px; align-items: center;">
+          <button
+            type="button"
+            class="btn btn--sm btn--ghost"
+            ?disabled=${!enabled || members.length === 0}
+            @click=${() => props.onDraftChange(setAgentTeamBroadcastMembers(props.draft, members, true))}
+          >
+            Select all members
+          </button>
+          <button
+            type="button"
+            class="btn btn--sm btn--ghost"
+            ?disabled=${!enabled}
+            @click=${() => props.onDraftChange(setAgentTeamBroadcastMembers(props.draft, members, false))}
+          >
+            Clear selected
+          </button>
+          <label class="row" style="gap: 8px;">
+            <input
+              type="checkbox"
+              ?checked=${enabled}
+              @change=${(e: Event) =>
+                props.onDraftChange(setAgentTeamBroadcastEnabled(props.draft, checkedValue(e)))}
+            />
+            <span>${enabled ? "Broadcast enabled" : "Broadcast disabled"}</span>
+          </label>
+        </div>
       </div>
       <div class="list" style="margin-top: 12px;">
         ${members.map((member) => {
@@ -802,11 +877,22 @@ function renderFeishuSettingsCard(props: AgentTeamsPanelProps) {
                       <div>${account.configured ? "configured" : "not configured"}</div>
                       <div>${account.running || account.connected ? "active" : "stopped"}</div>
                     </div>
+                    ${account.lastError
+                      ? html`
+                          <div class="list-sub" style="margin-top: 8px;">
+                            Last error: ${redactSecretText(account.lastError)}
+                          </div>
+                        `
+                      : nothing}
                   </div>
                 `,
               )}
             </div>
           `}
+      <div class="callout info" style="margin-top: 12px;">
+        Feishu commands: /feishu start, /feishu doctor, /feishu auth, /feishu info --all.
+        Status shown here is read-only and redacted; secrets stay behind Gateway configuration and auth storage.
+      </div>
       ${renderFeishuCapabilityGaps(props)}
     </section>
   `;
@@ -1104,6 +1190,13 @@ function objectValue(value: unknown): Record<string, unknown> | null {
 
 function stringOrEmpty(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function redactSecretText(value: string): string {
+  return value
+    .replace(/authorization:\s*bearer\s+[^\s,;]+/gi, "Authorization: Bearer [redacted]")
+    .replace(/\b(access|refresh|bot|app)[_-]?token\s*[:=]\s*[^\s,;]+/gi, "$1_token=[redacted]")
+    .replace(/\b(app[_-]?secret|authorization)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]");
 }
 
 function inputValue(event: Event): string {

@@ -1,18 +1,21 @@
 # Metis AgentTeam
 
-AgentTeam lets one Gateway runtime manage multiple named agents, route IM accounts to specific agents, and keep each agent's workspace, model state, and session state separate. The current user-facing surface is a mix of stable `metis agents ...` CLI commands and Gateway RPC calls for team operations.
+AgentTeam lets one Gateway runtime manage multiple named agents, route IM accounts to specific agents, and keep each agent's workspace, model state, and session state separate. The current user-facing surface is a mix of stable `metis agents ...` CLI commands, Gateway RPC calls, and the Control UI Agents -> Teams page.
 
 Telegram and Feishu are the first-priority IM targets for AgentTeam. Other IM adapters should extend through the same `ChannelAdapter` inbound model, route binding, account, peer, and thread semantics instead of adding agent routing inside each adapter.
 
-## Current Capability Vs Planned Capability
+## Supported Capability Matrix
 
-| Area | Current capability | Planned capability |
+| Area | Supported now | Remaining gap |
 | --- | --- | --- |
-| Agent isolation | Managed agents have separate workspace, `agentDir`, `models.json`, auth profile path, and sessions path. | Runtime credential resolution will fully prefer agent-scoped auth/model state before global fallback. |
-| Team management | `agents.teams.*` can create, list, update, delete, and reject binding conflicts without partial writes. | Control UI will expose a fuller team wizard, member editor, profile editor, binding builder, and doctor panel. |
-| Route bindings | Telegram and Feishu can use shared route semantics for channel, account, peer, thread, team, and role matches through Gateway RPC. | Feishu multi-account config, thread session policy, group policy, and structured mention routing will be productized. |
+| Agent isolation | Managed agents have separate workspace, `agentDir`, `models.json`, auth profile path, and sessions path. | Some runtime fallback diagnostics still need broader end-to-end coverage. |
+| Team management | `agents.teams.*` and Control UI can create, list, update, delete, edit members, set default member, edit aliases, edit bindings JSON, and reject binding conflicts without partial writes. | Template library and assisted onboarding remain intentionally small. |
+| Route bindings | Telegram and Feishu can use shared route semantics for channel, account, peer, thread, team, and role matches through Gateway RPC. The Control UI binding builder previews simple and structured payloads before apply. | Feishu real-account thread capability cache and deeper group-policy diagnostics are still being expanded. |
+| Broadcast | Team broadcast settings persist selected member fanout and the Control UI can select or clear broadcast members. | Runtime failure aggregation and channel-specific UX diagnostics remain partial. |
+| Workspace profiles | Control UI and RPC can list, read, and write `AGENTS.md`, `SOUL.md`, `TOOLS.md`, `IDENTITY.md`, `USER.md`, `HEARTBEAT.md`, `BOOTSTRAP.md`, and `MEMORY.md` through Gateway only. | `BOOTSTRAP.md` is supported but not auto-created. |
+| Model state | Control UI and RPC can read/write per-agent `models.json` state and display redacted credential-source summaries. | Operators still need to configure real provider credentials explicitly per agent or allowed fallback source. |
 | Telegram | Existing Telegram adapter has broad fake-tested group/topic/media/native-command coverage and AgentTeam alias routing baseline. | Telegram remains the first full IM validation path for future ChannelAdapter route extensions. |
-| Feishu | Built-in Feishu adapter maps fake webhook payloads to unified route context, account id, group/thread context, gate diagnostics, and metadata-only attachments. | OpenClaw Lark-style plugin capabilities such as Feishu native commands, resource downloads, docs/wiki/drive/task/calendar tools, thread-capable group checks, and OAuth/auth flows are not all complete yet. |
+| Feishu | Built-in Feishu adapter maps fake webhook payloads to unified route context, account id, group/thread context, gate diagnostics, metadata-only attachments, native `/feishu ...` command replies, and redacted account status surfaces. | Full OpenClaw Lark-style OAuth/UAT runtime, real OAPI tools, historical resource fetch, streaming cards, and thread-capable real-client cache are partial or planned. |
 | Migration | `agents.migration.dryRun` is read-only, previews doctor findings, binding apply, redacted config preview, and Feishu single-account migration suggestions. | Future migration may add apply-mode helpers after dry-run acceptance, but it must not rewrite user config silently. |
 
 ## Start Gateway
@@ -103,6 +106,26 @@ metis gateway call agents.teams.delete '{"id":"content"}'
 
 Deleting a team removes the team entry. It does not delete the member agent directories.
 
+## Manage Teams In Control UI
+
+Open the Gateway Control UI and go to Agents -> Teams. The page is a Gateway RPC client; it does not write local files directly from the browser.
+
+The Teams page supports this workflow:
+
+1. Create a template-backed team or switch the template field to custom members.
+2. Add or edit members with `agentId`, role, and display name.
+3. Choose the default member used when a route does not resolve to a more specific member.
+4. Add aliases such as `@writer` or `/agent review`.
+5. Configure broadcast and select the exact members included in fanout.
+6. Preview and apply simple `channel[:account]` bindings or structured JSON route bindings.
+7. List, load, edit, and save workspace profile files through `agents.files.*`.
+8. Load and save per-agent model JSON through `agents.models.*`.
+9. Review Feishu account/status guidance and local doctor checks.
+
+The page keeps advanced JSON textareas for compatibility with automation. Before sending create/update RPCs, the controller trims member and alias fields, drops incomplete alias/member rows, de-duplicates broadcast members, and keeps selected broadcast members inside the configured member set.
+
+The UI redacts secret-like status text before display. Do not paste app secrets, access tokens, refresh tokens, bot tokens, provider keys, or authorization headers into team names, aliases, workspace markdown, or comments.
+
 ## Edit Agent Workspace Files
 
 Each managed agent has a workspace with these auto-created profile files:
@@ -190,6 +213,34 @@ Team-level `bindings` are compiled into global runtime route bindings during tea
 
 Team aliases can route group messages by text mention patterns, for example `/agent writer` or `@writer`, when the channel inbound event reaches Gateway with mention metadata.
 
+## Configure Broadcast Fanout
+
+Team broadcast sends one inbound request to selected member agents while preserving isolated member workspaces, model paths, and sessions. Configure it through Control UI or RPC:
+
+```bash
+metis gateway call agents.teams.update '{"id":"content","broadcast":{"enabled":true,"members":["content-writer","content-reviewer"]}}'
+```
+
+When broadcast is disabled, Gateway falls back to normal single-agent route resolution. When broadcast is enabled with selected members, only those members participate in fanout.
+
+Keep broadcast member ids aligned with the team's `members` array. The Control UI filters duplicate or unknown selected members during save.
+
+## Feishu Startup And Status
+
+Feishu channel startup still uses the normal Gateway channel configuration. After the Gateway is running, use the native Feishu commands from a Feishu conversation when available:
+
+```text
+/feishu start
+/feishu doctor
+/feishu auth
+/feishu info --all
+/feishu help
+```
+
+The Control UI Teams page shows redacted `channels.status` account state, the default account, thread-session configuration, group count, and whether OAuth/OAPI/doctor capability signals are visible in the current Gateway status contract.
+
+Current Feishu status guidance is display-only in the Teams page. Configure Feishu accounts, app credentials, and OAuth state through Gateway configuration and Gateway-backed commands/RPCs, not by writing browser-local files. Secret-like values are redacted in status display; they should not be stored in workspace profile files.
+
 ## Migration Dry Run
 
 Preview AgentTeam diagnostics and proposed route-binding changes without writing config:
@@ -233,6 +284,6 @@ After editing `~/.metis/metis.json`, restart Gateway so the running process load
 
 - `metis agents bind` intentionally exposes the simple `channel[:account]` form. Use Gateway RPC JSON payloads for peer/thread/team/role binding matches.
 - Migration dry-run is read-only. It previews diagnostics and route-binding application but does not rewrite `session.dmScope`, model state, auth profiles, or workspace files automatically.
-- Feishu AgentTeam routing is not the same as the full OpenClaw Lark plugin surface. Message routing and dry-run diagnostics exist; plugin-level Feishu tools, resource downloads, native commands, and auth flows are still planned work unless a later release note says otherwise.
-- Source-backed AgentTeam parity tracking lives in `develop_steps/metis-agent-team-series-06-openclaw-lark-source-gap-and-landing-plan-2026-05-14.md`; that matrix is the baseline for Phase 0 and Phase 1 core hardening.
+- Feishu AgentTeam routing is not the same as the full OpenClaw Lark plugin surface. Message routing, native command replies, redacted status, and dry-run diagnostics exist; real OAPI tools, historical resource downloads, streaming card parity, and complete OAuth/UAT runtime remain partial unless a later release note says otherwise.
+- Source-backed AgentTeam parity tracking lives under `develop_steps/`, with the series-07 source recheck and Phase 8-9 closure notes as the current UI/docs baseline.
 - Live Telegram and Feishu operation still depends on the normal channel credentials and account setup. This guide does not require real Telegram or Feishu network access.

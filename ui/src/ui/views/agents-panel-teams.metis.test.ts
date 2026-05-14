@@ -75,7 +75,15 @@ function createProps(overrides: Partial<AgentTeamsPanelProps> = {}): AgentTeamsP
       channelLabels: { feishu: "Feishu" },
       channels: { feishu: { configured: true, running: true } },
       channelAccounts: {
-        feishu: [{ accountId: "tenant-a", name: "Tenant A", configured: true, running: true }],
+        feishu: [
+          {
+            accountId: "tenant-a",
+            name: "Tenant A",
+            configured: true,
+            running: true,
+            lastError: "Authorization: Bearer secret-access-token failed",
+          },
+        ],
       },
       channelDefaultAccountId: { feishu: "tenant-a" },
     },
@@ -119,9 +127,15 @@ describe("renderAgentTeamsPanel", () => {
     expect(text).toContain("1 alias");
     expect(text).toContain("1 binding");
     expect(text).toContain("Broadcast enabled");
+    expect(text).toContain("Guided workflow");
+    expect(text).toContain("Select all members");
+    expect(text).toContain("Clear selected");
     expect(text).toContain("Capability gaps");
     expect(text).toContain("OAuth missing");
+    expect(text).toContain("/feishu doctor");
     expect(text).toContain("Team-agent parity is partial");
+    expect(text).toContain("[redacted]");
+    expect(text).not.toContain("secret-access-token");
 
     const options = Array.from(container.querySelectorAll("option")).map(
       (option) => option.textContent ?? "",
