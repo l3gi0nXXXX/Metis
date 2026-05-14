@@ -1,6 +1,7 @@
 package metis.gateway.channels.feishu
 
-import metis.gateway.model.{ChannelPolicyConfig, FeishuConfig, FeishuMediaConfig}
+import metis.core.renderGatewayEditText
+import metis.gateway.model.{ChannelPolicyConfig, ChannelType, FeishuConfig, FeishuMediaConfig, OutboundMessage}
 import std.core.Duration
 import std.fs.{File, Path, exists, remove}
 import std.sync.Mutex
@@ -265,6 +266,52 @@ public class FeishuAdapterTest {
         @Expect(patched, true)
         @Expect(client.cardPatchCount(), 1)
         @Expect(client.patchedCard(0).fallbackText().contains("Authorized"), true)
+    }
+
+    @TestCase
+    public func streamingSendWithMessageIdCreatesAndPatchesOneInteractiveCard(): Unit {
+        let client = FeishuFakeApiClient()
+        let adapter = FeishuAdapter(config: FeishuConfig(enabled: true, streaming: "partial"), apiClient: client)
+        adapter.start()
+
+        let messageId = adapter.sendWithMessageId(OutboundMessage(
+            ChannelType.Feishu,
+            "oc_stream",
+            "first chunk",
+            replyToMessageId: Some("om_source"),
+            replyInThread: true,
+            accountId: "tenant-a"
+        ))
+        @Expect(messageId, "fake-feishu-card-1")
+        @Expect(client.cardSendCount(), 1)
+        @Expect(client.sentCard(0).fallbackText().contains("first chunk"), true)
+
+        let patchedId = adapter.sendWithMessageId(OutboundMessage(
+            ChannelType.Feishu,
+            "oc_stream",
+            renderGatewayEditText("first chunk\nsecond chunk"),
+            replyToMessageId: Some(messageId),
+            accountId: "tenant-a"
+        ))
+        @Expect(patchedId, messageId)
+        @Expect(client.cardPatchCount(), 1)
+        @Expect(client.patchedCard(0).fallbackText().contains("second chunk"), true)
+    }
+
+    @TestCase
+    public func toolUseDisplayIsIncludedOnlyWhenEnabled(): Unit {
+        let hidden = FeishuReplyCardDraft(title: "Metis", showToolUse: false)
+        hidden.appendText("answer")
+        hidden.appendToolUse("feishu_im_user_fetch_resource", "{\"message_id\":\"om_1\"}")
+        @Expect(hidden.toCard().fallbackText().contains("feishu_im_user_fetch_resource"), false)
+
+        let visible = FeishuReplyCardDraft(title: "Metis", showToolUse: true)
+        visible.appendText("answer")
+        visible.appendToolUse("feishu_im_user_fetch_resource", "{\"message_id\":\"om_1\"}")
+        let card = visible.toCard()
+        @Expect(card.fallbackText().contains("answer"), true)
+        @Expect(card.fallbackText().contains("Tool use"), true)
+        @Expect(card.fallbackText().contains("feishu_im_user_fetch_resource"), true)
     }
 
     @TestCase

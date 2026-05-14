@@ -1,5 +1,6 @@
 package metis.gateway.channels.feishu
 
+import metis.core.parseGatewayEditText
 import metis.core.config.CliConfig
 import metis.gateway.core.ChannelAdapter
 import metis.gateway.model.*
@@ -361,17 +362,7 @@ public class FeishuAdapter <: ChannelAdapter {
         if (!this.running) {
             return SendResult.Failed("feishu adapter is not running")
         }
-        let sentMessageId = this.sendTextToFeishuWithMessageIdForAccount(
-            this.outboundAccountId(message),
-            message.peerId,
-            message.text,
-            replyToMessageId: message.replyToMessageId,
-            replyInThread: message.replyInThread
-        )
-        synchronized(this.queueMutex) {
-            // 无论是否成功都记录，便于排障。
-            this.outboundLog.add(message)
-        }
+        let sentMessageId = this.sendWithMessageId(message)
         if (!sentMessageId.trimAscii().isEmpty()) {
             return SendResult.Success
         }
@@ -382,17 +373,91 @@ public class FeishuAdapter <: ChannelAdapter {
         if (!this.running) {
             return ""
         }
-        let sentMessageId = this.sendTextToFeishuWithMessageIdForAccount(
-            this.outboundAccountId(message),
-            message.peerId,
-            message.text,
-            replyToMessageId: message.replyToMessageId,
-            replyInThread: message.replyInThread
-        )
+        let accountId = this.outboundAccountId(message)
+        let sentMessageId = if (this.feishuShouldPatchInteractiveCard(message)) {
+            this.patchInteractiveCardForOutbound(accountId, message)
+        } else if (this.feishuShouldUseInteractiveCardForOutbound(accountId, message)) {
+            this.sendInteractiveCardForOutbound(accountId, message)
+        } else {
+            this.sendTextToFeishuWithMessageIdForAccount(
+                accountId,
+                message.peerId,
+                message.text,
+                replyToMessageId: message.replyToMessageId,
+                replyInThread: message.replyInThread
+            )
+        }
         synchronized(this.queueMutex) {
             this.outboundLog.add(message)
         }
         sentMessageId
+    }
+
+    private func feishuShouldPatchInteractiveCard(message: OutboundMessage): Bool {
+        if (message.replyToMessageId.isNone()) {
+            return false
+        }
+        !parseGatewayEditText(message.text).isEmpty()
+    }
+
+    private func feishuShouldUseInteractiveCardForOutbound(accountId: String, message: OutboundMessage): Bool {
+        if (message.text.trimAscii().isEmpty()) {
+            return false
+        }
+        if (this.feishuShouldPatchInteractiveCard(message)) {
+            return false
+        }
+        let mode = this.feishuConfigForAccount(accountId).streaming.trimAscii().toAsciiLower()
+        mode != "off" && mode != "text"
+    }
+
+    private func patchInteractiveCardForOutbound(accountId: String, message: OutboundMessage): String {
+        let targetMessageId = message.replyToMessageId.getOrThrow().trimAscii()
+        if (targetMessageId.isEmpty()) {
+            return ""
+        }
+        let text = parseGatewayEditText(message.text)
+        let result = this.apiClient.patchInteractiveCard(accountId, targetMessageId, FeishuInteractiveCard(title: "Metis", text: text))
+        if (result.ok) {
+            this.lastSendError = ""
+            return if (!result.messageId.isEmpty()) { result.messageId } else { targetMessageId }
+        }
+        if (result.status != "not_configured") {
+            this.lastSendError = if (result.error.isEmpty()) { result.status } else { result.error }
+        }
+        ""
+    }
+
+    private func sendInteractiveCardForOutbound(accountId: String, message: OutboundMessage): String {
+        let receiveId = this.normalizeSendTarget(message.peerId)
+        if (receiveId.isEmpty()) {
+            this.lastSendError = "peerId is empty"
+            return ""
+        }
+        let card = FeishuInteractiveCard(title: "Metis", text: message.text)
+        let result = this.apiClient.sendInteractiveCard(
+            accountId,
+            message.peerId,
+            receiveId,
+            this.resolveReceiveIdType(message.peerId),
+            card,
+            message.replyToMessageId,
+            message.replyInThread
+        )
+        if (result.ok && !result.messageId.isEmpty()) {
+            this.lastSendError = ""
+            return result.messageId
+        }
+        if (result.status != "not_configured") {
+            this.lastSendError = if (result.error.isEmpty()) { result.status } else { result.error }
+        }
+        this.sendTextToFeishuWithMessageIdForAccount(
+            accountId,
+            message.peerId,
+            card.fallbackText(),
+            replyToMessageId: message.replyToMessageId,
+            replyInThread: message.replyInThread
+        )
     }
 
     public func sendInteractiveCardToFeishu(

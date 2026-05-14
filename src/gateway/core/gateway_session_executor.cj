@@ -41,7 +41,8 @@ private class GatewayStreamingDeliveryState {
 }
 
 private func gatewayChannelSupportsMessageEdit(channelName: String): Bool {
-    channelName.trimAscii().toAsciiLower() == "telegram"
+    let normalized = channelName.trimAscii().toAsciiLower()
+    normalized == "telegram" || normalized == "feishu"
 }
 
 private func gatewayStripTaggedReasoning(raw: String): String {
