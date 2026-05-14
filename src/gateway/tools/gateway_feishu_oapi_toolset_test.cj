@@ -1,6 +1,8 @@
 package metis.gateway.tools
 
-import std.collection.ArrayList
+import std.collection.{ArrayList, HashMap}
+import std.fs.{Directory, File, Path, exists, remove}
+import std.time.DateTime
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString, JsonValue}
 
@@ -56,6 +58,62 @@ private class FeishuOapiToolsetErrorHttpClient <: FeishuOapiHttpClient {
     }
 }
 
+private class FeishuOapiToolsetFakeRefreshClient <: FeishuOapiRefreshClient {
+    public let calls = ArrayList<String>()
+
+    public init() {}
+
+    public func refresh(accountId: String, refreshToken: String): FeishuOapiRefreshResult {
+        this.calls.add(accountId)
+        this.calls.add(refreshToken)
+        FeishuOapiRefreshResult(
+            "authorized",
+            accessToken: "refreshed-access-token",
+            refreshToken: "refreshed-refresh-token",
+            expiresInSeconds: 3600,
+            scopes: ["im:message:readonly", "contact:contact.base:readonly"]
+        )
+    }
+}
+
+private class FeishuOapiToolsetFakeRawTransport <: FeishuOapiRawHttpTransport {
+    public var last: Option<FeishuOapiRawHttpRequest> = None<FeishuOapiRawHttpRequest>
+
+    public init() {}
+
+    public func send(request: FeishuOapiRawHttpRequest): FeishuOapiRawHttpResponse {
+        this.last = Some(request)
+        FeishuOapiRawHttpResponse(200, body: "{\"code\":0,\"data\":{\"ok\":true}}")
+    }
+}
+
+private func feishuOapiToolsetTempRoot(label: String): Path {
+    Path("/tmp/metis-feishu-oapi-${label}-${DateTime.now().toUnixTimeStamp().toNanoseconds()}")
+}
+
+private func feishuOapiWriteStoredToken(
+    root: Path,
+    accountId: String,
+    accessToken: String,
+    refreshToken: String,
+    expiresAtMs: Int64,
+    scopes: Array<String>
+): Unit {
+    if (!exists(root)) {
+        Directory.create(root, recursive: true)
+    }
+    let arr = JsonArray([])
+    for (scope in scopes) {
+        arr.add(JsonString(scope))
+    }
+    let token = JsonObject()
+    token.put("accessToken", JsonString(accessToken))
+    token.put("refreshToken", JsonString(refreshToken))
+    token.put("expiresAtMs", JsonString(expiresAtMs.toString()))
+    token.put("scopes", arr)
+    File.writeTo(root.join("${accountId}.json"), token.toJsonString().toArray())
+}
+
 @Test
 public class GatewayFeishuOapiToolsetTest {
     @TestCase
@@ -78,7 +136,7 @@ public class GatewayFeishuOapiToolsetTest {
         @Expect(json.get("account_id").getOrThrow().asString().getValue(), "default")
         let auth = json.get("auth").getOrThrow().asObject()
         @Expect(auth.get("required").getOrThrow().asBool().getValue(), true)
-        @Expect(auth.get("state").getOrThrow().asString().getValue(), "absent")
+        @Expect(auth.get("state").getOrThrow().asString().getValue(), "auth_required")
         @Expect(json.get("required_scopes").getOrThrow().asArray()[0].asString().getValue(), "docx:document:readonly")
     }
 
@@ -193,6 +251,110 @@ public class GatewayFeishuOapiToolsetTest {
         @Expect(http.captured[0], "ops")
         @Expect(http.captured[1], "/open-apis/im/v1/chats")
         @Expect(http.captured[2], "fake-access-token")
+    }
+
+    @TestCase
+    public func metisTokenProviderReadsTempStoreAndMapsAuthScopeExpiredAndRefresh(): Unit {
+        let root = feishuOapiToolsetTempRoot("token-provider")
+        try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        try {
+            let missing = MetisFeishuOapiTokenProvider(root: root, nowMs: 1000)
+            @Expect(missing.userAccessToken("tenant-a", ["im:message:readonly"]).status, "auth_required")
+
+            feishuOapiWriteStoredToken(root, "tenant-a", "stored-access-token", "stored-refresh-token", 100000, ["im:message:readonly"])
+            let authorized = MetisFeishuOapiTokenProvider(root: root, nowMs: 1000).userAccessToken("tenant-a", ["im:message:readonly"])
+            @Expect(authorized.status, "authorized")
+            @Expect(authorized.accessToken, "stored-access-token")
+
+            let scopeMissing = MetisFeishuOapiTokenProvider(root: root, nowMs: 1000).userAccessToken("tenant-a", ["im:message", "contact:contact.base:readonly"])
+            @Expect(scopeMissing.status, "scope_missing")
+            @Expect(scopeMissing.missingScopes[0], "im:message")
+            @Expect(scopeMissing.missingScopes[1], "contact:contact.base:readonly")
+
+            feishuOapiWriteStoredToken(root, "tenant-a", "expired-access-token", "expired-refresh-token", 900, ["im:message:readonly"])
+            let expired = MetisFeishuOapiTokenProvider(root: root, nowMs: 1000).userAccessToken("tenant-a", ["im:message:readonly"])
+            @Expect(expired.status, "expired")
+            @Expect(expired.accessToken, "")
+
+            let refresher = FeishuOapiToolsetFakeRefreshClient()
+            let refreshed = MetisFeishuOapiTokenProvider(
+                root: root,
+                refreshClient: Some<FeishuOapiRefreshClient>(refresher),
+                nowMs: 1000
+            ).userAccessToken("tenant-a", ["im:message:readonly"])
+            @Expect(refreshed.status, "authorized")
+            @Expect(refreshed.accessToken, "refreshed-access-token")
+            @Expect(refresher.calls[0], "tenant-a")
+            @Expect(refresher.calls[1], "expired-refresh-token")
+        } finally {
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func nativeHttpBoundaryBuildsMethodPathQueryBodyHeadersAndRedactsAuthorizationFromJson(): Unit {
+        let params = JsonObject()
+        params.put("chat_id", JsonString("oc_demo"))
+        let query = JsonObject()
+        query.put("page_size", JsonString("20"))
+        params.put("query", query)
+        let body = JsonObject()
+        body.put("content", JsonString("hello"))
+        params.put("body", body)
+        let headers = JsonObject()
+        headers.put("X-Metis-Test", JsonString("yes"))
+        headers.put("Authorization", JsonString("must-not-win"))
+        params.put("headers", headers)
+
+        let request = feishuOapiBuildRequest("feishu_chat_members", "list", "tenant-a", params)
+        let transport = FeishuOapiToolsetFakeRawTransport()
+        let response = FeishuNativeOapiHttpClient(
+            domain: "https://open.feishu.cn/",
+            transport: Some<FeishuOapiRawHttpTransport>(transport)
+        ).request(request, "boundary-secret-token")
+
+        @Expect(response.ok, true)
+        let sent = transport.last.getOrThrow()
+        @Expect(sent.accountId, "tenant-a")
+        @Expect(sent.method, "GET")
+        @Expect(sent.url, "https://open.feishu.cn/open-apis/im/v1/chats/oc_demo/members?page_size=20")
+        let sentBody = JsonValue.fromStr(sent.body).asObject()
+        @Expect(sentBody.get("content").getOrThrow().asString().getValue(), "hello")
+        @Expect(sent.headers.get("X-Metis-Test").getOrThrow(), "yes")
+        @Expect(sent.headers.get("Authorization").getOrThrow(), "Bearer boundary-secret-token")
+        @Expect(sent.toRedactedJson().toJsonString().contains("boundary-secret-token"), false)
+        @Expect(sent.toRedactedJson().toJsonString().contains("must-not-win"), false)
+    }
+
+    @TestCase
+    public func firstDomainAndAStageOpenClawToolNamesRouteThroughEnvelope(): Unit {
+        let captured = ArrayList<String>()
+        debugSetGatewayFeishuOapiToolCallRunnerForTest(Some({ method: String, payload: JsonObject =>
+            captured.add(method)
+            captured.add(payload.get("tool").getOrThrow().asString().getValue())
+            captured.add(payload.get("category").getOrThrow().asString().getValue())
+            captured.add(payload.get("path").getOrThrow().asString().getValue())
+            let out = JsonObject()
+            out.put("ok", JsonBool(true))
+            out.put("status", JsonString("success"))
+            out
+        }))
+        try {
+            let toolset = GatewayFeishuOapiToolset()
+            let _oauth = toolset.debugFeishuOapiInvokeForTest("feishu_oauth", "status", Some("tenant-a"), Some("{}"))
+            let _batch = toolset.debugFeishuOapiInvokeForTest("feishu_oauth_batch_auth", "status", Some("tenant-a"), Some("{}"))
+            let _botImage = toolset.debugFeishuOapiInvokeForTest("feishu_im_bot_image", "get", Some("tenant-a"), Some("{\"message_id\":\"om_1\",\"file_key\":\"img_1\",\"query\":{\"type\":\"image\"}}"))
+            let _ask = toolset.debugFeishuOapiInvokeForTest("feishu_ask_user_question", "create", Some("tenant-a"), Some("{\"questions\":[]}"))
+
+            @Expect(captured.contains("feishu_oauth"), true)
+            @Expect(captured.contains("oauth"), true)
+            @Expect(captured.contains("feishu_oauth_batch_auth"), true)
+            @Expect(captured.contains("feishu_im_bot_image"), true)
+            @Expect(captured.contains("/open-apis/im/v1/messages/:message_id/resources/:file_key"), true)
+            @Expect(captured.contains("feishu_ask_user_question"), true)
+        } finally {
+            debugSetGatewayFeishuOapiToolCallRunnerForTest(None<(String, JsonObject) -> JsonObject>)
+        }
     }
 
     @TestCase

@@ -10,6 +10,7 @@ import stdx.encoding.json.{JsonObject, JsonString}
 
 private class FeishuAuthFakeHttpClient <: FeishuAuthHttpClient {
     public let calls = ArrayList<String>()
+    public let capturedFields = ArrayList<String>()
     private let tokenBody: String
     private let tokenStatusCode: Int64
     private let tokenError: String
@@ -26,6 +27,15 @@ private class FeishuAuthFakeHttpClient <: FeishuAuthHttpClient {
 
     public func postForm(url: String, fields: HashMap<String, String>, _headers: HashMap<String, String>): FeishuAuthHttpResponse {
         this.calls.add(url)
+        if (fields.get("client_id").isSome()) {
+            this.capturedFields.add(fields.get("client_id").getOrThrow())
+        }
+        if (fields.get("client_secret").isSome()) {
+            this.capturedFields.add(fields.get("client_secret").getOrThrow())
+        }
+        if (fields.get("scope").isSome()) {
+            this.capturedFields.add(fields.get("scope").getOrThrow())
+        }
         if (url.contains("/device_authorize")) {
             @Expect(fields.get("scope").getOrThrow().contains("offline_access"), true)
             return FeishuAuthHttpResponse(
@@ -76,10 +86,10 @@ public class FeishuAuthFoundationTest {
         @Expect(slowDown.poll("device-1").status, "slow_down")
 
         let denied = FeishuDeviceFlowClient(FeishuAuthFakeHttpClient(tokenBody: "{\"error\":\"access_denied\"}"))
-        @Expect(denied.poll("device-1").status, "access_denied")
+        @Expect(denied.poll("device-1").status, "denied")
 
         let expired = FeishuDeviceFlowClient(FeishuAuthFakeHttpClient(tokenBody: "{\"error\":\"expired_token\"}"))
-        @Expect(expired.poll("device-1").status, "expired_token")
+        @Expect(expired.poll("device-1").status, "expired")
 
         let parseError = FeishuDeviceFlowClient(FeishuAuthFakeHttpClient(tokenBody: "{not-json"))
         @Expect(parseError.poll("device-1").status, "parse_error")
@@ -175,6 +185,46 @@ public class FeishuAuthFoundationTest {
             @Expect(raw.contains("tenant-app"), false)
             @Expect(raw.contains("root-secret-never-visible"), false)
             @Expect(raw.contains("device-1"), false)
+        } finally {
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func nativeAuthStartUsesResolvedAccountAppSecretAndDomain(): Unit {
+        let root = Path("/tmp/metis-feishu-native-auth-resolved-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        try {
+            var user = GatewayUserSettings()
+            user.feishu.domain = "https://open.feishu.cn"
+            user.feishu.defaultAccount = "tenant-a"
+            user.feishu.appId = "top-app"
+            user.feishu.appSecret = "top-secret-never-visible"
+            let account = JsonObject()
+            account.put("appId", JsonString("tenant-app"))
+            account.put("appSecret", JsonString("tenant-secret-never-visible"))
+            account.put("domain", JsonString("https://open.larksuite.com/"))
+            let accounts = JsonObject()
+            accounts.put("tenant-a", account)
+            user.feishu.accounts = Some(accounts)
+
+            let http = FeishuAuthFakeHttpClient()
+            let result = feishuGatewayNativeAuthStartWithClient(
+                "",
+                user,
+                http,
+                FeishuFileTokenStore(root),
+                nowMs: 1000
+            )
+            let raw = result.toJsonString()
+            @Expect(feishuAuthTestString(result, "status"), "pending")
+            @Expect(http.calls[0], "https://open.larksuite.com/open-apis/authen/v1/oidc/device_authorize")
+            @Expect(http.capturedFields[0], "tenant-app")
+            @Expect(http.capturedFields[1], "tenant-secret-never-visible")
+            @Expect(http.capturedFields[2].contains("offline_access"), true)
+            @Expect(raw.contains("tenant-app"), false)
+            @Expect(raw.contains("tenant-secret-never-visible"), false)
+            @Expect(raw.contains("top-secret-never-visible"), false)
         } finally {
             try { remove(root, recursive: true) } catch (_e: Exception) { () }
         }

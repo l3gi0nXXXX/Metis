@@ -87,7 +87,10 @@ private func feishuOapiInvoke(
         case None =>
             match (gatewayFeishuOapiClientForTest) {
                 case Some(client) => client.invoke(request).toJsonString()
-                case None => MetisFeishuOapiClient().invoke(request).toJsonString()
+                case None => MetisFeishuOapiClient(
+                    tokenProvider: Some<FeishuOapiTokenProvider>(MetisFeishuOapiTokenProvider()),
+                    httpClient: Some<FeishuOapiHttpClient>(FeishuNativeOapiHttpClient())
+                ).invoke(request).toJsonString()
             }
     }
 }
@@ -306,5 +309,29 @@ public class GatewayFeishuOapiToolset {
     public func feishu_im_user_search_messages(action: String, params_json: Option<String>, account_id: Option<String>): String {
         PrintUtils.printTool("feishu_im_user_search_messages", shortMessage: action)
         feishuOapiInvokeByTool("feishu_im_user_search_messages", action, params_json, account_id)
+    }
+
+    @tool[description: "Inspect or revoke Metis Feishu user OAuth status through the A-stage Feishu OAuth boundary. Tokens and secrets are never returned."]
+    public func feishu_oauth(action: String, params_json: Option<String>, account_id: Option<String>): String {
+        PrintUtils.printTool("feishu_oauth", shortMessage: action)
+        feishuOapiInvokeByTool("feishu_oauth", action, params_json, account_id)
+    }
+
+    @tool[description: "Start A-stage batch user authorization diagnostics for Feishu. Full app-scope batch auth remains delegated to the native /feishu auth flow."]
+    public func feishu_oauth_batch_auth(action: String, params_json: Option<String>, account_id: Option<String>): String {
+        PrintUtils.printTool("feishu_oauth_batch_auth", shortMessage: action)
+        feishuOapiInvokeByTool("feishu_oauth_batch_auth", action, params_json, account_id)
+    }
+
+    @tool[description: "Fetch a Feishu IM resource through the OAPI request boundary using bot/resource-compatible envelope parameters. Media persistence is handled by the Feishu media toolset when available."]
+    public func feishu_im_bot_image(action: String, params_json: Option<String>, account_id: Option<String>): String {
+        PrintUtils.printTool("feishu_im_bot_image", shortMessage: action)
+        feishuOapiInvokeByTool("feishu_im_bot_image", action, params_json, account_id)
+    }
+
+    @tool[description: "Create a Feishu ask-user-question card through the A-stage OAPI boundary. Card action handling remains in the Feishu channel runtime."]
+    public func feishu_ask_user_question(action: String, params_json: Option<String>, account_id: Option<String>): String {
+        PrintUtils.printTool("feishu_ask_user_question", shortMessage: action)
+        feishuOapiInvokeByTool("feishu_ask_user_question", action, params_json, account_id)
     }
 }

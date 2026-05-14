@@ -251,11 +251,13 @@ public class FeishuUserToken {
     }
 
     public func redactedStatus(accountId: String): JsonObject {
+        let hasAccessToken = !this.accessToken.isEmpty()
+        let expired = hasAccessToken && this.expiresAtMs > 0 && this.expiresAtMs <= DateTime.now().toUnixTimeStamp().toMilliseconds()
         let out = JsonObject()
         out.put("accountId", JsonString(gatewayFeishuNormalizeAccountId(accountId)))
-        out.put("status", JsonString(if (this.accessToken.isEmpty()) { "missing" } else { "authorized" }))
-        out.put("authorized", JsonBool(!this.accessToken.isEmpty()))
-        out.put("hasAccessToken", JsonBool(!this.accessToken.isEmpty()))
+        out.put("status", JsonString(if (!hasAccessToken) { "missing" } else if (expired) { "expired" } else { "authorized" }))
+        out.put("authorized", JsonBool(hasAccessToken && !expired))
+        out.put("hasAccessToken", JsonBool(hasAccessToken))
         out.put("hasRefreshToken", JsonBool(!this.refreshToken.isEmpty()))
         out.put("expiresAtMs", JsonInt(this.expiresAtMs))
         out.put("scopes", feishuAuthJsonStringArray(this.scopes))
@@ -590,8 +592,8 @@ private func feishuAuthTokenErrorStatus(error: String): String {
     match (error.trimAscii().toAsciiLower()) {
         case "authorization_pending" => "authorization_pending"
         case "slow_down" => "slow_down"
-        case "expired_token" => "expired_token"
-        case "access_denied" => "access_denied"
+        case "expired_token" => "expired"
+        case "access_denied" => "denied"
         case _ => "error"
     }
 }
