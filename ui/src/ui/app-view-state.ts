@@ -200,6 +200,9 @@ export type AppViewState = {
   agentTeamWorkspaceSaving: boolean;
   agentTeamWorkspaceError: string | null;
   agentTeamWorkspace: import("./controllers/agent-teams.js").AgentTeamWorkspaceDraft;
+  agentTeamFeishuAuthLoading: boolean;
+  agentTeamFeishuAuthError: string | null;
+  agentTeamFeishuAuthResult: import("./controllers/agent-teams.js").AgentTeamFeishuAuthResult | null;
   agentFilesLoading: boolean;
   agentFilesError: string | null;
   agentFilesList: AgentsFilesListResult | null;

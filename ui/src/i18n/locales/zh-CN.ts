@@ -136,6 +136,15 @@ export const zh_CN: TranslationMap = {
     channel: "频道",
     builtIn: "内置",
   },
+  agentTeams: {
+    title: "智能体团队",
+    guidedWorkflow: "引导式流程",
+    gatewayRpcOnly: "仅通过 Gateway RPC",
+    startOAuthViaGateway: "通过 Gateway 启动 OAuth",
+    missingSetupSteps: "缺失的配置步骤",
+    profileFiles: "SOUL.md、IDENTITY.md、USER.md 和 TOOLS.md",
+    secretsRedacted: "Secret 与 token 在展示前会被脱敏。",
+  },
   nav: {
     chat: "聊天",
     control: "控制",

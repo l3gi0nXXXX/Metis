@@ -101,6 +101,9 @@ function createProps(overrides: Partial<AgentTeamsPanelProps> = {}): AgentTeamsP
       agentId: "content-writer",
       fileName: "SOUL.md",
     },
+    feishuAuthLoading: false,
+    feishuAuthError: null,
+    feishuAuthResult: null,
     channelsSnapshot: {
       ts: 1,
       channelOrder: ["feishu"],
@@ -163,6 +166,7 @@ function createProps(overrides: Partial<AgentTeamsPanelProps> = {}): AgentTeamsP
     onLoadWorkspaceFiles: vi.fn(),
     onLoadWorkspaceFile: vi.fn(),
     onSaveWorkspaceFile: vi.fn(),
+    onStartFeishuOAuth: vi.fn(),
     ...overrides,
   };
 }
@@ -193,6 +197,10 @@ describe("renderAgentTeamsPanel", () => {
     expect(text).toContain("feishu_im_user_fetch_resource");
     expect(text).toContain("Workspace profile files");
     expect(text).toContain("Feishu Auth & Doctor");
+    expect(text).toContain("Start OAuth via Gateway");
+    expect(text).toContain("Missing setup steps");
+    expect(text).toContain("Confirm Feishu app credentials");
+    expect(text).toContain("Grant offline_access and OAPI scopes");
     expect(text).toContain("authorized");
     expect(text).toContain("docs:read im:message");
     expect(text).toContain("[redacted]");
@@ -203,8 +211,26 @@ describe("renderAgentTeamsPanel", () => {
     const options = Array.from(container.querySelectorAll("option")).map(
       (option) => option.textContent ?? "",
     );
-    expect(options).toContain("HEARTBEAT.md");
-    expect(options).toContain("BOOTSTRAP.md");
+    expect(options).toContain("SOUL.md");
+    expect(options).toContain("IDENTITY.md");
+    expect(options).toContain("USER.md");
+    expect(options).toContain("TOOLS.md");
+    expect(options).not.toContain("HEARTBEAT.md");
+    expect(options).not.toContain("BOOTSTRAP.md");
+  });
+
+  it("wires Feishu OAuth start to a Gateway RPC callback", () => {
+    const onStartFeishuOAuth = vi.fn();
+    const container = document.createElement("div");
+    render(renderAgentTeamsPanel(createProps({ onStartFeishuOAuth })), container);
+
+    const button = Array.from(container.querySelectorAll("button")).find((entry) =>
+      (entry.textContent ?? "").includes("Start OAuth via Gateway"),
+    );
+    expect(button).toBeTruthy();
+    button?.click();
+
+    expect(onStartFeishuOAuth).toHaveBeenCalledWith("tenant-a");
   });
 
   it("shows explicit fallback rows when Feishu auth status RPC fields are absent", () => {

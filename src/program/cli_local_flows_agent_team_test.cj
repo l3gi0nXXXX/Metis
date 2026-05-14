@@ -65,6 +65,32 @@ public class CliLocalFlowsAgentTeamTest {
     }
 
     @TestCase
+    public func buildsTeamBindingRpcParamsFromInlineJsonAndLegacyBindFlags(): Unit {
+        let spec = cliBuildAgentsTeamRpcSpec([
+            "team",
+            "create",
+            "--team",
+            "content",
+            "--template",
+            "pm-writer-reviewer",
+            "--binding-json",
+            "{\"type\":\"route\",\"agentId\":\"content-writer\",\"match\":{\"channel\":\"telegram\",\"accountId\":\"bot-a\"}}",
+            "--bind",
+            "feishu:tenant-a",
+            "--json"
+        ]).getOrThrow()
+
+        @Expect(spec.method, "agents.teams.create")
+        @Expect(spec.json, true)
+        let bindings = spec.params.get("bindings").getOrThrow().asArray()
+        @Expect(bindings.size(), 2)
+        let explicit = bindings[0].asObject()
+        @Expect(explicit.get("agentId").getOrThrow().asString().getValue(), "content-writer")
+        @Expect(explicit.get("match").getOrThrow().asObject().get("channel").getOrThrow().asString().getValue(), "telegram")
+        @Expect(bindings[1].asString().getValue(), "feishu:tenant-a")
+    }
+
+    @TestCase
     public func buildsGetAndDeleteTeamRpcParamsWithTeamId(): Unit {
         let getSpec = cliBuildAgentsTeamRpcSpec(["team", "get", "--team", "content"]).getOrThrow()
         let deleteSpec = cliBuildAgentsTeamRpcSpec(["team", "delete", "--team", "content"]).getOrThrow()

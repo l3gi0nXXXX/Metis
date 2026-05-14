@@ -3,14 +3,14 @@ package metis.gateway.runtime
 import metis.core.config.{CliSettingManager, GatewayUserSettings, MetisConfigManager}
 import metis.core.skills.setClawHubHttpGetForTest
 import metis.gateway.config.buildGatewayConfigFromUserSettings
-import metis.gateway.core.{gatewayFindSessionConversationViewForUser, gatewaySessionStoreForUserWithAgentId}
+import metis.gateway.core.{gatewayFindSessionConversationViewForUser, gatewaySessionStoreForUserWithAgentId, setGatewayFeishuNativeAuthRunnerForTest}
 import metis.gateway.protocol.GatewayProtocolResponse
 
 import magic.jsonable.*
 import std.env.{getVariable, setVariable}
 import std.fs.{Directory, Path, remove}
 import std.fs.File
-import stdx.encoding.json.{JsonArray, JsonObject, JsonString}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 import std.unittest.testmacro.*
 
 private func gatewayControlUiWsTestString(obj: JsonObject, key: String): String {
@@ -271,6 +271,33 @@ public class GatewayControlUiWsTest {
         @Expect(telegram.get("allowedUpdates").isSome(), true)
         @Expect(telegram.get("registrationPayload").isSome(), true)
         @Expect(telegram.get("healthSnapshot").isSome(), true)
+    }
+
+    @TestCase
+    public func feishuAuthStartCompatResponsePreservesAccountIdAndRedactsSecrets(): Unit {
+        try {
+            setGatewayFeishuNativeAuthRunnerForTest(Some({ accountId: String, _user: GatewayUserSettings =>
+                let out = JsonObject()
+                out.put("status", JsonString("pending"))
+                out.put("accountId", JsonString(accountId))
+                out.put("accessToken", JsonString("secret-access-token"))
+                out.put("redacted", JsonBool(false))
+                out
+            }))
+
+            let cfg = buildGatewayConfigFromUserSettings(CliSettingManager.readGatewaySettings())
+            let params = JsonObject()
+            params.put("accountId", JsonString("tenant-a"))
+            let response = gatewayControlUiWsCompatResponse("channels.feishu.auth.start", params, cfg)
+            @Expect(response.isSome(), true)
+            let result = response.getOrThrow().result.asObject()
+            @Expect(gatewayControlUiWsTestString(result, "status"), "pending")
+            @Expect(gatewayControlUiWsTestString(result, "accountId"), "tenant-a")
+            @Expect(result.toJsonString().contains("secret-access-token"), false)
+            @Expect(result.get("redacted").getOrThrow().asBool().getValue(), true)
+        } finally {
+            setGatewayFeishuNativeAuthRunnerForTest(None<(String, GatewayUserSettings) -> JsonObject>)
+        }
     }
 
     @TestCase

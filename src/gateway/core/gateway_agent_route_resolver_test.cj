@@ -443,6 +443,57 @@ public class GatewayAgentRouteResolverTest {
     }
 
     @TestCase
+    public func applyingSameBindingTwiceIsDeterministicallySkipped(): Unit {
+        let root = routeTestConfig()
+        let binding = peerBinding("ops", "telegram", "group", "-100_a", accountId: "*")
+
+        let first = applyBindings(root, [binding])
+        @Expect(first.added.size, 1)
+        @Expect(first.skipped.size, 0)
+        @Expect(first.conflicts.size, 0)
+
+        let second = applyBindings(root, [binding])
+        @Expect(second.added.size, 0)
+        @Expect(second.updated.size, 0)
+        @Expect(second.skipped.size, 1)
+        @Expect(second.conflicts.size, 0)
+        @Expect(second.skipped[0].get("agentId").getOrThrow().asString().getValue(), "ops")
+    }
+
+    @TestCase
+    public func sameMatchDifferentAgentProducesConflictDiagnostic(): Unit {
+        let root = routeTestConfig()
+        putBindings(root, [peerBinding("ops", "telegram", "group", "-100_a", accountId: "bot-a")])
+
+        let result = applyBindings(root, [peerBinding("reviewer", "telegram", "group", "-100_a", accountId: "bot-a")])
+
+        @Expect(result.added.size, 0)
+        @Expect(result.updated.size, 0)
+        @Expect(result.skipped.size, 0)
+        @Expect(result.conflicts.size, 1)
+        @Expect(result.conflicts[0].existingAgentId, "ops")
+        @Expect(result.conflicts[0].binding.get("agentId").getOrThrow().asString().getValue(), "reviewer")
+    }
+
+    @TestCase
+    public func wildcardApplyDoesNotReplaceOmittedDefaultAccountBinding(): Unit {
+        let root = routeTestConfig()
+        putBindings(root, [routeBinding("assistant-a", "telegram")])
+
+        let result = applyBindings(root, [routeBinding("assistant-b", "telegram", accountId: "*")])
+
+        @Expect(result.added.size, 1)
+        @Expect(result.updated.size, 0)
+        @Expect(result.conflicts.size, 0)
+        let rows = result.config.get("bindings").getOrThrow().asArray()
+        @Expect(rows.size(), 2)
+        let omitted = rows[0].asObject().get("match").getOrThrow().asObject()
+        @Expect(omitted.get("accountId").isNone(), true)
+        let wildcard = rows[1].asObject().get("match").getOrThrow().asObject()
+        @Expect(wildcard.get("accountId").getOrThrow().asString().getValue(), "*")
+    }
+
+    @TestCase
     public func bindingApplyPreservesCommentAndEnabledMetadata(): Unit {
         let root = routeTestConfig()
         let disabled = routeBinding("assistant-a", "telegram")

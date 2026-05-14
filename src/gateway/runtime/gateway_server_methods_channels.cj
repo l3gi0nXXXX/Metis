@@ -24,7 +24,8 @@ import metis.gateway.core.{
     gatewayPluginRuntimeSummary,
     gatewayListSessionCatalogViewsForUser,
     gatewayOpenClawPluginSidecarApplyMessageSendingHook,
-    gatewayOpenClawPluginSidecarApplyMessageSentHook
+    gatewayOpenClawPluginSidecarApplyMessageSentHook,
+    gatewayFeishuNativeAuthStart
 }
 import metis.gateway.config.{
     GatewayChannelPluginRegistry,
@@ -2291,6 +2292,15 @@ public func handleGatewayChannelsFamily(method: String, user: GatewayUserSetting
         result.put("health", gatewayChannelsHealthJson(user))
         result.put("probe", wantsProbe.toJsonValue())
         result.put("timeoutMs", timeoutMs.toJsonValue())
+        return Some(GatewayRpcResponse(true, method, result: result))
+    }
+    if (method == "channels.feishu.auth.start") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let accountId = gatewayRpcStringParam(requestValue, ["accountId", "account"], "")
+        let result = gatewayFeishuNativeAuthStart(accountId, user)
         return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "channels.logout") {

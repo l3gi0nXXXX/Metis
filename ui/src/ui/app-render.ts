@@ -32,6 +32,7 @@ import {
   previewAgentTeamBinding,
   saveAgentTeamModel,
   saveAgentTeamWorkspaceFile,
+  startAgentTeamFeishuOAuth,
   updateAgentTeam,
 } from "./controllers/agent-teams.ts";
 import {
@@ -1100,6 +1101,9 @@ export function renderApp(state: AppViewState) {
                   workspaceSaving: state.agentTeamWorkspaceSaving,
                   workspaceError: state.agentTeamWorkspaceError,
                   workspace: state.agentTeamWorkspace,
+                  feishuAuthLoading: state.agentTeamFeishuAuthLoading,
+                  feishuAuthError: state.agentTeamFeishuAuthError,
+                  feishuAuthResult: state.agentTeamFeishuAuthResult,
                   channelsSnapshot: state.channelsSnapshot,
                   configForm: state.configForm,
                 },
@@ -1321,6 +1325,8 @@ export function renderApp(state: AppViewState) {
                   state.agentTeamModelError = null;
                   state.agentTeamWorkspace = createEmptyAgentTeamWorkspaceDraft();
                   state.agentTeamWorkspaceError = null;
+                  state.agentTeamFeishuAuthError = null;
+                  state.agentTeamFeishuAuthResult = null;
                   state.agentTeamsError = null;
                   state.agentTeamsSuccess = null;
                 },
@@ -1351,6 +1357,7 @@ export function renderApp(state: AppViewState) {
                 onLoadWorkspaceFiles: () => loadAgentTeamWorkspaceFiles(state),
                 onLoadWorkspaceFile: (name) => loadAgentTeamWorkspaceFile(state, name),
                 onSaveWorkspaceFile: () => saveAgentTeamWorkspaceFile(state),
+                onStartFeishuOAuth: (accountId) => startAgentTeamFeishuOAuth(state, accountId),
                 onSkillsFilterChange: (next) => (state.skillsFilter = next),
                 onSkillsRefresh: () => {
                   if (resolvedAgentId) {

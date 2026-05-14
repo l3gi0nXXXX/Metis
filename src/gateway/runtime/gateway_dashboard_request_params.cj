@@ -93,6 +93,17 @@ public func gatewayDashboardRequestParams(
             gatewayDashboardParamInt(params, "timeoutMs", 8000)
         )
     }
+    if (normalized == "channels.feishu.auth.start") {
+        let out = JsonObject()
+        let accountId = gatewayDashboardParamString(params, "accountId")
+        let account = gatewayDashboardParamString(params, "account")
+        if (!accountId.isEmpty()) {
+            out.put("accountId", JsonString(accountId))
+        } else if (!account.isEmpty()) {
+            out.put("accountId", JsonString(account))
+        }
+        return out
+    }
     if (normalized == "channels.runtime") {
         let out = JsonObject()
         let channelId = gatewayDashboardParamString(params, "channelId")

@@ -117,6 +117,8 @@ public class FeishuFakeApiClient <: FeishuApiClient {
     private let patchedCards = ArrayList<FeishuInteractiveCard>()
     private var nextCardSendFailureStatus: String = ""
     private var nextCardSendFailureError: String = ""
+    private var nextCardPatchFailureStatus: String = ""
+    private var nextCardPatchFailureError: String = ""
 
     public init() {}
 
@@ -210,6 +212,13 @@ public class FeishuFakeApiClient <: FeishuApiClient {
 
     public func patchInteractiveCard(_accountId: String, _messageId: String, card: FeishuInteractiveCard): FeishuApiSendResult {
         this.patchedCards.add(card)
+        if (!this.nextCardPatchFailureStatus.trimAscii().isEmpty()) {
+            let status = this.nextCardPatchFailureStatus.trimAscii()
+            let error = this.nextCardPatchFailureError.trimAscii()
+            this.nextCardPatchFailureStatus = ""
+            this.nextCardPatchFailureError = ""
+            return FeishuApiSendResult(status: status, error: error)
+        }
         FeishuApiSendResult(ok: true, status: "ok", messageId: _messageId.trimAscii())
     }
 
@@ -221,6 +230,13 @@ public class FeishuFakeApiClient <: FeishuApiClient {
         this.textMessages.size
     }
 
+    public func lastTextMessage(): String {
+        if (this.textMessages.isEmpty()) {
+            return ""
+        }
+        this.textMessages[this.textMessages.size - 1]
+    }
+
     public func cardPatchCount(): Int64 {
         this.patchedCards.size
     }
@@ -228,6 +244,11 @@ public class FeishuFakeApiClient <: FeishuApiClient {
     public func failNextCardSend(status: String, error!: String = ""): Unit {
         this.nextCardSendFailureStatus = if (status.trimAscii().isEmpty()) { "error" } else { status.trimAscii() }
         this.nextCardSendFailureError = error.trimAscii()
+    }
+
+    public func failNextCardPatch(status: String, error!: String = ""): Unit {
+        this.nextCardPatchFailureStatus = if (status.trimAscii().isEmpty()) { "error" } else { status.trimAscii() }
+        this.nextCardPatchFailureError = error.trimAscii()
     }
 
     public func sentCard(index: Int64): FeishuInteractiveCard {
@@ -273,6 +294,7 @@ public class FeishuAdapter <: ChannelAdapter {
     private let accountId: String
     private let chatQueue = FeishuChatQueue()
     private let apiClient: FeishuApiClient
+    private let eventDedup = HashMap<String, Bool>()
 
     public init(
         config!: FeishuConfig = FeishuConfig(),
@@ -566,6 +588,13 @@ public class FeishuAdapter <: ChannelAdapter {
      */
     private func feishuDispatchEventRoot(root: JsonObject): String {
         let headerEventType = this.readHeaderEventType(root)
+        match (this.validateFeishuEventOwnership(root)) {
+            case Some(reason) => return this.feishuIgnoredResponse(reason, eventType: headerEventType)
+            case None => ()
+        }
+        if (this.feishuEventIsStale(root)) {
+            return this.feishuIgnoredResponse("stale_event", eventType: headerEventType)
+        }
         if (headerEventType == "card.action.trigger") {
             if (let Some(inbound) <- this.mapCardActionToInbound(root)) {
                 synchronized(this.queueMutex) {
@@ -577,6 +606,9 @@ public class FeishuAdapter <: ChannelAdapter {
         }
         if (headerEventType == "im.message.reaction.created_v1" || headerEventType == "im.message.reaction.deleted_v1") {
             if (let Some(inbound) <- this.mapReactionEventToInbound(root)) {
+                if (!this.tryRecordFeishuEvent(inbound.accountId, inbound.messageId)) {
+                    return this.feishuIgnoredResponse("duplicate_event", eventType: headerEventType)
+                }
                 this.chatQueue.runExclusive(inbound.accountId, inbound.peerId, inbound.threadId ?? "", { =>
                     synchronized(this.queueMutex) {
                         this.inboundQueue.add(inbound)
@@ -590,6 +622,45 @@ public class FeishuAdapter <: ChannelAdapter {
             headerEventType == "drive.file.comment.updated_v1" ||
             headerEventType == "drive.file.comment.deleted_v1") {
             if (let Some(inbound) <- this.mapDriveCommentEventToInbound(root)) {
+                if (!this.tryRecordFeishuEvent(inbound.accountId, inbound.messageId)) {
+                    return this.feishuIgnoredResponse("duplicate_event", eventType: headerEventType)
+                }
+                synchronized(this.queueMutex) {
+                    this.inboundQueue.add(inbound)
+                }
+                return "{\"ok\":true}"
+            }
+            return this.feishuIgnoredResponse("malformed_event", eventType: headerEventType)
+        }
+        if (headerEventType == "im.chat.member.bot.added_v1" || headerEventType == "im.chat.member.bot.deleted_v1") {
+            if (let Some(inbound) <- this.mapBotMembershipEventToInbound(root)) {
+                if (!this.tryRecordFeishuEvent(inbound.accountId, inbound.messageId)) {
+                    return this.feishuIgnoredResponse("duplicate_event", eventType: headerEventType)
+                }
+                synchronized(this.queueMutex) {
+                    this.inboundQueue.add(inbound)
+                }
+                return "{\"ok\":true}"
+            }
+            return this.feishuIgnoredResponse("malformed_event", eventType: headerEventType)
+        }
+        if (headerEventType == "vc.meeting.invited_v1" || headerEventType == "vc.meeting.meeting_invited_v1") {
+            if (let Some(inbound) <- this.mapVcInvitedEventToInbound(root)) {
+                if (!this.tryRecordFeishuEvent(inbound.accountId, inbound.messageId)) {
+                    return this.feishuIgnoredResponse("duplicate_event", eventType: headerEventType)
+                }
+                synchronized(this.queueMutex) {
+                    this.inboundQueue.add(inbound)
+                }
+                return "{\"ok\":true}"
+            }
+            return this.feishuIgnoredResponse("malformed_event", eventType: headerEventType)
+        }
+        if (headerEventType == "bitable.field.changed_v1" || headerEventType == "bitable.field.updated_v1") {
+            if (let Some(inbound) <- this.mapBitableFieldChangedEventToInbound(root)) {
+                if (!this.tryRecordFeishuEvent(inbound.accountId, inbound.messageId)) {
+                    return this.feishuIgnoredResponse("duplicate_event", eventType: headerEventType)
+                }
                 synchronized(this.queueMutex) {
                     this.inboundQueue.add(inbound)
                 }
@@ -603,6 +674,9 @@ public class FeishuAdapter <: ChannelAdapter {
         }
 
         if (let Some(inbound) <- this.mapWebhookToInbound(root)) {
+            if (!this.tryRecordFeishuEvent(inbound.accountId, inbound.messageId)) {
+                return this.feishuIgnoredResponse("duplicate_event", eventType: headerEventType)
+            }
             PrintUtils.printLine(
                 "Feishu ingest: mapped messageId=${inbound.messageId}, chat=${inbound.peerId}, sender=${inbound.senderId}, mentioned=${inbound.mentioned}"
             )
@@ -678,6 +752,140 @@ public class FeishuAdapter <: ChannelAdapter {
             normalized == "sticker" ||
             normalized == "share_chat" ||
             normalized == "share_user"
+    }
+
+    private func validateFeishuEventOwnership(root: JsonObject): Option<String> {
+        let accountId = this.resolveFeishuAccountIdWithoutApp(root)
+        let cfg = this.feishuConfigForAccount(accountId)
+        let expectedAppId = cfg.appId.trimAscii()
+        if (expectedAppId.isEmpty()) {
+            return None<String>
+        }
+        let eventAppId = this.readFeishuEventAppId(root)
+        if (eventAppId.isEmpty()) {
+            return None<String>
+        }
+        if (eventAppId != expectedAppId) {
+            PrintUtils.printLine("Feishu ingest: wrong app for account=${accountId}, event app_id mismatch")
+            return Some("wrong_app")
+        }
+        None<String>
+    }
+
+    private func readFeishuEventAppId(root: JsonObject): String {
+        let header = match (root.get("header")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        for (key in ["app_id", "appId"]) {
+            let value = this.readStringField(header, key).trimAscii()
+            if (!value.isEmpty()) {
+                return value
+            }
+        }
+        let event = match (root.get("event")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        for (key in ["app_id", "appId"]) {
+            let value = this.readStringField(event, key).trimAscii()
+            if (!value.isEmpty()) {
+                return value
+            }
+        }
+        ""
+    }
+
+    private func resolveFeishuAccountIdWithoutApp(root: JsonObject): String {
+        let header = match (root.get("header")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        for (key in ["account_id", "accountId", "tenant_key", "tenantKey"]) {
+            let value = this.readStringField(header, key).trimAscii()
+            if (!value.isEmpty()) {
+                return this.normalizeAccountId(value)
+            }
+        }
+        let event = match (root.get("event")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        for (key in ["account_id", "accountId", "tenant_key", "tenantKey"]) {
+            let value = this.readStringField(event, key).trimAscii()
+            if (!value.isEmpty()) {
+                return this.normalizeAccountId(value)
+            }
+        }
+        this.effectiveAccountId()
+    }
+
+    private func feishuEventIsStale(root: JsonObject): Bool {
+        let timestamp = this.readFeishuEventTimestampMs(root)
+        if (timestamp <= 0) {
+            return false
+        }
+        let now = DateTime.now().toUnixTimeStamp().toMilliseconds()
+        let skewMs = this.config.requestMaxSkewSeconds * 1000
+        timestamp + skewMs < now
+    }
+
+    private func readFeishuEventTimestampMs(root: JsonObject): Int64 {
+        let event = match (root.get("event")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        for (key in ["action_time", "event_time", "invite_time", "create_time"]) {
+            let parsed = this.parseFeishuTimestampMs(this.readStringField(event, key))
+            if (parsed > 0) {
+                return parsed
+            }
+        }
+        let message = match (event.get("message")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        for (key in ["create_time", "update_time"]) {
+            let parsed = this.parseFeishuTimestampMs(this.readStringField(message, key))
+            if (parsed > 0) {
+                return parsed
+            }
+        }
+        0
+    }
+
+    private func parseFeishuTimestampMs(raw: String): Int64 {
+        let trimmed = raw.trimAscii()
+        if (trimmed.isEmpty()) {
+            return 0
+        }
+        try {
+            let parsed = Int64.parse(trimmed)
+            if (parsed > 0 && parsed < 10_000_000_000) {
+                return parsed * 1000
+            }
+            parsed
+        } catch (_e: Exception) {
+            0
+        }
+    }
+
+    private func tryRecordFeishuEvent(accountId: String, eventKey: String): Bool {
+        let normalizedKey = eventKey.trimAscii()
+        if (normalizedKey.isEmpty()) {
+            return true
+        }
+        let key = "${this.normalizeAccountId(accountId)}:${normalizedKey}"
+        var recorded = false
+        synchronized(this.queueMutex) {
+            if (this.eventDedup.get(key) ?? false) {
+                recorded = false
+            } else {
+                this.eventDedup[key] = true
+                recorded = true
+            }
+        }
+        recorded
     }
 
     private func mapCardActionToInbound(root: JsonObject): Option<InboundMessage> {
@@ -898,6 +1106,192 @@ public class FeishuAdapter <: ChannelAdapter {
             mediaContext: mediaContext,
             systemEvent: true,
             systemEventKind: "feishu.drive_comment"
+        ))
+    }
+
+    private func mapBotMembershipEventToInbound(root: JsonObject): Option<InboundMessage> {
+        let event = match (root.get("event")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { return None<InboundMessage> }
+            case None => return None<InboundMessage>
+        }
+        let eventType = this.readHeaderEventType(root)
+        let accountId = this.resolveFeishuAccountId(root)
+        let chatId = this.firstNonEmpty([
+            this.readStringField(event, "chat_id"),
+            this.readStringField(event, "open_chat_id")
+        ])
+        if (chatId.trimAscii().isEmpty()) {
+            return None<InboundMessage>
+        }
+        let operatorObj = match (event.get("operator_id")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let operatorId = this.firstNonEmpty([
+            this.readStringField(operatorObj, "open_id"),
+            this.readStringField(operatorObj, "user_id"),
+            this.readStringField(operatorObj, "union_id"),
+            this.readStringField(event, "operator_id")
+        ])
+        let action = if (eventType.contains("deleted") || eventType.contains("removed")) { "deleted" } else { "added" }
+        let mediaContext = JsonObject()
+        mediaContext.put("channel", JsonString("feishu"))
+        mediaContext.put("accountId", JsonString(accountId))
+        mediaContext.put("peerId", JsonString(chatId.trimAscii()))
+        mediaContext.put("messageId", JsonString("bot:${action}:${chatId.trimAscii()}"))
+        let context = JsonObject()
+        let membership = JsonObject()
+        membership.put("chatId", JsonString(chatId.trimAscii()))
+        membership.put("operatorId", JsonString(operatorId.trimAscii()))
+        membership.put("action", JsonString(action))
+        membership.put("eventType", JsonString(eventType))
+        membership.put("status", JsonString("accepted"))
+        context.put("feishuBotMembership", membership)
+        mediaContext.put("context", context)
+        let inboundId = "bot-membership:${eventType}:${chatId.trimAscii()}:${operatorId.trimAscii()}"
+        Some(InboundMessage(
+            ChannelType.Feishu,
+            inboundId,
+            chatId.trimAscii(),
+            operatorId.trimAscii(),
+            ChatType.Group,
+            "[feishu-bot-membership]\naction=${action}\nchatId=${chatId.trimAscii()}\nby=${operatorId.trimAscii()}",
+            true,
+            DateTime.now(),
+            conversationId: Some(chatId.trimAscii()),
+            raw: Some(root.toJsonString()),
+            accountId: accountId,
+            mediaContext: mediaContext,
+            systemEvent: true,
+            systemEventKind: "feishu.bot_membership"
+        ))
+    }
+
+    private func mapVcInvitedEventToInbound(root: JsonObject): Option<InboundMessage> {
+        let event = match (root.get("event")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { return None<InboundMessage> }
+            case None => return None<InboundMessage>
+        }
+        let meetingObj = match (event.get("meeting")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let accountId = this.resolveFeishuAccountId(root)
+        let eventId = this.readStringField(event, "event_id")
+        let meetingNo = this.firstNonEmpty([
+            this.readStringField(meetingObj, "meeting_no"),
+            this.readStringField(event, "meeting_no")
+        ])
+        if (meetingNo.trimAscii().isEmpty() && eventId.trimAscii().isEmpty()) {
+            return None<InboundMessage>
+        }
+        let operatorObj = match (event.get("operator_id")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let operatorId = this.firstNonEmpty([
+            this.readStringField(operatorObj, "open_id"),
+            this.readStringField(operatorObj, "user_id"),
+            this.readStringField(operatorObj, "union_id"),
+            this.readStringField(event, "operator_id")
+        ])
+        let peerId = if (meetingNo.trimAscii().isEmpty()) { "vc:${eventId.trimAscii()}" } else { "vc:${meetingNo.trimAscii()}" }
+        let mediaContext = JsonObject()
+        mediaContext.put("channel", JsonString("feishu"))
+        mediaContext.put("accountId", JsonString(accountId))
+        mediaContext.put("peerId", JsonString(peerId))
+        mediaContext.put("messageId", JsonString(if (eventId.trimAscii().isEmpty()) { peerId } else { eventId.trimAscii() }))
+        let context = JsonObject()
+        let vc = JsonObject()
+        vc.put("eventId", JsonString(eventId.trimAscii()))
+        vc.put("meetingNo", JsonString(meetingNo.trimAscii()))
+        vc.put("operatorId", JsonString(operatorId.trimAscii()))
+        vc.put("eventType", JsonString(this.readHeaderEventType(root)))
+        vc.put("status", JsonString("accepted"))
+        context.put("feishuVcInvited", vc)
+        mediaContext.put("context", context)
+        let inboundId = if (eventId.trimAscii().isEmpty()) { "vc-invited:${meetingNo.trimAscii()}" } else { "vc-invited:${eventId.trimAscii()}" }
+        Some(InboundMessage(
+            ChannelType.Feishu,
+            inboundId,
+            peerId,
+            operatorId.trimAscii(),
+            ChatType.Direct,
+            "[feishu-vc-invited]\nmeetingNo=${meetingNo.trimAscii()}\neventId=${eventId.trimAscii()}\nby=${operatorId.trimAscii()}",
+            true,
+            DateTime.now(),
+            conversationId: Some(peerId),
+            raw: Some(root.toJsonString()),
+            accountId: accountId,
+            mediaContext: mediaContext,
+            systemEvent: true,
+            systemEventKind: "feishu.vc_invited"
+        ))
+    }
+
+    private func mapBitableFieldChangedEventToInbound(root: JsonObject): Option<InboundMessage> {
+        let event = match (root.get("event")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { return None<InboundMessage> }
+            case None => return None<InboundMessage>
+        }
+        let accountId = this.resolveFeishuAccountId(root)
+        let appToken = this.firstNonEmpty([
+            this.readStringField(event, "app_token"),
+            this.readStringField(event, "appToken")
+        ])
+        let tableId = this.firstNonEmpty([
+            this.readStringField(event, "table_id"),
+            this.readStringField(event, "tableId")
+        ])
+        let fieldId = this.firstNonEmpty([
+            this.readStringField(event, "field_id"),
+            this.readStringField(event, "fieldId")
+        ])
+        if (appToken.trimAscii().isEmpty() || tableId.trimAscii().isEmpty() || fieldId.trimAscii().isEmpty()) {
+            return None<InboundMessage>
+        }
+        let operatorObj = match (event.get("operator_id")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let operatorId = this.firstNonEmpty([
+            this.readStringField(operatorObj, "open_id"),
+            this.readStringField(operatorObj, "user_id"),
+            this.readStringField(operatorObj, "union_id"),
+            this.readStringField(event, "operator_id")
+        ])
+        let peerId = "bitable:${appToken.trimAscii()}:${tableId.trimAscii()}"
+        let mediaContext = JsonObject()
+        mediaContext.put("channel", JsonString("feishu"))
+        mediaContext.put("accountId", JsonString(accountId))
+        mediaContext.put("peerId", JsonString(peerId))
+        mediaContext.put("messageId", JsonString("bitable:${appToken.trimAscii()}:${tableId.trimAscii()}:${fieldId.trimAscii()}"))
+        let context = JsonObject()
+        let bitable = JsonObject()
+        bitable.put("appToken", JsonString(appToken.trimAscii()))
+        bitable.put("tableId", JsonString(tableId.trimAscii()))
+        bitable.put("fieldId", JsonString(fieldId.trimAscii()))
+        bitable.put("operatorId", JsonString(operatorId.trimAscii()))
+        bitable.put("eventType", JsonString(this.readHeaderEventType(root)))
+        bitable.put("status", JsonString("accepted"))
+        context.put("feishuBitableFieldChanged", bitable)
+        mediaContext.put("context", context)
+        let inboundId = "bitable-field:${appToken.trimAscii()}:${tableId.trimAscii()}:${fieldId.trimAscii()}:${operatorId.trimAscii()}"
+        Some(InboundMessage(
+            ChannelType.Feishu,
+            inboundId,
+            peerId,
+            operatorId.trimAscii(),
+            ChatType.Direct,
+            "[feishu-bitable-field-changed]\nappToken=${appToken.trimAscii()}\ntableId=${tableId.trimAscii()}\nfieldId=${fieldId.trimAscii()}\nby=${operatorId.trimAscii()}",
+            true,
+            DateTime.now(),
+            conversationId: Some(peerId),
+            raw: Some(root.toJsonString()),
+            accountId: accountId,
+            mediaContext: mediaContext,
+            systemEvent: true,
+            systemEventKind: "feishu.bitable_field_changed"
         ))
     }
 

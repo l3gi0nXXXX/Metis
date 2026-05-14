@@ -130,6 +130,7 @@ export type AgentsProps = {
   onLoadWorkspaceFiles: () => void;
   onLoadWorkspaceFile: (name: string) => void;
   onSaveWorkspaceFile: () => void;
+  onStartFeishuOAuth: (accountId: string) => void;
   onSkillsFilterChange: (next: string) => void;
   onSkillsRefresh: () => void;
   onAgentSkillToggle: (agentId: string, skillName: string, enabled: boolean) => void;
@@ -376,6 +377,7 @@ export function renderAgents(props: AgentsProps) {
                     onLoadWorkspaceFiles: props.onLoadWorkspaceFiles,
                     onLoadWorkspaceFile: props.onLoadWorkspaceFile,
                     onSaveWorkspaceFile: props.onSaveWorkspaceFile,
+                    onStartFeishuOAuth: props.onStartFeishuOAuth,
                   })
                 : nothing}
             `}

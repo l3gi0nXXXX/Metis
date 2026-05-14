@@ -106,7 +106,7 @@ public func gatewayFeishuResolveAccount(config: FeishuConfig, accountId: String)
     FeishuResolvedAccount(normalized, merged, explicitAccount: explicitAccount, credentialSource: credentialSource)
 }
 
-public func gatewayFeishuDescribeAccounts(config: FeishuConfig): JsonObject {
+public func gatewayFeishuDescribeAccounts(config: FeishuConfig, runtime!: JsonObject = JsonObject()): JsonObject {
     let out = JsonObject()
     let defaultAccount = gatewayFeishuDefaultAccountId(config)
     let diagnostics = gatewayFeishuUnsupportedFieldDiagnostics(config)
@@ -120,11 +120,14 @@ public func gatewayFeishuDescribeAccounts(config: FeishuConfig): JsonObject {
     let rows = JsonArray([])
     for (accountId in gatewayFeishuListAccountIds(config)) {
         let resolved = gatewayFeishuResolveAccount(config, accountId)
+        let runtimeRow = gatewayFeishuRuntimeAccount(runtime, resolved.accountId)
         let row = JsonObject()
         row.put("accountId", JsonString(resolved.accountId))
         row.put("defaultAccount", JsonBool(resolved.accountId == defaultAccount))
         row.put("enabled", JsonBool(resolved.config.enabled))
         row.put("configured", JsonBool(!resolved.config.appId.trimAscii().isEmpty() && !resolved.config.appSecret.trimAscii().isEmpty()))
+        row.put("running", JsonBool(gatewayFeishuRuntimeBool(runtimeRow, "running", false)))
+        row.put("lastError", JsonString(gatewayFeishuRedactSecretText(gatewayFeishuRuntimeString(runtimeRow, "lastError", ""))))
         row.put("credentialSource", JsonString(resolved.credentialSource))
         row.put("explicitAccount", JsonBool(resolved.explicitAccount))
         row.put("receiveMode", JsonString(resolved.config.receiveMode))
@@ -142,6 +145,52 @@ public func gatewayFeishuDescribeAccounts(config: FeishuConfig): JsonObject {
     out.put("accounts", rows)
     out.put("count", JsonInt(rows.size()))
     out
+}
+
+private func gatewayFeishuRuntimeAccount(runtime: JsonObject, accountId: String): JsonObject {
+    let accounts = match (runtime.get("accounts")) {
+        case Some(v) => try { v.asArray() } catch (_: Exception) { JsonArray([]) }
+        case None => JsonArray([])
+    }
+    for (i in 0..accounts.size()) {
+        let row = try { accounts[i].asObject() } catch (_: Exception) { JsonObject() }
+        if (gatewayFeishuRuntimeString(row, "accountId", "") == accountId) {
+            return row
+        }
+    }
+    JsonObject()
+}
+
+private func gatewayFeishuRuntimeString(obj: JsonObject, key: String, fallback: String): String {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asString().getValue().trimAscii() } catch (_: Exception) { fallback }
+        case None => fallback
+    }
+}
+
+private func gatewayFeishuRuntimeBool(obj: JsonObject, key: String, fallback: Bool): Bool {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asBool().getValue() } catch (_: Exception) { fallback }
+        case None => fallback
+    }
+}
+
+private func gatewayFeishuRedactSecretText(raw: String): String {
+    let text = raw.trimAscii()
+    if (text.isEmpty()) {
+        return ""
+    }
+    let lower = text.toAsciiLower()
+    if (
+        lower.contains("authorization") ||
+        lower.contains("bearer ") ||
+        lower.contains("secret") ||
+        lower.contains("token") ||
+        lower.contains("password")
+    ) {
+        return "[redacted]"
+    }
+    text
 }
 
 public func gatewayFeishuUnsupportedFieldDiagnostics(config: FeishuConfig): JsonObject {

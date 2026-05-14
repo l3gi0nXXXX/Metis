@@ -13,6 +13,7 @@ import stdx.net.tls.*
 
 public class FeishuOapiRequest {
     public let toolName: String
+    public let actionKey: String
     public let category: String
     public let domain: String
     public let action: String
@@ -22,6 +23,8 @@ public class FeishuOapiRequest {
     public let tokenMode: String
     public let params: JsonObject
     public let requiredScopes: Array<String>
+    public let supported: Bool
+    public let supportedActions: Array<String>
 
     public init(
         toolName: String,
@@ -36,6 +39,7 @@ public class FeishuOapiRequest {
         requiredScopes: Array<String>
     ) {
         this.toolName = toolName.trimAscii()
+        this.actionKey = feishuOapiActionKeyForToolAction(this.toolName, action)
         this.category = category.trimAscii()
         this.domain = domain.trimAscii()
         this.action = action.trimAscii()
@@ -45,11 +49,14 @@ public class FeishuOapiRequest {
         this.tokenMode = tokenMode.trimAscii()
         this.params = params
         this.requiredScopes = requiredScopes
+        this.supported = feishuOapiIsSupportedActionKey(this.actionKey)
+        this.supportedActions = feishuOapiSupportedActionsForTool(this.toolName)
     }
 
     public func toJson(): JsonObject {
         let out = JsonObject()
         out.put("tool", JsonString(this.toolName))
+        out.put("action_key", JsonString(this.actionKey))
         out.put("category", JsonString(this.category))
         out.put("domain", JsonString(this.domain))
         out.put("action", JsonString(this.action))
@@ -58,6 +65,8 @@ public class FeishuOapiRequest {
         out.put("method", JsonString(this.method))
         out.put("token_mode", JsonString(this.tokenMode))
         out.put("required_scopes", feishuOapiJsonStringArray(this.requiredScopes))
+        out.put("supported", JsonBool(this.supported))
+        out.put("supported_actions", feishuOapiJsonStringArray(this.supportedActions))
         out.put("params", this.params)
         out
     }
@@ -115,6 +124,25 @@ public class FeishuOapiResult {
             "scope_missing",
             error: if (error.trimAscii().isEmpty()) { "Feishu OAPI required scope is missing." } else { error.trimAscii() },
             missingScopes: missingScopes
+        )
+    }
+
+    public static func appScopeMissing(request: FeishuOapiRequest, missingScopes: Array<String>, error!: String = ""): FeishuOapiResult {
+        FeishuOapiResult(
+            request,
+            false,
+            "app_scope_missing",
+            error: if (error.trimAscii().isEmpty()) { "Feishu app is missing required OAPI scope(s)." } else { error.trimAscii() },
+            missingScopes: missingScopes
+        )
+    }
+
+    public static func unsupportedAction(request: FeishuOapiRequest): FeishuOapiResult {
+        FeishuOapiResult(
+            request,
+            false,
+            "unsupported_action",
+            error: "Unsupported Feishu OAPI action: ${request.actionKey}."
         )
     }
 
@@ -191,6 +219,77 @@ public class FeishuOapiRefreshResult {
         this.expiresInSeconds = expiresInSeconds
         this.scopes = scopes
         this.error = error.trimAscii()
+    }
+}
+
+public class FeishuOapiAuthRequestMerger {
+    private let entries = HashMap<String, FeishuOapiAuthRequestMergeEntry>()
+
+    public init() {}
+
+    public func merge(turnKey: String, accountId: String, userId: String, scopes: Array<String>, status: String): JsonObject {
+        let key = "${turnKey.trimAscii()}\u{0000}${accountId.trimAscii()}\u{0000}${userId.trimAscii()}"
+        let entry = match (this.entries.get(key)) {
+            case Some(v) => v
+            case None =>
+                let created = FeishuOapiAuthRequestMergeEntry(turnKey, accountId, userId)
+                this.entries[key] = created
+                created
+        }
+        entry.add(scopes, status)
+        entry.toJson()
+    }
+}
+
+private class FeishuOapiAuthRequestMergeEntry {
+    private let turnKey: String
+    private let accountId: String
+    private let userId: String
+    private let scopes = ArrayList<String>()
+    private var requestCount: Int64 = 0
+    private var hasAuthRequired: Bool = false
+    private var hasAppScopeMissing: Bool = false
+
+    init(turnKey: String, accountId: String, userId: String) {
+        this.turnKey = turnKey.trimAscii()
+        this.accountId = feishuOapiNormalizeAccountId(accountId)
+        this.userId = userId.trimAscii()
+    }
+
+    func add(newScopes: Array<String>, status: String): Unit {
+        this.requestCount++
+        let cleanStatus = status.trimAscii()
+        if (cleanStatus == "auth_required") {
+            this.hasAuthRequired = true
+        }
+        if (cleanStatus == "app_scope_missing") {
+            this.hasAppScopeMissing = true
+        }
+        for (scope in newScopes) {
+            let clean = scope.trimAscii()
+            if (!clean.isEmpty() && !this.scopes.contains(clean)) {
+                this.scopes.add(clean)
+            }
+        }
+    }
+
+    func toJson(): JsonObject {
+        let out = JsonObject()
+        out.put("status", JsonString(if (this.hasAppScopeMissing) {
+            "app_scope_missing"
+        } else if (this.hasAuthRequired) {
+            "auth_required"
+        } else {
+            "scope_missing"
+        }))
+        out.put("turn_key", JsonString(this.turnKey))
+        out.put("account_id", JsonString(this.accountId))
+        out.put("user_id", JsonString(this.userId))
+        out.put("request_count", JsonInt(this.requestCount))
+        out.put("merged", JsonBool(this.requestCount > 1))
+        out.put("merged_scopes", feishuOapiJsonStringArray(this.scopes.toArray()))
+        out.put("redacted", JsonBool(true))
+        out
     }
 }
 
@@ -512,9 +611,15 @@ public class MetisFeishuOapiClient <: FeishuOapiClient {
     }
 
     public func invoke(request: FeishuOapiRequest): JsonObject {
+        if (!request.supported) {
+            return FeishuOapiResult.unsupportedAction(request).toJson()
+        }
         let token = match (this.tokenProvider) {
             case Some(provider) => provider.userAccessToken(request.accountId, request.requiredScopes)
             case None => return FeishuOapiResult.authRequired(request).toJson()
+        }
+        if (token.status == "app_scope_missing") {
+            return FeishuOapiResult.appScopeMissing(request, token.missingScopes, error: token.error).toJson()
         }
         if (token.status == "scope_missing") {
             return FeishuOapiResult.scopeMissing(request, token.missingScopes, error: token.error).toJson()
@@ -530,6 +635,13 @@ public class MetisFeishuOapiClient <: FeishuOapiClient {
                 let response = http.request(request, token.accessToken)
                 if (response.ok) {
                     return FeishuOapiResult.success(request, response.body).toJson()
+                }
+                let code = feishuOapiResponseCode(response.body)
+                if (code == "99991672") {
+                    return FeishuOapiResult.appScopeMissing(request, request.requiredScopes, error: response.error).toJson()
+                }
+                if (code == "99991679") {
+                    return FeishuOapiResult.scopeMissing(request, request.requiredScopes, error: response.error).toJson()
                 }
                 return FeishuOapiResult.apiError(
                     request,
@@ -600,17 +712,18 @@ public func feishuOapiBuildRequest(toolName: String, action: String, accountId: 
     let cleanTool = toolName.trimAscii()
     let cleanAction = if (action.trimAscii().isEmpty()) { "default" } else { action.trimAscii() }
     let category = feishuOapiCategoryForTool(cleanTool)
+    let actionKey = feishuOapiActionKeyForToolAction(cleanTool, cleanAction)
     FeishuOapiRequest(
         cleanTool,
         category,
         feishuOapiDomainForCategory(category),
         cleanAction,
         if (accountId.trimAscii().isEmpty()) { "default" } else { accountId.trimAscii() },
-        feishuOapiPathForTool(cleanTool, cleanAction),
-        feishuOapiMethodForAction(cleanAction),
-        "user_access_token",
+        feishuOapiPathForActionKey(actionKey),
+        feishuOapiMethodForActionKey(actionKey),
+        feishuOapiTokenModeForActionKey(actionKey),
         params,
-        feishuOapiRequiredScopesForTool(cleanTool, category, cleanAction)
+        feishuOapiRequiredScopesForActionKey(actionKey)
     )
 }
 
@@ -685,162 +798,334 @@ public func feishuOapiDomainForCategory(category: String): String {
     }
 }
 
-public func feishuOapiRequiredScopesForTool(toolName: String, category: String, _action: String): Array<String> {
-    let name = toolName.trimAscii()
-    match (category.trimAscii()) {
-        case "docs" =>
-            if (name == "feishu_create_doc" || name == "feishu_update_doc") {
-                return ["docx:document"]
-            }
-            ["docx:document:readonly"]
-        case "wiki" => ["wiki:wiki:readonly"]
-        case "drive" => ["drive:drive:readonly"]
-        case "search" => ["docx:document:readonly", "wiki:wiki:readonly"]
-        case "bitable" => ["bitable:app:readonly"]
-        case "calendar" => ["calendar:calendar:readonly"]
-        case "task" => ["task:task:readonly"]
-        case "sheets" => ["sheets:spreadsheet:readonly"]
-        case "chat" => ["im:chat:readonly"]
-        case "user" => ["contact:contact.base:readonly"]
-        case "im" =>
-            if (name == "feishu_im_bot_image") {
-                return ["im:resource"]
-            }
-            if (name == "feishu_im_user_message") {
-                return ["im:message"]
-            }
-            if (name == "feishu_im_user_fetch_resource") {
-                return ["im:message.group_msg:get_as_user", "im:message.p2p_msg:get_as_user", "im:message:readonly"]
-            }
-            ["im:message:readonly"]
-        case "oauth" => ["offline_access"]
-        case "interaction" => ["cardkit:card"]
+public func feishuOapiRequiredScopesForTool(toolName: String, _category: String, action: String): Array<String> {
+    feishuOapiRequiredScopesForActionKey(feishuOapiActionKeyForToolAction(toolName, action))
+}
+
+public func feishuOapiActionKeyForToolAction(toolName: String, action: String): String {
+    let tool = toolName.trimAscii()
+    let rawAction = if (action.trimAscii().isEmpty()) { "default" } else { action.trimAscii().toAsciiLower() }
+    let normalizedAction = match (tool) {
+        case "feishu_fetch_doc" => "default"
+        case "feishu_create_doc" => "default"
+        case "feishu_update_doc" => "default"
+        case "feishu_get_user" => "default"
+        case "feishu_search_user" => "default"
+        case "feishu_chat_members" => "default"
+        case "feishu_im_user_get_messages" => "default"
+        case "feishu_im_user_get_thread_messages" => "default"
+        case "feishu_im_user_search_messages" => "default"
+        case "feishu_im_user_fetch_resource" => "default"
+        case "feishu_im_bot_image" => "default"
+        case "feishu_oauth" => "default"
+        case "feishu_oauth_batch_auth" => "default"
+        case "feishu_ask_user_question" => "default"
+        case "feishu_im_user_message" =>
+            if (rawAction == "create") { "send" } else { rawAction }
+        case _ => rawAction
+    }
+    if (tool == "feishu_im_user_get_thread_messages") {
+        return "feishu_im_user_get_messages.default"
+    }
+    if (tool == "feishu_im_bot_image") {
+        return "feishu_im_user_fetch_resource.default"
+    }
+    "${tool}.${normalizedAction}"
+}
+
+public func feishuOapiSupportedActionsForTool(toolName: String): Array<String> {
+    match (toolName.trimAscii()) {
+        case "feishu_chat" => ["get", "search"]
+        case "feishu_im_user_message" => ["send", "reply"]
+        case "feishu_sheet" => ["info", "read", "write", "append", "find", "create", "export"]
+        case "feishu_drive_file" => ["list", "get_meta", "copy", "move", "delete", "upload", "download"]
+        case "feishu_wiki_space" => ["list", "get", "create"]
+        case "feishu_wiki_space_node" => ["list", "get", "create", "move", "copy"]
+        case "feishu_doc_comments" => ["list", "list_replies", "create", "reply", "patch"]
+        case "feishu_doc_media" => ["download", "insert"]
+        case "feishu_bitable_app" => ["create", "get", "list", "patch", "copy"]
+        case "feishu_bitable_app_table" => ["create", "list", "patch", "batch_create"]
+        case "feishu_bitable_app_table_record" => ["create", "update", "delete", "batch_create", "batch_update", "batch_delete", "list"]
+        case "feishu_bitable_app_table_field" => ["create", "list", "update", "delete"]
+        case "feishu_bitable_app_table_view" => ["create", "get", "list", "patch"]
+        case "feishu_calendar_calendar" => ["list", "get", "primary"]
+        case "feishu_calendar_event" => ["create", "list", "get", "patch", "delete", "search", "reply", "instances", "instance_view"]
+        case "feishu_calendar_event_attendee" => ["create", "list"]
+        case "feishu_calendar_freebusy" => ["list"]
+        case "feishu_task_task" => ["create", "get", "list", "patch", "add_members", "append_steps"]
+        case "feishu_task_tasklist" => ["create", "get", "list", "tasks", "patch", "add_members"]
+        case "feishu_task_attachment" => ["upload"]
+        case "feishu_task_section" => ["create", "get", "list", "patch", "tasks"]
+        case "feishu_task_comment" => ["create", "list", "get"]
+        case "feishu_task_subtask" => ["create", "list"]
+        case "feishu_task_agent" => ["register", "update_profile"]
+        case "feishu_search_doc_wiki" => ["search"]
+        case "feishu_fetch_doc" => ["default"]
+        case "feishu_create_doc" => ["default"]
+        case "feishu_update_doc" => ["default"]
+        case "feishu_get_user" => ["default"]
+        case "feishu_search_user" => ["default"]
+        case "feishu_chat_members" => ["default"]
+        case "feishu_im_user_get_messages" => ["default"]
+        case "feishu_im_user_get_thread_messages" => ["default"]
+        case "feishu_im_user_search_messages" => ["default"]
+        case "feishu_im_user_fetch_resource" => ["default"]
+        case "feishu_im_bot_image" => ["default"]
+        case "feishu_oauth" => ["default"]
+        case "feishu_oauth_batch_auth" => ["default"]
+        case "feishu_ask_user_question" => ["default"]
         case _ => []
     }
 }
 
-private func feishuOapiMethodForAction(action: String): String {
-    let clean = action.trimAscii().toAsciiLower()
-    if (clean == "create" || clean == "send" || clean == "search") {
-        return "POST"
-    }
-    if (clean == "update" || clean == "patch") {
-        return "PATCH"
-    }
-    if (clean == "delete" || clean == "remove") {
-        return "DELETE"
-    }
-    "GET"
+public func feishuOapiIsSupportedActionKey(actionKey: String): Bool {
+    feishuOapiPathForActionKey(actionKey) != ""
 }
 
-private func feishuOapiPathForTool(toolName: String, _action: String): String {
-    let name = toolName.trimAscii()
-    if (name == "feishu_oauth" || name == "feishu_oauth_batch_auth") {
-        return "/open-apis/authen/v1/oidc/device_authorize"
+private func feishuOapiTokenModeForActionKey(_actionKey: String): String {
+    "user_access_token"
+}
+
+private func feishuOapiMethodForActionKey(actionKey: String): String {
+    match (actionKey) {
+        case "feishu_chat.search" => "GET"
+        case "feishu_search_user.default" => "GET"
+        case "feishu_im_user_message.send" => "POST"
+        case "feishu_im_user_message.reply" => "POST"
+        case "feishu_search_doc_wiki.search" => "POST"
+        case "feishu_sheet.write" => "PUT"
+        case "feishu_sheet.append" => "POST"
+        case "feishu_sheet.create" => "POST"
+        case "feishu_drive_file.copy" => "POST"
+        case "feishu_drive_file.move" => "POST"
+        case "feishu_drive_file.delete" => "DELETE"
+        case "feishu_drive_file.upload" => "POST"
+        case "feishu_doc_comments.create" => "POST"
+        case "feishu_doc_comments.reply" => "POST"
+        case "feishu_doc_comments.patch" => "PATCH"
+        case "feishu_doc_media.insert" => "POST"
+        case "feishu_wiki_space.create" => "POST"
+        case "feishu_wiki_space_node.create" => "POST"
+        case "feishu_wiki_space_node.move" => "POST"
+        case "feishu_wiki_space_node.copy" => "POST"
+        case _ =>
+            let action = actionKey.split(".")[1].trimAscii()
+            if (action == "create" || action == "batch_create" || action == "register" || action == "add_members" || action == "append_steps") {
+                "POST"
+            } else if (action == "patch" || action == "update" || action == "update_profile" || action == "batch_update") {
+                "PATCH"
+            } else if (action == "delete" || action == "batch_delete") {
+                "DELETE"
+            } else {
+                "GET"
+            }
     }
-    if (name == "feishu_ask_user_question") {
-        return "/open-apis/cardkit/v1/cards"
+}
+
+private func feishuOapiPathForActionKey(actionKey: String): String {
+    match (actionKey) {
+        case "feishu_oauth.default" => "/open-apis/authen/v1/oidc/device_authorize"
+        case "feishu_oauth_batch_auth.default" => "/open-apis/authen/v1/oidc/device_authorize"
+        case "feishu_ask_user_question.default" => "/open-apis/cardkit/v1/cards"
+        case "feishu_fetch_doc.default" => "/open-apis/docx/v1/documents/:document_id/raw_content"
+        case "feishu_create_doc.default" => "/open-apis/docx/v1/documents"
+        case "feishu_update_doc.default" => "/open-apis/docx/v1/documents/:document_id"
+        case "feishu_doc_comments.list" => "/open-apis/docx/v1/documents/:document_id/comments"
+        case "feishu_doc_comments.list_replies" => "/open-apis/docx/v1/documents/:document_id/comments/:comment_id/replies"
+        case "feishu_doc_comments.create" => "/open-apis/docx/v1/documents/:document_id/comments"
+        case "feishu_doc_comments.reply" => "/open-apis/docx/v1/documents/:document_id/comments/:comment_id/replies"
+        case "feishu_doc_comments.patch" => "/open-apis/docx/v1/documents/:document_id/comments/:comment_id"
+        case "feishu_doc_media.download" => "/open-apis/docx/v1/documents/:document_id/media/:file_token/download"
+        case "feishu_doc_media.insert" => "/open-apis/docx/v1/documents/:document_id/media"
+        case "feishu_wiki_space.list" => "/open-apis/wiki/v2/spaces"
+        case "feishu_wiki_space.get" => "/open-apis/wiki/v2/spaces/:space_id"
+        case "feishu_wiki_space.create" => "/open-apis/wiki/v2/spaces"
+        case "feishu_wiki_space_node.list" => "/open-apis/wiki/v2/spaces/:space_id/nodes"
+        case "feishu_wiki_space_node.get" => "/open-apis/wiki/v2/spaces/:space_id/nodes/:node_token"
+        case "feishu_wiki_space_node.create" => "/open-apis/wiki/v2/spaces/:space_id/nodes"
+        case "feishu_wiki_space_node.move" => "/open-apis/wiki/v2/spaces/:space_id/nodes/:node_token/move"
+        case "feishu_wiki_space_node.copy" => "/open-apis/wiki/v2/spaces/:space_id/nodes/:node_token/copy"
+        case "feishu_drive_file.list" => "/open-apis/drive/v1/files"
+        case "feishu_drive_file.get_meta" => "/open-apis/drive/v1/metas/batch_query"
+        case "feishu_drive_file.copy" => "/open-apis/drive/v1/files/:file_token/copy"
+        case "feishu_drive_file.move" => "/open-apis/drive/v1/files/:file_token/move"
+        case "feishu_drive_file.delete" => "/open-apis/drive/v1/files/:file_token"
+        case "feishu_drive_file.upload" => "/open-apis/drive/v1/files/upload_all"
+        case "feishu_drive_file.download" => "/open-apis/drive/v1/files/:file_token/download"
+        case "feishu_search_doc_wiki.search" => "/open-apis/search/v2/data_sources/:data_source_id/search"
+        case "feishu_sheet.info" => "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token"
+        case "feishu_sheet.read" => "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/values/:range"
+        case "feishu_sheet.write" => "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/values"
+        case "feishu_sheet.append" => "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/values_append"
+        case "feishu_sheet.find" => "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/:sheet_id/find"
+        case "feishu_sheet.create" => "/open-apis/sheets/v3/spreadsheets"
+        case "feishu_sheet.export" => "/open-apis/drive/v1/export_tasks"
+        case "feishu_chat.search" => "/open-apis/im/v1/chats/search"
+        case "feishu_chat.get" => "/open-apis/im/v1/chats/:chat_id"
+        case "feishu_chat_members.default" => "/open-apis/im/v1/chats/:chat_id/members"
+        case "feishu_get_user.default" => "/open-apis/contact/v3/users/:user_id"
+        case "feishu_search_user.default" => "/open-apis/search/v1/user"
+        case "feishu_im_user_message.send" => "/open-apis/im/v1/messages"
+        case "feishu_im_user_message.reply" => "/open-apis/im/v1/messages/:message_id/reply"
+        case "feishu_im_user_get_messages.default" => "/open-apis/im/v1/messages"
+        case "feishu_im_user_search_messages.default" => "/open-apis/search/v2/data_sources/im_message/search"
+        case "feishu_im_user_fetch_resource.default" => "/open-apis/im/v1/messages/:message_id/resources/:file_key"
+        case "feishu_bitable_app.create" => "/open-apis/bitable/v1/apps"
+        case "feishu_bitable_app.get" => "/open-apis/bitable/v1/apps/:app_token"
+        case "feishu_bitable_app.list" => "/open-apis/bitable/v1/apps"
+        case "feishu_bitable_app.patch" => "/open-apis/bitable/v1/apps/:app_token"
+        case "feishu_bitable_app.copy" => "/open-apis/bitable/v1/apps/:app_token/copy"
+        case "feishu_bitable_app_table.create" => "/open-apis/bitable/v1/apps/:app_token/tables"
+        case "feishu_bitable_app_table.list" => "/open-apis/bitable/v1/apps/:app_token/tables"
+        case "feishu_bitable_app_table.patch" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id"
+        case "feishu_bitable_app_table.batch_create" => "/open-apis/bitable/v1/apps/:app_token/tables/batch_create"
+        case "feishu_bitable_app_table_record.create" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records"
+        case "feishu_bitable_app_table_record.update" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/:record_id"
+        case "feishu_bitable_app_table_record.delete" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/:record_id"
+        case "feishu_bitable_app_table_record.batch_create" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/batch_create"
+        case "feishu_bitable_app_table_record.batch_update" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/batch_update"
+        case "feishu_bitable_app_table_record.batch_delete" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/batch_delete"
+        case "feishu_bitable_app_table_record.list" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records"
+        case "feishu_bitable_app_table_field.create" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/fields"
+        case "feishu_bitable_app_table_field.list" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/fields"
+        case "feishu_bitable_app_table_field.update" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/fields/:field_id"
+        case "feishu_bitable_app_table_field.delete" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/fields/:field_id"
+        case "feishu_bitable_app_table_view.create" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views"
+        case "feishu_bitable_app_table_view.get" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views/:view_id"
+        case "feishu_bitable_app_table_view.list" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views"
+        case "feishu_bitable_app_table_view.patch" => "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views/:view_id"
+        case "feishu_calendar_calendar.list" => "/open-apis/calendar/v4/calendars"
+        case "feishu_calendar_calendar.get" => "/open-apis/calendar/v4/calendars/:calendar_id"
+        case "feishu_calendar_calendar.primary" => "/open-apis/calendar/v4/calendars/primary"
+        case "feishu_calendar_event.create" => "/open-apis/calendar/v4/calendars/:calendar_id/events"
+        case "feishu_calendar_event.list" => "/open-apis/calendar/v4/calendars/:calendar_id/events"
+        case "feishu_calendar_event.get" => "/open-apis/calendar/v4/calendars/:calendar_id/events/:event_id"
+        case "feishu_calendar_event.patch" => "/open-apis/calendar/v4/calendars/:calendar_id/events/:event_id"
+        case "feishu_calendar_event.delete" => "/open-apis/calendar/v4/calendars/:calendar_id/events/:event_id"
+        case "feishu_calendar_event.search" => "/open-apis/calendar/v4/calendars/:calendar_id/events/search"
+        case "feishu_calendar_event.reply" => "/open-apis/calendar/v4/calendars/:calendar_id/events/:event_id/reply"
+        case "feishu_calendar_event.instances" => "/open-apis/calendar/v4/calendars/:calendar_id/events/:event_id/instances"
+        case "feishu_calendar_event.instance_view" => "/open-apis/calendar/v4/calendars/:calendar_id/events/:event_id/instance_view"
+        case "feishu_calendar_event_attendee.create" => "/open-apis/calendar/v4/calendars/:calendar_id/events/:event_id/attendees"
+        case "feishu_calendar_event_attendee.list" => "/open-apis/calendar/v4/calendars/:calendar_id/events/:event_id/attendees"
+        case "feishu_calendar_freebusy.list" => "/open-apis/calendar/v4/freebusy/list"
+        case "feishu_task_task.create" => "/open-apis/task/v2/tasks"
+        case "feishu_task_task.get" => "/open-apis/task/v2/tasks/:task_guid"
+        case "feishu_task_task.list" => "/open-apis/task/v2/tasks"
+        case "feishu_task_task.patch" => "/open-apis/task/v2/tasks/:task_guid"
+        case "feishu_task_task.add_members" => "/open-apis/task/v2/tasks/:task_guid/add_members"
+        case "feishu_task_task.append_steps" => "/open-apis/task/v2/tasks/:task_guid/append_steps"
+        case "feishu_task_tasklist.create" => "/open-apis/task/v2/tasklists"
+        case "feishu_task_tasklist.get" => "/open-apis/task/v2/tasklists/:tasklist_guid"
+        case "feishu_task_tasklist.list" => "/open-apis/task/v2/tasklists"
+        case "feishu_task_tasklist.tasks" => "/open-apis/task/v2/tasklists/:tasklist_guid/tasks"
+        case "feishu_task_tasklist.patch" => "/open-apis/task/v2/tasklists/:tasklist_guid"
+        case "feishu_task_tasklist.add_members" => "/open-apis/task/v2/tasklists/:tasklist_guid/add_members"
+        case "feishu_task_attachment.upload" => "/open-apis/task/v2/tasks/:task_guid/attachments"
+        case "feishu_task_section.create" => "/open-apis/task/v2/tasklists/:tasklist_guid/sections"
+        case "feishu_task_section.get" => "/open-apis/task/v2/tasklists/:tasklist_guid/sections/:section_guid"
+        case "feishu_task_section.list" => "/open-apis/task/v2/tasklists/:tasklist_guid/sections"
+        case "feishu_task_section.patch" => "/open-apis/task/v2/tasklists/:tasklist_guid/sections/:section_guid"
+        case "feishu_task_section.tasks" => "/open-apis/task/v2/tasklists/:tasklist_guid/sections/:section_guid/tasks"
+        case "feishu_task_comment.create" => "/open-apis/task/v2/tasks/:task_guid/comments"
+        case "feishu_task_comment.list" => "/open-apis/task/v2/tasks/:task_guid/comments"
+        case "feishu_task_comment.get" => "/open-apis/task/v2/tasks/:task_guid/comments/:comment_id"
+        case "feishu_task_subtask.create" => "/open-apis/task/v2/tasks/:task_guid/subtasks"
+        case "feishu_task_subtask.list" => "/open-apis/task/v2/tasks/:task_guid/subtasks"
+        case "feishu_task_agent.register" => "/open-apis/task/v2/tasks/:task_guid/collaborators"
+        case "feishu_task_agent.update_profile" => "/open-apis/task/v2/tasks/:task_guid/collaborators/:user_id"
+        case _ => ""
     }
-    if (name == "feishu_fetch_doc") {
-        return "/open-apis/docx/v1/documents/:document_id/raw_content"
+}
+
+private func feishuOapiRequiredScopesForActionKey(actionKey: String): Array<String> {
+    match (actionKey) {
+        case "feishu_chat.search" => ["im:chat:read"]
+        case "feishu_chat.get" => ["im:chat:read"]
+        case "feishu_chat_members.default" => ["im:chat.members:read"]
+        case "feishu_get_user.default" => ["contact:contact.base:readonly", "contact:user.base:readonly"]
+        case "feishu_search_user.default" => ["contact:user:search"]
+        case "feishu_im_user_message.send" => ["im:message", "im:message.send_as_user"]
+        case "feishu_im_user_message.reply" => ["im:message", "im:message.send_as_user"]
+        case "feishu_im_user_fetch_resource.default" => ["im:message.group_msg:get_as_user", "im:message.p2p_msg:get_as_user", "im:message:readonly"]
+        case "feishu_im_user_get_messages.default" => ["im:chat:read", "im:message:readonly", "im:message.group_msg:get_as_user", "im:message.p2p_msg:get_as_user", "contact:contact.base:readonly", "contact:user.base:readonly"]
+        case "feishu_im_user_search_messages.default" => ["im:chat:read", "im:message:readonly", "im:message.group_msg:get_as_user", "im:message.p2p_msg:get_as_user", "contact:contact.base:readonly", "contact:user.base:readonly", "search:message"]
+        case "feishu_fetch_doc.default" => ["docx:document:readonly", "wiki:node:read"]
+        case "feishu_create_doc.default" => ["board:whiteboard:node:create", "docx:document:create", "docx:document:readonly", "docx:document:write_only", "wiki:node:create", "wiki:node:read", "docs:document.media:upload"]
+        case "feishu_update_doc.default" => ["board:whiteboard:node:create", "docx:document:create", "docx:document:readonly", "docx:document:write_only"]
+        case "feishu_doc_comments.list" => ["wiki:node:read", "docs:document.comment:read"]
+        case "feishu_doc_comments.list_replies" => ["wiki:node:read", "docs:document.comment:read"]
+        case "feishu_doc_comments.create" => ["wiki:node:read", "docs:document.comment:create"]
+        case "feishu_doc_comments.reply" => ["wiki:node:read", "docs:document.comment:create"]
+        case "feishu_doc_comments.patch" => ["docs:document.comment:update"]
+        case "feishu_doc_media.download" => ["board:whiteboard:node:read", "docs:document.media:download"]
+        case "feishu_doc_media.insert" => ["docx:document:write_only", "docs:document.media:upload"]
+        case "feishu_wiki_space.list" => ["wiki:space:retrieve"]
+        case "feishu_wiki_space.get" => ["wiki:space:read"]
+        case "feishu_wiki_space.create" => ["wiki:space:write_only"]
+        case "feishu_wiki_space_node.list" => ["wiki:node:retrieve"]
+        case "feishu_wiki_space_node.get" => ["wiki:node:read"]
+        case "feishu_wiki_space_node.create" => ["wiki:node:create"]
+        case "feishu_wiki_space_node.move" => ["wiki:node:move"]
+        case "feishu_wiki_space_node.copy" => ["wiki:node:copy"]
+        case "feishu_drive_file.list" => ["space:document:retrieve"]
+        case "feishu_drive_file.get_meta" => ["drive:drive.metadata:readonly"]
+        case "feishu_drive_file.copy" => ["docs:document:copy"]
+        case "feishu_drive_file.move" => ["space:document:move"]
+        case "feishu_drive_file.delete" => ["space:document:delete"]
+        case "feishu_drive_file.upload" => ["drive:file:upload"]
+        case "feishu_drive_file.download" => ["drive:file:download"]
+        case "feishu_search_doc_wiki.search" => ["search:docs:read"]
+        case "feishu_sheet.info" => ["sheets:spreadsheet.meta:read", "sheets:spreadsheet:read"]
+        case "feishu_sheet.read" => ["sheets:spreadsheet.meta:read", "sheets:spreadsheet:read"]
+        case "feishu_sheet.write" => ["sheets:spreadsheet.meta:read", "sheets:spreadsheet:read", "sheets:spreadsheet:create", "sheets:spreadsheet:write_only"]
+        case "feishu_sheet.append" => ["sheets:spreadsheet.meta:read", "sheets:spreadsheet:read", "sheets:spreadsheet:create", "sheets:spreadsheet:write_only"]
+        case "feishu_sheet.find" => ["sheets:spreadsheet.meta:read", "sheets:spreadsheet:read"]
+        case "feishu_sheet.create" => ["sheets:spreadsheet.meta:read", "sheets:spreadsheet:read", "sheets:spreadsheet:create", "sheets:spreadsheet:write_only"]
+        case "feishu_sheet.export" => ["docs:document:export"]
+        case "feishu_oauth.default" => ["offline_access"]
+        case "feishu_oauth_batch_auth.default" => ["offline_access"]
+        case "feishu_ask_user_question.default" => ["cardkit:card"]
+        case _ =>
+            feishuOapiFallbackScopesForActionKey(actionKey)
     }
-    if (name == "feishu_create_doc" || name == "feishu_update_doc") {
-        return "/open-apis/docx/v1/documents"
+}
+
+private func feishuOapiFallbackScopesForActionKey(actionKey: String): Array<String> {
+    if (actionKey.startsWith("feishu_bitable_app_table_field.")) {
+        match (actionKey) {
+            case "feishu_bitable_app_table_field.create" => return ["base:field:create"]
+            case "feishu_bitable_app_table_field.list" => return ["base:field:read"]
+            case "feishu_bitable_app_table_field.update" => return ["base:field:read", "base:field:update"]
+            case "feishu_bitable_app_table_field.delete" => return ["base:field:delete"]
+            case _ => return []
+        }
     }
-    if (name == "feishu_doc_comments") {
-        return "/open-apis/docx/v1/documents/:document_id/comments"
+    if (actionKey.startsWith("feishu_bitable_")) {
+        if (actionKey.contains(".list")) { return ["space:document:retrieve"] }
+        if (actionKey.contains(".create") || actionKey.contains(".batch_create")) { return ["base:app:create"] }
+        if (actionKey.contains(".patch") || actionKey.contains(".update") || actionKey.contains(".batch_update")) { return ["base:app:update"] }
+        if (actionKey.contains(".delete") || actionKey.contains(".batch_delete")) { return ["base:record:delete"] }
+        return ["base:app:read"]
     }
-    if (name == "feishu_doc_media") {
-        return "/open-apis/docx/v1/documents/:document_id/media"
+    if (actionKey.startsWith("feishu_calendar_event.")) {
+        if (actionKey.endsWith(".create")) { return ["calendar:calendar.event:create", "calendar:calendar.event:update"] }
+        if (actionKey.endsWith(".patch")) { return ["calendar:calendar.event:update"] }
+        if (actionKey.endsWith(".delete")) { return ["calendar:calendar.event:delete"] }
+        if (actionKey.endsWith(".reply")) { return ["calendar:calendar.event:reply"] }
+        return ["calendar:calendar.event:read"]
     }
-    if (name == "feishu_wiki_space_node") {
-        return "/open-apis/wiki/v2/spaces/:space_id/nodes"
+    if (actionKey.startsWith("feishu_calendar_")) {
+        if (actionKey == "feishu_calendar_freebusy.list") { return ["calendar:calendar.free_busy:read"] }
+        return ["calendar:calendar:read"]
     }
-    if (name == "feishu_wiki_space") {
-        return "/open-apis/wiki/v2/spaces"
+    if (actionKey.startsWith("feishu_task_")) {
+        if (actionKey.contains(".create") || actionKey.contains(".patch") || actionKey.contains(".add_members") || actionKey.contains(".append_steps") || actionKey.contains(".register") || actionKey.contains(".update_profile")) {
+            return ["task:task:write"]
+        }
+        return ["task:task:read", "task:task:write"]
     }
-    if (name == "feishu_drive_file") {
-        return "/open-apis/drive/v1/files"
-    }
-    if (name == "feishu_search_doc_wiki") {
-        return "/open-apis/search/v2/data_sources/:data_source_id/search"
-    }
-    if (name == "feishu_bitable_app_table_record") {
-        return "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records"
-    }
-    if (name == "feishu_bitable_app_table_field") {
-        return "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/fields"
-    }
-    if (name == "feishu_bitable_app_table_view") {
-        return "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views"
-    }
-    if (name == "feishu_bitable_app_table") {
-        return "/open-apis/bitable/v1/apps/:app_token/tables"
-    }
-    if (name == "feishu_bitable_app") {
-        return "/open-apis/bitable/v1/apps"
-    }
-    if (name == "feishu_calendar_event_attendee") {
-        return "/open-apis/calendar/v4/calendars/:calendar_id/events/:event_id/attendees"
-    }
-    if (name == "feishu_calendar_event") {
-        return "/open-apis/calendar/v4/calendars/:calendar_id/events"
-    }
-    if (name == "feishu_calendar_freebusy") {
-        return "/open-apis/calendar/v4/freebusy/list"
-    }
-    if (name == "feishu_calendar_calendar") {
-        return "/open-apis/calendar/v4/calendars"
-    }
-    if (name == "feishu_task_tasklist") {
-        return "/open-apis/task/v2/tasklists"
-    }
-    if (name == "feishu_task_attachment") {
-        return "/open-apis/task/v2/tasks/:task_guid/attachments"
-    }
-    if (name == "feishu_task_section") {
-        return "/open-apis/task/v2/tasklists/:tasklist_guid/sections"
-    }
-    if (name == "feishu_task_comment") {
-        return "/open-apis/task/v2/tasks/:task_guid/comments"
-    }
-    if (name == "feishu_task_subtask") {
-        return "/open-apis/task/v2/tasks/:task_guid/subtasks"
-    }
-    if (name == "feishu_task_agent") {
-        return "/open-apis/task/v2/tasks/:task_guid/collaborators"
-    }
-    if (name == "feishu_task_task") {
-        return "/open-apis/task/v2/tasks"
-    }
-    if (name == "feishu_sheet") {
-        return "/open-apis/sheets/v3/spreadsheets"
-    }
-    if (name == "feishu_chat_members") {
-        return "/open-apis/im/v1/chats/:chat_id/members"
-    }
-    if (name == "feishu_chat") {
-        return "/open-apis/im/v1/chats"
-    }
-    if (name == "feishu_get_user") {
-        return "/open-apis/contact/v3/users/:user_id"
-    }
-    if (name == "feishu_search_user") {
-        return "/open-apis/contact/v3/users/batch_get_id"
-    }
-    if (name == "feishu_im_user_get_thread_messages") {
-        return "/open-apis/im/v1/messages/:message_id/replies"
-    }
-    if (name == "feishu_im_user_search_messages") {
-        return "/open-apis/search/v2/data_sources/im_message/search"
-    }
-    if (name == "feishu_im_user_fetch_resource" || name == "feishu_im_bot_image") {
-        return "/open-apis/im/v1/messages/:message_id/resources/:file_key"
-    }
-    if (name == "feishu_im_user_get_messages" || name == "feishu_im_user_message") {
-        return "/open-apis/im/v1/messages"
-    }
-    "/open-apis/${feishuOapiDomainForCategory(feishuOapiCategoryForTool(name))}/generic"
+    []
 }
 
 public func feishuOapiDefaultTokenStoreRoot(): Path {
@@ -1054,6 +1339,17 @@ private func feishuOapiParseBody(body: String): JsonValue {
         let out = JsonObject()
         out.put("raw", JsonString(body))
         out
+    }
+}
+
+private func feishuOapiResponseCode(body: JsonValue): String {
+    let obj = try { body.asObject() } catch (_e: Exception) { return "" }
+    match (obj.get("code")) {
+        case Some(v) =>
+            try { return v.asInt().getValue().toString() } catch (_e: Exception) {
+                try { return v.asString().getValue().trimAscii() } catch (_inner: Exception) { return "" }
+            }
+        case None => ""
     }
 }
 

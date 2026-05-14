@@ -135,6 +135,15 @@ export const en: TranslationMap = {
     channel: "Channel",
     builtIn: "Built-in",
   },
+  agentTeams: {
+    title: "Agent Teams",
+    guidedWorkflow: "Guided workflow",
+    gatewayRpcOnly: "Gateway RPC only",
+    startOAuthViaGateway: "Start OAuth via Gateway",
+    missingSetupSteps: "Missing setup steps",
+    profileFiles: "SOUL.md, IDENTITY.md, USER.md, and TOOLS.md",
+    secretsRedacted: "Secrets and tokens are redacted before display.",
+  },
   nav: {
     chat: "Chat",
     control: "Control",

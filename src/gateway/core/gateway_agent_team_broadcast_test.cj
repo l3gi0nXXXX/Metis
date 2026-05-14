@@ -259,4 +259,34 @@ public class GatewayAgentTeamBroadcastTest {
             @Expect(noMembersPlan.diagnostics.contains("broadcast-members-empty:content"), true)
         })
     }
+
+    @TestCase
+    public func broadcastAggregateIsDeterministicAndCarriesPerAgentStatus(): Unit {
+        withBroadcastTempHome("aggregate", { home: Path =>
+            let root = broadcastRoot(home, broadcastTeam(Some(JsonBool(true)), selectedMembers: ["writer", "reviewer"]))
+            writeBroadcastRoot(root)
+            let plan = gatewayResolveAgentTeamBroadcastPlan(broadcastRequest(root))
+            let writer = GatewayResolvedSessionTurnResult(
+                plan.turns[0].context,
+                GatewaySessionExecutionResult("writer answer", delivered: true, deliveryStatus: "delivered", deliveryMessageId: "m-writer")
+            )
+            let reviewer = GatewayResolvedSessionTurnResult(
+                plan.turns[1].context,
+                GatewaySessionExecutionResult("reviewer answer", delivered: false, deliveryStatus: "not-requested")
+            )
+
+            let aggregate = gatewayAgentTeamBroadcastAggregateJson(plan, [reviewer, writer])
+            @Expect(aggregate.get("kind").getOrThrow().asString().getValue(), "agent-team-broadcast-aggregate")
+            @Expect(aggregate.get("teamId").getOrThrow().asString().getValue(), "content")
+            @Expect(aggregate.get("status").getOrThrow().asString().getValue(), "partial")
+            @Expect(aggregate.get("delivered").getOrThrow().asBool().getValue(), true)
+            let agents = aggregate.get("agents").getOrThrow().asArray()
+            @Expect(agents.size(), 2)
+            @Expect(agents[0].asObject().get("agentId").getOrThrow().asString().getValue(), "writer")
+            @Expect(agents[0].asObject().get("deliveryStatus").getOrThrow().asString().getValue(), "delivered")
+            @Expect(agents[1].asObject().get("agentId").getOrThrow().asString().getValue(), "reviewer")
+            @Expect(agents[1].asObject().get("status").getOrThrow().asString().getValue(), "not-delivered")
+            @Expect(aggregate.get("answer").getOrThrow().asString().getValue(), "[writer] writer answer\n[reviewer] reviewer answer")
+        })
+    }
 }

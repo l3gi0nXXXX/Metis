@@ -1,6 +1,7 @@
 package metis.gateway.channels.feishu
 
 import metis.core.config.GatewayUserSettings
+import metis.gateway.tools.MetisFeishuOapiTokenProvider
 
 import std.collection.{ArrayList, HashMap}
 import std.fs.{Path, remove}
@@ -146,6 +147,34 @@ public class FeishuAuthFoundationTest {
             @Expect(loadedStatus.contains("im:message"), true)
             @Expect(loadedStatus.contains("access-secret"), false)
             @Expect(loadedStatus.contains("refresh-secret"), false)
+        } finally {
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func nativeAuthAndOapiClientReadTheSameTokenStoreShapeWithoutSecretsInStatus(): Unit {
+        let root = Path("/tmp/metis-feishu-shared-token-store-${DateTime.now().toUnixTimeStamp().toNanoseconds()}")
+        try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        try {
+            let nativeStore = FeishuFileTokenStore(root)
+            nativeStore.save("tenant-a", FeishuUserToken(
+                accessToken: "shared-access-secret",
+                refreshToken: "shared-refresh-secret",
+                expiresAtMs: 4102444800000,
+                scopes: ["offline_access", "im:message", "im:message.send_as_user"]
+            ))
+
+            let oapiLookup = MetisFeishuOapiTokenProvider(root: root, nowMs: 1000)
+                .userAccessToken("tenant-a", ["im:message", "im:message.send_as_user"])
+            @Expect(oapiLookup.status, "authorized")
+            @Expect(oapiLookup.accessToken, "shared-access-secret")
+
+            let status = nativeStore.status("tenant-a").toJsonString()
+            @Expect(status.contains("authorized"), true)
+            @Expect(status.contains("im:message.send_as_user"), true)
+            @Expect(status.contains("shared-access-secret"), false)
+            @Expect(status.contains("shared-refresh-secret"), false)
         } finally {
             try { remove(root, recursive: true) } catch (_e: Exception) { () }
         }

@@ -390,6 +390,7 @@ public func cliBuildAgentsTeamRpcSpec(args: Array<String>): Option<CliAgentsTeam
     var template = ""
     let members = ArrayList<JsonValue>()
     let aliases = ArrayList<JsonValue>()
+    let bindings = ArrayList<JsonValue>()
     var i: Int64 = 2
     while (i < args.size) {
         let token = args[i].trimAscii()
@@ -429,6 +430,21 @@ public func cliBuildAgentsTeamRpcSpec(args: Array<String>): Option<CliAgentsTeam
             i += 2
             continue
         }
+        if (low == "--binding-json" || low == "--binding") {
+            if (i + 1 >= args.size) { return None<CliAgentsTeamRpcSpec> }
+            match (cliAgentsJsonObjectFromText(args[i + 1])) {
+                case Some(obj) => bindings.add(obj)
+                case None => return None<CliAgentsTeamRpcSpec>
+            }
+            i += 2
+            continue
+        }
+        if (low == "--bind") {
+            if (i + 1 >= args.size) { return None<CliAgentsTeamRpcSpec> }
+            bindings.add(JsonString(args[i + 1].trimAscii()))
+            i += 2
+            continue
+        }
         return None<CliAgentsTeamRpcSpec>
     }
 
@@ -438,6 +454,7 @@ public func cliBuildAgentsTeamRpcSpec(args: Array<String>): Option<CliAgentsTeam
     if (!template.isEmpty()) { params.put("template", JsonString(template)) }
     if (members.size > 0) { params.put("members", JsonArray(members)) }
     if (aliases.size > 0) { params.put("aliases", JsonArray(aliases)) }
+    if (bindings.size > 0) { params.put("bindings", JsonArray(bindings)) }
     Some(CliAgentsTeamRpcSpec(method, params, json, action))
 }
 

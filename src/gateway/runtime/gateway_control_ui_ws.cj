@@ -21,7 +21,7 @@ import std.convert.Parsable
 import std.fs.{Directory, File, FileInfo, Path, exists}
 import std.sync.Mutex
 import std.time.DateTime
-import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString, JsonValue}
 import stdx.net.http.*
 
 private let gatewayControlUiWsClientIdLock = Mutex()
@@ -1806,6 +1806,19 @@ private func gatewayControlUiWsChannelsRuntimeResult(params: JsonObject): JsonVa
     }
 }
 
+private func gatewayControlUiWsFeishuAuthStartResult(params: JsonObject): JsonValue {
+    let user = CliSettingManager.readGatewaySettings()
+    let request = GatewayRpcRequest("channels.feishu.auth.start", params: gatewayDashboardRequestParams("channels.feishu.auth.start", params))
+    match (handleGatewayChannelsFamily("channels.feishu.auth.start", user, request: Some(request))) {
+        case Some(response) => response.result
+        case None =>
+            let result = JsonObject()
+            result.put("status", JsonString("unavailable"))
+            result.put("redacted", JsonBool(true))
+            result
+    }
+}
+
 private func gatewayControlUiWsChannelsHealthResult(): JsonValue {
     let user = CliSettingManager.readGatewaySettings()
     match (handleGatewayChannelsFamily("channels.health", user)) {
@@ -2701,6 +2714,9 @@ public func gatewayControlUiWsCompatResponse(method: String, params: JsonObject,
     }
     if (normalized == "channels.status") {
         return Some(GatewayProtocolResponse(true, method, result: gatewayControlUiWsChannelsStatusMinimalResult()))
+    }
+    if (normalized == "channels.feishu.auth.start") {
+        return Some(GatewayProtocolResponse(true, method, result: gatewayControlUiWsFeishuAuthStartResult(params)))
     }
     if (normalized == "channels.runtime") {
         return Some(GatewayProtocolResponse(true, method, result: gatewayControlUiWsChannelsRuntimeResult(params)))

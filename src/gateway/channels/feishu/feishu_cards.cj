@@ -96,6 +96,8 @@ public class FeishuInteractiveCard {
 }
 
 public class FeishuReplyFooterMetrics {
+    public let status: String
+    public let elapsedMs: Int64
     public let inputTokens: Int64
     public let outputTokens: Int64
     public let cacheRead: Int64
@@ -104,6 +106,8 @@ public class FeishuReplyFooterMetrics {
     public let model: String
 
     public init(
+        status!: String = "",
+        elapsedMs!: Int64 = 0,
         inputTokens!: Int64 = 0,
         outputTokens!: Int64 = 0,
         cacheRead!: Int64 = 0,
@@ -111,6 +115,8 @@ public class FeishuReplyFooterMetrics {
         contextTokens!: Int64 = 0,
         model!: String = ""
     ) {
+        this.status = status.trimAscii()
+        this.elapsedMs = elapsedMs
         this.inputTokens = inputTokens
         this.outputTokens = outputTokens
         this.cacheRead = cacheRead
@@ -119,30 +125,68 @@ public class FeishuReplyFooterMetrics {
         this.model = model.trimAscii()
     }
 
-    public func toFooterText(): String {
+    public func toFooterText(config!: FeishuReplyFooterConfig = FeishuReplyFooterConfig()): String {
         let parts = ArrayList<String>()
-        if (this.inputTokens > 0) {
+        if (config.status && !this.status.isEmpty()) {
+            parts.add("Status: ${this.status}")
+        }
+        if (config.elapsed && this.elapsedMs > 0) {
+            parts.add("Elapsed: ${this.formatElapsed(this.elapsedMs)}")
+        }
+        if (config.tokens && this.inputTokens > 0) {
             parts.add("Tokens in: ${this.inputTokens}")
         }
-        if (this.outputTokens > 0) {
+        if (config.tokens && this.outputTokens > 0) {
             parts.add("Tokens out: ${this.outputTokens}")
         }
-        if (this.cacheRead > 0) {
+        if (config.cache && this.cacheRead > 0) {
             parts.add("Cache read: ${this.cacheRead}")
         }
-        if (this.cacheWrite > 0) {
+        if (config.cache && this.cacheWrite > 0) {
             parts.add("Cache write: ${this.cacheWrite}")
         }
-        if (this.contextTokens > 0) {
+        if (config.context && this.contextTokens > 0) {
             parts.add("Context: ${this.contextTokens}")
         }
-        if (!this.model.isEmpty()) {
+        if (config.model && !this.model.isEmpty()) {
             parts.add("Model: ${this.model}")
         }
         if (parts.isEmpty()) {
             return ""
         }
         "Metrics\n${String.join(parts.toArray(), delimiter: " | ")}"
+    }
+
+    private func formatElapsed(ms: Int64): String {
+        let tenths = ms / 100
+        let seconds = tenths / 10
+        let frac = tenths % 10
+        "${seconds}.${frac}s"
+    }
+}
+
+public class FeishuReplyFooterConfig {
+    public let status: Bool
+    public let elapsed: Bool
+    public let tokens: Bool
+    public let cache: Bool
+    public let context: Bool
+    public let model: Bool
+
+    public init(
+        status!: Bool = true,
+        elapsed!: Bool = true,
+        tokens!: Bool = true,
+        cache!: Bool = true,
+        context!: Bool = true,
+        model!: Bool = true
+    ) {
+        this.status = status
+        this.elapsed = elapsed
+        this.tokens = tokens
+        this.cache = cache
+        this.context = context
+        this.model = model
     }
 }
 
@@ -204,6 +248,7 @@ public class FeishuStreamingCardController {
     private var currentText: String = ""
     private var toolUseText: String = ""
     private var aborted: Bool = false
+    private var phase: String = "idle"
 
     public init(
         client: FeishuApiClient,
@@ -229,6 +274,7 @@ public class FeishuStreamingCardController {
         if (this.aborted) {
             return ""
         }
+        this.phase = "creating"
         this.currentText = text.trimAscii()
         let result = this.client.sendInteractiveCard(
             this.accountId,
@@ -241,6 +287,7 @@ public class FeishuStreamingCardController {
         )
         if (result.ok && !result.messageId.isEmpty()) {
             this.cardMessageId = result.messageId
+            this.phase = "streaming"
             return result.messageId
         }
         let fallback = this.client.sendTextMessage(
@@ -253,21 +300,27 @@ public class FeishuStreamingCardController {
             this.replyInThread
         )
         if (fallback.ok) {
+            this.phase = "terminated"
             return fallback.messageId
         }
+        this.phase = "terminated"
         ""
     }
 
     public func patchChunk(text: String): Bool {
-        if (this.aborted || this.cardMessageId.isEmpty()) {
+        if (this.aborted || this.cardMessageId.isEmpty() || this.isTerminalPhase()) {
             return false
         }
-        this.currentText = text.trimAscii()
+        let normalized = text.trimAscii()
+        if (normalized == this.currentText) {
+            return true
+        }
+        this.currentText = normalized
         this.patchCurrent(None<FeishuReplyFooterMetrics>)
     }
 
     public func updateToolPayload(name: String, payload: String): Bool {
-        if (this.aborted || this.cardMessageId.isEmpty() || !this.showToolUse) {
+        if (this.aborted || this.cardMessageId.isEmpty() || this.isTerminalPhase() || !this.showToolUse) {
             return false
         }
         let toolName = name.trimAscii()
@@ -284,16 +337,21 @@ public class FeishuStreamingCardController {
     }
 
     public func finalize(text: String, footerMetrics!: Option<FeishuReplyFooterMetrics> = None<FeishuReplyFooterMetrics>): Bool {
-        if (this.aborted || this.cardMessageId.isEmpty()) {
+        if (this.aborted || this.cardMessageId.isEmpty() || this.isTerminalPhase()) {
             return false
         }
         this.currentText = text.trimAscii()
-        this.patchCurrent(footerMetrics)
+        let ok = this.patchCurrent(footerMetrics)
+        if (ok && this.phase != "terminated") {
+            this.phase = "completed"
+        }
+        ok
     }
 
     public func abort(reason: String): Bool {
         if (this.cardMessageId.isEmpty()) {
             this.aborted = true
+            this.phase = "aborted"
             return false
         }
         this.aborted = true
@@ -303,12 +361,52 @@ public class FeishuStreamingCardController {
             this.cardMessageId,
             FeishuInteractiveCard(title: "Metis", text: "Aborted: ${message}")
         )
+        this.phase = "aborted"
         result.ok
     }
 
+    public func currentPhase(): String {
+        this.phase
+    }
+
+    private func isTerminalPhase(): Bool {
+        this.phase == "completed" || this.phase == "aborted" || this.phase == "terminated"
+    }
+
     private func patchCurrent(footerMetrics: Option<FeishuReplyFooterMetrics>): Bool {
-        let result = this.client.patchInteractiveCard(this.accountId, this.cardMessageId, this.buildCard(footerMetrics))
-        result.ok
+        let card = this.buildCard(footerMetrics)
+        let result = this.client.patchInteractiveCard(this.accountId, this.cardMessageId, card)
+        if (result.ok) {
+            return true
+        }
+        if (this.shouldFallbackPatchFailure(result.status)) {
+            let fallback = this.client.sendTextMessage(
+                this.accountId,
+                this.rawPeerId,
+                this.receiveId,
+                this.receiveIdType,
+                card.fallbackText(),
+                this.replyToMessageId,
+                this.replyInThread
+            )
+            if (fallback.ok) {
+                this.phase = "terminated"
+                return true
+            }
+        }
+        false
+    }
+
+    private func shouldFallbackPatchFailure(status: String): Bool {
+        let normalized = status.trimAscii().toAsciiLower()
+        normalized == "rate_limited" ||
+            normalized == "too_many_requests" ||
+            normalized == "table_size_limit" ||
+            normalized == "table_limit" ||
+            normalized == "message_unavailable" ||
+            normalized == "not_found" ||
+            normalized == "deleted" ||
+            normalized == "recalled"
     }
 
     private func buildCard(footerMetrics: Option<FeishuReplyFooterMetrics>): FeishuInteractiveCard {

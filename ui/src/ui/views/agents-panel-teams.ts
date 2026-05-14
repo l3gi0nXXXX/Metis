@@ -25,6 +25,7 @@ import {
   type AgentTeamBindingDraft,
   type AgentTeamBindingPreview,
   type AgentTeamEditorDraft,
+  type AgentTeamFeishuAuthResult,
   type AgentTeamModelDraft,
   type AgentTeamWorkspaceDraft,
 } from "../controllers/agent-teams.ts";
@@ -49,6 +50,9 @@ export type AgentTeamsPanelState = {
   workspaceSaving: boolean;
   workspaceError: string | null;
   workspace: AgentTeamWorkspaceDraft;
+  feishuAuthLoading: boolean;
+  feishuAuthError: string | null;
+  feishuAuthResult: AgentTeamFeishuAuthResult | null;
   channelsSnapshot: ChannelsStatusSnapshot | null;
   configForm: Record<string, unknown> | null;
 };
@@ -71,6 +75,7 @@ export type AgentTeamsPanelProps = AgentTeamsPanelState & {
   onLoadWorkspaceFiles: () => void;
   onLoadWorkspaceFile: (name: string) => void;
   onSaveWorkspaceFile: () => void;
+  onStartFeishuOAuth: (accountId: string) => void;
 };
 
 export function renderAgentTeamsPanel(props: AgentTeamsPanelProps) {
@@ -1090,6 +1095,9 @@ function renderFeishuAuthDoctorPanel(props: AgentTeamsPanelProps) {
       <div class="callout info" style="margin-top: 12px;">
         UI will not write token files, app credentials, or local Feishu config. Auth start and token refresh must stay behind Gateway RPC or native Feishu commands.
       </div>
+      ${props.feishuAuthError
+        ? html`<div class="callout danger" style="margin-top: 12px;">${redactSecretText(props.feishuAuthError)}</div>`
+        : nothing}
       <div class="agents-overview-grid" style="margin-top: 14px;">
         <div class="agent-kv">
           <div class="label">Account</div>
@@ -1138,7 +1146,78 @@ function renderFeishuAuthDoctorPanel(props: AgentTeamsPanelProps) {
               Doctor status RPC missing. Use /feishu doctor until Gateway exposes a redacted Feishu doctor object to channels.status.
             </div>
           `}
+      <div class="agent-model-actions">
+        <button
+          type="button"
+          class="btn btn--sm primary"
+          ?disabled=${props.feishuAuthLoading}
+          @click=${() => props.onStartFeishuOAuth(defaultAccount)}
+        >
+          ${props.feishuAuthLoading ? "Starting OAuth..." : "Start OAuth via Gateway"}
+        </button>
+      </div>
+      ${props.feishuAuthResult
+        ? html`
+            <div class="agent-kv" style="margin-top: 12px;">
+              <div class="label">OAuth start result</div>
+              <pre class="mono" style="white-space: pre-wrap; margin: 0;">${redactedJsonText(props.feishuAuthResult)}</pre>
+            </div>
+          `
+        : nothing}
+      ${renderFeishuMissingSetupSteps(props, auth, doctor, oapiAvailable)}
     </section>
+  `;
+}
+
+function renderFeishuMissingSetupSteps(
+  props: AgentTeamsPanelProps,
+  auth: Record<string, unknown> | null,
+  doctor: Record<string, unknown> | null,
+  oapiAvailable: boolean,
+) {
+  const feishu = resolveFeishuSettings(props);
+  const steps = [
+    {
+      label: "Confirm Feishu app credentials",
+      done: feishu.accounts.some((account) => account.configured === true),
+    },
+    {
+      label: "Start OAuth through Gateway RPC",
+      done: Boolean(auth) || Boolean(props.feishuAuthResult),
+    },
+    {
+      label: "Grant offline_access and OAPI scopes",
+      done: Boolean(auth && statusText(auth, ["scopeSummary", "scopes"], "").trim()),
+    },
+    {
+      label: "Run Feishu doctor",
+      done: Boolean(doctor),
+    },
+    {
+      label: "Bind channel/account/peer/thread/team route",
+      done: Boolean(props.bindingPreview?.applyPayload || safeJsonArrayLength(props.draft.bindingsJson) > 0),
+    },
+    {
+      label: "Expose OAPI capability status",
+      done: oapiAvailable,
+    },
+  ];
+  return html`
+    <div style="margin-top: 14px;">
+      <div class="list-title">Missing setup steps</div>
+      <div class="list" style="margin-top: 8px;">
+        ${steps.map(
+          (step) => html`
+            <div class="list-item">
+              <div class="list-main">
+                <div class="list-title">${step.label}</div>
+              </div>
+              <div class="list-meta"><span class="badge">${step.done ? "done" : "needed"}</span></div>
+            </div>
+          `,
+        )}
+      </div>
+    </div>
   `;
 }
 

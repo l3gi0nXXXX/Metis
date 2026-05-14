@@ -1,4 +1,4 @@
-import{f as e,o as t,r as n,u as r}from"./i18n.js";import{l as i}from"./format.js";import{A as a,B as o,C as s,D as c,F as l,H as u,I as d,L as f,N as p,O as m,P as h,R as g,S as ee,T as _,U as v,V as y,_ as b,a as x,b as S,d as C,f as te,g as ne,h as w,k as T,m as E,n as D,p as O,r as k,t as re,u as A,v as j,w as ie,x as M,y as N,z as ae}from"./index.js";import{r as oe}from"./channel-config-extras.js";import{i as se,n as ce,r as le,t as ue}from"./skills-shared.js";function de(t){let{agent:i,configForm:a,agentFilesList:o,configLoading:s,configSaving:c,configDirty:l,onConfigReload:u,onConfigSave:d,onModelChange:f,onModelFallbacksChange:p,onSelectPanel:m}=t,h=j(a,i.id),g=i.model,ee=(o&&o.agentId===i.id?o.workspace:null)||h.entry?.workspace||h.defaults?.workspace||i.workspace||`default`,_=h.entry?.model?S(h.entry?.model):h.defaults?.model?S(h.defaults?.model):S(g),v=S(h.defaults?.model??g),y=M(h.entry?.model),x=M(h.defaults?.model)||(v===`-`?null:ne(v))||(a?null:M(g)),C=y??x??null,w=N(h.entry?.model)??N(h.defaults?.model)??(a?null:N(g))??[],T=Array.isArray(h.entry?.skills)?h.entry?.skills:null,E=T?.length??null,D=!!(t.defaultId&&i.id===t.defaultId),O=!a||s||c,k=e=>{let t=w.filter((t,n)=>n!==e);p(i.id,t)};return e`
+import{f as e,o as t,r as n,u as r}from"./i18n.js";import{l as i}from"./format.js";import{A as a,B as o,C as s,D as c,F as l,H as u,I as d,L as f,N as p,O as m,P as h,R as g,S as ee,T as _,U as v,V as y,_ as b,a as x,b as S,d as C,f as te,g as ne,h as w,k as T,m as E,n as D,p as O,r as re,t as ie,u as ae,v as k,w as oe,x as A,y as j,z as se}from"./index.js";import{r as ce}from"./channel-config-extras.js";import{i as le,n as ue,r as de,t as fe}from"./skills-shared.js";function pe(t){let{agent:i,configForm:a,agentFilesList:o,configLoading:s,configSaving:c,configDirty:l,onConfigReload:u,onConfigSave:d,onModelChange:f,onModelFallbacksChange:p,onSelectPanel:m}=t,h=k(a,i.id),g=i.model,ee=(o&&o.agentId===i.id?o.workspace:null)||h.entry?.workspace||h.defaults?.workspace||i.workspace||`default`,_=h.entry?.model?S(h.entry?.model):h.defaults?.model?S(h.defaults?.model):S(g),v=S(h.defaults?.model??g),y=A(h.entry?.model),x=A(h.defaults?.model)||(v===`-`?null:ne(v))||(a?null:A(g)),C=y??x??null,w=j(h.entry?.model)??j(h.defaults?.model)??(a?null:j(g))??[],T=Array.isArray(h.entry?.skills)?h.entry?.skills:null,E=T?.length??null,D=!!(t.defaultId&&i.id===t.defaultId),O=!a||s||c,re=e=>{let t=w.filter((t,n)=>n!==e);p(i.id,t)};return e`
     <section class="card">
       <div class="card-title">Overview</div>
       <div class="card-sub">Workspace paths and identity metadata.</div>
@@ -64,7 +64,7 @@ import{f as e,o as t,r as n,u as r}from"./i18n.js";import{l as i}from"./format.j
                       type="button"
                       class="chip-remove"
                       ?disabled=${O}
-                      @click=${()=>k(n)}
+                      @click=${()=>re(n)}
                     >
                       &times;
                     </button>
@@ -99,30 +99,30 @@ import{f as e,o as t,r as n,u as r}from"./i18n.js";import{l as i}from"./format.j
         </div>
       </div>
     </section>
-  `}var fe=Object.defineProperty,pe=(e,t,n)=>t in e?fe(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n,P=(e,t,n)=>pe(e,typeof t==`symbol`?t:t+``,n),me={classPrefix:`cm-`,theme:`github`,linkTarget:`_blank`,sanitize:!1,plugins:[],customRenderers:{}};function he(e){return{...me,...e,plugins:e?.plugins??[],customRenderers:e?.customRenderers??{}}}function ge(e,t){return typeof t==`function`?t(e):e}function _e(e,t){let n=he(t),r=n.classPrefix,i=e;for(let e of n.plugins)e.transformBlock&&(i=i.map(e.transformBlock));let a=`<div class="${r}preview">${i.map(e=>{for(let t of n.plugins)if(t.renderBlock){let r=t.renderBlock(e,()=>ye(e,n));if(r!==null)return r}let t=n.customRenderers[e.type];return t?t(e):ye(e,n)}).join(`
-`)}</div>`;return a=ge(a,n.sanitize),a}async function ve(e,t){let n=he(t);for(let e of n.plugins)e.init&&await e.init();let r=_e(e,t);for(let e of n.plugins)e.postProcess&&(r=await e.postProcess(r));return r}function ye(e,t){let n=t.classPrefix;switch(e.type){case`paragraph`:return`<p class="${n}paragraph">${F(e.content,t)}</p>`;case`heading`:return be(e,t);case`bulletList`:return xe(e,t);case`numberedList`:return Se(e,t);case`checkList`:return Ce(e,t);case`codeBlock`:return we(e,t);case`blockquote`:return`<blockquote class="${n}blockquote">${F(e.content,t)}</blockquote>`;case`table`:return Te(e,t);case`image`:return Ee(e,t);case`divider`:return`<hr class="${n}divider" />`;case`callout`:return De(e,t);default:return`<div class="${n}unknown">${F(e.content,t)}</div>`}}function be(e,t){let n=t.classPrefix,r=e.props.level,i=`h${r}`;return`<${i} class="${n}heading ${n}h${r}">${F(e.content,t)}</${i}>`}function xe(e,t){return`<ul class="${t.classPrefix}bullet-list">
-${e.children.map(e=>`<li>${F(e.content,t)}</li>`).join(`
+  `}var me=Object.defineProperty,he=(e,t,n)=>t in e?me(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n,M=(e,t,n)=>he(e,typeof t==`symbol`?t:t+``,n),ge={classPrefix:`cm-`,theme:`github`,linkTarget:`_blank`,sanitize:!1,plugins:[],customRenderers:{}};function N(e){return{...ge,...e,plugins:e?.plugins??[],customRenderers:e?.customRenderers??{}}}function _e(e,t){return typeof t==`function`?t(e):e}function P(e,t){let n=N(t),r=n.classPrefix,i=e;for(let e of n.plugins)e.transformBlock&&(i=i.map(e.transformBlock));let a=`<div class="${r}preview">${i.map(e=>{for(let t of n.plugins)if(t.renderBlock){let r=t.renderBlock(e,()=>F(e,n));if(r!==null)return r}let t=n.customRenderers[e.type];return t?t(e):F(e,n)}).join(`
+`)}</div>`;return a=_e(a,n.sanitize),a}async function ve(e,t){let n=N(t);for(let e of n.plugins)e.init&&await e.init();let r=P(e,t);for(let e of n.plugins)e.postProcess&&(r=await e.postProcess(r));return r}function F(e,t){let n=t.classPrefix;switch(e.type){case`paragraph`:return`<p class="${n}paragraph">${I(e.content,t)}</p>`;case`heading`:return ye(e,t);case`bulletList`:return be(e,t);case`numberedList`:return xe(e,t);case`checkList`:return Se(e,t);case`codeBlock`:return Ce(e,t);case`blockquote`:return`<blockquote class="${n}blockquote">${I(e.content,t)}</blockquote>`;case`table`:return we(e,t);case`image`:return Te(e,t);case`divider`:return`<hr class="${n}divider" />`;case`callout`:return Ee(e,t);default:return`<div class="${n}unknown">${I(e.content,t)}</div>`}}function ye(e,t){let n=t.classPrefix,r=e.props.level,i=`h${r}`;return`<${i} class="${n}heading ${n}h${r}">${I(e.content,t)}</${i}>`}function be(e,t){return`<ul class="${t.classPrefix}bullet-list">
+${e.children.map(e=>`<li>${I(e.content,t)}</li>`).join(`
 `)}
-</ul>`}function Se(e,t){return`<ol class="${t.classPrefix}numbered-list">
-${e.children.map(e=>`<li>${F(e.content,t)}</li>`).join(`
+</ul>`}function xe(e,t){return`<ol class="${t.classPrefix}numbered-list">
+${e.children.map(e=>`<li>${I(e.content,t)}</li>`).join(`
 `)}
-</ol>`}function Ce(e,t){let n=t.classPrefix,r=e.props.checked;return`
+</ol>`}function Se(e,t){let n=t.classPrefix,r=e.props.checked;return`
 <div class="${n}checklist-item">
   <input type="checkbox" ${r?`checked disabled`:`disabled`} />
-  <span class="${r?`${n}checked`:``}">${F(e.content,t)}</span>
-</div>`.trim()}function we(e,t){let n=t.classPrefix,r=e.content.map(e=>e.text).join(``),i=e.props.language||``,a=I(r),o=i?` language-${i}`:``;return`<pre class="${n}code-block"${i?` data-language="${i}"`:``}><code class="${n}code${o}">${a}</code></pre>`}function Te(e,t){let n=t.classPrefix,{headers:r,rows:i,alignments:a}=e.props,o=e=>{let t=a?.[e];return t?` style="text-align: ${t}"`:``};return`<table class="${n}table">
-${r.length>0?`<thead><tr>${r.map((e,t)=>`<th${o(t)}>${I(e)}</th>`).join(``)}</tr></thead>`:``}
+  <span class="${r?`${n}checked`:``}">${I(e.content,t)}</span>
+</div>`.trim()}function Ce(e,t){let n=t.classPrefix,r=e.content.map(e=>e.text).join(``),i=e.props.language||``,a=L(r),o=i?` language-${i}`:``;return`<pre class="${n}code-block"${i?` data-language="${i}"`:``}><code class="${n}code${o}">${a}</code></pre>`}function we(e,t){let n=t.classPrefix,{headers:r,rows:i,alignments:a}=e.props,o=e=>{let t=a?.[e];return t?` style="text-align: ${t}"`:``};return`<table class="${n}table">
+${r.length>0?`<thead><tr>${r.map((e,t)=>`<th${o(t)}>${L(e)}</th>`).join(``)}</tr></thead>`:``}
 <tbody>
-${i.map(e=>`<tr>${e.map((e,t)=>`<td${o(t)}>${I(e)}</td>`).join(``)}</tr>`).join(`
+${i.map(e=>`<tr>${e.map((e,t)=>`<td${o(t)}>${L(e)}</td>`).join(``)}</tr>`).join(`
 `)}
 </tbody>
-</table>`}function Ee(e,t){let n=t.classPrefix,{url:r,alt:i,title:a,width:o,height:s}=e.props,c=i?` alt="${I(i)}"`:` alt=""`,l=a?` title="${I(a)}"`:``,u=o?` width="${o}"`:``,d=s?` height="${s}"`:``;return`<figure class="${n}image">${`<img src="${I(r)}"${c}${l}${u}${d} />`}${i?`<figcaption>${I(i)}</figcaption>`:``}</figure>`}function De(e,t){let n=t.classPrefix,r=e.props.type;return`
+</table>`}function Te(e,t){let n=t.classPrefix,{url:r,alt:i,title:a,width:o,height:s}=e.props,c=i?` alt="${L(i)}"`:` alt=""`,l=a?` title="${L(a)}"`:``,u=o?` width="${o}"`:``,d=s?` height="${s}"`:``;return`<figure class="${n}image">${`<img src="${L(r)}"${c}${l}${u}${d} />`}${i?`<figcaption>${L(i)}</figcaption>`:``}</figure>`}function Ee(e,t){let n=t.classPrefix,r=e.props.type;return`
 <div class="${n}callout ${n}callout-${r}" role="alert">
   <strong class="${n}callout-title">${r}</strong>
-  <div class="${n}callout-content">${F(e.content,t)}</div>
-</div>`.trim()}function F(e,t){return e.map(e=>Oe(e,t)).join(``)}function Oe(e,t){let n=I(e.text),r=e.styles;if(r.code&&(n=`<code>${n}</code>`),r.highlight&&(n=`<mark>${n}</mark>`),r.strikethrough&&(n=`<del>${n}</del>`),r.underline&&(n=`<u>${n}</u>`),r.italic&&(n=`<em>${n}</em>`),r.bold&&(n=`<strong>${n}</strong>`),r.link){let e=t.linkTarget===`_blank`?` target="_blank" rel="noopener noreferrer"`:``,i=r.link.title?` title="${I(r.link.title)}"`:``;n=`<a href="${I(r.link.url)}"${i}${e}>${n}</a>`}return n}function I(e){return e.replace(/&/g,`&amp;`).replace(/</g,`&lt;`).replace(/>/g,`&gt;`).replace(/"/g,`&quot;`).replace(/'/g,`&#039;`)}function ke(e){return[...[1,2,3,4,5,6].map(t=>({tag:`h${t}`,classes:[`${e}heading`,`${e}h${t}`]})),{tag:`p`,classes:[`${e}paragraph`]},{tag:`ul`,classes:[`${e}bullet-list`]},{tag:`ol`,classes:[`${e}numbered-list`]},{tag:`pre`,classes:[`${e}code-block`]},{tag:`blockquote`,classes:[`${e}blockquote`]},{tag:`hr`,classes:[`${e}divider`]},{tag:`table`,classes:[`${e}table`]},{tag:`figure`,classes:[`${e}image`]}]}function Ae(e,t){let n=t.join(` `),r=/\bclass\s*=\s*"([^"]*)"/i,i=e.match(r);return i?e.replace(r,`class="${n} ${i[1]}"`):e.endsWith(`/>`)?e.slice(0,-2)+` class="${n}" />`:e.slice(0,-1)+` class="${n}">`}function je(e,t){return e.replace(/(?<!<figure[^>]*>\s*)(<img\s[^>]*\/?>)(?!\s*<\/figure>)/gi,`<figure class="${t}image">$1</figure>`)}function Me(e,t){let n=t?.classPrefix??`cm-`,r=t?.wrapperClass??`${n}preview`,i=ke(n),a=e;for(let{tag:e,classes:t}of i){let n=RegExp(`<${e}(\\s[^>]*)?>|<${e}\\s*\\/?>`,`gi`);a=a.replace(n,e=>Ae(e,t))}return a=je(a,n),a=`<div class="${r}">${a}</div>`,typeof t?.sanitize==`function`&&(a=t.sanitize(a)),a}async function Ne(e){try{return(await t(()=>import(`./preview.js`),[],import.meta.url)).parse(e)}catch{throw Error(`@create-markdown/core is required to parse markdown in <markdown-preview>. Install it, or provide pre-parsed blocks via the blocks attribute / setBlocks().`)}}P(class extends HTMLElement{constructor(){super(),P(this,`_shadow`,null),P(this,`plugins`,[]),P(this,`defaultTheme`,`github`),P(this,`styleElement`),P(this,`contentElement`);let e=this.constructor._shadowMode;e!==`none`&&(this._shadow=this.attachShadow({mode:e})),this.styleElement=document.createElement(`style`),this.renderRoot.appendChild(this.styleElement),this.contentElement=document.createElement(`div`),this.contentElement.className=`markdown-preview-content`,this.renderRoot.appendChild(this.contentElement),this.updateStyles()}static get observedAttributes(){return[`theme`,`link-target`,`async`]}get renderRoot(){return this._shadow??this}connectedCallback(){this.render()}attributeChangedCallback(e,t,n){this.render()}setPlugins(e){this.plugins=e,this.render()}setDefaultTheme(e){this.defaultTheme=e,this.render()}getMarkdown(){let e=this.getAttribute(`blocks`);if(e)try{return JSON.parse(e).map(e=>e.content.map(e=>e.text).join(``)).join(`
+  <div class="${n}callout-content">${I(e.content,t)}</div>
+</div>`.trim()}function I(e,t){return e.map(e=>De(e,t)).join(``)}function De(e,t){let n=L(e.text),r=e.styles;if(r.code&&(n=`<code>${n}</code>`),r.highlight&&(n=`<mark>${n}</mark>`),r.strikethrough&&(n=`<del>${n}</del>`),r.underline&&(n=`<u>${n}</u>`),r.italic&&(n=`<em>${n}</em>`),r.bold&&(n=`<strong>${n}</strong>`),r.link){let e=t.linkTarget===`_blank`?` target="_blank" rel="noopener noreferrer"`:``,i=r.link.title?` title="${L(r.link.title)}"`:``;n=`<a href="${L(r.link.url)}"${i}${e}>${n}</a>`}return n}function L(e){return e.replace(/&/g,`&amp;`).replace(/</g,`&lt;`).replace(/>/g,`&gt;`).replace(/"/g,`&quot;`).replace(/'/g,`&#039;`)}function Oe(e){return[...[1,2,3,4,5,6].map(t=>({tag:`h${t}`,classes:[`${e}heading`,`${e}h${t}`]})),{tag:`p`,classes:[`${e}paragraph`]},{tag:`ul`,classes:[`${e}bullet-list`]},{tag:`ol`,classes:[`${e}numbered-list`]},{tag:`pre`,classes:[`${e}code-block`]},{tag:`blockquote`,classes:[`${e}blockquote`]},{tag:`hr`,classes:[`${e}divider`]},{tag:`table`,classes:[`${e}table`]},{tag:`figure`,classes:[`${e}image`]}]}function ke(e,t){let n=t.join(` `),r=/\bclass\s*=\s*"([^"]*)"/i,i=e.match(r);return i?e.replace(r,`class="${n} ${i[1]}"`):e.endsWith(`/>`)?e.slice(0,-2)+` class="${n}" />`:e.slice(0,-1)+` class="${n}">`}function Ae(e,t){return e.replace(/(?<!<figure[^>]*>\s*)(<img\s[^>]*\/?>)(?!\s*<\/figure>)/gi,`<figure class="${t}image">$1</figure>`)}function je(e,t){let n=t?.classPrefix??`cm-`,r=t?.wrapperClass??`${n}preview`,i=Oe(n),a=e;for(let{tag:e,classes:t}of i){let n=RegExp(`<${e}(\\s[^>]*)?>|<${e}\\s*\\/?>`,`gi`);a=a.replace(n,e=>ke(e,t))}return a=Ae(a,n),a=`<div class="${r}">${a}</div>`,typeof t?.sanitize==`function`&&(a=t.sanitize(a)),a}async function Me(e){try{return(await t(()=>import(`./preview.js`),[],import.meta.url)).parse(e)}catch{throw Error(`@create-markdown/core is required to parse markdown in <markdown-preview>. Install it, or provide pre-parsed blocks via the blocks attribute / setBlocks().`)}}M(class extends HTMLElement{constructor(){super(),M(this,`_shadow`,null),M(this,`plugins`,[]),M(this,`defaultTheme`,`github`),M(this,`styleElement`),M(this,`contentElement`);let e=this.constructor._shadowMode;e!==`none`&&(this._shadow=this.attachShadow({mode:e})),this.styleElement=document.createElement(`style`),this.renderRoot.appendChild(this.styleElement),this.contentElement=document.createElement(`div`),this.contentElement.className=`markdown-preview-content`,this.renderRoot.appendChild(this.contentElement),this.updateStyles()}static get observedAttributes(){return[`theme`,`link-target`,`async`]}get renderRoot(){return this._shadow??this}connectedCallback(){this.render()}attributeChangedCallback(e,t,n){this.render()}setPlugins(e){this.plugins=e,this.render()}setDefaultTheme(e){this.defaultTheme=e,this.render()}getMarkdown(){let e=this.getAttribute(`blocks`);if(e)try{return JSON.parse(e).map(e=>e.content.map(e=>e.text).join(``)).join(`
 
-`)}catch{return``}return this.textContent||``}setMarkdown(e){this.textContent=e,this.render()}setBlocks(e){this.setAttribute(`blocks`,JSON.stringify(e)),this.render()}getOptions(){return{theme:this.getAttribute(`theme`)||this.defaultTheme,linkTarget:this.getAttribute(`link-target`)||`_blank`,plugins:this.plugins}}async getBlocks(){let e=this.getAttribute(`blocks`);if(e)try{return JSON.parse(e)}catch{return console.warn(`Invalid blocks JSON in markdown-preview element`),[]}return Ne(this.textContent||``)}async render(){let e=await this.getBlocks(),t=this.getOptions(),n=this.hasAttribute(`async`)||this.plugins.length>0;try{let r;r=n?await ve(e,t):_e(e,t),this.contentElement.innerHTML=r}catch(e){console.error(`Error rendering markdown preview:`,e),this.contentElement.innerHTML=`<div class="error">Error rendering content</div>`}}updateStyles(){let e=this.plugins.filter(e=>e.getCSS).map(e=>e.getCSS()).join(`
+`)}catch{return``}return this.textContent||``}setMarkdown(e){this.textContent=e,this.render()}setBlocks(e){this.setAttribute(`blocks`,JSON.stringify(e)),this.render()}getOptions(){return{theme:this.getAttribute(`theme`)||this.defaultTheme,linkTarget:this.getAttribute(`link-target`)||`_blank`,plugins:this.plugins}}async getBlocks(){let e=this.getAttribute(`blocks`);if(e)try{return JSON.parse(e)}catch{return console.warn(`Invalid blocks JSON in markdown-preview element`),[]}return Me(this.textContent||``)}async render(){let e=await this.getBlocks(),t=this.getOptions(),n=this.hasAttribute(`async`)||this.plugins.length>0;try{let r;r=n?await ve(e,t):P(e,t),this.contentElement.innerHTML=r}catch(e){console.error(`Error rendering markdown preview:`,e),this.contentElement.innerHTML=`<div class="error">Error rendering content</div>`}}updateStyles(){let e=this.plugins.filter(e=>e.getCSS).map(e=>e.getCSS()).join(`
 
 `),t=this._shadow?`:host { display: block; }`:`markdown-preview { display: block; }`;this.styleElement.textContent=`
 ${t}
@@ -141,7 +141,7 @@ ${t}
 }
 
 ${e}
-    `.trim()}},`_shadowMode`,`open`);function L(t,n,r){return e`
+    `.trim()}},`_shadowMode`,`open`);function Ne(t,n,r){return e`
     <section class="card">
       <div class="card-title">Agent Context</div>
       <div class="card-sub">${n}</div>
@@ -183,7 +183,7 @@ ${e}
     </section>
   `}function Pe(e,t){let n=e.channelMeta?.find(e=>e.id===t);return n?.label?n.label:e.channelLabels?.[t]??t}function Fe(e){if(!e)return[];let t=new Set;for(let n of e.channelOrder??[])t.add(n);for(let n of e.channelMeta??[])t.add(n.id);for(let n of Object.keys(e.channelAccounts??{}))t.add(n);let n=[],r=e.channelOrder?.length?e.channelOrder:Array.from(t);for(let e of r)t.has(e)&&(n.push(e),t.delete(e));for(let e of t)n.push(e);return n.map(t=>({id:t,label:Pe(e,t),accounts:e.channelAccounts?.[t]??[]}))}var Ie=[`groupPolicy`,`streamMode`,`dmPolicy`];function Le(e){let t=0,n=0,r=0;for(let i of e){let e=i.probe&&typeof i.probe==`object`&&`ok`in i.probe?!!i.probe.ok:!1;(i.connected===!0||i.running===!0||e)&&(t+=1),i.configured&&(n+=1),i.enabled&&(r+=1)}return{total:e.length,connected:t,configured:n,enabled:r}}function Re(t){let a=Fe(t.snapshot),o=t.lastSuccess?i(t.lastSuccess):`never`;return e`
     <section class="grid grid-cols-2">
-      ${L(t.context,`Workspace, identity, and model configuration.`,t.onSelectPanel)}
+      ${Ne(t.context,`Workspace, identity, and model configuration.`,t.onSelectPanel)}
       <section class="card">
         <div class="row" style="justify-content: space-between;">
           <div>
@@ -203,7 +203,7 @@ ${e}
             `}
         ${a.length===0?e` <div class="muted" style="margin-top: 16px">No channels found.</div> `:e`
               <div class="list" style="margin-top: 16px;">
-                ${a.map(n=>{let i=Le(n.accounts),a=i.total?`${i.connected}/${i.total} connected`:`no accounts`,o=i.configured?`${i.configured} configured`:`not configured`,s=i.total?`${i.enabled} enabled`:`disabled`,c=oe({configForm:t.configForm,channelId:n.id,fields:Ie});return e`
+                ${a.map(n=>{let i=Le(n.accounts),a=i.total?`${i.connected}/${i.total} connected`:`no accounts`,o=i.configured?`${i.configured} configured`:`not configured`,s=i.total?`${i.enabled} enabled`:`disabled`,c=ce({configForm:t.configForm,channelId:n.id,fields:Ie});return e`
                     <div class="list-item">
                       <div class="list-main">
                         <div class="list-title">${n.label}</div>
@@ -234,7 +234,7 @@ ${e}
     </section>
   `}function ze(t){let i=t.jobs.filter(e=>e.agentId===t.agentId);return e`
     <section class="grid grid-cols-2">
-      ${L(t.context,`Workspace and scheduling targets.`,t.onSelectPanel)}
+      ${Ne(t.context,`Workspace and scheduling targets.`,t.onSelectPanel)}
       <section class="card">
         <div class="row" style="justify-content: space-between;">
           <div>
@@ -283,8 +283,8 @@ ${e}
                       </div>
                     </div>
                     <div class="list-meta">
-                      <div class="mono">${k(n)}</div>
-                      <div class="muted">${re(n)}</div>
+                      <div class="mono">${re(n)}</div>
+                      <div class="muted">${ie(n)}</div>
                       <button
                         class="btn btn--sm"
                         style="margin-top: 6px;"
@@ -406,7 +406,7 @@ ${e}
                           </div>
                         </div>
                         <div class="md-preview-dialog__body">
-                          ${a(Me(c.parse(d,{gfm:!0,breaks:!0}),{sanitize:e=>m.sanitize(e)}))}
+                          ${a(je(c.parse(d,{gfm:!0,breaks:!0}),{sanitize:e=>m.sanitize(e)}))}
                         </div>
                       </div>
                     </dialog>
@@ -421,7 +421,7 @@ ${e}
     <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px;">
       ${o.map(t=>e`<span class="agent-pill">${t}</span>`)}
     </div>
-  `}function He(e){return e.source===`plugin`?e.pluginId?n(`agentTools.connectedSource`,{id:e.pluginId}):n(`agentTools.connected`):e.source===`channel`?e.channelId?n(`agentTools.channelSource`,{id:e.channelId}):n(`agentTools.channel`):n(`agentTools.builtIn`)}function Ue(t){let i=j(t.configForm,t.agentId),a=i.entry?.tools??{},o=i.globalTools??{},c=a.profile??o.profile??`full`,l=s(t.toolsCatalogResult),u=ie(t.toolsCatalogResult),d=a.profile?`agent override`:o.profile?`global default`:`default`,f=Array.isArray(a.allow)&&a.allow.length>0,p=Array.isArray(o.allow)&&o.allow.length>0,m=!!t.configForm&&!t.configLoading&&!t.configSaving&&!f&&!(t.toolsCatalogLoading&&!t.toolsCatalogResult&&!t.toolsCatalogError),h=f?[]:Array.isArray(a.alsoAllow)?a.alsoAllow:[],g=f?[]:Array.isArray(a.deny)?a.deny:[],v=f?{allow:a.allow??[],deny:a.deny??[]}:ee(c)??void 0,y=u.flatMap(e=>e.tools.map(e=>e.id)),b=e=>{let t=O(e,v),n=E(e,h),r=E(e,g);return{allowed:(t||n)&&!r,baseAllowed:t,denied:r}},x=y.filter(e=>b(e).allowed).length,S=(e,n)=>{let r=new Set(h.map(e=>_(e)).filter(e=>e.length>0)),i=new Set(g.map(e=>_(e)).filter(e=>e.length>0)),a=b(e).baseAllowed,o=_(e);n?(i.delete(o),a||r.add(o)):(r.delete(o),i.add(o)),t.onOverridesChange(t.agentId,[...r],[...i])},C=e=>{let n=new Set(h.map(e=>_(e)).filter(e=>e.length>0)),r=new Set(g.map(e=>_(e)).filter(e=>e.length>0));for(let t of y){let i=b(t).baseAllowed,a=_(t);e?(r.delete(a),i||n.add(a)):(n.delete(a),r.add(a))}t.onOverridesChange(t.agentId,[...n],[...r])};return e`
+  `}function He(e){return e.source===`plugin`?e.pluginId?n(`agentTools.connectedSource`,{id:e.pluginId}):n(`agentTools.connected`):e.source===`channel`?e.channelId?n(`agentTools.channelSource`,{id:e.channelId}):n(`agentTools.channel`):n(`agentTools.builtIn`)}function Ue(t){let i=k(t.configForm,t.agentId),a=i.entry?.tools??{},o=i.globalTools??{},c=a.profile??o.profile??`full`,l=s(t.toolsCatalogResult),u=oe(t.toolsCatalogResult),d=a.profile?`agent override`:o.profile?`global default`:`default`,f=Array.isArray(a.allow)&&a.allow.length>0,p=Array.isArray(o.allow)&&o.allow.length>0,m=!!t.configForm&&!t.configLoading&&!t.configSaving&&!f&&!(t.toolsCatalogLoading&&!t.toolsCatalogResult&&!t.toolsCatalogError),h=f?[]:Array.isArray(a.alsoAllow)?a.alsoAllow:[],g=f?[]:Array.isArray(a.deny)?a.deny:[],v=f?{allow:a.allow??[],deny:a.deny??[]}:ee(c)??void 0,y=u.flatMap(e=>e.tools.map(e=>e.id)),b=e=>{let t=O(e,v),n=E(e,h),r=E(e,g);return{allowed:(t||n)&&!r,baseAllowed:t,denied:r}},x=y.filter(e=>b(e).allowed).length,S=(e,n)=>{let r=new Set(h.map(e=>_(e)).filter(e=>e.length>0)),i=new Set(g.map(e=>_(e)).filter(e=>e.length>0)),a=b(e).baseAllowed,o=_(e);n?(i.delete(o),a||r.add(o)):(r.delete(o),i.add(o)),t.onOverridesChange(t.agentId,[...r],[...i])},C=e=>{let n=new Set(h.map(e=>_(e)).filter(e=>e.length>0)),r=new Set(g.map(e=>_(e)).filter(e=>e.length>0));for(let t of y){let i=b(t).baseAllowed,a=_(t);e?(r.delete(a),i||n.add(a)):(n.delete(a),r.add(a))}t.onOverridesChange(t.agentId,[...n],[...r])};return e`
     <section class="card">
       <div class="row" style="justify-content: space-between; flex-wrap: wrap;">
         <div style="min-width: 0;">
@@ -601,7 +601,7 @@ ${e}
           `)}
       </div>
     </section>
-  `}function We(t){let i=!!t.configForm&&!t.configLoading&&!t.configSaving,a=j(t.configForm,t.agentId),o=Array.isArray(a.entry?.skills)?a.entry?.skills:void 0,s=new Set((o??[]).map(e=>e.trim()).filter(Boolean)),c=o!==void 0,l=!!(t.report&&t.activeAgentId===t.agentId),u=l?t.report?.skills??[]:[],d=t.filter.trim().toLowerCase(),f=d?u.filter(e=>[e.name,e.description,e.source].join(` `).toLowerCase().includes(d)):u,p=se(f),m=c?u.filter(e=>s.has(e.name)).length:u.length,h=u.length;return e`
+  `}function We(t){let i=!!t.configForm&&!t.configLoading&&!t.configSaving,a=k(t.configForm,t.agentId),o=Array.isArray(a.entry?.skills)?a.entry?.skills:void 0,s=new Set((o??[]).map(e=>e.trim()).filter(Boolean)),c=o!==void 0,l=!!(t.report&&t.activeAgentId===t.agentId),u=l?t.report?.skills??[]:[],d=t.filter.trim().toLowerCase(),f=d?u.filter(e=>[e.name,e.description,e.source].join(` `).toLowerCase().includes(d)):u,p=le(f),m=c?u.filter(e=>s.has(e.name)).length:u.length,h=u.length;return e`
     <section class="card">
       <div class="row" style="justify-content: space-between; flex-wrap: wrap;">
         <div style="min-width: 0;">
@@ -710,12 +710,12 @@ ${e}
         ${t.skills.map(e=>Ke(e,{agentId:n.agentId,allowSet:n.allowSet,usingAllowlist:n.usingAllowlist,editable:n.editable,onToggle:n.onToggle}))}
       </div>
     </details>
-  `}function Ke(t,n){let i=n.usingAllowlist?n.allowSet.has(t.name):!0,a=ue(t),o=ce(t);return e`
+  `}function Ke(t,n){let i=n.usingAllowlist?n.allowSet.has(t.name):!0,a=fe(t),o=ue(t);return e`
     <div class="list-item agent-skill-row">
       <div class="list-main">
         <div class="list-title">${t.emoji?`${t.emoji} `:``}${t.name}</div>
         <div class="list-sub">${t.description}</div>
-        ${le({skill:t})}
+        ${de({skill:t})}
         ${a.length>0?e`<div class="muted" style="margin-top: 6px;">Missing: ${a.join(`, `)}</div>`:r}
         ${o.length>0?e`<div class="muted" style="margin-top: 6px;">Reason: ${o.join(`, `)}</div>`:r}
       </div>
@@ -731,7 +731,7 @@ ${e}
         </label>
       </div>
     </div>
-  `}function qe(t){let n=t.list?.teams??[],r=pt(t.draft.membersJson),i=r.length>0?r:t.detail?.members??[],a=H(t.draft.aliasesJson),o=a.length>0?a:mt(t.detail),s=ht(t.draft.broadcastJson,t.detail?.broadcast),c=t.detail?B(t.detail):t.selectedId?t.selectedId:`New team`;return e`
+  `}function qe(t){let n=t.list?.teams??[],r=ht(t.draft.membersJson),i=r.length>0?r:t.detail?.members??[],a=gt(t.draft.aliasesJson),o=a.length>0?a:_t(t.detail),s=vt(t.draft.broadcastJson,t.detail?.broadcast),c=t.detail?pt(t.detail):t.selectedId?t.selectedId:`New team`;return e`
     ${Je(t,i,s)}
 
     <section class="grid grid-cols-2">
@@ -755,7 +755,7 @@ ${e}
     </section>
 
     <section style="margin-top: 16px;">
-      ${dt(t,n,i)}
+      ${ft(t,n,i)}
     </section>
   `}function Je(t,n,r){return e`
     <section class="card" style="margin-bottom: 16px;">
@@ -767,7 +767,7 @@ ${e}
         <span class="badge">Gateway RPC only</span>
       </div>
       <div class="agents-overview-grid" style="margin-top: 14px;">
-        ${[{label:t.detail?`Edit team`:`Create team`,status:t.draft.id?`ready`:`needs key`},{label:`Members`,status:G(n.length,`member`)},{label:`Default`,status:V(t.draft.defaultAgentId,n)},{label:`Bindings`,status:G(W(t.draft.bindingsJson),`binding`)},{label:`Profiles`,status:t.workspace.workspace?`workspace loaded`:`choose member`},{label:`Models`,status:t.modelResult?.models?.path?`models.json loaded`:`load model`},{label:`Feishu`,status:(t.channelsSnapshot?.channelAccounts?.feishu??[]).length?`status visible`:`status missing`},{label:`Broadcast`,status:U(r)?`${K(r.members).length} selected`:`disabled`}].map(t=>e`
+        ${[{label:t.detail?`Edit team`:`Create team`,status:t.draft.id?`ready`:`needs key`},{label:`Members`,status:U(n.length,`member`)},{label:`Default`,status:B(t.draft.defaultAgentId,n)},{label:`Bindings`,status:U(H(t.draft.bindingsJson),`binding`)},{label:`Profiles`,status:t.workspace.workspace?`workspace loaded`:`choose member`},{label:`Models`,status:t.modelResult?.models?.path?`models.json loaded`:`load model`},{label:`Feishu`,status:(t.channelsSnapshot?.channelAccounts?.feishu??[]).length?`status visible`:`status missing`},{label:`Broadcast`,status:V(r)?`${W(r.members).length} selected`:`disabled`}].map(t=>e`
             <div class="agent-kv">
               <div class="label">${t.label}</div>
               <div>${t.status}</div>
@@ -804,16 +804,16 @@ ${e}
                     aria-pressed=${n.id===t.selectedId?`true`:`false`}
                   >
                     <div class="list-main">
-                      <div class="list-title">${B(n)}</div>
+                      <div class="list-title">${pt(n)}</div>
                       <div class="list-sub">
-                        ${G(n.members?.length??0,`member`)} ·
-                        ${G(n.aliases?.length??0,`alias`)} · default
-                        ${V(n.defaultAgentId,n.members??[])}
+                        ${U(n.members?.length??0,`member`)} ·
+                        ${U(n.aliases?.length??0,`alias`)} · default
+                        ${B(n.defaultAgentId,n.members??[])}
                       </div>
                     </div>
                     <div class="list-meta">
-                      <span class="badge">${G(n.bindings?.length??0,`binding`)}</span>
-                      <span class="badge">${U(n.broadcast)?`broadcast on`:`broadcast off`}</span>
+                      <span class="badge">${U(n.bindings?.length??0,`binding`)}</span>
+                      <span class="badge">${V(n.broadcast)?`broadcast on`:`broadcast off`}</span>
                     </div>
                   </button>
                 `)}
@@ -832,7 +832,7 @@ ${e}
             .value=${t.draft.id}
             ?disabled=${!!t.detail}
             placeholder="content"
-            @input=${e=>t.onDraftChange({id:Q(e)})}
+            @input=${e=>t.onDraftChange({id:Z(e)})}
           />
         </label>
         <label class="field">
@@ -840,7 +840,7 @@ ${e}
           <input
             .value=${t.draft.displayName}
             placeholder="Content Team"
-            @input=${e=>t.onDraftChange({displayName:Q(e)})}
+            @input=${e=>t.onDraftChange({displayName:Z(e)})}
           />
         </label>
         <label class="field">
@@ -848,7 +848,7 @@ ${e}
           <select
             .value=${t.draft.template}
             ?disabled=${!!t.detail||r.length>0}
-            @change=${e=>t.onDraftChange({template:$(e)})}
+            @change=${e=>t.onDraftChange({template:Q(e)})}
           >
             <option value="pm-writer-reviewer">PM / Writer / Reviewer</option>
             <option value="">Custom members</option>
@@ -858,11 +858,11 @@ ${e}
           <span>Default member</span>
           <select
             .value=${t.draft.defaultAgentId}
-            @change=${e=>t.onDraftChange({defaultAgentId:$(e)})}
+            @change=${e=>t.onDraftChange({defaultAgentId:Q(e)})}
           >
             <option value="">First member</option>
             ${i.map(t=>e`
-                <option value=${t.agentId}>${V(t.agentId,i)}</option>
+                <option value=${t.agentId}>${B(t.agentId,i)}</option>
               `)}
           </select>
         </label>
@@ -933,7 +933,7 @@ ${e}
             <input
               .value=${n.agentId??``}
               placeholder="content-writer"
-              @input=${e=>t.onDraftChange(g(t.draft,r,{agentId:Q(e)}))}
+              @input=${e=>t.onDraftChange(g(t.draft,r,{agentId:Z(e)}))}
             />
           </label>
           <label class="field">
@@ -941,7 +941,7 @@ ${e}
             <input
               .value=${n.role??``}
               placeholder="writer"
-              @input=${e=>t.onDraftChange(g(t.draft,r,{role:Q(e)}))}
+              @input=${e=>t.onDraftChange(g(t.draft,r,{role:Z(e)}))}
             />
           </label>
           <label class="field">
@@ -949,7 +949,7 @@ ${e}
             <input
               .value=${n.name??``}
               placeholder="Writer"
-              @input=${e=>t.onDraftChange(g(t.draft,r,{name:Q(e)}))}
+              @input=${e=>t.onDraftChange(g(t.draft,r,{name:Z(e)}))}
             />
           </label>
         </div>
@@ -968,22 +968,22 @@ ${e}
     <div class="agents-overview-grid" style="margin-top: 14px;">
       <div class="agent-kv">
         <div class="label">Members</div>
-        <div>${G(t.length,`member`)}</div>
+        <div>${U(t.length,`member`)}</div>
       </div>
       <div class="agent-kv">
         <div class="label">Aliases</div>
-        <div>${G(n.length,`alias`)}</div>
+        <div>${U(n.length,`alias`)}</div>
       </div>
       <div class="agent-kv">
         <div class="label">Bindings</div>
-        <div>${G(W(r),`binding`)}</div>
+        <div>${U(H(r),`binding`)}</div>
       </div>
       <div class="agent-kv">
         <div class="label">Broadcast</div>
-        <div>${U(i)?`Broadcast enabled`:`Broadcast disabled`}</div>
+        <div>${V(i)?`Broadcast enabled`:`Broadcast disabled`}</div>
       </div>
     </div>
-  `}function $e(t,n){let r=H(t.draft.aliasesJson);return e`
+  `}function $e(t,n){let r=gt(t.draft.aliasesJson);return e`
     <div class="row" style="justify-content: space-between; margin-top: 16px;">
       <div>
         <div class="list-title">Aliases</div>
@@ -1011,17 +1011,17 @@ ${e}
             <input
               .value=${r.alias??``}
               placeholder="@writer"
-              @input=${e=>t.onDraftChange(f(t.draft,i,{alias:Q(e)}))}
+              @input=${e=>t.onDraftChange(f(t.draft,i,{alias:Z(e)}))}
             />
           </label>
           <label class="field">
             <span>Member</span>
             <select
               .value=${r.agentId??``}
-              @change=${e=>t.onDraftChange(f(t.draft,i,{agentId:$(e)}))}
+              @change=${e=>t.onDraftChange(f(t.draft,i,{agentId:Q(e)}))}
             >
               <option value="">Choose member</option>
-              ${n.map(t=>e`<option value=${t.agentId}>${V(t.agentId,n)}</option>`)}
+              ${n.map(t=>e`<option value=${t.agentId}>${B(t.agentId,n)}</option>`)}
             </select>
           </label>
         </div>
@@ -1030,13 +1030,13 @@ ${e}
         <button
           type="button"
           class="btn btn--sm btn--ghost"
-          @click=${()=>t.onDraftChange(ae(t.draft,i))}
+          @click=${()=>t.onDraftChange(se(t.draft,i))}
         >
           Remove
         </button>
       </div>
     </div>
-  `}function tt(t,n,r){let i=U(r),a=K(r.members);return e`
+  `}function tt(t,n,r){let i=V(r),a=W(r.members);return e`
     <div style="margin-top: 16px;">
       <div class="row" style="justify-content: space-between; align-items: flex-start;">
         <div>
@@ -1064,7 +1064,7 @@ ${e}
             <input
               type="checkbox"
               ?checked=${i}
-              @change=${e=>t.onDraftChange(y(t.draft,Ct(e)))}
+              @change=${e=>t.onDraftChange(y(t.draft,$(e)))}
             />
             <span>${i?`Broadcast enabled`:`Broadcast disabled`}</span>
           </label>
@@ -1074,7 +1074,7 @@ ${e}
         ${n.map(r=>{let o=a.includes(r.agentId);return e`
             <label class="list-item" style="cursor: pointer;">
               <div class="list-main">
-                <div class="list-title">${V(r.agentId,n)}</div>
+                <div class="list-title">${B(r.agentId,n)}</div>
                 <div class="list-sub">${o?`Included in broadcast`:`Not included`}</div>
               </div>
               <div class="list-meta">
@@ -1082,7 +1082,7 @@ ${e}
                   type="checkbox"
                   ?checked=${o}
                   ?disabled=${!i}
-                  @change=${e=>t.onDraftChange(u(t.draft,r.agentId,Ct(e)))}
+                  @change=${e=>t.onDraftChange(u(t.draft,r.agentId,$(e)))}
                 />
               </div>
             </label>
@@ -1096,16 +1096,16 @@ ${e}
       <div class="grid grid-cols-2" style="margin-top: 14px;">
         <label class="field">
           <span>Member</span>
-          <select .value=${t.binding.agentId} @change=${e=>t.onBindingChange({agentId:$(e)})}>
+          <select .value=${t.binding.agentId} @change=${e=>t.onBindingChange({agentId:Q(e)})}>
             <option value="">Choose member</option>
-            ${n.map(t=>e`<option value=${t.agentId}>${V(t.agentId,n)}</option>`)}
+            ${n.map(t=>e`<option value=${t.agentId}>${B(t.agentId,n)}</option>`)}
           </select>
         </label>
         <label class="field">
           <span>Action</span>
           <select
             .value=${t.binding.mode}
-            @change=${e=>t.onBindingChange({mode:$(e)===`unbind`?`unbind`:`bind`})}
+            @change=${e=>t.onBindingChange({mode:Q(e)===`unbind`?`unbind`:`bind`})}
           >
             <option value="bind">Apply</option>
             <option value="unbind">Remove</option>
@@ -1115,7 +1115,7 @@ ${e}
           <span>Payload type</span>
           <select
             .value=${t.binding.useStructuredBinding?`structured`:`simple`}
-            @change=${e=>t.onBindingChange({useStructuredBinding:$(e)===`structured`})}
+            @change=${e=>t.onBindingChange({useStructuredBinding:Q(e)===`structured`})}
           >
             <option value="simple">Simple binding</option>
             <option value="structured">JSON route binding</option>
@@ -1126,7 +1126,7 @@ ${e}
           <input
             .value=${t.binding.spec}
             placeholder="feishu:tenant-a"
-            @input=${e=>t.onBindingChange({spec:Q(e)})}
+            @input=${e=>t.onBindingChange({spec:Z(e)})}
           />
         </label>
         ${R(t,`Channel`,`channel`,`feishu`)}
@@ -1143,7 +1143,7 @@ ${e}
         <input
           .value=${t.binding.comment}
           placeholder="content team route"
-          @input=${e=>t.onBindingChange({comment:Q(e)})}
+          @input=${e=>t.onBindingChange({comment:Z(e)})}
         />
       </label>
       <div class="agent-model-actions">
@@ -1161,7 +1161,7 @@ ${e}
         <pre style="white-space: pre-wrap; margin: 0;">${i.lines.join(`
 `)}</pre>
       </div>
-      ${t.bindingResult?e`<div class="callout success" style="margin-top: 12px;">${ft(t.bindingResult)}</div>`:r}
+      ${t.bindingResult?e`<div class="callout success" style="margin-top: 12px;">${mt(t.bindingResult)}</div>`:r}
     </section>
   `}function R(t,n,r,i){return e`
     <label class="field">
@@ -1169,7 +1169,7 @@ ${e}
       <input
         .value=${String(t.binding[r]??``)}
         placeholder=${i}
-        @input=${e=>t.onBindingChange({[r]:Q(e)})}
+        @input=${e=>t.onBindingChange({[r]:Z(e)})}
       />
     </label>
   `}function rt(t,n){return e`
@@ -1182,17 +1182,17 @@ ${e}
           <span>Member</span>
           <select
             .value=${t.workspace.agentId}
-            @change=${e=>t.onWorkspaceChange({agentId:$(e)})}
+            @change=${e=>t.onWorkspaceChange({agentId:Q(e)})}
           >
             <option value="">Choose member</option>
-            ${n.map(t=>e`<option value=${t.agentId}>${V(t.agentId,n)}</option>`)}
+            ${n.map(t=>e`<option value=${t.agentId}>${B(t.agentId,n)}</option>`)}
           </select>
         </label>
         <label class="field">
           <span>Profile file</span>
           <select
             .value=${t.workspace.fileName}
-            @change=${e=>{let n=$(e);t.onWorkspaceChange({fileName:n}),t.onLoadWorkspaceFile(n)}}
+            @change=${e=>{let n=Q(e);t.onWorkspaceChange({fileName:n}),t.onLoadWorkspaceFile(n)}}
           >
             ${p.map(t=>e`<option value=${t}>${t}</option>`)}
           </select>
@@ -1216,7 +1216,7 @@ ${e}
           class="agent-file-textarea"
           rows="12"
           .value=${t.workspace.draft}
-          @input=${e=>t.onWorkspaceChange({draft:St(e)})}
+          @input=${e=>t.onWorkspaceChange({draft:wt(e)})}
         ></textarea>
       </label>
       <div class="agent-model-actions">
@@ -1256,10 +1256,10 @@ ${e}
           <span>Member</span>
           <select
             .value=${t.modelDraft.agentId}
-            @change=${e=>t.onModelDraftChange({agentId:$(e)})}
+            @change=${e=>t.onModelDraftChange({agentId:Q(e)})}
           >
             <option value="">Choose member</option>
-            ${n.map(t=>e`<option value=${t.agentId}>${V(t.agentId,n)}</option>`)}
+            ${n.map(t=>e`<option value=${t.agentId}>${B(t.agentId,n)}</option>`)}
           </select>
         </label>
         <div class="field">
@@ -1276,7 +1276,7 @@ ${e}
           <input
             .value=${t.modelDraft.primaryModelRef}
             placeholder="openai:gpt-5-mini"
-            @input=${e=>t.onModelDraftChange({primaryModelRef:Q(e)})}
+            @input=${e=>t.onModelDraftChange({primaryModelRef:Z(e)})}
           />
         </label>
         <label class="field">
@@ -1284,7 +1284,7 @@ ${e}
           <input
             .value=${t.modelDraft.runtimePrimaryModelRef}
             placeholder="openai:gpt-5-mini"
-            @input=${e=>t.onModelDraftChange({runtimePrimaryModelRef:Q(e)})}
+            @input=${e=>t.onModelDraftChange({runtimePrimaryModelRef:Z(e)})}
           />
         </label>
       </div>
@@ -1315,7 +1315,7 @@ ${e}
         </button>
       </div>
     </section>
-  `}function at(t){if(!t)return r;let n=_t(t);return e`
+  `}function at(t){if(!t)return r;let n=bt(t);return e`
     <div style="margin-top: 14px;">
       <div class="list-title">Model provider chips</div>
       <div class="card-sub">Derived from agents.models.get/set and redacted before display.</div>
@@ -1337,11 +1337,11 @@ ${e}
       ${t.credentialSource?e`
             <div class="agent-kv" style="margin-top: 12px;">
               <div class="label">Credential source</div>
-              <pre class="mono" style="white-space: pre-wrap; margin: 0;">${xt(t.credentialSource)}</pre>
+              <pre class="mono" style="white-space: pre-wrap; margin: 0;">${J(t.credentialSource)}</pre>
             </div>
           `:r}
     </div>
-  `}function ot(t){let n=q(t);return e`
+  `}function ot(t){let n=G(t);return e`
     <section class="card">
       <div class="card-title">Feishu Settings</div>
       <div class="card-sub">Non-secret channel settings and account runtime snapshot.</div>
@@ -1381,7 +1381,7 @@ ${e}
                     </div>
                     ${t.lastError?e`
                           <div class="list-sub" style="margin-top: 8px;">
-                            Last error: ${Z(t.lastError)}
+                            Last error: ${X(t.lastError)}
                           </div>
                         `:r}
                   </div>
@@ -1394,7 +1394,7 @@ ${e}
       </div>
       ${st(t)}
     </section>
-  `}function st(t){let n=J(t.channelsSnapshot?.channels?.feishu),r=K(n?.capabilities),i=J(n?.auth)??J(n?.oauth),a=J(n?.doctor)??J(n?.diagnostics),o=!!i||r.some(e=>e.includes(`oauth`)),s=r.some(e=>e.includes(`oapi`)||e.includes(`openapi`)),c=!!a||r.some(e=>e.includes(`doctor`));return e`
+  `}function st(t){let n=K(t.channelsSnapshot?.channels?.feishu),r=W(n?.capabilities),i=K(n?.auth)??K(n?.oauth),a=K(n?.doctor)??K(n?.diagnostics),o=!!i||r.some(e=>e.includes(`oauth`)),s=r.some(e=>e.includes(`oapi`)||e.includes(`openapi`)),c=!!a||r.some(e=>e.includes(`doctor`));return e`
     <div style="margin-top: 14px;">
       <div class="list-title">Capability gaps</div>
       <div class="list" style="margin-top: 8px;">
@@ -1428,13 +1428,14 @@ ${e}
           `)}
       </div>
     </section>
-  `}function ut(t){let n=J(t.channelsSnapshot?.channels?.feishu),i=K(n?.capabilities),a=J(n?.auth)??J(n?.oauth),o=J(n?.doctor)??J(n?.diagnostics),s=i.some(e=>{let t=e.toLowerCase();return t.includes(`oapi`)||t.includes(`openapi`)}),c=q(t).defaultAccount||t.channelsSnapshot?.channelDefaultAccountId?.feishu||`default`;return e`
+  `}function ut(t){let n=K(t.channelsSnapshot?.channels?.feishu),i=W(n?.capabilities),a=K(n?.auth)??K(n?.oauth),o=K(n?.doctor)??K(n?.diagnostics),s=i.some(e=>{let t=e.toLowerCase();return t.includes(`oapi`)||t.includes(`openapi`)}),c=G(t).defaultAccount||t.channelsSnapshot?.channelDefaultAccountId?.feishu||`default`;return e`
     <section class="card">
       <div class="card-title">Feishu Auth & Doctor</div>
       <div class="card-sub">Read-only Feishu status, auth, doctor, and OAPI signals from Gateway RPC.</div>
       <div class="callout info" style="margin-top: 12px;">
         UI will not write token files, app credentials, or local Feishu config. Auth start and token refresh must stay behind Gateway RPC or native Feishu commands.
       </div>
+      ${t.feishuAuthError?e`<div class="callout danger" style="margin-top: 12px;">${X(t.feishuAuthError)}</div>`:r}
       <div class="agents-overview-grid" style="margin-top: 14px;">
         <div class="agent-kv">
           <div class="label">Account</div>
@@ -1442,11 +1443,11 @@ ${e}
         </div>
         <div class="agent-kv">
           <div class="label">OAuth status</div>
-          <div>${a?Y(a,[`status`,`tokenStatus`],`status unknown`):`Auth status RPC missing`}</div>
+          <div>${a?q(a,[`status`,`tokenStatus`],`status unknown`):`Auth status RPC missing`}</div>
         </div>
         <div class="agent-kv">
           <div class="label">Doctor</div>
-          <div>${o?Y(o,[`status`,`state`],`available`):`Doctor status RPC missing`}</div>
+          <div>${o?q(o,[`status`,`state`],`available`):`Doctor status RPC missing`}</div>
         </div>
         <div class="agent-kv">
           <div class="label">OAPI</div>
@@ -1457,9 +1458,9 @@ ${e}
             <div class="agent-kv" style="margin-top: 12px;">
               <div class="label">Auth summary</div>
               <div>
-                ${Y(a,[`accountId`],c)} ·
-                ${Y(a,[`scopeSummary`,`scopes`],`scope status missing`)}
-                ${X(a.error)?e`<div class="list-sub">Error: ${Z(X(a.error))}</div>`:r}
+                ${q(a,[`accountId`],c)} ·
+                ${q(a,[`scopeSummary`,`scopes`],`scope status missing`)}
+                ${Y(a.error)?e`<div class="list-sub">Error: ${X(Y(a.error))}</div>`:r}
               </div>
             </div>
           `:e`
@@ -1470,15 +1471,46 @@ ${e}
       ${o?e`
             <div class="agent-kv" style="margin-top: 12px;">
               <div class="label">Doctor summary</div>
-              <div>${xt(bt(o,[`status`,`state`,`findings`,`lastProbeAt`,`message`]))}</div>
+              <div>${J(Ct(o,[`status`,`state`,`findings`,`lastProbeAt`,`message`]))}</div>
             </div>
           `:e`
             <div class="callout warning" style="margin-top: 12px;">
               Doctor status RPC missing. Use /feishu doctor until Gateway exposes a redacted Feishu doctor object to channels.status.
             </div>
           `}
+      <div class="agent-model-actions">
+        <button
+          type="button"
+          class="btn btn--sm primary"
+          ?disabled=${t.feishuAuthLoading}
+          @click=${()=>t.onStartFeishuOAuth(c)}
+        >
+          ${t.feishuAuthLoading?`Starting OAuth...`:`Start OAuth via Gateway`}
+        </button>
+      </div>
+      ${t.feishuAuthResult?e`
+            <div class="agent-kv" style="margin-top: 12px;">
+              <div class="label">OAuth start result</div>
+              <pre class="mono" style="white-space: pre-wrap; margin: 0;">${J(t.feishuAuthResult)}</pre>
+            </div>
+          `:r}
+      ${dt(t,a,o,s)}
     </section>
-  `}function dt(t,r,i){let a=gt(t,r,i);return e`
+  `}function dt(t,n,r,i){return e`
+    <div style="margin-top: 14px;">
+      <div class="list-title">Missing setup steps</div>
+      <div class="list" style="margin-top: 8px;">
+        ${[{label:`Confirm Feishu app credentials`,done:G(t).accounts.some(e=>e.configured===!0)},{label:`Start OAuth through Gateway RPC`,done:!!n||!!t.feishuAuthResult},{label:`Grant offline_access and OAPI scopes`,done:!!(n&&q(n,[`scopeSummary`,`scopes`],``).trim())},{label:`Run Feishu doctor`,done:!!r},{label:`Bind channel/account/peer/thread/team route`,done:!!(t.bindingPreview?.applyPayload||H(t.draft.bindingsJson)>0)},{label:`Expose OAPI capability status`,done:i}].map(t=>e`
+            <div class="list-item">
+              <div class="list-main">
+                <div class="list-title">${t.label}</div>
+              </div>
+              <div class="list-meta"><span class="badge">${t.done?`done`:`needed`}</span></div>
+            </div>
+          `)}
+      </div>
+    </div>
+  `}function ft(t,r,i){let a=yt(t,r,i);return e`
     <section class="card">
       <div class="row" style="justify-content: space-between;">
         <div>
@@ -1508,10 +1540,10 @@ ${e}
         class="agent-file-textarea"
         rows="6"
         .value=${n}
-        @input=${e=>r(St(e))}
+        @input=${e=>r(wt(e))}
       ></textarea>
     </label>
-  `}function B(e){return e.displayName?.trim()||e.id}function V(e,t){if(!e)return`first configured member`;let n=t.find(t=>t.agentId===e);return n?`${n.name?.trim()||n.role?.trim()||n.agentId} (${n.agentId})`:e}function ft(e){let t=[e.added?.length?`${e.added.length} added`:``,e.removed?.length?`${e.removed.length} removed`:``,e.skipped?.length?`${e.skipped.length} skipped`:``,e.missing?.length?`${e.missing.length} missing`:``,e.conflicts?.length?`${e.conflicts.length} conflicts`:``].filter(Boolean);return t.length?t.join(`, `):`Gateway accepted the binding request.`}function pt(e){try{let t=JSON.parse(e||`[]`);return Array.isArray(t)?t:[]}catch{return[]}}function H(e){try{let t=JSON.parse(e||`[]`);return Array.isArray(t)?t.map(e=>J(e)).filter(e=>!!e).map(e=>({alias:X(e.alias),agentId:X(e.agentId)})).filter(e=>e.alias||e.agentId):[]}catch{return[]}}function mt(e){return Array.isArray(e?.aliases)?e.aliases.map(e=>J(e)).filter(e=>!!e).map(e=>({alias:X(e.alias),agentId:X(e.agentId)})).filter(e=>e.alias||e.agentId):[]}function ht(e,t){try{return J(JSON.parse(e||`{}`))??t??{enabled:!1}}catch{return t??{enabled:!1}}}function U(e){return J(e)?.enabled===!0}function W(e){try{let t=JSON.parse(e||`[]`);return Array.isArray(t)?t.length:0}catch{return 0}}function G(e,t){return`${e} ${t}${e===1?``:`s`}`}function K(e){return Array.isArray(e)?e.filter(e=>typeof e==`string`).map(e=>e.trim()).filter(Boolean):[]}function q(e){let t=J(J(e.configForm?.gateway)?.feishu??e.configForm?.feishu),n=J(t?.accounts),r=J(t?.groups),i=e.channelsSnapshot?.channelAccounts?.feishu??[],a=n?Object.keys(n):[],o=X(t?.defaultAccount)||e.channelsSnapshot?.channelDefaultAccountId?.feishu||i[0]?.accountId||a[0]||``,s=i.length>0?i:a.map(e=>({accountId:e,configured:!0}));return{defaultAccount:o,threadSession:X(t?.threadSession)||X(t?.groupSessionScope)||`not configured`,groupCount:r?Object.keys(r).length:0,accounts:s}}function gt(e,t,n){return[{title:`Teams list`,message:t.length>0?`${t.length} team definitions loaded.`:`No team definitions loaded.`,status:t.length>0?`ok`:`info`},{title:`Members`,message:n.length>0?`${n.length} members available for edit.`:`No members selected.`,status:n.length>0?`ok`:`warn`},{title:`Binding preview`,message:e.bindingPreview?.applyPayload?`Apply payload is ready.`:`Preview a binding before applying.`,status:e.bindingPreview?.applyPayload?`ok`:`info`},{title:`Workspace profiles`,message:e.workspace.workspace?`Workspace loaded: ${e.workspace.workspace}`:`Choose a member and list files.`,status:e.workspace.workspace?`ok`:`info`},{title:`Model profile`,message:e.modelResult?.models?.path?`models.json: ${e.modelResult.models.path}`:`Load a member model.`,status:e.modelResult?.models?.path?`ok`:`info`},{title:`Feishu accounts`,message:(e.channelsSnapshot?.channelAccounts?.feishu??[]).length>0?`Feishu account status is visible.`:`No Feishu account status in channels.status.`,status:(e.channelsSnapshot?.channelAccounts?.feishu??[]).length>0?`ok`:`info`}]}function J(e){return e&&typeof e==`object`&&!Array.isArray(e)?e:null}function _t(e){let t=J(e.state)?.providers,n=[];if(Array.isArray(t))t.forEach(e=>{let t=vt(J(e));t&&n.push(t)});else{let e=J(t);e&&Object.entries(e).forEach(([e,t])=>{let r=J(t)??{provider:e},i=vt({...r,provider:r.provider??e});i&&n.push(i)})}if(n.length===0&&e.primaryModelRef){let t=e.primaryModelRef.includes(`:`)?e.primaryModelRef.split(`:`)[0]:``;n.push({label:t||`Primary model`,provider:t,runtimeProvider:t,modelRef:e.primaryModelRef,status:`primary`})}return n}function vt(e){if(!e)return null;let t=X(e.provider)||X(e.id),n=X(e.runtimeProvider)||X(e.runtime_provider),r=X(e.defaultModelRef)||X(e.modelRef)||X(e.model)||X(e.runtimeModelRef),i=X(e.displayName)||X(e.name)||t||n||r;return i?{label:i,provider:t,runtimeProvider:n,modelRef:r,status:yt(e.configured)}:null}function yt(e){return e===!0?`configured`:e===!1?`needs credentials`:`status unknown`}function Y(e,t,n){for(let n of t){let t=e[n];if(typeof t==`string`&&t.trim())return Z(t.trim());if(typeof t==`number`||typeof t==`boolean`)return String(t);if(Array.isArray(t)){let e=t.map(e=>String(e).trim()).filter(Boolean).join(`, `);if(e)return Z(e)}}return n}function bt(e,t){let n={};return t.forEach(t=>{e[t]!==void 0&&(n[t]=e[t])}),n}function xt(e){try{return Z(JSON.stringify(e??{},null,2))}catch{return Z(String(e??``))}}function X(e){return typeof e==`string`?e:``}function Z(e){return e.replace(/authorization:\s*bearer\s+[^\s,;]+/gi,`Authorization: Bearer [redacted]`).replace(/\b(access|refresh|bot|app)[_-]?token\s*[:=]\s*[^\s,;]+/gi,`$1_token=[redacted]`).replace(/(["']?(?:access|refresh|bot|app)[_-]?token["']?\s*[:=]\s*)["']?[^"',;\s]+["']?/gi,`$1[redacted]`).replace(/\b(app[_-]?secret|authorization)\s*[:=]\s*[^\s,;]+/gi,`$1=[redacted]`)}function Q(e){return e.target.value}function $(e){return e.target.value}function St(e){return e.target.value}function Ct(e){return e.target.checked}function wt(t){let i=t.agentsList?.agents??[],a=t.agentsList?.defaultId??null,o=t.selectedAgentId??a??i[0]?.id??null,s=o?i.find(e=>e.id===o)??null:null,c=o&&t.agentSkills.agentId===o?t.agentSkills.report?.skills?.length??null:null,l=t.channels.snapshot?Object.keys(t.channels.snapshot.channelAccounts??{}).length:null,u=o?t.cron.jobs.filter(e=>e.agentId===o).length:null,d={files:t.agentFiles.list?.files?.length??null,skills:c,channels:l,cron:u||null,teams:t.agentTeams.list?.count??null};return e`
+  `}function pt(e){return e.displayName?.trim()||e.id}function B(e,t){if(!e)return`first configured member`;let n=t.find(t=>t.agentId===e);return n?`${n.name?.trim()||n.role?.trim()||n.agentId} (${n.agentId})`:e}function mt(e){let t=[e.added?.length?`${e.added.length} added`:``,e.removed?.length?`${e.removed.length} removed`:``,e.skipped?.length?`${e.skipped.length} skipped`:``,e.missing?.length?`${e.missing.length} missing`:``,e.conflicts?.length?`${e.conflicts.length} conflicts`:``].filter(Boolean);return t.length?t.join(`, `):`Gateway accepted the binding request.`}function ht(e){try{let t=JSON.parse(e||`[]`);return Array.isArray(t)?t:[]}catch{return[]}}function gt(e){try{let t=JSON.parse(e||`[]`);return Array.isArray(t)?t.map(e=>K(e)).filter(e=>!!e).map(e=>({alias:Y(e.alias),agentId:Y(e.agentId)})).filter(e=>e.alias||e.agentId):[]}catch{return[]}}function _t(e){return Array.isArray(e?.aliases)?e.aliases.map(e=>K(e)).filter(e=>!!e).map(e=>({alias:Y(e.alias),agentId:Y(e.agentId)})).filter(e=>e.alias||e.agentId):[]}function vt(e,t){try{return K(JSON.parse(e||`{}`))??t??{enabled:!1}}catch{return t??{enabled:!1}}}function V(e){return K(e)?.enabled===!0}function H(e){try{let t=JSON.parse(e||`[]`);return Array.isArray(t)?t.length:0}catch{return 0}}function U(e,t){return`${e} ${t}${e===1?``:`s`}`}function W(e){return Array.isArray(e)?e.filter(e=>typeof e==`string`).map(e=>e.trim()).filter(Boolean):[]}function G(e){let t=K(K(e.configForm?.gateway)?.feishu??e.configForm?.feishu),n=K(t?.accounts),r=K(t?.groups),i=e.channelsSnapshot?.channelAccounts?.feishu??[],a=n?Object.keys(n):[],o=Y(t?.defaultAccount)||e.channelsSnapshot?.channelDefaultAccountId?.feishu||i[0]?.accountId||a[0]||``,s=i.length>0?i:a.map(e=>({accountId:e,configured:!0}));return{defaultAccount:o,threadSession:Y(t?.threadSession)||Y(t?.groupSessionScope)||`not configured`,groupCount:r?Object.keys(r).length:0,accounts:s}}function yt(e,t,n){return[{title:`Teams list`,message:t.length>0?`${t.length} team definitions loaded.`:`No team definitions loaded.`,status:t.length>0?`ok`:`info`},{title:`Members`,message:n.length>0?`${n.length} members available for edit.`:`No members selected.`,status:n.length>0?`ok`:`warn`},{title:`Binding preview`,message:e.bindingPreview?.applyPayload?`Apply payload is ready.`:`Preview a binding before applying.`,status:e.bindingPreview?.applyPayload?`ok`:`info`},{title:`Workspace profiles`,message:e.workspace.workspace?`Workspace loaded: ${e.workspace.workspace}`:`Choose a member and list files.`,status:e.workspace.workspace?`ok`:`info`},{title:`Model profile`,message:e.modelResult?.models?.path?`models.json: ${e.modelResult.models.path}`:`Load a member model.`,status:e.modelResult?.models?.path?`ok`:`info`},{title:`Feishu accounts`,message:(e.channelsSnapshot?.channelAccounts?.feishu??[]).length>0?`Feishu account status is visible.`:`No Feishu account status in channels.status.`,status:(e.channelsSnapshot?.channelAccounts?.feishu??[]).length>0?`ok`:`info`}]}function K(e){return e&&typeof e==`object`&&!Array.isArray(e)?e:null}function bt(e){let t=K(e.state)?.providers,n=[];if(Array.isArray(t))t.forEach(e=>{let t=xt(K(e));t&&n.push(t)});else{let e=K(t);e&&Object.entries(e).forEach(([e,t])=>{let r=K(t)??{provider:e},i=xt({...r,provider:r.provider??e});i&&n.push(i)})}if(n.length===0&&e.primaryModelRef){let t=e.primaryModelRef.includes(`:`)?e.primaryModelRef.split(`:`)[0]:``;n.push({label:t||`Primary model`,provider:t,runtimeProvider:t,modelRef:e.primaryModelRef,status:`primary`})}return n}function xt(e){if(!e)return null;let t=Y(e.provider)||Y(e.id),n=Y(e.runtimeProvider)||Y(e.runtime_provider),r=Y(e.defaultModelRef)||Y(e.modelRef)||Y(e.model)||Y(e.runtimeModelRef),i=Y(e.displayName)||Y(e.name)||t||n||r;return i?{label:i,provider:t,runtimeProvider:n,modelRef:r,status:St(e.configured)}:null}function St(e){return e===!0?`configured`:e===!1?`needs credentials`:`status unknown`}function q(e,t,n){for(let n of t){let t=e[n];if(typeof t==`string`&&t.trim())return X(t.trim());if(typeof t==`number`||typeof t==`boolean`)return String(t);if(Array.isArray(t)){let e=t.map(e=>String(e).trim()).filter(Boolean).join(`, `);if(e)return X(e)}}return n}function Ct(e,t){let n={};return t.forEach(t=>{e[t]!==void 0&&(n[t]=e[t])}),n}function J(e){try{return X(JSON.stringify(e??{},null,2))}catch{return X(String(e??``))}}function Y(e){return typeof e==`string`?e:``}function X(e){return e.replace(/authorization:\s*bearer\s+[^\s,;]+/gi,`Authorization: Bearer [redacted]`).replace(/\b(access|refresh|bot|app)[_-]?token\s*[:=]\s*[^\s,;]+/gi,`$1_token=[redacted]`).replace(/(["']?(?:access|refresh|bot|app)[_-]?token["']?\s*[:=]\s*)["']?[^"',;\s]+["']?/gi,`$1[redacted]`).replace(/\b(app[_-]?secret|authorization)\s*[:=]\s*[^\s,;]+/gi,`$1=[redacted]`)}function Z(e){return e.target.value}function Q(e){return e.target.value}function wt(e){return e.target.value}function $(e){return e.target.checked}function Tt(t){let i=t.agentsList?.agents??[],a=t.agentsList?.defaultId??null,o=t.selectedAgentId??a??i[0]?.id??null,s=o?i.find(e=>e.id===o)??null:null,c=o&&t.agentSkills.agentId===o?t.agentSkills.report?.skills?.length??null:null,l=t.channels.snapshot?Object.keys(t.channels.snapshot.channelAccounts??{}).length:null,u=o?t.cron.jobs.filter(e=>e.agentId===o).length:null,d={files:t.agentFiles.list?.files?.length??null,skills:c,channels:l,cron:u||null,teams:t.agentTeams.list?.count??null};return e`
     <div class="agents-layout">
       <section class="agents-toolbar">
         <div class="agents-toolbar-row">
@@ -1524,7 +1556,7 @@ ${e}
             >
               ${i.length===0?e` <option value="">No agents</option> `:i.map(t=>e`
                       <option value=${t.id} ?selected=${t.id===o}>
-                        ${w(t)}${A(t.id,a)?` (${A(t.id,a)})`:``}
+                        ${w(t)}${ae(t.id,a)?` (${ae(t.id,a)})`:``}
                       </option>
                     `)}
             </select>
@@ -1561,24 +1593,24 @@ ${e}
         ${t.error?e`<div class="callout danger" style="margin-top: 8px;">${t.error}</div>`:r}
       </section>
       <section class="agents-main">
-        ${Tt(t.activePanel,e=>t.onSelectPanel(e),d)}
+        ${Et(t.activePanel,e=>t.onSelectPanel(e),d)}
         ${!s&&t.activePanel!==`teams`?e`
               <div class="card">
                 <div class="card-title">Select an agent</div>
                 <div class="card-sub">Pick an agent to inspect its workspace and tools.</div>
               </div>
             `:e`
-              ${t.activePanel===`overview`?de({agent:s,basePath:t.basePath,defaultId:a,configForm:t.config.form,agentFilesList:t.agentFiles.list,agentIdentity:t.agentIdentityById[s.id]??null,agentIdentityError:t.agentIdentityError,agentIdentityLoading:t.agentIdentityLoading,configLoading:t.config.loading,configSaving:t.config.saving,configDirty:t.config.dirty,modelCatalog:t.modelCatalog,onConfigReload:t.onConfigReload,onConfigSave:t.onConfigSave,onModelChange:t.onModelChange,onModelFallbacksChange:t.onModelFallbacksChange,onSelectPanel:t.onSelectPanel}):r}
+              ${t.activePanel===`overview`?pe({agent:s,basePath:t.basePath,defaultId:a,configForm:t.config.form,agentFilesList:t.agentFiles.list,agentIdentity:t.agentIdentityById[s.id]??null,agentIdentityError:t.agentIdentityError,agentIdentityLoading:t.agentIdentityLoading,configLoading:t.config.loading,configSaving:t.config.saving,configDirty:t.config.dirty,modelCatalog:t.modelCatalog,onConfigReload:t.onConfigReload,onConfigSave:t.onConfigSave,onModelChange:t.onModelChange,onModelFallbacksChange:t.onModelFallbacksChange,onSelectPanel:t.onSelectPanel}):r}
               ${t.activePanel===`files`?Be({agentId:s.id,agentFilesList:t.agentFiles.list,agentFilesLoading:t.agentFiles.loading,agentFilesError:t.agentFiles.error,agentFileActive:t.agentFiles.active,agentFileContents:t.agentFiles.contents,agentFileDrafts:t.agentFiles.drafts,agentFileSaving:t.agentFiles.saving,onLoadFiles:t.onLoadFiles,onSelectFile:t.onSelectFile,onFileDraftChange:t.onFileDraftChange,onFileReset:t.onFileReset,onFileSave:t.onFileSave}):r}
               ${t.activePanel===`tools`?Ue({agentId:s.id,configForm:t.config.form,configLoading:t.config.loading,configSaving:t.config.saving,configDirty:t.config.dirty,toolsCatalogLoading:t.toolsCatalog.loading,toolsCatalogError:t.toolsCatalog.error,toolsCatalogResult:t.toolsCatalog.result,toolsEffectiveLoading:t.toolsEffective.loading,toolsEffectiveError:t.toolsEffective.error,toolsEffectiveResult:t.toolsEffective.result,runtimeSessionKey:t.runtimeSessionKey,runtimeSessionMatchesSelectedAgent:t.runtimeSessionMatchesSelectedAgent,onProfileChange:t.onToolsProfileChange,onOverridesChange:t.onToolsOverridesChange,onConfigReload:t.onConfigReload,onConfigSave:t.onConfigSave}):r}
               ${t.activePanel===`skills`?We({agentId:s.id,report:t.agentSkills.report,loading:t.agentSkills.loading,error:t.agentSkills.error,activeAgentId:t.agentSkills.agentId,configForm:t.config.form,configLoading:t.config.loading,configSaving:t.config.saving,configDirty:t.config.dirty,filter:t.agentSkills.filter,onFilterChange:t.onSkillsFilterChange,onRefresh:t.onSkillsRefresh,onToggle:t.onAgentSkillToggle,onClear:t.onAgentSkillsClear,onDisableAll:t.onAgentSkillsDisableAll,onConfigReload:t.onConfigReload,onConfigSave:t.onConfigSave}):r}
               ${t.activePanel===`channels`?Re({context:C(s,t.config.form,t.agentFiles.list,a,t.agentIdentityById[s.id]??null),configForm:t.config.form,snapshot:t.channels.snapshot,loading:t.channels.loading,error:t.channels.error,lastSuccess:t.channels.lastSuccess,onRefresh:t.onChannelsRefresh,onSelectPanel:t.onSelectPanel}):r}
               ${t.activePanel===`cron`?ze({context:C(s,t.config.form,t.agentFiles.list,a,t.agentIdentityById[s.id]??null),agentId:s.id,jobs:t.cron.jobs,status:t.cron.status,loading:t.cron.loading,error:t.cron.error,onRefresh:t.onCronRefresh,onRunNow:t.onCronRunNow,onSelectPanel:t.onSelectPanel}):r}
-              ${t.activePanel===`teams`?qe({...t.agentTeams,onRefresh:t.onTeamsRefresh,onSelectTeam:t.onSelectTeam,onNewTeam:t.onNewTeam,onDraftChange:t.onTeamDraftChange,onCreateTeam:t.onCreateTeam,onUpdateTeam:t.onUpdateTeam,onDeleteTeam:t.onDeleteTeam,onBindingChange:t.onTeamBindingChange,onPreviewBinding:t.onPreviewTeamBinding,onApplyBinding:t.onApplyTeamBinding,onModelDraftChange:t.onTeamModelDraftChange,onLoadModel:t.onLoadTeamModel,onSaveModel:t.onSaveTeamModel,onWorkspaceChange:t.onWorkspaceChange,onLoadWorkspaceFiles:t.onLoadWorkspaceFiles,onLoadWorkspaceFile:t.onLoadWorkspaceFile,onSaveWorkspaceFile:t.onSaveWorkspaceFile}):r}
+              ${t.activePanel===`teams`?qe({...t.agentTeams,onRefresh:t.onTeamsRefresh,onSelectTeam:t.onSelectTeam,onNewTeam:t.onNewTeam,onDraftChange:t.onTeamDraftChange,onCreateTeam:t.onCreateTeam,onUpdateTeam:t.onUpdateTeam,onDeleteTeam:t.onDeleteTeam,onBindingChange:t.onTeamBindingChange,onPreviewBinding:t.onPreviewTeamBinding,onApplyBinding:t.onApplyTeamBinding,onModelDraftChange:t.onTeamModelDraftChange,onLoadModel:t.onLoadTeamModel,onSaveModel:t.onSaveTeamModel,onWorkspaceChange:t.onWorkspaceChange,onLoadWorkspaceFiles:t.onLoadWorkspaceFiles,onLoadWorkspaceFile:t.onLoadWorkspaceFile,onSaveWorkspaceFile:t.onSaveWorkspaceFile,onStartFeishuOAuth:t.onStartFeishuOAuth}):r}
             `}
       </section>
     </div>
-  `}function Tt(t,n,i){return e`
+  `}function Et(t,n,i){return e`
     <div class="agent-tabs">
       ${[{id:`overview`,label:`Overview`},{id:`files`,label:`Files`},{id:`tools`,label:`Tools`},{id:`skills`,label:`Skills`},{id:`channels`,label:`Channels`},{id:`cron`,label:`Cron Jobs`},{id:`teams`,label:`Teams`}].map(a=>e`
           <button
@@ -1590,5 +1622,5 @@ ${e}
           </button>
         `)}
     </div>
-  `}export{wt as renderAgents};
+  `}export{Tt as renderAgents};
 //# sourceMappingURL=agents.js.map

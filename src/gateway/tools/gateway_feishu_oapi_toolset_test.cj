@@ -35,6 +35,14 @@ private class FeishuOapiToolsetScopeMissingTokenProvider <: FeishuOapiTokenProvi
     }
 }
 
+private class FeishuOapiToolsetAppScopeMissingTokenProvider <: FeishuOapiTokenProvider {
+    public init() {}
+
+    public func userAccessToken(_accountId: String, requiredScopes: Array<String>): FeishuOapiTokenLookup {
+        FeishuOapiTokenLookup("app_scope_missing", missingScopes: requiredScopes, error: "missing app scope")
+    }
+}
+
 private class FeishuOapiToolsetOkTokenProvider <: FeishuOapiTokenProvider {
     public init() {}
 
@@ -72,6 +80,31 @@ private class FeishuOapiToolsetFakeRefreshClient <: FeishuOapiRefreshClient {
             refreshToken: "refreshed-refresh-token",
             expiresInSeconds: 3600,
             scopes: ["im:message:readonly", "contact:contact.base:readonly"]
+        )
+    }
+}
+
+private class FeishuOapiToolsetStateRefreshClient <: FeishuOapiRefreshClient {
+    private let statusValue: String
+    private let accessTokenValue: String
+    private let refreshTokenValue: String
+    private let errorValue: String
+
+    public init(status: String, accessToken!: String = "", refreshToken!: String = "", error!: String = "") {
+        this.statusValue = status
+        this.accessTokenValue = accessToken
+        this.refreshTokenValue = refreshToken
+        this.errorValue = error
+    }
+
+    public func refresh(_accountId: String, _refreshToken: String): FeishuOapiRefreshResult {
+        FeishuOapiRefreshResult(
+            this.statusValue,
+            accessToken: this.accessTokenValue,
+            refreshToken: this.refreshTokenValue,
+            expiresInSeconds: 3600,
+            scopes: ["im:message:readonly"],
+            error: this.errorValue
         )
     }
 }
@@ -237,20 +270,42 @@ public class GatewayFeishuOapiToolsetTest {
         ).invoke(scopeRequest)
         @Expect(scopeJson.get("ok").getOrThrow().asBool().getValue(), false)
         @Expect(scopeJson.get("status").getOrThrow().asString().getValue(), "scope_missing")
-        @Expect(scopeJson.get("missing_scopes").getOrThrow().asArray()[0].asString().getValue(), "calendar:calendar:readonly")
+        @Expect(scopeJson.get("missing_scopes").getOrThrow().asArray()[0].asString().getValue(), "calendar:calendar.event:read")
 
         let http = FeishuOapiToolsetErrorHttpClient()
-        let apiRequest = feishuOapiBuildRequest("feishu_chat", "list", "ops", JsonObject())
+        let apiRequest = feishuOapiBuildRequest("feishu_chat", "get", "ops", JsonObject())
         let apiJson = MetisFeishuOapiClient(
             tokenProvider: Some<FeishuOapiTokenProvider>(FeishuOapiToolsetOkTokenProvider()),
             httpClient: Some<FeishuOapiHttpClient>(http)
         ).invoke(apiRequest)
         @Expect(apiJson.get("ok").getOrThrow().asBool().getValue(), false)
-        @Expect(apiJson.get("status").getOrThrow().asString().getValue(), "api_error")
+        @Expect(apiJson.get("status").getOrThrow().asString().getValue(), "app_scope_missing")
         @Expect(apiJson.get("error").getOrThrow().asString().getValue(), "forbidden")
+        @Expect(apiJson.get("missing_scopes").getOrThrow().asArray()[0].asString().getValue(), "im:chat:read")
         @Expect(http.captured[0], "ops")
-        @Expect(http.captured[1], "/open-apis/im/v1/chats")
+        @Expect(http.captured[1], "/open-apis/im/v1/chats/:chat_id")
         @Expect(http.captured[2], "fake-access-token")
+    }
+
+    @TestCase
+    public func nativeBoundaryDistinguishesAuthRequiredUserScopeMissingAndAppScopeMissing(): Unit {
+        let request = feishuOapiBuildRequest("feishu_im_user_message", "send", "tenant-a", JsonObject())
+        let authJson = MetisFeishuOapiClient().invoke(request)
+        @Expect(authJson.get("status").getOrThrow().asString().getValue(), "auth_required")
+        @Expect(authJson.get("auth").getOrThrow().asObject().get("mode").getOrThrow().asString().getValue(), "user_access_token")
+
+        let userScopeJson = MetisFeishuOapiClient(
+            tokenProvider: Some<FeishuOapiTokenProvider>(FeishuOapiToolsetScopeMissingTokenProvider())
+        ).invoke(request)
+        @Expect(userScopeJson.get("status").getOrThrow().asString().getValue(), "scope_missing")
+        @Expect(userScopeJson.get("missing_scopes").getOrThrow().asArray()[0].asString().getValue(), "im:message")
+
+        let appScopeJson = MetisFeishuOapiClient(
+            tokenProvider: Some<FeishuOapiTokenProvider>(FeishuOapiToolsetAppScopeMissingTokenProvider())
+        ).invoke(request)
+        @Expect(appScopeJson.get("status").getOrThrow().asString().getValue(), "app_scope_missing")
+        @Expect(appScopeJson.get("missing_scopes").getOrThrow().asArray()[0].asString().getValue(), "im:message")
+        @Expect(appScopeJson.toJsonString().contains("fake-access-token"), false)
     }
 
     @TestCase
@@ -286,6 +341,55 @@ public class GatewayFeishuOapiToolsetTest {
             @Expect(refreshed.accessToken, "refreshed-access-token")
             @Expect(refresher.calls[0], "tenant-a")
             @Expect(refresher.calls[1], "expired-refresh-token")
+        } finally {
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func metisTokenProviderRefreshMapsDeniedPendingSlowDownParseErrorAndRetainsRefreshToken(): Unit {
+        let root = feishuOapiToolsetTempRoot("refresh-states")
+        try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        try {
+            feishuOapiWriteStoredToken(root, "tenant-a", "expired-access-token", "keep-refresh-token", 900, ["im:message:readonly"])
+
+            let denied = MetisFeishuOapiTokenProvider(
+                root: root,
+                refreshClient: Some<FeishuOapiRefreshClient>(FeishuOapiToolsetStateRefreshClient("denied", error: "denied by user")),
+                nowMs: 1000
+            ).userAccessToken("tenant-a", ["im:message:readonly"])
+            @Expect(denied.status, "denied")
+
+            let pending = MetisFeishuOapiTokenProvider(
+                root: root,
+                refreshClient: Some<FeishuOapiRefreshClient>(FeishuOapiToolsetStateRefreshClient("authorization_pending")),
+                nowMs: 1000
+            ).userAccessToken("tenant-a", ["im:message:readonly"])
+            @Expect(pending.status, "authorization_pending")
+
+            let slowDown = MetisFeishuOapiTokenProvider(
+                root: root,
+                refreshClient: Some<FeishuOapiRefreshClient>(FeishuOapiToolsetStateRefreshClient("slow_down")),
+                nowMs: 1000
+            ).userAccessToken("tenant-a", ["im:message:readonly"])
+            @Expect(slowDown.status, "slow_down")
+
+            let parseError = MetisFeishuOapiTokenProvider(
+                root: root,
+                refreshClient: Some<FeishuOapiRefreshClient>(FeishuOapiToolsetStateRefreshClient("parse_error", error: "bad json")),
+                nowMs: 1000
+            ).userAccessToken("tenant-a", ["im:message:readonly"])
+            @Expect(parseError.status, "parse_error")
+
+            let refreshed = MetisFeishuOapiTokenProvider(
+                root: root,
+                refreshClient: Some<FeishuOapiRefreshClient>(FeishuOapiToolsetStateRefreshClient("authorized", accessToken: "new-access-token")),
+                nowMs: 1000
+            ).userAccessToken("tenant-a", ["im:message:readonly"])
+            @Expect(refreshed.status, "authorized")
+            let persisted = JsonValue.fromStr(String.fromUtf8(File.readFrom(root.join("tenant-a.json")))).asObject().toJsonString()
+            @Expect(persisted.contains("new-access-token"), true)
+            @Expect(persisted.contains("keep-refresh-token"), true)
         } finally {
             try { remove(root, recursive: true) } catch (_e: Exception) { () }
         }
@@ -403,5 +507,90 @@ public class GatewayFeishuOapiToolsetTest {
         let bitable = feishuOapiBuildRequest("feishu_bitable_app", "list", "a", JsonObject())
         @Expect(bitable.category, "bitable")
         @Expect(bitable.domain, "bitable")
+    }
+
+    @TestCase
+    public func firstBatchActionMapUsesOpenClawActionKeysPathsMethodsTokenModeAndScopes(): Unit {
+        let imSend = feishuOapiBuildRequest("feishu_im_user_message", "send", "a", JsonObject())
+        @Expect(imSend.actionKey, "feishu_im_user_message.send")
+        @Expect(imSend.path, "/open-apis/im/v1/messages")
+        @Expect(imSend.method, "POST")
+        @Expect(imSend.tokenMode, "user_access_token")
+        @Expect(imSend.requiredScopes[0], "im:message")
+        @Expect(imSend.requiredScopes[1], "im:message.send_as_user")
+
+        let imReply = feishuOapiBuildRequest("feishu_im_user_message", "reply", "a", JsonObject())
+        @Expect(imReply.actionKey, "feishu_im_user_message.reply")
+        @Expect(imReply.path, "/open-apis/im/v1/messages/:message_id/reply")
+        @Expect(imReply.method, "POST")
+
+        let chatGet = feishuOapiBuildRequest("feishu_chat", "get", "a", JsonObject())
+        @Expect(chatGet.actionKey, "feishu_chat.get")
+        @Expect(chatGet.path, "/open-apis/im/v1/chats/:chat_id")
+        @Expect(chatGet.requiredScopes[0], "im:chat:read")
+
+        let userSearch = feishuOapiBuildRequest("feishu_search_user", "default", "a", JsonObject())
+        @Expect(userSearch.actionKey, "feishu_search_user.default")
+        @Expect(userSearch.path, "/open-apis/search/v1/user")
+        @Expect(userSearch.method, "GET")
+        @Expect(userSearch.requiredScopes[0], "contact:user:search")
+
+        let docFetch = feishuOapiBuildRequest("feishu_fetch_doc", "default", "a", JsonObject())
+        @Expect(docFetch.actionKey, "feishu_fetch_doc.default")
+        @Expect(docFetch.path, "/open-apis/docx/v1/documents/:document_id/raw_content")
+        @Expect(docFetch.requiredScopes[0], "docx:document:readonly")
+
+        let wikiNode = feishuOapiBuildRequest("feishu_wiki_space_node", "get", "a", JsonObject())
+        @Expect(wikiNode.actionKey, "feishu_wiki_space_node.get")
+        @Expect(wikiNode.path, "/open-apis/wiki/v2/spaces/:space_id/nodes/:node_token")
+        @Expect(wikiNode.requiredScopes[0], "wiki:node:read")
+
+        let driveList = feishuOapiBuildRequest("feishu_drive_file", "list", "a", JsonObject())
+        @Expect(driveList.actionKey, "feishu_drive_file.list")
+        @Expect(driveList.path, "/open-apis/drive/v1/files")
+        @Expect(driveList.requiredScopes[0], "space:document:retrieve")
+
+        let searchDocs = feishuOapiBuildRequest("feishu_search_doc_wiki", "search", "a", JsonObject())
+        @Expect(searchDocs.actionKey, "feishu_search_doc_wiki.search")
+        @Expect(searchDocs.path, "/open-apis/search/v2/data_sources/:data_source_id/search")
+        @Expect(searchDocs.requiredScopes[0], "search:docs:read")
+
+        let sheetRead = feishuOapiBuildRequest("feishu_sheet", "read", "a", JsonObject())
+        @Expect(sheetRead.actionKey, "feishu_sheet.read")
+        @Expect(sheetRead.path, "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/values/:range")
+        @Expect(sheetRead.method, "GET")
+        @Expect(sheetRead.requiredScopes[0], "sheets:spreadsheet.meta:read")
+    }
+
+    @TestCase
+    public func unknownOapiActionReturnsStructuredUnsupportedActionDiagnostic(): Unit {
+        let out = GatewayFeishuOapiToolset().debugFeishuOapiInvokeForTest(
+            "feishu_chat",
+            "explode",
+            Some("tenant-a"),
+            Some("{\"chat_id\":\"oc_demo\"}")
+        )
+        let json = JsonValue.fromStr(out).asObject()
+        @Expect(json.get("ok").getOrThrow().asBool().getValue(), false)
+        @Expect(json.get("status").getOrThrow().asString().getValue(), "unsupported_action")
+        @Expect(json.get("action_key").getOrThrow().asString().getValue(), "feishu_chat.explode")
+        @Expect(json.get("supported_actions").getOrThrow().asArray()[0].asString().getValue(), "get")
+        @Expect(json.toJsonString().contains("Bearer"), false)
+    }
+
+    @TestCase
+    public func authRequestMergeHelperProducesOneMergedRequestForSameTurnScopes(): Unit {
+        let merger = FeishuOapiAuthRequestMerger()
+        let first = merger.merge("turn-1", "tenant-a", "ou_1", ["im:message"], "auth_required")
+        @Expect(first.get("status").getOrThrow().asString().getValue(), "auth_required")
+        @Expect(first.get("request_count").getOrThrow().asInt().getValue(), 1)
+
+        let second = merger.merge("turn-1", "tenant-a", "ou_1", ["contact:user:search", "im:message"], "scope_missing")
+        @Expect(second.get("request_count").getOrThrow().asInt().getValue(), 2)
+        @Expect(second.get("status").getOrThrow().asString().getValue(), "auth_required")
+        let scopes = second.get("merged_scopes").getOrThrow().asArray().toJsonString()
+        @Expect(scopes.contains("im:message"), true)
+        @Expect(scopes.contains("contact:user:search"), true)
+        @Expect(second.get("merged").getOrThrow().asBool().getValue(), true)
     }
 }

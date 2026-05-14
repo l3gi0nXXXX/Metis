@@ -17,6 +17,7 @@ import {
   previewAgentTeamBinding,
   removeAgentTeamAlias,
   saveAgentTeamWorkspaceFile,
+  startAgentTeamFeishuOAuth,
   setAgentTeamBroadcastEnabled,
   setAgentTeamBroadcastMember,
   setAgentTeamBroadcastMembers,
@@ -49,6 +50,9 @@ function createState(): { state: AgentTeamsState; request: ReturnType<typeof vi.
     agentTeamWorkspaceSaving: false,
     agentTeamWorkspaceError: null,
     agentTeamWorkspace: createEmptyAgentTeamWorkspaceDraft(),
+    agentTeamFeishuAuthLoading: false,
+    agentTeamFeishuAuthError: null,
+    agentTeamFeishuAuthResult: null,
   };
   return { state, request };
 }
@@ -410,17 +414,46 @@ describe("team binding and models", () => {
   });
 });
 
+describe("Feishu OAuth start", () => {
+  it("starts Feishu OAuth through Gateway RPC and redacts accidental secret fields", async () => {
+    const { state, request } = createState();
+    request.mockResolvedValueOnce({
+      status: "pending",
+      accountId: "tenant-a",
+      verificationUri: "https://verify.example/activate",
+      userCode: "ABCD-EFGH",
+      accessToken: "secret-access-token",
+      refresh_token: "secret-refresh-token",
+      authorization: "Bearer secret-authorization-token",
+    });
+
+    await startAgentTeamFeishuOAuth(state, "tenant-a");
+
+    expect(request).toHaveBeenCalledWith("channels.feishu.auth.start", {
+      accountId: "tenant-a",
+    });
+    expect(state.agentTeamFeishuAuthResult).toMatchObject({
+      status: "pending",
+      accountId: "tenant-a",
+      verificationUri: "https://verify.example/activate",
+      userCode: "ABCD-EFGH",
+      redacted: true,
+    });
+    const rendered = JSON.stringify(state.agentTeamFeishuAuthResult);
+    expect(rendered).toContain("[redacted]");
+    expect(rendered).not.toContain("secret-access-token");
+    expect(rendered).not.toContain("secret-refresh-token");
+    expect(rendered).not.toContain("secret-authorization-token");
+  });
+});
+
 describe("team workspace profiles", () => {
   it("matches the Gateway Control UI supported profile file contract", () => {
     expect([...AGENT_TEAM_PROFILE_FILES]).toEqual([
-      "AGENTS.md",
       "SOUL.md",
       "TOOLS.md",
       "IDENTITY.md",
       "USER.md",
-      "HEARTBEAT.md",
-      "BOOTSTRAP.md",
-      "MEMORY.md",
     ]);
   });
 
@@ -475,14 +508,10 @@ describe("team workspace profiles", () => {
       content: "Be direct.",
     });
     expect(state.agentTeamWorkspace.files.map((file) => file.name)).toEqual([
-      "AGENTS.md",
       "SOUL.md",
       "TOOLS.md",
       "IDENTITY.md",
       "USER.md",
-      "HEARTBEAT.md",
-      "BOOTSTRAP.md",
-      "MEMORY.md",
     ]);
     expect(state.agentTeamWorkspace.content).toBe("Be direct.");
   });

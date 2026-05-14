@@ -69,6 +69,24 @@ private func channelRuntimeReadInt(obj: JsonObject, key: String, defaultValue: I
     }
 }
 
+private func channelRuntimeRedactSecretText(raw: String): String {
+    let text = raw.trimAscii()
+    if (text.isEmpty()) {
+        return ""
+    }
+    let lower = text.toAsciiLower()
+    if (
+        lower.contains("authorization") ||
+        lower.contains("bearer ") ||
+        lower.contains("secret") ||
+        lower.contains("token") ||
+        lower.contains("password")
+    ) {
+        return "[redacted]"
+    }
+    text
+}
+
 private func channelRuntimeReadAccounts(root: JsonObject): JsonArray {
     let raw = match (root.get("accounts")) {
         case Some(v) =>
@@ -133,7 +151,7 @@ private func channelRuntimeAppendHistory(history: JsonArray, state: String, deta
     }
     let row = JsonObject()
     row.put("state", JsonString(state))
-    row.put("detail", JsonString(detail))
+    row.put("detail", JsonString(channelRuntimeRedactSecretText(detail)))
     row.put("ts", gatewayChannelRuntimeNowMs().toJsonValue())
     out.add(row)
     out
@@ -189,7 +207,7 @@ private func channelRuntimeCloneRow(row: JsonObject): JsonObject {
     out.put("lastPullAtMs", channelRuntimeReadInt(row, "lastPullAtMs", 0).toJsonValue())
     out.put("lastEventAtMs", channelRuntimeReadInt(row, "lastEventAtMs", 0).toJsonValue())
     out.put("lastSendAtMs", channelRuntimeReadInt(row, "lastSendAtMs", 0).toJsonValue())
-    out.put("lastError", JsonString(channelRuntimeReadString(row, "lastError", "")))
+    out.put("lastError", JsonString(channelRuntimeRedactSecretText(channelRuntimeReadString(row, "lastError", ""))))
     out.put("backoffMs", channelRuntimeReadInt(row, "backoffMs", 0).toJsonValue())
     out.put("nextRestartAtMs", channelRuntimeReadInt(row, "nextRestartAtMs", 0).toJsonValue())
     out.put("configuredBinding", channelRuntimeReadBool(row, "configuredBinding", false).toJsonValue())

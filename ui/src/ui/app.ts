@@ -319,6 +319,9 @@ export class MetisApp extends LitElement {
   @state() agentTeamWorkspaceSaving = false;
   @state() agentTeamWorkspaceError: string | null = null;
   @state() agentTeamWorkspace: AgentTeamWorkspaceDraft = createEmptyAgentTeamWorkspaceDraft();
+  @state() agentTeamFeishuAuthLoading = false;
+  @state() agentTeamFeishuAuthError: string | null = null;
+  @state() agentTeamFeishuAuthResult: Record<string, unknown> | null = null;
   @state() agentFilesLoading = false;
   @state() agentFilesError: string | null = null;
   @state() agentFilesList: AgentsFilesListResult | null = null;

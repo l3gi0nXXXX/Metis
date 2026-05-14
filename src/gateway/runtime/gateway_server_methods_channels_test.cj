@@ -15,6 +15,7 @@ import metis.gateway.core.{
     gatewayChannelRuntimePrimeAccount,
     gatewayChannelRuntimeRegisterAccount,
     gatewayPluginManagerSummary,
+    setGatewayFeishuNativeAuthRunnerForTest,
     setGatewayOpenClawPluginSidecarRunnerForTest
 }
 
@@ -23,7 +24,7 @@ import std.collection.ArrayList
 import std.env.{getVariable, setVariable}
 import std.fs.{Directory, Path, remove}
 import std.unittest.testmacro.*
-import stdx.encoding.json.{JsonArray, JsonObject, JsonString}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 
 private func channelsTestBool(obj: JsonObject, key: String): Bool {
     match (obj.get(key)) {
@@ -178,6 +179,46 @@ public class GatewayServerMethodsChannelsTest {
         @Expect(channelsTestBool(telegramSupports, "mediaPhoto"), true)
         @Expect(channelsTestBool(telegramSupports, "mediaAudio"), true)
         @Expect(channelsTestBool(telegramSupports, "mediaVideoNote"), true)
+    }
+
+    @TestCase
+    public func feishuAuthStartRpcUsesGatewayRunnerAndRedactsSecrets(): Unit {
+        try {
+            setGatewayFeishuNativeAuthRunnerForTest(Some({ accountId: String, _user: GatewayUserSettings =>
+                let out = JsonObject()
+                out.put("status", JsonString("pending"))
+                out.put("accountId", JsonString(accountId))
+                out.put("verificationUri", JsonString("https://verify.example/activate"))
+                out.put("userCode", JsonString("ABCD-EFGH"))
+                out.put("accessToken", JsonString("secret-access-token"))
+                out.put("refreshToken", JsonString("secret-refresh-token"))
+                out.put("authorization", JsonString("Bearer secret-authorization-token"))
+                out.put("redacted", JsonBool(false))
+                out
+            }))
+
+            var user = GatewayUserSettings()
+            user.feishu.defaultAccount = "tenant-a"
+            let params = JsonObject()
+            params.put("accountId", JsonString("tenant-a"))
+            let response = handleGatewayChannelsFamily(
+                "channels.feishu.auth.start",
+                user,
+                request: Some(GatewayRpcRequest("channels.feishu.auth.start", params: params))
+            ).getOrThrow()
+
+            @Expect(response.ok, true)
+            let result = response.result.asObject()
+            @Expect(channelsTestString(result, "status"), "pending")
+            @Expect(channelsTestString(result, "accountId"), "tenant-a")
+            @Expect(channelsTestString(result, "verificationUri"), "https://verify.example/activate")
+            @Expect(result.toJsonString().contains("secret-access-token"), false)
+            @Expect(result.toJsonString().contains("secret-refresh-token"), false)
+            @Expect(result.toJsonString().contains("secret-authorization-token"), false)
+            @Expect(channelsTestBool(result, "redacted"), true)
+        } finally {
+            setGatewayFeishuNativeAuthRunnerForTest(None<(String, GatewayUserSettings) -> JsonObject>)
+        }
     }
 
     @TestCase

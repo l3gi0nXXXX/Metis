@@ -3,7 +3,7 @@ package metis.gateway.core
 import metis.core.config.{MetisAgentScope, MetisPaths}
 import metis.gateway.session.{GatewaySessionContext, GatewaySessionRequest, GatewayTurnContext, gatewayIngressSourceLabel, gatewayResolveDeliveryTarget, gatewayRuntimeRouteContextFromMediaContext}
 import std.collection.ArrayList
-import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString, JsonValue}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString, JsonValue}
 
 public class GatewayAgentTeamBroadcastTurn {
     public let teamId: String
@@ -499,4 +499,81 @@ public func gatewayResolveAgentTeamBroadcastPlan(request: GatewaySessionRequest)
         return gatewayBroadcastBuildPlanForTeam(request, team, diagnostics)
     }
     gatewayBroadcastSinglePlan(request, diagnostics.toArray())
+}
+
+private func gatewayBroadcastFindTurnResult(
+    turn: GatewayAgentTeamBroadcastTurn,
+    results: Array<GatewayResolvedSessionTurnResult>
+): Option<GatewayResolvedSessionTurnResult> {
+    for (result in results) {
+        if (result.context.agentId == turn.agentId && result.context.sessionKey == turn.context.sessionKey) {
+            return Some(result)
+        }
+    }
+    None<GatewayResolvedSessionTurnResult>
+}
+
+public func gatewayAgentTeamBroadcastAggregateJson(
+    plan: GatewayAgentTeamBroadcastPlan,
+    results: Array<GatewayResolvedSessionTurnResult>
+): JsonObject {
+    let agents = JsonArray([])
+    let answerLines = ArrayList<String>()
+    var deliveredCount: Int64 = 0
+    var allDelivered = plan.turns.size > 0
+    for (turn in plan.turns) {
+        let row = JsonObject()
+        row.put("teamId", JsonString(turn.teamId))
+        row.put("agentId", JsonString(turn.agentId))
+        row.put("sessionKey", JsonString(turn.context.sessionKey))
+        match (gatewayBroadcastFindTurnResult(turn, results)) {
+            case Some(result) =>
+                let execution = result.execution
+                let status = if (execution.delivered) { "delivered" } else { "not-delivered" }
+                if (execution.delivered) {
+                    deliveredCount += 1
+                } else {
+                    allDelivered = false
+                }
+                row.put("status", JsonString(status))
+                row.put("delivered", JsonBool(execution.delivered))
+                row.put("deliveryStatus", JsonString(execution.deliveryStatus))
+                row.put("deliveryError", JsonString(execution.deliveryError))
+                row.put("deliveryMessageId", JsonString(execution.deliveryMessageId))
+                row.put("answer", JsonString(execution.answer))
+                if (!execution.answer.trimAscii().isEmpty()) {
+                    answerLines.add("[${turn.agentId}] ${execution.answer}")
+                }
+            case None =>
+                allDelivered = false
+                row.put("status", JsonString("missing-result"))
+                row.put("delivered", JsonBool(false))
+                row.put("deliveryStatus", JsonString("missing-result"))
+                row.put("deliveryError", JsonString(""))
+                row.put("deliveryMessageId", JsonString(""))
+                row.put("answer", JsonString(""))
+        }
+        agents.add(row)
+    }
+
+    let status = if (!plan.enabled) {
+        "disabled"
+    } else if (allDelivered) {
+        "ok"
+    } else if (deliveredCount > 0) {
+        "partial"
+    } else {
+        "failed"
+    }
+    let out = JsonObject()
+    out.put("kind", JsonString("agent-team-broadcast-aggregate"))
+    out.put("enabled", JsonBool(plan.enabled))
+    out.put("teamId", JsonString(plan.teamId))
+    out.put("status", JsonString(status))
+    out.put("delivered", JsonBool(deliveredCount > 0))
+    out.put("total", JsonInt(plan.turns.size))
+    out.put("deliveredCount", JsonInt(deliveredCount))
+    out.put("agents", agents)
+    out.put("answer", JsonString(String.join(answerLines.toArray(), delimiter: "\n")))
+    out
 }

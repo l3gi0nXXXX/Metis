@@ -73,6 +73,8 @@ export type AgentTeamWorkspaceDraft = {
   draft: string;
 };
 
+export type AgentTeamFeishuAuthResult = Record<string, unknown>;
+
 export type AgentTeamsState = {
   client: GatewayBrowserClient | null;
   connected: boolean;
@@ -95,17 +97,16 @@ export type AgentTeamsState = {
   agentTeamWorkspaceSaving: boolean;
   agentTeamWorkspaceError: string | null;
   agentTeamWorkspace: AgentTeamWorkspaceDraft;
+  agentTeamFeishuAuthLoading: boolean;
+  agentTeamFeishuAuthError: string | null;
+  agentTeamFeishuAuthResult: AgentTeamFeishuAuthResult | null;
 };
 
 export const AGENT_TEAM_PROFILE_FILES = [
-  "AGENTS.md",
   "SOUL.md",
   "TOOLS.md",
   "IDENTITY.md",
   "USER.md",
-  "HEARTBEAT.md",
-  "BOOTSTRAP.md",
-  "MEMORY.md",
 ] as const;
 
 export function createEmptyAgentTeamDraft(): AgentTeamEditorDraft {
@@ -694,6 +695,35 @@ export async function saveAgentTeamWorkspaceFile(state: AgentTeamsState) {
   }
 }
 
+export async function startAgentTeamFeishuOAuth(
+  state: AgentTeamsState,
+  accountId = "",
+) {
+  if (!state.client || !state.connected || state.agentTeamFeishuAuthLoading) {
+    return;
+  }
+  state.agentTeamFeishuAuthLoading = true;
+  state.agentTeamFeishuAuthError = null;
+  state.agentTeamsSuccess = null;
+  try {
+    const params: Record<string, unknown> = {};
+    const normalizedAccountId = accountId.trim();
+    if (normalizedAccountId) {
+      params.accountId = normalizedAccountId;
+    }
+    const res = await state.client.request<AgentTeamFeishuAuthResult>(
+      "channels.feishu.auth.start",
+      params,
+    );
+    state.agentTeamFeishuAuthResult = sanitizeFeishuAuthResult(res ?? {});
+    state.agentTeamsSuccess = "Feishu OAuth started through Gateway RPC.";
+  } catch (err) {
+    state.agentTeamFeishuAuthError = String(err);
+  } finally {
+    state.agentTeamFeishuAuthLoading = false;
+  }
+}
+
 function teamPayloadFromDraft(
   draft: AgentTeamEditorDraft,
   options: { create: boolean },
@@ -885,4 +915,41 @@ function compactBroadcast(
 
 function stringifyPretty(value: unknown): string {
   return JSON.stringify(value ?? null, null, 2);
+}
+
+function sanitizeFeishuAuthResult(value: AgentTeamFeishuAuthResult): AgentTeamFeishuAuthResult {
+  const sanitized = deepRedact(value) as AgentTeamFeishuAuthResult;
+  sanitized.redacted = true;
+  return sanitized;
+}
+
+function deepRedact(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => deepRedact(item));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    Object.entries(value as Record<string, unknown>).forEach(([key, entry]) => {
+      if (isSecretKey(key)) {
+        out[key] = "[redacted]";
+      } else {
+        out[key] = deepRedact(entry);
+      }
+    });
+    return out;
+  }
+  if (typeof value === "string") {
+    return value.replace(/bearer\s+[^\s,;]+/gi, "Bearer [redacted]");
+  }
+  return value;
+}
+
+function isSecretKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[-_]/g, "");
+  return (
+    normalized.includes("token") ||
+    normalized.includes("secret") ||
+    normalized === "authorization" ||
+    normalized === "authheader"
+  );
 }

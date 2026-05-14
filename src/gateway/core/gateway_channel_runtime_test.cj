@@ -135,4 +135,22 @@ public class GatewayChannelRuntimeTest {
             @Expect(adapter.sentCount, 1)
         }
     }
+
+    @TestCase
+    public func runtimeStatusRedactsSecretBearingErrors(): Unit {
+        withGatewayChannelRuntimeTestHome {
+            gatewayChannelRuntimeRegisterAccount("feishu", accountId: "tenant-a")
+            gatewayChannelRuntimeMarkFailure(
+                "feishu",
+                accountId: "tenant-a",
+                error: "Authorization: Bearer access-secret appSecret=app-secret refresh_token=refresh-secret"
+            )
+
+            let rendered = gatewayChannelRuntimeSummary("feishu").toJsonString()
+            @Expect(rendered.contains("access-secret"), false)
+            @Expect(rendered.contains("app-secret"), false)
+            @Expect(rendered.contains("refresh-secret"), false)
+            @Expect(rendered.contains("[redacted]"), true)
+        }
+    }
 }

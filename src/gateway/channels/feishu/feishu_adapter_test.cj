@@ -4,12 +4,13 @@ import metis.core.renderGatewayEditText
 import metis.gateway.core.{gatewayPolicyFilteredChatToolNamesForTurnContext, gatewayPolicyFilteredSystemPromptForTurnContext, gatewayResolveSessionContextWithAgentRoute}
 import metis.gateway.model.{ChannelPolicyConfig, ChannelType, FeishuConfig, FeishuMediaConfig, OutboundMessage}
 import metis.gateway.session.gatewaySessionRequestFromInbound
+import std.collection.ArrayList
 import std.core.Duration
 import std.fs.{File, Path, exists, remove}
 import std.sync.Mutex
 import std.time.DateTime
 import std.unittest.testmacro.*
-import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString, JsonValue}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString, JsonValue}
 
 class FeishuQueueProbe {
     private let lock = Mutex()
@@ -64,16 +65,19 @@ public class FeishuAdapterTest {
         threadId!: String = "",
         headerAccountId!: String = "",
         appId!: String = "",
+        createTime!: String = "",
         mentions!: String = ""
     ): String {
-        let headerExtra = if (!headerAccountId.isEmpty()) {
-            ",\"account_id\":\"${headerAccountId}\""
-        } else if (!appId.isEmpty()) {
-            ",\"app_id\":\"${appId}\""
-        } else {
-            ""
+        let headerParts = ArrayList<String>()
+        if (!headerAccountId.isEmpty()) {
+            headerParts.add("\"account_id\":\"${headerAccountId}\"")
         }
+        if (!appId.isEmpty()) {
+            headerParts.add("\"app_id\":\"${appId}\"")
+        }
+        let headerExtra = if (headerParts.isEmpty()) { "" } else { "," + String.join(headerParts.toArray(), delimiter: ",") }
         let mentionField = if (!mentions.isEmpty()) { ",\"mentions\":${mentions}" } else { "" }
+        let createTimeField = if (!createTime.isEmpty()) { ",\"create_time\":\"${createTime}\"" } else { "" }
         "{" +
             "\"header\":{\"event_type\":\"im.message.receive_v1\"${headerExtra}}," +
             "\"event\":{" +
@@ -86,6 +90,7 @@ public class FeishuAdapterTest {
             "\"content\":\"${text}\"," +
             "\"root_id\":\"${rootId}\"," +
             "\"thread_id\":\"${threadId}\"" +
+            createTimeField +
             mentionField +
             "}" +
             "}" +
@@ -103,7 +108,12 @@ public class FeishuAdapterTest {
             "}"
     }
 
-    private func reactionPayload(accountId!: String = "tenant-a"): String {
+    private func reactionPayload(accountId!: String = "tenant-a", actionTime!: String = ""): String {
+        let effectiveActionTime = if (actionTime.trimAscii().isEmpty()) {
+            DateTime.now().toUnixTimeStamp().toMilliseconds().toString()
+        } else {
+            actionTime.trimAscii()
+        }
         "{" +
             "\"header\":{\"event_type\":\"im.message.reaction.created_v1\",\"account_id\":\"${accountId}\"}," +
             "\"event\":{" +
@@ -113,8 +123,29 @@ public class FeishuAdapterTest {
             "\"thread_id\":\"omt_react\"," +
             "\"reaction_type\":{\"emoji_type\":\"THUMBSUP\"}," +
             "\"user_id\":{\"open_id\":\"ou_reactor\"}," +
-            "\"action_time\":\"1710000000000\"" +
+            "\"action_time\":\"${effectiveActionTime}\"" +
             "}" +
+            "}"
+    }
+
+    private func botMembershipPayload(eventType: String, accountId!: String = "tenant-a"): String {
+        "{" +
+            "\"header\":{\"event_type\":\"${eventType}\",\"account_id\":\"${accountId}\"}," +
+            "\"event\":{\"chat_id\":\"oc_bot\",\"operator_id\":{\"open_id\":\"ou_owner\"}}" +
+            "}"
+    }
+
+    private func vcInvitedPayload(accountId!: String = "tenant-a"): String {
+        "{" +
+            "\"header\":{\"event_type\":\"vc.meeting.invited_v1\",\"account_id\":\"${accountId}\"}," +
+            "\"event\":{\"event_id\":\"ev_vc_1\",\"meeting\":{\"meeting_no\":\"123456\"},\"operator_id\":{\"open_id\":\"ou_inviter\"}}" +
+            "}"
+    }
+
+    private func bitableFieldChangedPayload(accountId!: String = "tenant-a"): String {
+        "{" +
+            "\"header\":{\"event_type\":\"bitable.field.changed_v1\",\"account_id\":\"${accountId}\"}," +
+            "\"event\":{\"app_token\":\"bascn_1\",\"table_id\":\"tbl_1\",\"field_id\":\"fld_1\",\"operator_id\":{\"open_id\":\"ou_editor\"}}" +
             "}"
     }
 
@@ -231,9 +262,16 @@ public class FeishuAdapterTest {
     @TestCase
     public func accountResolverReportsUnsupportedAccountFieldsAsIgnoredDiagnostics(): Unit {
         let tenant = JsonObject()
+        tenant.put("connectionMode", JsonString("websocket"))
+        tenant.put("dmPolicy", JsonString("open"))
+        tenant.put("historyLimit", JsonInt(20))
+        tenant.put("replyMode", JsonString("card"))
         tenant.put("footer", JsonObject())
         tenant.put("uat", JsonObject())
         tenant.put("dedup", JsonObject())
+        tenant.put("reactionNotifications", JsonString("all"))
+        tenant.put("markdown", JsonObject())
+        tenant.put("capabilities", JsonObject())
         let group = JsonObject()
         group.put("respondToMentionAll", JsonBool(true))
         let accountGroups = JsonObject()
@@ -255,9 +293,16 @@ public class FeishuAdapterTest {
         @Expect(raw.contains("base-secret-never-visible"), false)
         @Expect(raw.contains("unsupportedFields"), true)
         @Expect(raw.contains("ignoredFields"), true)
+        @Expect(raw.contains("accounts.tenant-a.connectionMode"), true)
+        @Expect(raw.contains("accounts.tenant-a.dmPolicy"), true)
+        @Expect(raw.contains("accounts.tenant-a.historyLimit"), true)
+        @Expect(raw.contains("accounts.tenant-a.replyMode"), true)
         @Expect(raw.contains("accounts.tenant-a.footer"), true)
         @Expect(raw.contains("accounts.tenant-a.uat"), true)
         @Expect(raw.contains("accounts.tenant-a.dedup"), true)
+        @Expect(raw.contains("accounts.tenant-a.reactionNotifications"), true)
+        @Expect(raw.contains("accounts.tenant-a.markdown"), true)
+        @Expect(raw.contains("accounts.tenant-a.capabilities"), true)
         @Expect(raw.contains("accounts.tenant-a.groups.oc_team.respondToMentionAll"), true)
         let unsupportedRows = descriptions.get("unsupportedFields").getOrThrow().asArray().toJsonString()
         let ignoredRows = descriptions.get("ignoredFields").getOrThrow().asArray().toJsonString()
@@ -265,6 +310,60 @@ public class FeishuAdapterTest {
         @Expect(unsupportedRows.contains("unsupported"), true)
         @Expect(ignoredRows.contains("status"), true)
         @Expect(ignoredRows.contains("ignored"), true)
+    }
+
+    @TestCase
+    public func accountDescriptionsExposeRuntimeStatusForEveryConfiguredAccount(): Unit {
+        let tenantA = JsonObject()
+        tenantA.put("appId", JsonString("tenant-a-app"))
+        tenantA.put("appSecret", JsonString("tenant-a-secret-never-visible"))
+        let tenantB = JsonObject()
+        tenantB.put("enabled", JsonBool(false))
+        let accounts = JsonObject()
+        accounts.put("tenant-a", tenantA)
+        accounts.put("tenant-b", tenantB)
+        let config = FeishuConfig(
+            enabled: true,
+            defaultAccount: "tenant-a",
+            appId: "top-app",
+            appSecret: "top-secret-never-visible",
+            accounts: Some(accounts)
+        )
+        let runtimeAccounts = JsonArray([])
+        let running = JsonObject()
+        running.put("accountId", JsonString("tenant-a"))
+        running.put("running", JsonBool(true))
+        running.put("lastError", JsonString(""))
+        runtimeAccounts.add(running)
+        let failed = JsonObject()
+        failed.put("accountId", JsonString("tenant-b"))
+        failed.put("running", JsonBool(false))
+        failed.put("lastError", JsonString("Authorization: Bearer token-never-visible"))
+        runtimeAccounts.add(failed)
+        let runtime = JsonObject()
+        runtime.put("accounts", runtimeAccounts)
+
+        let descriptions = gatewayFeishuDescribeAccounts(config, runtime: runtime)
+        let raw = descriptions.toJsonString()
+
+        @Expect(raw.contains("top-secret-never-visible"), false)
+        @Expect(raw.contains("tenant-a-secret-never-visible"), false)
+        @Expect(raw.contains("token-never-visible"), false)
+        @Expect(descriptions.get("defaultAccountId").getOrThrow().asString().getValue(), "tenant-a")
+        let rows = descriptions.get("accounts").getOrThrow().asArray()
+        @Expect(rows.size(), 2)
+        let tenantARow = rows[0].asObject()
+        let tenantBRow = rows[1].asObject()
+        @Expect(tenantARow.get("accountId").getOrThrow().asString().getValue(), "tenant-a")
+        @Expect(tenantARow.get("defaultAccount").getOrThrow().asBool().getValue(), true)
+        @Expect(tenantARow.get("configured").getOrThrow().asBool().getValue(), true)
+        @Expect(tenantARow.get("running").getOrThrow().asBool().getValue(), true)
+        @Expect(tenantARow.get("credentialSource").getOrThrow().asString().getValue(), "account")
+        @Expect(tenantBRow.get("accountId").getOrThrow().asString().getValue(), "tenant-b")
+        @Expect(tenantBRow.get("enabled").getOrThrow().asBool().getValue(), false)
+        @Expect(tenantBRow.get("configured").getOrThrow().asBool().getValue(), true)
+        @Expect(tenantBRow.get("running").getOrThrow().asBool().getValue(), false)
+        @Expect(tenantBRow.get("lastError").getOrThrow().asString().getValue(), "[redacted]")
     }
 
     @TestCase
@@ -474,7 +573,16 @@ public class FeishuAdapterTest {
     @TestCase
     public func streamingControllerLifecycleIncludesToolFooterAbortAndFallback(): Unit {
         let client = FeishuFakeApiClient()
-        let metrics = FeishuReplyFooterMetrics(inputTokens: 12, cacheRead: 3, model: "metis-test")
+        let metrics = FeishuReplyFooterMetrics(
+            status: "completed",
+            elapsedMs: 1234,
+            inputTokens: 12,
+            outputTokens: 34,
+            cacheRead: 3,
+            cacheWrite: 4,
+            contextTokens: 4096,
+            model: "metis-test"
+        )
         let controller = FeishuStreamingCardController(
             client,
             accountId: "tenant-a",
@@ -486,16 +594,23 @@ public class FeishuAdapterTest {
             showToolUse: true
         )
 
+        @Expect(controller.currentPhase(), "idle")
         @Expect(controller.create("first chunk"), "fake-feishu-card-1")
+        @Expect(controller.currentPhase(), "streaming")
         @Expect(controller.patchChunk("second chunk"), true)
         @Expect(controller.updateToolPayload("feishu_fetch_doc", "{\"doc\":\"1\"}"), true)
         @Expect(controller.finalize("final answer", footerMetrics: Some(metrics)), true)
+        @Expect(controller.currentPhase(), "completed")
         @Expect(client.cardSendCount(), 1)
         @Expect(client.cardPatchCount(), 3)
+        @Expect(client.patchedCard(2).fallbackText().contains("Status: completed"), true)
+        @Expect(client.patchedCard(2).fallbackText().contains("Elapsed: 1.2s"), true)
         @Expect(client.patchedCard(2).fallbackText().contains("Tokens in: 12"), true)
+        @Expect(client.patchedCard(2).fallbackText().contains("Tokens out: 34"), true)
         @Expect(client.patchedCard(2).fallbackText().contains("Cache read: 3"), true)
+        @Expect(client.patchedCard(2).fallbackText().contains("Cache write: 4"), true)
+        @Expect(client.patchedCard(2).fallbackText().contains("Context: 4096"), true)
         @Expect(client.patchedCard(2).fallbackText().contains("Model: metis-test"), true)
-        @Expect(client.patchedCard(2).fallbackText().contains("Tokens out: 0"), false)
 
         let abortController = FeishuStreamingCardController(
             client,
@@ -506,6 +621,7 @@ public class FeishuAdapterTest {
         )
         @Expect(abortController.create("will abort"), "fake-feishu-card-2")
         @Expect(abortController.abort("cancelled"), true)
+        @Expect(abortController.currentPhase(), "aborted")
         @Expect(abortController.patchChunk("ignored after abort"), false)
 
         let fallbackClient = FeishuFakeApiClient()
@@ -518,7 +634,70 @@ public class FeishuAdapterTest {
             receiveIdType: "chat_id"
         )
         @Expect(fallback.create("fallback text"), "fake-feishu-text-1")
+        @Expect(fallback.currentPhase(), "terminated")
         @Expect(fallbackClient.textSendCount(), 1)
+    }
+
+    @TestCase
+    public func streamingControllerThrottlesDuplicateFlushAndFallsBackOnPatchFailure(): Unit {
+        let client = FeishuFakeApiClient()
+        let controller = FeishuStreamingCardController(
+            client,
+            accountId: "tenant-a",
+            rawPeerId: "oc_stream",
+            receiveId: "oc_stream",
+            receiveIdType: "chat_id"
+        )
+        @Expect(controller.create("first chunk"), "fake-feishu-card-1")
+        @Expect(controller.patchChunk("first chunk"), true)
+        @Expect(client.cardPatchCount(), 0)
+
+        client.failNextCardPatch("rate_limited", error: "card update rate limited")
+        @Expect(controller.patchChunk("second chunk"), true)
+        @Expect(controller.currentPhase(), "terminated")
+        @Expect(client.cardPatchCount(), 1)
+        @Expect(client.textSendCount(), 1)
+        @Expect(client.lastTextMessage().contains("second chunk"), true)
+    }
+
+    @TestCase
+    public func streamingControllerUnavailableMessageGuardTerminatesWithoutLosingFinalAnswer(): Unit {
+        let client = FeishuFakeApiClient()
+        let controller = FeishuStreamingCardController(
+            client,
+            accountId: "tenant-a",
+            rawPeerId: "oc_stream",
+            receiveId: "oc_stream",
+            receiveIdType: "chat_id"
+        )
+        @Expect(controller.create("first chunk"), "fake-feishu-card-1")
+        client.failNextCardPatch("message_unavailable", error: "message recalled")
+        @Expect(controller.finalize("final answer"), true)
+        @Expect(controller.currentPhase(), "terminated")
+        @Expect(client.textSendCount(), 1)
+        @Expect(client.lastTextMessage().contains("final answer"), true)
+    }
+
+    @TestCase
+    public func footerMetricsRespectConfiguredFieldsAndPresentData(): Unit {
+        let metrics = FeishuReplyFooterMetrics(
+            status: "completed",
+            elapsedMs: 1500,
+            inputTokens: 10,
+            outputTokens: 20,
+            cacheRead: 5,
+            cacheWrite: 6,
+            contextTokens: 100,
+            model: "metis-test"
+        )
+        let onlyStatusAndModel = metrics.toFooterText(config: FeishuReplyFooterConfig(status: true, elapsed: false, tokens: false, cache: false, context: false, model: true))
+        @Expect(onlyStatusAndModel.contains("Status: completed"), true)
+        @Expect(onlyStatusAndModel.contains("Model: metis-test"), true)
+        @Expect(onlyStatusAndModel.contains("Tokens in"), false)
+        @Expect(onlyStatusAndModel.contains("Elapsed"), false)
+
+        let noData = FeishuReplyFooterMetrics().toFooterText(config: FeishuReplyFooterConfig(status: true, elapsed: true, tokens: true, cache: true, context: true, model: true))
+        @Expect(noData, "")
     }
 
     @TestCase
@@ -583,6 +762,109 @@ public class FeishuAdapterTest {
             .get("feishuDriveComment").getOrThrow().asObject()
         @Expect(comment.get("fileToken").getOrThrow().asString().getValue(), "doccn_1")
         @Expect(comment.get("replyId").getOrThrow().asString().getValue(), "reply_1")
+    }
+
+    @TestCase
+    public func inboundEnvelopeRejectsWrongAppForMultiAccountFakeEvents(): Unit {
+        let tenantA = JsonObject()
+        tenantA.put("appId", JsonString("cli_app_a"))
+        let tenantB = JsonObject()
+        tenantB.put("appId", JsonString("cli_app_b"))
+        let accounts = JsonObject()
+        accounts.put("tenant-a", tenantA)
+        accounts.put("tenant-b", tenantB)
+        let adapter = FeishuAdapter(
+            config: FeishuConfig(enabled: true, accounts: Some(accounts)),
+            accountId: "tenant-a"
+        )
+        adapter.start()
+
+        let wrong = adapter.ingestWebhookPayload(this.webhookPayload(
+            "om_wrong_app",
+            "oc_group",
+            "ou_1",
+            "{\\\"text\\\":\\\"wrong app\\\"}",
+            headerAccountId: "tenant-a",
+            appId: "cli_app_b"
+        ))
+        let wrongJson = JsonValue.fromStr(wrong).asObject()
+        @Expect(wrongJson.get("ignored").getOrThrow().asBool().getValue(), true)
+        @Expect(wrongJson.get("reason").getOrThrow().asString().getValue(), "wrong_app")
+        @Expect(adapter.pullInbound().size, 0)
+
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload(
+            "om_right_app",
+            "oc_group",
+            "ou_1",
+            "{\\\"text\\\":\\\"right app\\\"}",
+            headerAccountId: "tenant-a",
+            appId: "cli_app_a"
+        )).contains("\"ok\":true"), true)
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 1)
+        @Expect(inbound[0].messageId, "om_right_app")
+        @Expect(inbound[0].accountId, "tenant-a")
+    }
+
+    @TestCase
+    public func messageAndReactionDedupDropReconnectReplayDeterministically(): Unit {
+        let adapter = FeishuAdapter(config: FeishuConfig(enabled: true), accountId: "tenant-a")
+        adapter.start()
+        let messagePayload = this.webhookPayload("om_dup", "oc_group", "ou_1", "{\\\"text\\\":\\\"hello\\\"}")
+        @Expect(adapter.ingestWebhookPayload(messagePayload).contains("\"ok\":true"), true)
+        let messageDup = JsonValue.fromStr(adapter.ingestWebhookPayload(messagePayload)).asObject()
+        @Expect(messageDup.get("ignored").getOrThrow().asBool().getValue(), true)
+        @Expect(messageDup.get("reason").getOrThrow().asString().getValue(), "duplicate_event")
+
+        let reactionPayload = this.reactionPayload()
+        @Expect(adapter.ingestWebhookPayload(reactionPayload).contains("\"ok\":true"), true)
+        let reactionDup = JsonValue.fromStr(adapter.ingestWebhookPayload(reactionPayload)).asObject()
+        @Expect(reactionDup.get("ignored").getOrThrow().asBool().getValue(), true)
+        @Expect(reactionDup.get("reason").getOrThrow().asString().getValue(), "duplicate_event")
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 2)
+    }
+
+    @TestCase
+    public func staleMessageAndReactionReplayAreIgnoredWithDiagnostics(): Unit {
+        let adapter = FeishuAdapter(config: FeishuConfig(enabled: true), accountId: "tenant-a")
+        adapter.start()
+        let staleMessage = JsonValue.fromStr(adapter.ingestWebhookPayload(this.webhookPayload(
+            "om_stale",
+            "oc_group",
+            "ou_1",
+            "{\\\"text\\\":\\\"old\\\"}",
+            createTime: "1"
+        ))).asObject()
+        @Expect(staleMessage.get("ignored").getOrThrow().asBool().getValue(), true)
+        @Expect(staleMessage.get("reason").getOrThrow().asString().getValue(), "stale_event")
+
+        let staleReaction = JsonValue.fromStr(adapter.ingestWebhookPayload(this.reactionPayload(actionTime: "1"))).asObject()
+        @Expect(staleReaction.get("ignored").getOrThrow().asBool().getValue(), true)
+        @Expect(staleReaction.get("reason").getOrThrow().asString().getValue(), "stale_event")
+        @Expect(adapter.pullInbound().size, 0)
+    }
+
+    @TestCase
+    public func botVcAndBitableEventsBecomeStructuredSystemEvents(): Unit {
+        let adapter = FeishuAdapter(config: FeishuConfig(enabled: true), accountId: "tenant-a")
+        adapter.start()
+        @Expect(adapter.ingestWebhookPayload(this.botMembershipPayload("im.chat.member.bot.added_v1")).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.botMembershipPayload("im.chat.member.bot.deleted_v1")).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.vcInvitedPayload()).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.bitableFieldChangedPayload()).contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 4)
+        @Expect(inbound[0].systemEventKind, "feishu.bot_membership")
+        @Expect(inbound[0].text.contains("added"), true)
+        @Expect(inbound[1].systemEventKind, "feishu.bot_membership")
+        @Expect(inbound[1].text.contains("deleted"), true)
+        @Expect(inbound[2].systemEventKind, "feishu.vc_invited")
+        @Expect(inbound[2].text.contains("123456"), true)
+        @Expect(inbound[3].systemEventKind, "feishu.bitable_field_changed")
+        @Expect(inbound[3].text.contains("fld_1"), true)
     }
 
     @TestCase
