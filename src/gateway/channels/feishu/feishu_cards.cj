@@ -1,7 +1,7 @@
 package metis.gateway.channels.feishu
 
 import std.collection.ArrayList
-import stdx.encoding.json.{JsonArray, JsonObject, JsonString}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 
 public class FeishuInteractiveCard {
     public let title: String
@@ -91,6 +91,83 @@ public class FeishuInteractiveCard {
             elements.add(actionNode)
         }
         root.put("elements", elements)
+        root
+    }
+}
+
+public class FeishuCardFallbackDecision {
+    public let shouldFallback: Bool
+    public let category: String
+    public let status: String
+    public let detail: String
+
+    public init(shouldFallback!: Bool = false, category!: String = "unrecoverable", status!: String = "", detail!: String = "") {
+        this.shouldFallback = shouldFallback
+        this.category = if (category.trimAscii().isEmpty()) { "unrecoverable" } else { category.trimAscii() }
+        this.status = status.trimAscii()
+        this.detail = detail.trimAscii()
+    }
+}
+
+public func classifyFeishuCardFallback(status: String, error!: String = ""): FeishuCardFallbackDecision {
+    let normalizedStatus = status.trimAscii().toAsciiLower()
+    let detail = error.trimAscii()
+    let probe = "${normalizedStatus} ${detail.toAsciiLower()}"
+    if (normalizedStatus.isEmpty() && detail.isEmpty()) {
+        return FeishuCardFallbackDecision(category: "unrecoverable")
+    }
+    if (normalizedStatus == "not_configured") {
+        return FeishuCardFallbackDecision(category: "not_configured", status: normalizedStatus, detail: detail)
+    }
+    if (probe.contains("rate_limited") ||
+        probe.contains("too_many_requests") ||
+        probe.contains("rate limit") ||
+        probe.contains("429")) {
+        return FeishuCardFallbackDecision(shouldFallback: true, category: "rate_limit", status: normalizedStatus, detail: detail)
+    }
+    if (probe.contains("table_size_limit") ||
+        probe.contains("table_limit") ||
+        probe.contains("table limit") ||
+        probe.contains("content_too_large") ||
+        probe.contains("message_too_large") ||
+        probe.contains("card too large") ||
+        probe.contains("too many elements")) {
+        return FeishuCardFallbackDecision(shouldFallback: true, category: "table_limit", status: normalizedStatus, detail: detail)
+    }
+    if (probe.contains("message_unavailable") ||
+        probe.contains("not_found") ||
+        probe.contains("not found") ||
+        probe.contains("deleted") ||
+        probe.contains("recalled") ||
+        probe.contains("withdrawn")) {
+        return FeishuCardFallbackDecision(shouldFallback: true, category: "message_unavailable", status: normalizedStatus, detail: detail)
+    }
+    FeishuCardFallbackDecision(category: "unrecoverable", status: normalizedStatus, detail: detail)
+}
+
+public class FeishuCardLiveSmokeChecklist {
+    public static func optInEnvName(): String {
+        "METIS_FEISHU_LIVE_CARD_SMOKE"
+    }
+
+    public static func isOptInValueEnabled(value: String): Bool {
+        let normalized = value.trimAscii().toAsciiLower()
+        normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on"
+    }
+
+    public static func toJson(): JsonObject {
+        let root = JsonObject()
+        root.put("optInRequired", JsonBool(true))
+        root.put("optInEnv", JsonString(FeishuCardLiveSmokeChecklist.optInEnvName()))
+        root.put("defaultNetwork", JsonString("disabled"))
+        root.put("redaction", JsonString("capture fixtures only after removing tokens, authorization headers, user content, and tenant secrets"))
+        root.put("phases", JsonArray([
+            JsonString("create"),
+            JsonString("patch"),
+            JsonString("finalize"),
+            JsonString("abort"),
+            JsonString("fallback")
+        ]))
         root
     }
 }
@@ -249,6 +326,9 @@ public class FeishuStreamingCardController {
     private var toolUseText: String = ""
     private var aborted: Bool = false
     private var phase: String = "idle"
+    private var lastFallbackCategoryValue: String = ""
+    private var lastFallbackStatusValue: String = ""
+    private var lastFallbackDetailValue: String = ""
 
     public init(
         client: FeishuApiClient,
@@ -288,8 +368,10 @@ public class FeishuStreamingCardController {
         if (result.ok && !result.messageId.isEmpty()) {
             this.cardMessageId = result.messageId
             this.phase = "streaming"
+            this.clearFallbackDecision()
             return result.messageId
         }
+        this.recordFallbackDecision(classifyFeishuCardFallback(result.status, error: result.error))
         let fallback = this.client.sendTextMessage(
             this.accountId,
             this.rawPeerId,
@@ -369,6 +451,18 @@ public class FeishuStreamingCardController {
         this.phase
     }
 
+    public func lastFallbackCategory(): String {
+        this.lastFallbackCategoryValue
+    }
+
+    public func lastFallbackStatus(): String {
+        this.lastFallbackStatusValue
+    }
+
+    public func lastFallbackDetail(): String {
+        this.lastFallbackDetailValue
+    }
+
     private func isTerminalPhase(): Bool {
         this.phase == "completed" || this.phase == "aborted" || this.phase == "terminated"
     }
@@ -379,7 +473,9 @@ public class FeishuStreamingCardController {
         if (result.ok) {
             return true
         }
-        if (this.shouldFallbackPatchFailure(result.status)) {
+        let decision = classifyFeishuCardFallback(result.status, error: result.error)
+        this.recordFallbackDecision(decision)
+        if (decision.shouldFallback) {
             let fallback = this.client.sendTextMessage(
                 this.accountId,
                 this.rawPeerId,
@@ -397,16 +493,16 @@ public class FeishuStreamingCardController {
         false
     }
 
-    private func shouldFallbackPatchFailure(status: String): Bool {
-        let normalized = status.trimAscii().toAsciiLower()
-        normalized == "rate_limited" ||
-            normalized == "too_many_requests" ||
-            normalized == "table_size_limit" ||
-            normalized == "table_limit" ||
-            normalized == "message_unavailable" ||
-            normalized == "not_found" ||
-            normalized == "deleted" ||
-            normalized == "recalled"
+    private func recordFallbackDecision(decision: FeishuCardFallbackDecision): Unit {
+        this.lastFallbackCategoryValue = decision.category
+        this.lastFallbackStatusValue = decision.status
+        this.lastFallbackDetailValue = decision.detail
+    }
+
+    private func clearFallbackDecision(): Unit {
+        this.lastFallbackCategoryValue = ""
+        this.lastFallbackStatusValue = ""
+        this.lastFallbackDetailValue = ""
     }
 
     private func buildCard(footerMetrics: Option<FeishuReplyFooterMetrics>): FeishuInteractiveCard {

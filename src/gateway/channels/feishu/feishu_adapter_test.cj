@@ -661,6 +661,73 @@ public class FeishuAdapterTest {
     }
 
     @TestCase
+    public func cardFallbackClassificationSeparatesRateTableAndTerminalFailures(): Unit {
+        let rate = classifyFeishuCardFallback("rate_limited", error: "card rate limited")
+        @Expect(rate.shouldFallback, true)
+        @Expect(rate.category, "rate_limit")
+        @Expect(rate.status, "rate_limited")
+
+        let table = classifyFeishuCardFallback("table_size_limit", error: "table rows exceeded")
+        @Expect(table.shouldFallback, true)
+        @Expect(table.category, "table_limit")
+
+        let unavailable = classifyFeishuCardFallback("message_unavailable", error: "message recalled")
+        @Expect(unavailable.shouldFallback, true)
+        @Expect(unavailable.category, "message_unavailable")
+
+        let invalid = classifyFeishuCardFallback("invalid_payload", error: "bad card json")
+        @Expect(invalid.shouldFallback, false)
+        @Expect(invalid.category, "unrecoverable")
+    }
+
+    @TestCase
+    public func streamingControllerRecordsFallbackCategoryForCreateAndPatch(): Unit {
+        let createClient = FeishuFakeApiClient()
+        createClient.failNextCardSend("too_many_requests", error: "429")
+        let createController = FeishuStreamingCardController(
+            createClient,
+            accountId: "tenant-a",
+            rawPeerId: "oc_stream",
+            receiveId: "oc_stream",
+            receiveIdType: "chat_id"
+        )
+        @Expect(createController.create("fallback text"), "fake-feishu-text-1")
+        @Expect(createController.lastFallbackCategory(), "rate_limit")
+        @Expect(createController.lastFallbackStatus(), "too_many_requests")
+
+        let patchClient = FeishuFakeApiClient()
+        let patchController = FeishuStreamingCardController(
+            patchClient,
+            accountId: "tenant-a",
+            rawPeerId: "oc_stream",
+            receiveId: "oc_stream",
+            receiveIdType: "chat_id"
+        )
+        @Expect(patchController.create("first chunk"), "fake-feishu-card-1")
+        patchClient.failNextCardPatch("table_size_limit", error: "table limit exceeded")
+        @Expect(patchController.patchChunk("wide table fallback"), true)
+        @Expect(patchController.currentPhase(), "terminated")
+        @Expect(patchController.lastFallbackCategory(), "table_limit")
+        @Expect(patchController.lastFallbackStatus(), "table_size_limit")
+        @Expect(patchClient.textSendCount(), 1)
+    }
+
+    @TestCase
+    public func cardLiveSmokeChecklistIsExplicitOptInOnly(): Unit {
+        let checklist = FeishuCardLiveSmokeChecklist.toJson()
+        @Expect(checklist.get("optInRequired").getOrThrow().asBool().getValue(), true)
+        @Expect(checklist.get("defaultNetwork").getOrThrow().asString().getValue(), "disabled")
+        let phases = checklist.get("phases").getOrThrow().asArray()
+        @Expect(phases.size(), 5)
+        @Expect(checklist.toJsonString().contains("create"), true)
+        @Expect(checklist.toJsonString().contains("fallback"), true)
+        @Expect(FeishuCardLiveSmokeChecklist.isOptInValueEnabled(""), false)
+        @Expect(FeishuCardLiveSmokeChecklist.isOptInValueEnabled("0"), false)
+        @Expect(FeishuCardLiveSmokeChecklist.isOptInValueEnabled("true"), true)
+        @Expect(FeishuCardLiveSmokeChecklist.isOptInValueEnabled("1"), true)
+    }
+
+    @TestCase
     public func streamingControllerUnavailableMessageGuardTerminatesWithoutLosingFinalAnswer(): Unit {
         let client = FeishuFakeApiClient()
         let controller = FeishuStreamingCardController(
@@ -906,6 +973,47 @@ public class FeishuAdapterTest {
         let malformedJson = JsonValue.fromStr(malformed).asObject()
         @Expect(malformedJson.get("ignored").getOrThrow().asBool().getValue(), true)
         @Expect(malformedJson.get("reason").getOrThrow().asString().getValue(), "malformed_event")
+    }
+
+    @TestCase
+    public func sanitizedFeishuEventReplayFixtureCoversSupportedAndIgnoredShapes(): Unit {
+        let raw = String.fromUtf8(File.readFrom(Path("src/gateway/channels/feishu/feishu_event_replay_samples.json")))
+        @Expect(raw.contains("Bearer "), false)
+        @Expect(raw.contains("tenant_access_token"), false)
+        @Expect(raw.contains("app_secret"), false)
+        @Expect(raw.contains("Authorization"), false)
+
+        let samples = JsonValue.fromStr(raw).asArray()
+        let adapter = FeishuAdapter(config: FeishuConfig(enabled: true), accountId: "tenant-a")
+        adapter.start()
+        var ignoredCount = 0
+        for (item in samples.getItems()) {
+            let sample = item.asObject()
+            let payload = sample.get("payload").getOrThrow().asObject().toJsonString()
+            let expected = sample.get("expected").getOrThrow().asObject()
+            let response = JsonValue.fromStr(adapter.ingestWebhookPayload(payload)).asObject()
+            if (expected.get("ignored").getOrThrow().asBool().getValue()) {
+                ignoredCount += 1
+                @Expect(response.get("ignored").getOrThrow().asBool().getValue(), true)
+                @Expect(response.get("reason").getOrThrow().asString().getValue(), expected.get("reason").getOrThrow().asString().getValue())
+            } else {
+                @Expect(response.get("ok").getOrThrow().asBool().getValue(), true)
+            }
+        }
+
+        let inbound = adapter.pullInbound()
+        @Expect(samples.size(), 9)
+        @Expect(ignoredCount, 2)
+        @Expect(inbound.size, 7)
+        @Expect(inbound[0].systemEvent, false)
+        @Expect(inbound[0].messageId, "om_fixture_message")
+        @Expect(inbound[0].text.contains("fixture hello"), true)
+        @Expect(inbound[1].systemEventKind, "feishu.reaction")
+        @Expect(inbound[2].systemEventKind, "feishu.card_action")
+        @Expect(inbound[3].systemEventKind, "feishu.drive_comment")
+        @Expect(inbound[4].systemEventKind, "feishu.bot_membership")
+        @Expect(inbound[5].systemEventKind, "feishu.vc_invited")
+        @Expect(inbound[6].systemEventKind, "feishu.bitable_field_changed")
     }
 
     @TestCase

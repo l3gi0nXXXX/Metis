@@ -1,0 +1,201 @@
+[
+  {
+    "name": "message",
+    "payload": {
+      "header": {
+        "event_type": "im.message.receive_v1",
+        "account_id": "tenant-a"
+      },
+      "event": {
+        "sender": {
+          "sender_id": {
+            "open_id": "ou_fixture_sender"
+          }
+        },
+        "message": {
+          "message_id": "om_fixture_message",
+          "chat_id": "oc_fixture_group",
+          "chat_type": "group",
+          "message_type": "text",
+          "content": "{\"text\":\"fixture hello\"}",
+          "root_id": "",
+          "thread_id": ""
+        }
+      }
+    },
+    "expected": {
+      "ignored": false
+    }
+  },
+  {
+    "name": "reaction",
+    "payload": {
+      "header": {
+        "event_type": "im.message.reaction.created_v1",
+        "account_id": "tenant-a"
+      },
+      "event": {
+        "message_id": "om_fixture_reacted",
+        "chat_id": "oc_fixture_group",
+        "chat_type": "group",
+        "thread_id": "omt_fixture_topic",
+        "reaction_type": {
+          "emoji_type": "THUMBSUP"
+        },
+        "user_id": {
+          "open_id": "ou_fixture_reactor"
+        }
+      }
+    },
+    "expected": {
+      "ignored": false
+    }
+  },
+  {
+    "name": "card_action",
+    "payload": {
+      "header": {
+        "event_type": "card.action.trigger",
+        "account_id": "tenant-a"
+      },
+      "event": {
+        "operator": {
+          "open_id": "ou_fixture_operator"
+        },
+        "context": {
+          "open_message_id": "om_fixture_card",
+          "open_chat_id": "oc_fixture_group"
+        },
+        "action": {
+          "value": {
+            "action": "feishu.fixture.confirm",
+            "nonce": "fixture-nonce"
+          }
+        }
+      }
+    },
+    "expected": {
+      "ignored": false
+    }
+  },
+  {
+    "name": "drive_comment",
+    "payload": {
+      "header": {
+        "event_type": "drive.file.comment.created_v1",
+        "account_id": "tenant-a"
+      },
+      "event": {
+        "comment_id": "comment_fixture_1",
+        "reply_id": "reply_fixture_1",
+        "file_token": "doccn_fixture_1",
+        "file_type": "docx",
+        "is_mention": true,
+        "user_id": {
+          "open_id": "ou_fixture_commenter"
+        },
+        "content": "fixture review request"
+      }
+    },
+    "expected": {
+      "ignored": false
+    }
+  },
+  {
+    "name": "bot_membership",
+    "payload": {
+      "header": {
+        "event_type": "im.chat.member.bot.added_v1",
+        "account_id": "tenant-a"
+      },
+      "event": {
+        "chat_id": "oc_fixture_group",
+        "operator_id": {
+          "open_id": "ou_fixture_owner"
+        }
+      }
+    },
+    "expected": {
+      "ignored": false
+    }
+  },
+  {
+    "name": "vc_invitation",
+    "payload": {
+      "header": {
+        "event_type": "vc.meeting.invited_v1",
+        "account_id": "tenant-a"
+      },
+      "event": {
+        "event_id": "ev_fixture_vc_1",
+        "meeting": {
+          "meeting_no": "123456789"
+        },
+        "operator_id": {
+          "open_id": "ou_fixture_inviter"
+        }
+      }
+    },
+    "expected": {
+      "ignored": false
+    }
+  },
+  {
+    "name": "bitable_field_changed",
+    "payload": {
+      "header": {
+        "event_type": "bitable.field.changed_v1",
+        "account_id": "tenant-a"
+      },
+      "event": {
+        "app_token": "bascn_fixture_1",
+        "table_id": "tbl_fixture_1",
+        "field_id": "fld_fixture_1",
+        "operator_id": {
+          "open_id": "ou_fixture_editor"
+        }
+      }
+    },
+    "expected": {
+      "ignored": false
+    }
+  },
+  {
+    "name": "malformed_message",
+    "payload": {
+      "header": {
+        "event_type": "im.message.receive_v1",
+        "account_id": "tenant-a"
+      },
+      "event": {
+        "message": {
+          "message_id": "om_fixture_malformed",
+          "chat_id": "oc_fixture_group",
+          "chat_type": "group",
+          "message_type": "text",
+          "content": "{\"text\":\"missing sender\"}"
+        }
+      }
+    },
+    "expected": {
+      "ignored": true,
+      "reason": "malformed_event"
+    }
+  },
+  {
+    "name": "unknown_event",
+    "payload": {
+      "header": {
+        "event_type": "im.message.deleted_v1",
+        "account_id": "tenant-a"
+      },
+      "event": {
+        "message_id": "om_fixture_deleted"
+      }
+    },
+    "expected": {
+      "ignored": true,
+      "reason": "unsupported_event"
+    }
+  }
+]
