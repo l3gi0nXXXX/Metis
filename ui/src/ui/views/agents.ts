@@ -19,7 +19,11 @@ import {
   renderAgentCron,
 } from "./agents-panels-status-files.ts";
 import { renderAgentTools, renderAgentSkills } from "./agents-panels-tools-skills.ts";
-import { renderAgentTeamsPanel, type AgentTeamsPanelState } from "./agents-panel-teams.ts";
+import {
+  renderAgentTeamsPanel,
+  type AgentTeamsPanelState,
+} from "./agents-panel-teams.ts";
+import type { AgentTeamFeishuAuthAction } from "../controllers/agent-teams.ts";
 import { agentBadgeText, buildAgentContext, normalizeAgentLabel } from "./agents-utils.ts";
 
 export type AgentsPanel = "overview" | "files" | "tools" | "skills" | "channels" | "cron" | "teams";
@@ -130,7 +134,7 @@ export type AgentsProps = {
   onLoadWorkspaceFiles: () => void;
   onLoadWorkspaceFile: (name: string) => void;
   onSaveWorkspaceFile: () => void;
-  onStartFeishuOAuth: (accountId: string) => void;
+  onStartFeishuOAuth: (accountId: string, action?: AgentTeamFeishuAuthAction) => void;
   onSkillsFilterChange: (next: string) => void;
   onSkillsRefresh: () => void;
   onAgentSkillToggle: (agentId: string, skillName: string, enabled: boolean) => void;

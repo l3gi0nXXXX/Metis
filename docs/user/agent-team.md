@@ -47,11 +47,11 @@ metis gateway health
 
 ## Use AgentTeam From Each Surface
 
-CLI: use `metis agents team create/list/get/update/delete` for the common team lifecycle, `metis agents bind/unbind` for simple channel/account routes, and `metis gateway call agents.teams.update ...` for richer structured bindings or broadcast settings.
+CLI: use `metis agents team create/list/get/update/delete` for the common team lifecycle, `metis agents bind/unbind` for simple channel/account routes, and `metis gateway call agents.teams.update ...` for richer structured bindings or broadcast settings. The CLI does not create Telegram bots, Feishu apps, or provider credentials for you; create those in their provider consoles and then configure Metis.
 
-Telegram: configure the built-in Telegram channel, then bind `telegram:<accountId>` or a structured route with group/topic peer data to a member agent. Native Telegram commands such as `/focus`, `/unfocus`, `/agents`, and `/subagents` continue to enter the same Gateway route/session path.
+Telegram: configure the built-in Telegram channel with an existing bot token, then bind `telegram:<accountId>` or a structured route with group/topic peer data to a member agent. Native Telegram commands such as `/focus`, `/unfocus`, `/agents`, and `/subagents` continue to enter the same Gateway route/session path.
 
-Feishu: configure Feishu accounts and use native `/feishu start`, `/feishu doctor`, `/feishu auth`, and `/feishu info --all` from Feishu conversations when available. Bind `feishu:<accountId>` or structured group/thread routes to member agents. OAuth/OAPI and card behavior remain Gateway-backed and are not handled by browser-local files.
+Feishu: create the Feishu app/bot manually in the Feishu developer console, configure the app credentials and event subscription in Metis, then use native `/feishu start`, `/feishu doctor`, `/feishu auth`, and `/feishu info --all` from Feishu conversations when available. Bind `feishu:<accountId>` or structured group/thread routes to member agents. Metis can guide setup, validate status, and save Gateway-backed configuration, but it cannot non-interactively create a Feishu bot/app or grant tenant permissions on your behalf. OAuth/OAPI and card behavior remain Gateway-backed and are not handled by browser-local files.
 
 Control UI: open Agents -> Teams to create teams, edit members and aliases, preview bindings, apply Gateway RPC changes, edit allowed profile files, inspect per-agent model state, and review Feishu readiness/doctor guidance. The browser is a Gateway RPC client only.
 
@@ -154,7 +154,9 @@ The UI does not write `~/.metis`, token files, Feishu app credentials, or agent 
 
 ## Edit Agent Workspace Files
 
-Each managed agent has a workspace with these auto-created profile files:
+Each managed agent has its own workspace, `agentDir`, sessions directory, `models.json`, `auth-profiles.json`, and supported profile-file set. One agent's profile, model state, auth profile, and session history are not shared with another agent unless an operator explicitly copies or configures that state.
+
+Each managed agent workspace has these auto-created profile files:
 
 ```text
 AGENTS.md
@@ -188,6 +190,21 @@ Common file roles:
 | `HEARTBEAT.md` | Lightweight status, recurring check notes, and continuity hints. |
 | `BOOTSTRAP.md` | Optional explicit setup state loaded for full non-IM prompts when present. |
 | `MEMORY.md` | Durable facts, goals, and decisions for future sessions. |
+
+All eight supported profile names are agent-scoped:
+
+```text
+AGENTS.md
+SOUL.md
+TOOLS.md
+IDENTITY.md
+USER.md
+HEARTBEAT.md
+BOOTSTRAP.md
+MEMORY.md
+```
+
+`BOOTSTRAP.md` is the only supported profile name in this list that Metis does not create automatically.
 
 The RPC path rejects absolute paths, `~`, URI schemes, and `..` traversal. Keep file names workspace-relative.
 
@@ -252,6 +269,8 @@ When broadcast is disabled, Gateway falls back to normal single-agent route reso
 Keep broadcast member ids aligned with the team's `members` array. The Control UI filters duplicate or unknown selected members during save.
 
 ## Feishu Startup And Status
+
+Metis does not create a Feishu app or bot automatically. Before Metis can receive Feishu events, an operator must create or select a Feishu app in the Feishu developer console, enable the bot and event subscriptions, configure the app credentials in the Gateway-backed Metis config, and install or authorize the app for the target tenant/chat. Metis then provides setup guidance, status checks, OAuth start/status helpers, route binding, and redacted diagnostics.
 
 Feishu channel startup still uses the normal Gateway channel configuration. After the Gateway is running, use the native Feishu commands from a Feishu conversation when available:
 

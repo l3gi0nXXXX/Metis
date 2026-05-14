@@ -2,7 +2,7 @@ package metis.gateway.core
 
 import metis.core.config.GatewayUserSettings
 
-import stdx.encoding.json.{JsonBool, JsonObject, JsonString, JsonValue}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString, JsonValue}
 
 private var gatewayFeishuNativeAuthRunnerOverride: Option<(String, GatewayUserSettings) -> JsonObject> =
     None<(String, GatewayUserSettings) -> JsonObject>
@@ -14,6 +14,8 @@ private var gatewayFeishuNativeAuthCompleteRunnerOverride: Option<(String, Gatew
     None<(String, GatewayUserSettings) -> JsonObject>
 private var gatewayFeishuNativeAuthRevokeRunnerOverride: Option<(String, GatewayUserSettings) -> JsonObject> =
     None<(String, GatewayUserSettings) -> JsonObject>
+private var gatewayFeishuNativeAuthRevokeOptionsRunnerOverride: Option<(String, GatewayUserSettings, Bool) -> JsonObject> =
+    None<(String, GatewayUserSettings, Bool) -> JsonObject>
 
 public func setGatewayFeishuNativeAuthRunner(runner: Option<(String, GatewayUserSettings) -> JsonObject>): Unit {
     gatewayFeishuNativeAuthRunnerOverride = runner
@@ -33,6 +35,14 @@ public func setGatewayFeishuNativeAuthCompleteRunner(runner: Option<(String, Gat
 
 public func setGatewayFeishuNativeAuthRevokeRunner(runner: Option<(String, GatewayUserSettings) -> JsonObject>): Unit {
     gatewayFeishuNativeAuthRevokeRunnerOverride = runner
+    gatewayFeishuNativeAuthRevokeOptionsRunnerOverride = match (runner) {
+        case Some(v) => Some({ accountId: String, user: GatewayUserSettings, _serverRevoke: Bool => v(accountId, user) })
+        case None => None<(String, GatewayUserSettings, Bool) -> JsonObject>
+    }
+}
+
+public func setGatewayFeishuNativeAuthRevokeOptionsRunner(runner: Option<(String, GatewayUserSettings, Bool) -> JsonObject>): Unit {
+    gatewayFeishuNativeAuthRevokeOptionsRunnerOverride = runner
 }
 
 public func setGatewayFeishuNativeAuthRunnerForTest(runner: Option<(String, GatewayUserSettings) -> JsonObject>): Unit {
@@ -81,7 +91,12 @@ public func gatewayFeishuNativeAuthComplete(accountId: String, user: GatewayUser
     gatewayFeishuNativeAuthAction(accountId, user, gatewayFeishuNativeAuthCompleteRunnerOverride, "complete")
 }
 
-public func gatewayFeishuNativeAuthRevoke(accountId: String, user: GatewayUserSettings): JsonObject {
+public func gatewayFeishuNativeAuthRevoke(accountId: String, user: GatewayUserSettings, serverRevoke!: Bool = false): JsonObject {
+    let normalized = gatewayFeishuNativeAccountId(accountId, user)
+    match (gatewayFeishuNativeAuthRevokeOptionsRunnerOverride) {
+        case Some(runner) => return gatewayFeishuNativeRedactAuthResult(runner(normalized, user, serverRevoke), normalized)
+        case None => ()
+    }
     gatewayFeishuNativeAuthAction(accountId, user, gatewayFeishuNativeAuthRevokeRunnerOverride, "revoke")
 }
 
@@ -160,15 +175,24 @@ private func gatewayFeishuNativeRedactAuthResult(raw: JsonObject, accountId: Str
         "authorized",
         "pending",
         "revoked",
+        "localRevoked",
+        "serverRevokeRequested",
+        "serverRevokeStatus",
+        "refreshStatus",
         "hasAccessToken",
         "hasRefreshToken",
         "hasDeviceCode",
-        "scopes"
+        "scopes",
+        "scopeDiagnostic",
+        "diagnostic",
+        "diagnostics"
     ]) {
         match (raw.get(key)) {
             case Some(v) =>
                 if (key == "error") {
                     out.put(key, JsonString(gatewayFeishuNativeRedactSensitiveText(gatewayFeishuNativeJsonValueString(v))))
+                } else if (key == "scopeDiagnostic" || key == "diagnostic" || key == "diagnostics") {
+                    out.put(key, gatewayFeishuNativeRedactJsonValue(v))
                 } else {
                     out.put(key, v)
                 }
@@ -177,6 +201,42 @@ private func gatewayFeishuNativeRedactAuthResult(raw: JsonObject, accountId: Str
     }
     out.put("redacted", JsonBool(true))
     out
+}
+
+private func gatewayFeishuNativeRedactJsonValue(value: JsonValue): JsonValue {
+    try {
+        let obj = value.asObject()
+        let out = JsonObject()
+        for ((key, entry) in obj.getFields()) {
+            if (gatewayFeishuNativeIsSecretKey(key)) {
+                out.put(key, JsonString("[redacted]"))
+            } else {
+                out.put(key, gatewayFeishuNativeRedactJsonValue(entry))
+            }
+        }
+        return out
+    } catch (_: Exception) {
+        try {
+            let arr = value.asArray()
+            let out = JsonArray([])
+            for (i in 0..arr.size()) {
+                out.add(gatewayFeishuNativeRedactJsonValue(arr[i]))
+            }
+            return out
+        } catch (_inner: Exception) {
+            try {
+                let text = value.asString().getValue()
+                return JsonString(gatewayFeishuNativeRedactSensitiveText(text))
+            } catch (_text: Exception) {
+                return value
+            }
+        }
+    }
+}
+
+private func gatewayFeishuNativeIsSecretKey(raw: String): Bool {
+    let key = raw.trimAscii().toAsciiLower()
+    key.contains("token") || key.contains("secret") || key == "authorization" || key.contains("password")
 }
 
 private func gatewayFeishuNativeJsonValueString(value: JsonValue): String {

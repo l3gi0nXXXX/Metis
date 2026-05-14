@@ -4,6 +4,15 @@ import magic.jsonable.*
 
 import metis.core.config.{CliConfig, GatewayUserSettings, TelegramCustomCommandUserSettings}
 import metis.gateway.channels.telegram.{setTelegramTransportRunnerForTest, TelegramTransportRequest, TelegramTransportResponse}
+import metis.gateway.channels.feishu.{
+    FeishuAuthHttpClient,
+    FeishuAuthHttpResponse,
+    FeishuFileAuthSessionStore,
+    FeishuFileTokenStore,
+    FeishuUserToken,
+    feishuGatewayNativeAuthRevokeWithClient,
+    feishuGatewayNativeAuthStatusWithStores
+}
 import metis.gateway.core.{
     gatewayChannelManagerSummary,
     gatewayChannelRuntimeMarkFailure,
@@ -24,9 +33,10 @@ import metis.gateway.core.{
 }
 
 import std.convert.Parsable
-import std.collection.ArrayList
+import std.collection.{ArrayList, HashMap}
 import std.env.{getVariable, setVariable}
 import std.fs.{Directory, Path, remove}
+import std.time.DateTime
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 
@@ -66,6 +76,34 @@ private func channelsRowsContainStringField(rows: JsonArray, key: String, value:
         }
     }
     false
+}
+
+private class GatewayChannelsFeishuAuthFakeHttpClient <: FeishuAuthHttpClient {
+    public let calls = ArrayList<String>()
+    private let tokenBody: String
+    private let revokeBody: String
+
+    public init(
+        tokenBody!: String = "{\"access_token\":\"refreshed-access-secret\",\"refresh_token\":\"refreshed-refresh-secret\",\"expires_in\":7200,\"scope\":\"offline_access\"}",
+        revokeBody!: String = "{\"ok\":true}"
+    ) {
+        this.tokenBody = tokenBody
+        this.revokeBody = revokeBody
+    }
+
+    public func postForm(url: String, fields: HashMap<String, String>, _headers: HashMap<String, String>): FeishuAuthHttpResponse {
+        this.calls.add(url)
+        if (url.contains("/revoke")) {
+            @Expect(fields.get("token").getOrThrow().isEmpty(), false)
+            return FeishuAuthHttpResponse(200, this.revokeBody)
+        }
+        if (url.contains("/token")) {
+            @Expect(fields.get("grant_type").getOrThrow(), "refresh_token")
+            @Expect(fields.get("refresh_token").getOrThrow(), "refresh-secret")
+            return FeishuAuthHttpResponse(200, this.tokenBody)
+        }
+        FeishuAuthHttpResponse(404, "{\"error\":\"not_found\"}")
+    }
 }
 
 private func withGatewayChannelsTestHome<T>(block: () -> T): T {
@@ -299,6 +337,170 @@ public class GatewayServerMethodsChannelsTest {
             setGatewayFeishuNativeAuthPollRunnerForTest(None<(String, GatewayUserSettings) -> JsonObject>)
             setGatewayFeishuNativeAuthCompleteRunnerForTest(None<(String, GatewayUserSettings) -> JsonObject>)
             setGatewayFeishuNativeAuthRevokeRunnerForTest(None<(String, GatewayUserSettings) -> JsonObject>)
+        }
+    }
+
+    @TestCase
+    public func channelsStatusExposesRedactedFeishuAuthLifecycleSummary(): Unit {
+        try {
+            setGatewayFeishuNativeAuthStatusRunnerForTest(Some({ accountId: String, _user: GatewayUserSettings =>
+                let out = JsonObject()
+                out.put("status", JsonString("authorized"))
+                out.put("accountId", JsonString(accountId))
+                out.put("tokenStatus", JsonString("authorized"))
+                out.put("scopeSummary", JsonString("offline_access im:message"))
+                out.put("accessToken", JsonString("secret-access-token"))
+                out.put("refreshToken", JsonString("secret-refresh-token"))
+                out.put("authorization", JsonString("Bearer secret-authorization-token"))
+                out.put("redacted", JsonBool(false))
+                out
+            }))
+
+            var user = GatewayUserSettings()
+            user.feishu.defaultAccount = "tenant-a"
+            let response = handleGatewayChannelsFamily("channels.status", user).getOrThrow()
+            @Expect(response.ok, true)
+            let result = response.result.asObject()
+            let feishu = result.get("channels").getOrThrow().asObject().get("feishu").getOrThrow().asObject()
+            let auth = feishu.get("auth").getOrThrow().asObject()
+            let oauth = feishu.get("oauth").getOrThrow().asObject()
+            let raw = result.toJsonString()
+
+            @Expect(channelsTestString(auth, "accountId"), "tenant-a")
+            @Expect(channelsTestString(auth, "status"), "authorized")
+            @Expect(channelsTestString(auth, "tokenStatus"), "authorized")
+            @Expect(channelsTestString(auth, "scopeSummary"), "offline_access im:message")
+            @Expect(channelsTestBool(auth, "redacted"), true)
+            @Expect(channelsTestString(oauth, "tokenStatus"), "authorized")
+            @Expect(raw.contains("secret-access-token"), false)
+            @Expect(raw.contains("secret-refresh-token"), false)
+            @Expect(raw.contains("secret-authorization-token"), false)
+        } finally {
+            setGatewayFeishuNativeAuthStatusRunnerForTest(None<(String, GatewayUserSettings) -> JsonObject>)
+        }
+    }
+
+    @TestCase
+    public func feishuAuthStatusRefreshesExpiredTokenWithFakeClientAndReportsScopeDiagnostic(): Unit {
+        let root = Path("/tmp/metis-gateway-feishu-auth-refresh-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        try {
+            var user = GatewayUserSettings()
+            user.feishu.defaultAccount = "tenant-a"
+            user.feishu.appId = "app-id"
+            user.feishu.appSecret = "app-secret-never-visible"
+            let tokenStore = FeishuFileTokenStore(root.join("tokens"))
+            let sessionStore = FeishuFileAuthSessionStore(root.join("sessions"))
+            let nowMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
+            tokenStore.save("tenant-a", FeishuUserToken(
+                accessToken: "expired-access-secret",
+                refreshToken: "refresh-secret",
+                expiresAtMs: nowMs - 1000,
+                scopes: ["offline_access", "im:message"]
+            ))
+            let http = GatewayChannelsFeishuAuthFakeHttpClient(
+                tokenBody: "{\"access_token\":\"refreshed-access-secret\",\"refresh_token\":\"refreshed-refresh-secret\",\"expires_in\":7200,\"scope\":\"offline_access im:message im:message.send_as_user\"}"
+            )
+
+            let status = feishuGatewayNativeAuthStatusWithStores(
+                "tenant-a",
+                user,
+                tokenStore,
+                sessionStore,
+                nowMs: nowMs,
+                http: Some<FeishuAuthHttpClient>(http)
+            )
+            let diagnostic = status.get("scopeDiagnostic").getOrThrow().asObject()
+            let raw = status.toJsonString()
+
+            @Expect(channelsTestString(status, "status"), "authorized")
+            @Expect(channelsTestString(status, "tokenStatus"), "authorized")
+            @Expect(channelsTestString(status, "refreshStatus"), "refreshed")
+            @Expect(channelsTestBool(diagnostic, "offlineAccess"), true)
+            @Expect(raw.contains("refreshed-access-secret"), false)
+            @Expect(raw.contains("refreshed-refresh-secret"), false)
+            @Expect(raw.contains("app-secret-never-visible"), false)
+            @Expect(http.calls.size, 1)
+        } finally {
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func feishuAuthRefreshWithoutCredentialsReturnsDiagnosticWithoutNetwork(): Unit {
+        let root = Path("/tmp/metis-gateway-feishu-auth-refresh-missing-creds-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        try {
+            var user = GatewayUserSettings()
+            user.feishu.defaultAccount = "tenant-a"
+            let tokenStore = FeishuFileTokenStore(root.join("tokens"))
+            let sessionStore = FeishuFileAuthSessionStore(root.join("sessions"))
+            let nowMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
+            tokenStore.save("tenant-a", FeishuUserToken(
+                accessToken: "expired-access-secret",
+                refreshToken: "refresh-secret",
+                expiresAtMs: nowMs - 1000,
+                scopes: ["offline_access"]
+            ))
+            let http = GatewayChannelsFeishuAuthFakeHttpClient()
+
+            let status = feishuGatewayNativeAuthStatusWithStores(
+                "tenant-a",
+                user,
+                tokenStore,
+                sessionStore,
+                nowMs: nowMs,
+                http: Some<FeishuAuthHttpClient>(http)
+            )
+
+            @Expect(channelsTestString(status, "status"), "expired")
+            @Expect(channelsTestString(status, "refreshStatus"), "missing_app_credentials")
+            @Expect(status.toJsonString().contains("expired-access-secret"), false)
+            @Expect(http.calls.size, 0)
+        } finally {
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func feishuAuthServerRevokeUsesFakeClientAndNeverLogsTokens(): Unit {
+        let root = Path("/tmp/metis-gateway-feishu-auth-server-revoke-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        try {
+            var user = GatewayUserSettings()
+            user.feishu.defaultAccount = "tenant-a"
+            user.feishu.appId = "app-id"
+            user.feishu.appSecret = "app-secret-never-visible"
+            let tokenStore = FeishuFileTokenStore(root.join("tokens"))
+            let sessionStore = FeishuFileAuthSessionStore(root.join("sessions"))
+            tokenStore.save("tenant-a", FeishuUserToken(
+                accessToken: "access-secret",
+                refreshToken: "refresh-secret",
+                expiresAtMs: 4102444800000,
+                scopes: ["offline_access"]
+            ))
+            let http = GatewayChannelsFeishuAuthFakeHttpClient(revokeBody: "{\"ok\":true}")
+
+            let revoked = feishuGatewayNativeAuthRevokeWithClient(
+                "tenant-a",
+                user,
+                http,
+                tokenStore,
+                sessionStore,
+                serverRevoke: true
+            )
+            let raw = revoked.toJsonString()
+
+            @Expect(channelsTestString(revoked, "status"), "revoked")
+            @Expect(channelsTestString(revoked, "serverRevokeStatus"), "revoked")
+            @Expect(channelsTestBool(revoked, "localRevoked"), true)
+            @Expect(tokenStore.load("tenant-a").isNone(), true)
+            @Expect(raw.contains("access-secret"), false)
+            @Expect(raw.contains("refresh-secret"), false)
+            @Expect(raw.contains("app-secret-never-visible"), false)
+            @Expect(http.calls.size, 1)
+        } finally {
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
         }
     }
 

@@ -1924,6 +1924,18 @@ private func gatewayChannelStatusRow(user: GatewayUserSettings, channelId: Strin
     if (channelId == "telegram") {
         row.put("telegram", gatewayTelegramRuntimeJson(user, liveProbe: probe))
     }
+    if (channelId == "feishu") {
+        let auth = gatewayFeishuNativeAuthStatus(gatewayFeishuDefaultAccountId(user), user)
+        row.put("auth", auth)
+        row.put("oauth", auth)
+        row.put("doctor", gatewayFeishuChannelDiagnosticsJson(user))
+        row.put("capabilities", JsonArray([
+            JsonString("oauth:device-flow"),
+            JsonString("oauth:lifecycle"),
+            JsonString("oapi:tools"),
+            JsonString("doctor")
+        ]))
+    }
     match (getGatewayChannelCatalogEntry(channelId)) {
         case Some(entry) =>
             if (!entry.builtin && gatewayLegacyPluginHostCompatible(entry.pluginId)) {
@@ -2274,11 +2286,14 @@ public func handleGatewayChannelsFamily(method: String, user: GatewayUserSetting
         let wantsProbe = gatewayRpcBoolParam(requestValue, ["probe"], false)
         let timeoutMs = gatewayRpcIntParam(requestValue, ["timeoutMs"], 10000)
         let result = JsonObject()
-        let channels = JsonArray([])
+        let channelRows = JsonArray([])
+        let channels = JsonObject()
         let channelAccounts = JsonObject()
         let channelDefaultAccountId = JsonObject()
         for (entry in listGatewayChannelCatalogEntries()) {
-            channels.add(gatewayChannelStatusRow(user, entry.id, probe: wantsProbe, timeoutMs: timeoutMs))
+            let row = gatewayChannelStatusRow(user, entry.id, probe: wantsProbe, timeoutMs: timeoutMs)
+            channelRows.add(row)
+            channels.put(entry.id, row)
             channelAccounts.put(entry.id, gatewayChannelAccountSnapshots(user, entry.id, probe: wantsProbe, timeoutMs: timeoutMs))
             channelDefaultAccountId.put(entry.id, gatewayChannelRuntimeDefaultAccountId(entry.id))
         }
@@ -2288,6 +2303,7 @@ public func handleGatewayChannelsFamily(method: String, user: GatewayUserSetting
         result.put("channelSystemImages", gatewayChannelSystemImagesJson())
         result.put("channelMeta", gatewayChannelMetaJson(user))
         result.put("channels", channels)
+        result.put("channelRows", channelRows)
         result.put("channelAccounts", channelAccounts)
         result.put("channelDefaultAccountId", channelDefaultAccountId)
         result.put("channelModels", gatewayRpcConfigValueAtPath(user, "gateway.channelmodels") ?? JsonObject(HashMap<String, JsonValue>()))
@@ -2340,7 +2356,8 @@ public func handleGatewayChannelsFamily(method: String, user: GatewayUserSetting
             case None => GatewayRpcRequest(method)
         }
         let accountId = gatewayRpcStringParam(requestValue, ["accountId", "account"], "")
-        let result = gatewayFeishuNativeAuthRevoke(accountId, user)
+        let serverRevoke = gatewayRpcBoolParam(requestValue, ["serverRevoke", "server", "remote"], false)
+        let result = gatewayFeishuNativeAuthRevoke(accountId, user, serverRevoke: serverRevoke)
         return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "channels.logout") {

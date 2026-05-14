@@ -215,8 +215,10 @@ describe("renderAgentTeamsPanel", () => {
     expect(options).toContain("IDENTITY.md");
     expect(options).toContain("USER.md");
     expect(options).toContain("TOOLS.md");
-    expect(options).not.toContain("HEARTBEAT.md");
-    expect(options).not.toContain("BOOTSTRAP.md");
+    expect(options).toContain("AGENTS.md");
+    expect(options).toContain("HEARTBEAT.md");
+    expect(options).toContain("BOOTSTRAP.md");
+    expect(options).toContain("MEMORY.md");
   });
 
   it("renders Team Wizard templates and wires channel route presets", () => {
@@ -340,6 +342,25 @@ describe("renderAgentTeamsPanel", () => {
     button?.click();
 
     expect(onStartFeishuOAuth).toHaveBeenCalledWith("tenant-a");
+  });
+
+  it("wires Feishu OAuth lifecycle buttons to explicit Gateway RPC actions", () => {
+    const onStartFeishuOAuth = vi.fn();
+    const container = document.createElement("div");
+    render(renderAgentTeamsPanel(createProps({ onStartFeishuOAuth })), container);
+
+    const buttons = Array.from(container.querySelectorAll("button"));
+    for (const [label, action] of [
+      ["Status", "status"],
+      ["Poll", "poll"],
+      ["Complete", "complete"],
+      ["Revoke local auth", "revoke"],
+    ] as const) {
+      const button = buttons.find((entry) => (entry.textContent ?? "").includes(label));
+      expect(button).toBeTruthy();
+      button?.click();
+      expect(onStartFeishuOAuth).toHaveBeenLastCalledWith("tenant-a", action);
+    }
   });
 
   it("shows explicit fallback rows when Feishu auth status RPC fields are absent", () => {

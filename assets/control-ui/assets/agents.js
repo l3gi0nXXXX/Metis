@@ -1586,10 +1586,42 @@ ${e}
         >
           ${t.feishuAuthLoading?`Starting OAuth...`:`Start OAuth via Gateway`}
         </button>
+        <button
+          type="button"
+          class="btn btn--sm"
+          ?disabled=${t.feishuAuthLoading}
+          @click=${()=>t.onStartFeishuOAuth(c,`status`)}
+        >
+          Status
+        </button>
+        <button
+          type="button"
+          class="btn btn--sm"
+          ?disabled=${t.feishuAuthLoading}
+          @click=${()=>t.onStartFeishuOAuth(c,`poll`)}
+        >
+          Poll
+        </button>
+        <button
+          type="button"
+          class="btn btn--sm"
+          ?disabled=${t.feishuAuthLoading}
+          @click=${()=>t.onStartFeishuOAuth(c,`complete`)}
+        >
+          Complete
+        </button>
+        <button
+          type="button"
+          class="btn btn--sm danger"
+          ?disabled=${t.feishuAuthLoading}
+          @click=${()=>t.onStartFeishuOAuth(c,`revoke`)}
+        >
+          Revoke local auth
+        </button>
       </div>
       ${t.feishuAuthResult?e`
             <div class="agent-kv" style="margin-top: 12px;">
-              <div class="label">OAuth start result</div>
+              <div class="label">OAuth lifecycle result</div>
               <pre class="mono" style="white-space: pre-wrap; margin: 0;">${Y(t.feishuAuthResult)}</pre>
             </div>
           `:r}

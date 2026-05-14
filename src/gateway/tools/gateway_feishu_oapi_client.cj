@@ -181,6 +181,20 @@ public class FeishuOapiResult {
         FeishuOapiResult(request, false, "invalid_request", error: error)
     }
 
+    public static func tokenModeUnsupported(
+        request: FeishuOapiRequest,
+        error!: String = "",
+        scopeDiagnostic!: Option<JsonObject> = None<JsonObject>
+    ): FeishuOapiResult {
+        FeishuOapiResult(
+            request,
+            false,
+            "token_mode_unsupported",
+            error: if (error.trimAscii().isEmpty()) { "Unsupported Feishu OAPI token mode: ${request.tokenMode}." } else { error.trimAscii() },
+            scopeDiagnostic: scopeDiagnostic
+        )
+    }
+
     public func toJson(): JsonObject {
         let out = this.request.toJson()
         out.put("ok", JsonBool(this.ok))
@@ -394,6 +408,7 @@ public class FeishuOapiResourceResult {
 
 public interface FeishuOapiTokenProvider {
     func userAccessToken(accountId: String, requiredScopes: Array<String>): FeishuOapiTokenLookup
+    func tokenLookup(accountId: String, tokenMode: String, requiredScopes: Array<String>): FeishuOapiTokenLookup
 }
 
 public interface FeishuOapiAppScopeChecker {
@@ -520,6 +535,32 @@ public class MetisFeishuOapiTokenProvider <: FeishuOapiTokenProvider {
             grantedScopes: token.scopes,
             hasOfflineAccess: feishuOapiHasScope(token.scopes, "offline_access")
         )
+    }
+
+    public func tokenLookup(accountId: String, tokenMode: String, requiredScopes: Array<String>): FeishuOapiTokenLookup {
+        match (tokenMode.trimAscii()) {
+            case "user_access_token" => this.userAccessToken(accountId, requiredScopes)
+            case "tenant_access_token" =>
+                FeishuOapiTokenLookup(
+                    "token_mode_unsupported",
+                    error: "Metis Feishu OAPI native token provider does not yet issue tenant_access_token."
+                )
+            case "bot_access_token" =>
+                FeishuOapiTokenLookup(
+                    "token_mode_unsupported",
+                    error: "Metis Feishu OAPI native token provider does not yet issue bot_access_token."
+                )
+            case "app_access_token" =>
+                FeishuOapiTokenLookup(
+                    "token_mode_unsupported",
+                    error: "Metis Feishu OAPI native token provider does not yet issue app_access_token."
+                )
+            case _ =>
+                FeishuOapiTokenLookup(
+                    "token_mode_unsupported",
+                    error: "Unsupported Feishu OAPI token mode: ${tokenMode.trimAscii()}."
+                )
+        }
     }
 
     private func refreshOrExpired(accountId: String, token: FeishuOapiStoredToken, requiredScopes: Array<String>): FeishuOapiTokenLookup {
@@ -749,13 +790,16 @@ public class MetisFeishuOapiClient <: FeishuOapiClient {
             case None => ()
         }
         let token = match (this.tokenProvider) {
-            case Some(provider) => provider.userAccessToken(request.accountId, request.requiredScopes)
+            case Some(provider) => provider.tokenLookup(request.accountId, request.tokenMode, request.requiredScopes)
             case None => return FeishuOapiResult.authRequired(
                 request,
                 scopeDiagnostic: Some(feishuOapiScopeDiagnostic(request, appScope, None<FeishuOapiTokenLookup>))
             ).toJson()
         }
         let scopeDiagnostic = Some(feishuOapiScopeDiagnostic(request, appScope, Some(token)))
+        if (token.status == "token_mode_unsupported") {
+            return FeishuOapiResult.tokenModeUnsupported(request, error: token.error, scopeDiagnostic: scopeDiagnostic).toJson()
+        }
         if (token.status == "app_scope_missing") {
             return FeishuOapiResult.appScopeMissing(request, token.missingScopes, error: token.error, scopeDiagnostic: scopeDiagnostic).toJson()
         }
@@ -948,7 +992,8 @@ public func feishuOapiActionKeyForToolAction(toolName: String, action: String): 
         case "feishu_fetch_doc" => "default"
         case "feishu_create_doc" => "default"
         case "feishu_update_doc" => "default"
-        case "feishu_get_user" => "default"
+        case "feishu_get_user" =>
+            if (rawAction == "basic_batch") { "basic_batch" } else { "default" }
         case "feishu_search_user" => "default"
         case "feishu_chat_members" => "default"
         case "feishu_im_user_get_messages" => "default"
@@ -1002,7 +1047,7 @@ public func feishuOapiSupportedActionsForTool(toolName: String): Array<String> {
         case "feishu_fetch_doc" => ["default"]
         case "feishu_create_doc" => ["default"]
         case "feishu_update_doc" => ["default"]
-        case "feishu_get_user" => ["default"]
+        case "feishu_get_user" => ["default", "basic_batch"]
         case "feishu_search_user" => ["default"]
         case "feishu_chat_members" => ["default"]
         case "feishu_im_user_get_messages" => ["default"]
@@ -1021,8 +1066,66 @@ public func feishuOapiIsSupportedActionKey(actionKey: String): Bool {
     feishuOapiPathForActionKey(actionKey) != ""
 }
 
-private func feishuOapiTokenModeForActionKey(_actionKey: String): String {
-    "user_access_token"
+public func feishuOapiOpenClawActionKeys(): Array<String> {
+    [
+        "feishu_bitable_app.copy", "feishu_bitable_app.create", "feishu_bitable_app.get", "feishu_bitable_app.list",
+        "feishu_bitable_app.patch", "feishu_bitable_app_table.batch_create", "feishu_bitable_app_table.create",
+        "feishu_bitable_app_table.list", "feishu_bitable_app_table.patch", "feishu_bitable_app_table_field.create",
+        "feishu_bitable_app_table_field.delete", "feishu_bitable_app_table_field.list", "feishu_bitable_app_table_field.update",
+        "feishu_bitable_app_table_record.batch_create", "feishu_bitable_app_table_record.batch_delete",
+        "feishu_bitable_app_table_record.batch_update", "feishu_bitable_app_table_record.create",
+        "feishu_bitable_app_table_record.delete", "feishu_bitable_app_table_record.list", "feishu_bitable_app_table_record.update",
+        "feishu_bitable_app_table_view.create", "feishu_bitable_app_table_view.get", "feishu_bitable_app_table_view.list",
+        "feishu_bitable_app_table_view.patch", "feishu_calendar_calendar.get", "feishu_calendar_calendar.list",
+        "feishu_calendar_calendar.primary", "feishu_calendar_event.create", "feishu_calendar_event.delete",
+        "feishu_calendar_event.get", "feishu_calendar_event.instance_view", "feishu_calendar_event.instances",
+        "feishu_calendar_event.list", "feishu_calendar_event.patch", "feishu_calendar_event.reply",
+        "feishu_calendar_event.search", "feishu_calendar_event_attendee.create", "feishu_calendar_event_attendee.list",
+        "feishu_calendar_freebusy.list", "feishu_chat.get", "feishu_chat.search", "feishu_chat_members.default",
+        "feishu_create_doc.default", "feishu_doc_comments.create", "feishu_doc_comments.list",
+        "feishu_doc_comments.list_replies", "feishu_doc_comments.patch", "feishu_doc_comments.reply",
+        "feishu_doc_media.download", "feishu_doc_media.insert", "feishu_drive_file.copy", "feishu_drive_file.delete",
+        "feishu_drive_file.download", "feishu_drive_file.get_meta", "feishu_drive_file.list", "feishu_drive_file.move",
+        "feishu_drive_file.upload", "feishu_fetch_doc.default", "feishu_get_user.basic_batch", "feishu_get_user.default",
+        "feishu_im_user_fetch_resource.default", "feishu_im_user_get_messages.default", "feishu_im_user_message.reply",
+        "feishu_im_user_message.send", "feishu_im_user_search_messages.default", "feishu_search_doc_wiki.search",
+        "feishu_search_user.default", "feishu_task_attachment.upload", "feishu_task_comment.create",
+        "feishu_task_comment.get", "feishu_task_comment.list", "feishu_task_section.create", "feishu_task_section.get",
+        "feishu_task_section.list", "feishu_task_section.patch", "feishu_task_section.tasks", "feishu_task_subtask.create",
+        "feishu_task_subtask.list", "feishu_task_task.create", "feishu_task_task.get", "feishu_task_task.list",
+        "feishu_task_task.patch", "feishu_task_task.add_members", "feishu_task_task.append_steps",
+        "feishu_task_tasklist.add_members", "feishu_task_tasklist.create", "feishu_task_tasklist.get",
+        "feishu_task_tasklist.list", "feishu_task_tasklist.patch", "feishu_task_tasklist.tasks",
+        "feishu_task_agent.register", "feishu_task_agent.update_profile", "feishu_update_doc.default",
+        "feishu_wiki_space.create", "feishu_wiki_space.get", "feishu_wiki_space.list", "feishu_wiki_space_node.copy",
+        "feishu_wiki_space_node.create", "feishu_wiki_space_node.get", "feishu_wiki_space_node.list",
+        "feishu_wiki_space_node.move", "feishu_sheet.info", "feishu_sheet.read", "feishu_sheet.write",
+        "feishu_sheet.append", "feishu_sheet.find", "feishu_sheet.create", "feishu_sheet.export"
+    ]
+}
+
+public func feishuOapiPathForActionKeyForTest(actionKey: String): String {
+    feishuOapiPathForActionKey(actionKey)
+}
+
+public func feishuOapiMethodForActionKeyForTest(actionKey: String): String {
+    feishuOapiMethodForActionKey(actionKey)
+}
+
+public func feishuOapiRequiredScopesForActionKeyForTest(actionKey: String): Array<String> {
+    feishuOapiRequiredScopesForActionKey(actionKey)
+}
+
+private func feishuOapiTokenModeForActionKey(actionKey: String): String {
+    match (actionKey) {
+        case "feishu_doc_comments.list_replies" => "tenant_access_token"
+        case "feishu_task_task.append_steps" => "tenant_access_token"
+        case "feishu_im_user_fetch_resource.default" => "bot_access_token"
+        case "feishu_ask_user_question.default" => "app_access_token"
+        case "feishu_oauth.default" => "app_access_token"
+        case "feishu_oauth_batch_auth.default" => "app_access_token"
+        case _ => "user_access_token"
+    }
 }
 
 private func feishuOapiMethodForActionKey(actionKey: String): String {
@@ -1036,6 +1139,7 @@ private func feishuOapiMethodForActionKey(actionKey: String): String {
         case "feishu_search_user.default" => "GET"
         case "feishu_im_user_message.send" => "POST"
         case "feishu_im_user_message.reply" => "POST"
+        case "feishu_get_user.basic_batch" => "POST"
         case "feishu_search_doc_wiki.search" => "POST"
         case "feishu_sheet.write" => "PUT"
         case "feishu_sheet.append" => "POST"
@@ -1114,6 +1218,7 @@ private func feishuOapiPathForActionKey(actionKey: String): String {
         case "feishu_chat.get" => "/open-apis/im/v1/chats/:chat_id"
         case "feishu_chat_members.default" => "/open-apis/im/v1/chats/:chat_id/members"
         case "feishu_get_user.default" => "/open-apis/contact/v3/users/:user_id"
+        case "feishu_get_user.basic_batch" => "/open-apis/contact/v3/users/basic_batch"
         case "feishu_search_user.default" => "/open-apis/search/v1/user"
         case "feishu_im_user_message.send" => "/open-apis/im/v1/messages"
         case "feishu_im_user_message.reply" => "/open-apis/im/v1/messages/:message_id/reply"
@@ -1194,6 +1299,7 @@ private func feishuOapiRequiredScopesForActionKey(actionKey: String): Array<Stri
         case "feishu_chat.get" => ["im:chat:read"]
         case "feishu_chat_members.default" => ["im:chat.members:read"]
         case "feishu_get_user.default" => ["contact:contact.base:readonly", "contact:user.base:readonly"]
+        case "feishu_get_user.basic_batch" => ["contact:user.basic_profile:readonly"]
         case "feishu_search_user.default" => ["contact:user:search"]
         case "feishu_im_user_message.send" => ["im:message", "im:message.send_as_user"]
         case "feishu_im_user_message.reply" => ["im:message", "im:message.send_as_user"]
@@ -1307,6 +1413,16 @@ private class FeishuOapiStaticTokenProvider <: FeishuOapiTokenProvider {
             accessToken: this.accessToken,
             grantedScopes: this.grantedScopes,
             hasOfflineAccess: feishuOapiHasScope(this.grantedScopes, "offline_access")
+        )
+    }
+
+    public func tokenLookup(accountId: String, tokenMode: String, requiredScopes: Array<String>): FeishuOapiTokenLookup {
+        if (tokenMode.trimAscii() == "user_access_token") {
+            return this.userAccessToken(accountId, requiredScopes)
+        }
+        FeishuOapiTokenLookup(
+            "token_mode_unsupported",
+            error: "Static Feishu OAPI live-smoke token provider only supports user_access_token."
         )
     }
 }

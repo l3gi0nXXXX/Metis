@@ -539,6 +539,8 @@ public func gatewayAgentTeamBroadcastAggregateJson(
                 row.put("delivered", JsonBool(execution.delivered))
                 row.put("deliveryStatus", JsonString(execution.deliveryStatus))
                 row.put("deliveryError", JsonString(execution.deliveryError))
+                row.put("error", JsonString(execution.deliveryError))
+                row.put("elapsedMs", JsonInt(0))
                 row.put("deliveryMessageId", JsonString(execution.deliveryMessageId))
                 row.put("answer", JsonString(execution.answer))
                 if (!execution.answer.trimAscii().isEmpty()) {
@@ -550,6 +552,8 @@ public func gatewayAgentTeamBroadcastAggregateJson(
                 row.put("delivered", JsonBool(false))
                 row.put("deliveryStatus", JsonString("missing-result"))
                 row.put("deliveryError", JsonString(""))
+                row.put("error", JsonString(""))
+                row.put("elapsedMs", JsonInt(0))
                 row.put("deliveryMessageId", JsonString(""))
                 row.put("answer", JsonString(""))
         }

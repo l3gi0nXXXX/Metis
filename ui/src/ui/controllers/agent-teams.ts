@@ -91,6 +91,7 @@ export type AgentTeamWorkspaceDraft = {
 };
 
 export type AgentTeamFeishuAuthResult = Record<string, unknown>;
+export type AgentTeamFeishuAuthAction = "start" | "status" | "poll" | "complete" | "revoke";
 
 export type AgentTeamsState = {
   client: GatewayBrowserClient | null;
@@ -120,10 +121,14 @@ export type AgentTeamsState = {
 };
 
 export const AGENT_TEAM_PROFILE_FILES = [
+  "AGENTS.md",
   "SOUL.md",
   "TOOLS.md",
   "IDENTITY.md",
   "USER.md",
+  "HEARTBEAT.md",
+  "BOOTSTRAP.md",
+  "MEMORY.md",
 ] as const;
 
 export const AGENT_TEAM_TEMPLATES: AgentTeamTemplate[] = [
@@ -844,6 +849,7 @@ export async function saveAgentTeamWorkspaceFile(state: AgentTeamsState) {
 export async function startAgentTeamFeishuOAuth(
   state: AgentTeamsState,
   accountId = "",
+  action: AgentTeamFeishuAuthAction = "start",
 ) {
   if (!state.client || !state.connected || state.agentTeamFeishuAuthLoading) {
     return;
@@ -857,16 +863,34 @@ export async function startAgentTeamFeishuOAuth(
     if (normalizedAccountId) {
       params.accountId = normalizedAccountId;
     }
+    if (action === "revoke") {
+      params.serverRevoke = false;
+    }
     const res = await state.client.request<AgentTeamFeishuAuthResult>(
-      "channels.feishu.auth.start",
+      `channels.feishu.auth.${action}`,
       params,
     );
     state.agentTeamFeishuAuthResult = sanitizeFeishuAuthResult(res ?? {});
-    state.agentTeamsSuccess = "Feishu OAuth started through Gateway RPC.";
+    state.agentTeamsSuccess = feishuAuthActionSuccessMessage(action);
   } catch (err) {
     state.agentTeamFeishuAuthError = String(err);
   } finally {
     state.agentTeamFeishuAuthLoading = false;
+  }
+}
+
+function feishuAuthActionSuccessMessage(action: AgentTeamFeishuAuthAction): string {
+  switch (action) {
+    case "status":
+      return "Feishu OAuth status loaded through Gateway RPC.";
+    case "poll":
+      return "Feishu OAuth poll completed through Gateway RPC.";
+    case "complete":
+      return "Feishu OAuth completion checked through Gateway RPC.";
+    case "revoke":
+      return "Local Feishu OAuth authorization revoked through Gateway RPC.";
+    default:
+      return "Feishu OAuth started through Gateway RPC.";
   }
 }
 

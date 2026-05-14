@@ -4,6 +4,7 @@ import metis.core.config.{GatewayUserSettings, MetisPaths}
 import metis.gateway.core.{
     setGatewayFeishuNativeAuthCompleteRunner,
     setGatewayFeishuNativeAuthPollRunner,
+    setGatewayFeishuNativeAuthRevokeOptionsRunner,
     setGatewayFeishuNativeAuthRevokeRunner,
     setGatewayFeishuNativeAuthRunner,
     setGatewayFeishuNativeAuthStatusRunner
@@ -153,6 +154,26 @@ public class FeishuDeviceTokenResult {
     }
 }
 
+public class FeishuTokenRevokeResult {
+    public let status: String
+    public let error: String
+
+    public init(status!: String = "error", error!: String = "") {
+        this.status = status.trimAscii()
+        this.error = error.trimAscii()
+    }
+
+    public func toRedactedJson(): JsonObject {
+        let out = JsonObject()
+        out.put("status", JsonString(this.status))
+        out.put("redacted", JsonBool(true))
+        if (!this.error.isEmpty()) {
+            out.put("error", JsonString(feishuAuthRedactSensitiveText(this.error)))
+        }
+        out
+    }
+}
+
 public class FeishuDeviceFlowClient {
     private let http: FeishuAuthHttpClient
     private let domain: String
@@ -232,6 +253,56 @@ public class FeishuDeviceFlowClient {
             FeishuDeviceTokenResult(status: "parse_error", error: e.message)
         }
     }
+
+    public func refresh(refreshToken: String): FeishuDeviceTokenResult {
+        let fields = HashMap<String, String>()
+        fields["client_id"] = this.appId
+        fields["client_secret"] = this.appSecret
+        fields["refresh_token"] = refreshToken.trimAscii()
+        fields["grant_type"] = "refresh_token"
+        let response = this.http.postForm(
+            "${this.domain}/open-apis/authen/v1/oidc/token",
+            fields,
+            HashMap<String, String>([("Content-Type", "application/x-www-form-urlencoded")])
+        )
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+            return FeishuDeviceTokenResult(status: "network_error", error: response.error)
+        }
+        return try {
+            let root = JsonValue.fromStr(response.body).asObject()
+            let accessToken = feishuAuthString(root, "access_token")
+            if (!accessToken.isEmpty()) {
+                FeishuDeviceTokenResult(
+                    status: "authorized",
+                    accessToken: accessToken,
+                    refreshToken: feishuAuthString(root, "refresh_token"),
+                    expiresInSeconds: feishuAuthInt(root, "expires_in", 0),
+                    scopes: feishuAuthScopes(feishuAuthString(root, "scope"))
+                )
+            } else {
+                let err = feishuAuthString(root, "error")
+                FeishuDeviceTokenResult(status: feishuAuthTokenErrorStatus(err), error: err)
+            }
+        } catch (e: Exception) {
+            FeishuDeviceTokenResult(status: "parse_error", error: e.message)
+        }
+    }
+
+    public func revoke(token: String): FeishuTokenRevokeResult {
+        let fields = HashMap<String, String>()
+        fields["client_id"] = this.appId
+        fields["client_secret"] = this.appSecret
+        fields["token"] = token.trimAscii()
+        let response = this.http.postForm(
+            "${this.domain}/open-apis/authen/v1/oidc/revoke",
+            fields,
+            HashMap<String, String>([("Content-Type", "application/x-www-form-urlencoded")])
+        )
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+            return FeishuTokenRevokeResult(status: "network_error", error: response.error)
+        }
+        FeishuTokenRevokeResult(status: "revoked")
+    }
 }
 
 public class FeishuUserToken {
@@ -262,11 +333,14 @@ public class FeishuUserToken {
         let out = JsonObject()
         out.put("accountId", JsonString(gatewayFeishuNormalizeAccountId(accountId)))
         out.put("status", JsonString(if (!hasAccessToken) { "missing" } else if (expired) { "expired" } else { "authorized" }))
+        out.put("tokenStatus", JsonString(if (!hasAccessToken) { "missing" } else if (expired) { "expired" } else { "authorized" }))
         out.put("authorized", JsonBool(hasAccessToken && !expired))
         out.put("hasAccessToken", JsonBool(hasAccessToken))
         out.put("hasRefreshToken", JsonBool(!this.refreshToken.isEmpty()))
         out.put("expiresAtMs", JsonInt(this.expiresAtMs))
         out.put("scopes", feishuAuthJsonStringArray(this.scopes))
+        out.put("scopeSummary", JsonString(feishuAuthScopeSummaryFromArray(this.scopes)))
+        out.put("scopeDiagnostic", feishuAuthScopeDiagnostic(this.scopes))
         out.put("redacted", JsonBool(true))
         out
     }
@@ -318,7 +392,10 @@ public class FeishuFileTokenStore <: FeishuTokenStore {
                 let out = JsonObject()
                 out.put("accountId", JsonString(gatewayFeishuNormalizeAccountId(accountId)))
                 out.put("status", JsonString("missing"))
+                out.put("tokenStatus", JsonString("missing"))
                 out.put("authorized", JsonBool(false))
+                out.put("scopeSummary", JsonString(""))
+                out.put("scopeDiagnostic", feishuAuthScopeDiagnostic([]))
                 out.put("redacted", JsonBool(true))
                 out
         }
@@ -459,6 +536,16 @@ public func feishuInstallGatewayNativeAuthRunner(): Unit {
     setGatewayFeishuNativeAuthRevokeRunner(Some({ accountId: String, user: GatewayUserSettings =>
         feishuGatewayNativeAuthRevoke(accountId, user)
     }))
+    setGatewayFeishuNativeAuthRevokeOptionsRunner(Some({ accountId: String, user: GatewayUserSettings, serverRevoke: Bool =>
+        feishuGatewayNativeAuthRevokeWithClient(
+            accountId,
+            user,
+            FeishuNativeAuthHttpClient(),
+            FeishuFileTokenStore(feishuGatewayNativeAuthTokenStoreRoot()),
+            FeishuFileAuthSessionStore(feishuGatewayNativeAuthSessionStoreRoot()),
+            serverRevoke: serverRevoke
+        )
+    }))
 }
 
 public func feishuGatewayNativeAuthStart(accountId: String, user: GatewayUserSettings): JsonObject {
@@ -533,7 +620,8 @@ public func feishuGatewayNativeAuthStatus(accountId: String, user: GatewayUserSe
         accountId,
         user,
         FeishuFileTokenStore(feishuGatewayNativeAuthTokenStoreRoot()),
-        FeishuFileAuthSessionStore(feishuGatewayNativeAuthSessionStoreRoot())
+        FeishuFileAuthSessionStore(feishuGatewayNativeAuthSessionStoreRoot()),
+        http: Some<FeishuAuthHttpClient>(FeishuNativeAuthHttpClient())
     )
 }
 
@@ -542,9 +630,14 @@ public func feishuGatewayNativeAuthStatusWithStores(
     user: GatewayUserSettings,
     store: FeishuTokenStore,
     sessionStore: FeishuAuthSessionStore,
-    nowMs!: Int64 = DateTime.now().toUnixTimeStamp().toMilliseconds()
+    nowMs!: Int64 = DateTime.now().toUnixTimeStamp().toMilliseconds(),
+    http!: Option<FeishuAuthHttpClient> = None<FeishuAuthHttpClient>
 ): JsonObject {
     let normalized = feishuAuthNativeAccountId(accountId, user)
+    match (feishuAuthRefreshExpiredTokenStatus(normalized, user, store, nowMs, http)) {
+        case Some(refreshed) => return refreshed
+        case None => ()
+    }
     let tokenStatus = store.status(normalized)
     let tokenStatusText = feishuAuthString(tokenStatus, "status")
     if (tokenStatusText == "authorized") {
@@ -669,11 +762,13 @@ public func feishuGatewayNativeAuthCompleteWithClient(
 }
 
 public func feishuGatewayNativeAuthRevoke(accountId: String, user: GatewayUserSettings): JsonObject {
-    feishuGatewayNativeAuthRevokeWithStores(
+    feishuGatewayNativeAuthRevokeWithClient(
         accountId,
         user,
+        FeishuNativeAuthHttpClient(),
         FeishuFileTokenStore(feishuGatewayNativeAuthTokenStoreRoot()),
-        FeishuFileAuthSessionStore(feishuGatewayNativeAuthSessionStoreRoot())
+        FeishuFileAuthSessionStore(feishuGatewayNativeAuthSessionStoreRoot()),
+        serverRevoke: false
     )
 }
 
@@ -683,7 +778,31 @@ public func feishuGatewayNativeAuthRevokeWithStores(
     store: FeishuTokenStore,
     sessionStore: FeishuAuthSessionStore
 ): JsonObject {
+    feishuGatewayNativeAuthRevokeWithClient(
+        accountId,
+        user,
+        FeishuNativeAuthHttpClient(),
+        store,
+        sessionStore,
+        serverRevoke: false
+    )
+}
+
+public func feishuGatewayNativeAuthRevokeWithClient(
+    accountId: String,
+    user: GatewayUserSettings,
+    http: FeishuAuthHttpClient,
+    store: FeishuTokenStore,
+    sessionStore: FeishuAuthSessionStore,
+    serverRevoke!: Bool = false
+): JsonObject {
     let normalized = feishuAuthNativeAccountId(accountId, user)
+    let token = store.load(normalized)
+    let serverRevokeStatus = if (serverRevoke) {
+        feishuAuthServerRevoke(normalized, user, http, token)
+    } else {
+        "not_requested"
+    }
     store.delete(normalized)
     sessionStore.delete(normalized)
     let out = JsonObject()
@@ -693,8 +812,17 @@ public func feishuGatewayNativeAuthRevokeWithStores(
     out.put("authorized", JsonBool(false))
     out.put("pending", JsonBool(false))
     out.put("revoked", JsonBool(true))
+    out.put("localRevoked", JsonBool(true))
+    out.put("serverRevokeRequested", JsonBool(serverRevoke))
+    out.put("serverRevokeStatus", JsonString(serverRevokeStatus))
+    out.put("scopeSummary", JsonString(""))
+    out.put("scopeDiagnostic", feishuAuthScopeDiagnostic([]))
     out.put("redacted", JsonBool(true))
-    out.put("message", JsonString("Local Feishu user authorization was removed."))
+    out.put("message", JsonString(if (serverRevoke) {
+        "Local Feishu user authorization was removed; server revoke status is ${serverRevokeStatus}."
+    } else {
+        "Local Feishu user authorization was removed."
+    }))
     out
 }
 
@@ -716,6 +844,86 @@ public func feishuSaveAuthorizedUserToken(
     result.toRedactedJson()
 }
 
+private func feishuAuthRefreshExpiredTokenStatus(
+    accountId: String,
+    user: GatewayUserSettings,
+    store: FeishuTokenStore,
+    nowMs: Int64,
+    http: Option<FeishuAuthHttpClient>
+): Option<JsonObject> {
+    let token = match (store.load(accountId)) {
+        case Some(v) => v
+        case None => return None<JsonObject>
+    }
+    if (token.accessToken.isEmpty() || token.expiresAtMs <= 0 || token.expiresAtMs > nowMs) {
+        return None<JsonObject>
+    }
+    let base = token.redactedStatus(accountId)
+    if (token.refreshToken.isEmpty()) {
+        base.put("refreshStatus", JsonString("missing_refresh_token"))
+        base.put("message", JsonString("Stored Feishu user authorization is expired and has no refresh token."))
+        return Some(base)
+    }
+    let account = feishuAuthNativeAccountConfig(accountId, user)
+    let appId = feishuAuthJsonStringFallback(account, ["appId", "app_id"], user.feishu.appId)
+    let appSecret = feishuAuthJsonStringFallback(account, ["appSecret", "app_secret"], user.feishu.appSecret)
+    if (appId.isEmpty() || appSecret.isEmpty()) {
+        base.put("refreshStatus", JsonString("missing_app_credentials"))
+        base.put("message", JsonString("Stored Feishu user authorization is expired; appId/appSecret is required before refresh."))
+        return Some(base)
+    }
+    let client = match (http) {
+        case Some(v) => v
+        case None =>
+            base.put("refreshStatus", JsonString("not_configured"))
+            base.put("message", JsonString("Stored Feishu user authorization is expired; refresh client is not configured for this call."))
+            return Some(base)
+    }
+    let domain = feishuAuthJsonStringFallback(account, ["domain"], user.feishu.domain)
+    let refreshed = FeishuDeviceFlowClient(client, domain: domain, appId: appId, appSecret: appSecret).refresh(token.refreshToken)
+    if (refreshed.status != "authorized" || refreshed.accessToken.isEmpty()) {
+        base.put("refreshStatus", JsonString(if (refreshed.status.isEmpty()) { "expired" } else { refreshed.status }))
+        if (!refreshed.error.isEmpty()) {
+            base.put("error", JsonString(feishuAuthRedactSensitiveText(refreshed.error)))
+        }
+        base.put("message", JsonString("Stored Feishu user authorization refresh did not return an access token."))
+        return Some(base)
+    }
+    let saved = feishuSaveAuthorizedUserToken(store, accountId, FeishuDeviceTokenResult(
+        status: "authorized",
+        accessToken: refreshed.accessToken,
+        refreshToken: if (refreshed.refreshToken.isEmpty()) { token.refreshToken } else { refreshed.refreshToken },
+        expiresInSeconds: refreshed.expiresInSeconds,
+        scopes: if (refreshed.scopes.size > 0) { refreshed.scopes } else { token.scopes }
+    ), nowMs: nowMs)
+    let out = feishuAuthLifecycleTokenStatus(accountId, saved, "Stored Feishu user authorization was refreshed.")
+    out.put("refreshStatus", JsonString("refreshed"))
+    return Some(out)
+}
+
+private func feishuAuthServerRevoke(
+    accountId: String,
+    user: GatewayUserSettings,
+    http: FeishuAuthHttpClient,
+    token: Option<FeishuUserToken>
+): String {
+    let stored = match (token) {
+        case Some(v) => v
+        case None => return "missing_token"
+    }
+    if (stored.accessToken.isEmpty()) {
+        return "missing_token"
+    }
+    let account = feishuAuthNativeAccountConfig(accountId, user)
+    let appId = feishuAuthJsonStringFallback(account, ["appId", "app_id"], user.feishu.appId)
+    let appSecret = feishuAuthJsonStringFallback(account, ["appSecret", "app_secret"], user.feishu.appSecret)
+    if (appId.isEmpty() || appSecret.isEmpty()) {
+        return "missing_app_credentials"
+    }
+    let domain = feishuAuthJsonStringFallback(account, ["domain"], user.feishu.domain)
+    FeishuDeviceFlowClient(http, domain: domain, appId: appId, appSecret: appSecret).revoke(stored.accessToken).status
+}
+
 private func feishuAuthLifecycleTokenStatus(accountId: String, tokenStatus: JsonObject, message: String): JsonObject {
     let out = JsonObject()
     out.put("accountId", JsonString(gatewayFeishuNormalizeAccountId(accountId)))
@@ -724,11 +932,14 @@ private func feishuAuthLifecycleTokenStatus(accountId: String, tokenStatus: Json
     out.put("tokenStatus", JsonString(status))
     out.put("pending", JsonBool(false))
     out.put("redacted", JsonBool(true))
-    for (key in ["authorized", "hasAccessToken", "hasRefreshToken", "expiresAtMs", "scopes"]) {
+    for (key in ["authorized", "hasAccessToken", "hasRefreshToken", "expiresAtMs", "scopes", "scopeSummary", "scopeDiagnostic"]) {
         match (tokenStatus.get(key)) {
             case Some(v) => out.put(key, v)
             case None => ()
         }
+    }
+    if (feishuAuthString(out, "scopeSummary").isEmpty()) {
+        out.put("scopeSummary", JsonString(feishuAuthScopeSummary(out)))
     }
     if (!message.isEmpty()) {
         out.put("message", JsonString(message))
@@ -860,6 +1071,36 @@ private func feishuAuthScopeSummary(obj: JsonObject): String {
             }
         case None => ""
     }
+}
+
+private func feishuAuthScopeSummaryFromArray(scopes: Array<String>): String {
+    let out = ArrayList<String>()
+    for (scope in scopes) {
+        let clean = scope.trimAscii()
+        if (!clean.isEmpty()) {
+            out.add(clean)
+        }
+    }
+    String.join(out.toArray(), delimiter: " ")
+}
+
+private func feishuAuthScopeDiagnostic(scopes: Array<String>): JsonObject {
+    let out = JsonObject()
+    let granted = feishuAuthJsonStringArray(scopes)
+    let missingUserScopes = JsonArray([])
+    let hasOfflineAccess = scopes.contains("offline_access")
+    if (!hasOfflineAccess) {
+        missingUserScopes.add(JsonString("offline_access"))
+    }
+    out.put("status", JsonString(if (missingUserScopes.size() == 0) { "ok" } else { "missing_user_scope" }))
+    out.put("grantedUserScopes", granted)
+    out.put("userScopes", granted)
+    out.put("missingUserScopes", missingUserScopes)
+    out.put("missingAppScopes", JsonArray([]))
+    out.put("offlineAccess", JsonBool(hasOfflineAccess))
+    out.put("scopeSummary", JsonString(feishuAuthScopeSummaryFromArray(scopes)))
+    out.put("redacted", JsonBool(true))
+    out
 }
 
 private func feishuAuthScopeString(scopes: Array<String>): String {

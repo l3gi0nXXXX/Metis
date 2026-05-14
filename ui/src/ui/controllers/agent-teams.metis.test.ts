@@ -493,15 +493,52 @@ describe("Feishu OAuth start", () => {
     expect(rendered).not.toContain("secret-refresh-token");
     expect(rendered).not.toContain("secret-authorization-token");
   });
+
+  it("routes explicit Feishu OAuth lifecycle actions through Gateway RPC", async () => {
+    const { state, request } = createState();
+    request.mockResolvedValueOnce({
+      status: "authorized",
+      accountId: "tenant-a",
+      tokenStatus: "authorized",
+      scopeSummary: "offline_access",
+    });
+
+    await startAgentTeamFeishuOAuth(state, "tenant-a", "status");
+
+    expect(request).toHaveBeenCalledWith("channels.feishu.auth.status", {
+      accountId: "tenant-a",
+    });
+    expect(state.agentTeamsSuccess).toBe("Feishu OAuth status loaded through Gateway RPC.");
+  });
+
+  it("never asks the browser to server-revoke Feishu OAuth by default", async () => {
+    const { state, request } = createState();
+    request.mockResolvedValueOnce({
+      status: "revoked",
+      accountId: "tenant-a",
+      redacted: true,
+    });
+
+    await startAgentTeamFeishuOAuth(state, "tenant-a", "revoke");
+
+    expect(request).toHaveBeenCalledWith("channels.feishu.auth.revoke", {
+      accountId: "tenant-a",
+      serverRevoke: false,
+    });
+  });
 });
 
 describe("team workspace profiles", () => {
   it("matches the Gateway Control UI supported profile file contract", () => {
     expect([...AGENT_TEAM_PROFILE_FILES]).toEqual([
+      "AGENTS.md",
       "SOUL.md",
       "TOOLS.md",
       "IDENTITY.md",
       "USER.md",
+      "HEARTBEAT.md",
+      "BOOTSTRAP.md",
+      "MEMORY.md",
     ]);
   });
 
@@ -556,10 +593,14 @@ describe("team workspace profiles", () => {
       content: "Be direct.",
     });
     expect(state.agentTeamWorkspace.files.map((file) => file.name)).toEqual([
+      "AGENTS.md",
       "SOUL.md",
       "TOOLS.md",
       "IDENTITY.md",
       "USER.md",
+      "HEARTBEAT.md",
+      "BOOTSTRAP.md",
+      "MEMORY.md",
     ]);
     expect(state.agentTeamWorkspace.content).toBe("Be direct.");
   });

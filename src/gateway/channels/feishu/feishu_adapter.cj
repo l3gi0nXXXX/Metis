@@ -1469,6 +1469,7 @@ public class FeishuAdapter <: ChannelAdapter {
         this.attachFeishuAliasCandidates(mediaContext, accountConfig, messageObj)
         this.attachFeishuAttachmentContext(mediaContext, accountConfig, accountId, chatId, messageId, messageType, contentJsonString)
         this.attachFeishuRichMessageContext(mediaContext, messageType, contentJsonString)
+        this.attachFeishuResourceBoundaryContext(mediaContext, accountConfig, accountId, messageId, messageType)
 
         return InboundMessage(
             ChannelType.Feishu,
@@ -1886,6 +1887,66 @@ public class FeishuAdapter <: ChannelAdapter {
         forward.put("status", JsonString("metadata_only"))
         context.put("feishuMergeForward", forward)
         mediaContext.put("context", context)
+    }
+
+    private func attachFeishuResourceBoundaryContext(
+        mediaContext: JsonObject,
+        cfg: FeishuConfig,
+        accountId: String,
+        messageId: String,
+        messageType: String
+    ): Unit {
+        let normalizedType = messageType.trimAscii().toAsciiLower()
+        if (!(normalizedType == "image" || normalizedType == "file" || normalizedType == "media" || normalizedType == "audio" || normalizedType == "video")) {
+            return
+        }
+        let context = match (mediaContext.get("context")) {
+            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+            case None => JsonObject()
+        }
+        let boundary = JsonObject()
+        let current = JsonObject()
+        current.put("relation", JsonString("current"))
+        current.put("source", JsonString("channel_media_context"))
+        current.put("messageId", JsonString(messageId.trimAscii()))
+        current.put("status", JsonString(if (this.feishuMediaContextHasRecords(mediaContext)) { "staged_metadata" } else { "not_present" }))
+        current.put("downloadEnabled", JsonBool(cfg.media.downloadEnabled))
+        boundary.put("currentTurn", current)
+
+        let historical = JsonObject()
+        historical.put("relation", JsonString("historical"))
+        historical.put("source", JsonString("oapi"))
+        historical.put("tool", JsonString("feishu_im_user_fetch_resource"))
+        historical.put("accountId", JsonString(this.normalizeAccountId(accountId)))
+        historical.put("status", JsonString("auth_required"))
+        historical.put("reason", JsonString("historical Feishu resources require user authorization and message resource scopes"))
+        boundary.put("historicalResource", historical)
+
+        let botImage = JsonObject()
+        botImage.put("identity", JsonString("bot"))
+        botImage.put("source", JsonString("oapi"))
+        botImage.put("tool", JsonString("feishu_im_bot_image"))
+        botImage.put("status", JsonString("not_configured"))
+        botImage.put("reason", JsonString("bot image fetch must be configured through the Feishu OAPI boundary"))
+        boundary.put("botImage", botImage)
+
+        let docMedia = JsonObject()
+        docMedia.put("source", JsonString("oapi"))
+        docMedia.put("tool", JsonString("feishu_doc_media"))
+        docMedia.put("status", JsonString("auth_required"))
+        docMedia.put("reason", JsonString("document media requires Feishu document authorization and scope checks"))
+        boundary.put("docMedia", docMedia)
+
+        context.put("feishuResourceBoundary", boundary)
+        mediaContext.put("context", context)
+    }
+
+    private func feishuMediaContextHasRecords(mediaContext: JsonObject): Bool {
+        match (mediaContext.get("records")) {
+            case Some(v) =>
+                try { v.asArray().size() > 0 } catch (_e: Exception) { false }
+            case None => false
+        }
     }
 
     private func feishuResourceTypeForApi(kind: String): String {

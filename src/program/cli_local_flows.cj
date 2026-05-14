@@ -549,12 +549,16 @@ private func cliAgentsTeamHasAnyUpdateField(params: JsonObject): Bool {
     false
 }
 
+public func cliAgentsTeamProductSemanticsHelpText(): String {
+    "Team CRUD is handled by CLI/UI/Gateway RPC. Telegram/Feishu IM are runtime entry points for route bindings, aliases, and native commands; they do not create/update/delete teams. Team route means one deterministic agent, broadcast means explicit fan-out, and manager is a normal member/defaultAgent, not an autonomous manager runtime."
+}
+
 private func cliRunAgentsTeamFlow(args: Array<String>): Int64 {
     let action = if (args.size > 1) { args[1].trimAscii().toAsciiLower() } else { "" }
     if (action.isEmpty() || action == "help") {
         return printLocalFlowUsage(
             "agents team",
-            "Manage AgentTeam definitions through the unified Gateway main runtime",
+            "Manage AgentTeam definitions through CLI/UI/Gateway RPC. Telegram/Feishu IM only trigger runtime routes, aliases, and native commands; they do not perform team CRUD. Manager is a normal member/defaultAgent, not an autonomous manager runtime.",
             [
                 "metis agents team list",
                 "metis agents team get --team content",
@@ -1667,7 +1671,7 @@ public func cliRunAgentsFlow(args: Array<String>): Int64 {
                 "metis agents delete --agent reviewer",
                 "metis agents list --json"
             ],
-            "list [--json] | summary [--json] | health [--json] | capabilities [--json] | bindings [--agent <id>] [--json] | bind --agent <id> --bind <channel[:account]> [--bind ...] [--json] | unbind --agent <id> (--bind <channel[:account]> [--bind ...] | --all) [--json] | team list|get|create|update|delete [--team <id>] [--json] | migrate --dry-run [--json] | add --agent <id> [--name <text>] [--workspace <path>] [--model <ref>] [--json] | set-identity --agent <id> [--name <text>] [--emoji <text>] [--theme <text>] [--avatar <path>] [--json] | delete --agent <id> [--json] | help"
+            "list [--json] | summary [--json] | health [--json] | capabilities [--json] | bindings [--agent <id>] [--json] | bind --agent <id> --bind <channel[:account]> [--bind ...] [--json] | unbind --agent <id> (--bind <channel[:account]> [--bind ...] | --all) [--json] | team list|get|create|update|delete [--team <id>] [--json] | migrate --dry-run [--json] | add --agent <id> [--name <text>] [--workspace <path>] [--model <ref>] [--json] | set-identity --agent <id> [--name <text>] [--emoji <text>] [--theme <text>] [--avatar <path>] [--json] | delete --agent <id> [--json] | help\n${cliAgentsTeamProductSemanticsHelpText()}"
         )
     }
     if (sub == "team") {

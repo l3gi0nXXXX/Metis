@@ -4,7 +4,7 @@ import magic.jsonable.*
 
 import metis.core.gatewaySubagentResolveAgent
 import metis.core.config.{CliConfig, CliModelRuntimeStateManager, CliSettingManager, MetisConfigManager, MetisProcessEnvironmentLock}
-import metis.gateway.core.{GatewayAgentRouteInput, gatewayResolveAgentRoute, gatewayResolveAgentTeamBroadcastPlan}
+import metis.gateway.core.{GatewayAgentRouteInput, GatewayResolvedSessionTurnResult, GatewaySessionExecutionResult, gatewayAgentTeamBroadcastAggregateJson, gatewayResolveAgentRoute, gatewayResolveAgentTeamBroadcastPlan, gatewayResolveSessionContextWithAgentRoute}
 import metis.gateway.session.{GatewayIngressSource, GatewaySessionRequest}
 
 import std.collection.ArrayList
@@ -95,6 +95,13 @@ private func agentsTestTeamMember(agentId: String, role!: String = "", name!: St
         member.put("name", JsonString(name))
     }
     member
+}
+
+private func agentsTestTeamAlias(alias: String, agentId: String): JsonObject {
+    let row = JsonObject()
+    row.put("alias", JsonString(alias))
+    row.put("agentId", JsonString(agentId))
+    row
 }
 
 private func agentsTestRouteBinding(
@@ -1452,6 +1459,152 @@ public class GatewayServerMethodsAgentsTest {
             let persistedBroadcast = getResponse.result.asObject().get("team").getOrThrow().asObject().get("broadcast").getOrThrow().asObject()
             @Expect(agentsTestBool(persistedBroadcast, "enabled"), true)
             @Expect(persistedBroadcast.get("members").getOrThrow().asArray().size(), 2)
+        })
+    }
+
+    @TestCase
+    public func agentTeamRpcResponsesExposeProductSemanticsWithoutManagerRuntimePromise(): Unit {
+        withAgentsTempHome("metis-agent-team-product-semantics-home", { _home: Path =>
+            let createParams = JsonObject()
+            createParams.put("id", JsonString("content"))
+            createParams.put("template", JsonString("pm-writer-reviewer"))
+            createParams.put("defaultAgentId", JsonString("content-pm"))
+            let createResponse = handleGatewayAgentsFamily("agents.teams.create", request: Some(GatewayRpcRequest("agents.teams.create", params: createParams))).getOrThrow()
+            @Expect(createResponse.ok, true)
+            let createResult = createResponse.result.asObject()
+            let semantics = agentsTestObject(createResult, "semantics")
+            @Expect(agentsTestString(semantics, "singleRoute"), "deterministic-single-agent")
+            @Expect(agentsTestString(semantics, "broadcast"), "explicit-fan-out")
+            @Expect(agentsTestString(semantics, "manager"), "member-or-default-agent-only")
+            @Expect(agentsTestBool(semantics, "autonomousManagerRuntime"), false)
+
+            let getParams = JsonObject()
+            getParams.put("id", JsonString("content"))
+            let getResponse = handleGatewayAgentsFamily("agents.teams.get", request: Some(GatewayRpcRequest("agents.teams.get", params: getParams))).getOrThrow()
+            @Expect(getResponse.ok, true)
+            @Expect(agentsTestString(agentsTestObject(getResponse.result.asObject(), "semantics"), "manager"), "member-or-default-agent-only")
+        })
+    }
+
+    @TestCase
+    public func agentTeamBroadcastAggregateCoversPartialAndAllFailureWithPerMemberFields(): Unit {
+        withAgentsTempHome("metis-agent-team-broadcast-aggregate-failures-home", { _home: Path =>
+            let bindings = JsonArray([])
+            bindings.add(agentsTestRouteBinding("content-pm", "telegram", accountId: "bot-a", peerKind: "group", peerId: "-100_content"))
+            let broadcast = JsonObject()
+            broadcast.put("enabled", JsonBool(true))
+            broadcast.put("members", agentsTestStringArray(["content-pm", "content-writer", "content-reviewer"]))
+            let createParams = JsonObject()
+            createParams.put("id", JsonString("content"))
+            createParams.put("template", JsonString("pm-writer-reviewer"))
+            createParams.put("bindings", bindings)
+            createParams.put("broadcast", broadcast)
+            @Expect(handleGatewayAgentsFamily("agents.teams.create", request: Some(GatewayRpcRequest("agents.teams.create", params: createParams))).getOrThrow().ok, true)
+
+            let root = MetisConfigManager.rawConfig().getOrThrow()
+            let plan = gatewayResolveAgentTeamBroadcastPlan(GatewaySessionRequest(
+                GatewayIngressSource.Channel("telegram"),
+                channelName: "telegram",
+                text: "team fan-out",
+                accountId: "bot-a",
+                peerId: "-100_content",
+                senderId: "sender-content",
+                routeRoot: root,
+                routeAccountId: "bot-a",
+                routePeerKind: "group",
+                routePeerId: "-100_content"
+            ))
+            @Expect(plan.enabled, true)
+            @Expect(plan.turns.size, 3)
+
+            let delivered = GatewayResolvedSessionTurnResult(
+                plan.turns[0].context,
+                GatewaySessionExecutionResult("pm answer", delivered: true, deliveryStatus: "delivered", deliveryMessageId: "m-pm")
+            )
+            let failed = GatewayResolvedSessionTurnResult(
+                plan.turns[1].context,
+                GatewaySessionExecutionResult("", delivered: false, deliveryStatus: "send-failed", deliveryError: "synthetic send failure")
+            )
+            let partial = gatewayAgentTeamBroadcastAggregateJson(plan, [failed, delivered])
+            @Expect(agentsTestString(partial, "status"), "partial")
+            @Expect(partial.get("deliveredCount").getOrThrow().asInt().getValue(), 1)
+            let partialAgents = partial.get("agents").getOrThrow().asArray()
+            @Expect(agentsTestString(partialAgents[0].asObject(), "agentId"), "content-pm")
+            @Expect(agentsTestString(partialAgents[0].asObject(), "status"), "delivered")
+            @Expect(partialAgents[0].asObject().get("elapsedMs").isSome(), true)
+            @Expect(agentsTestString(partialAgents[1].asObject(), "error"), "synthetic send failure")
+            @Expect(partialAgents[1].asObject().get("elapsedMs").isSome(), true)
+            @Expect(agentsTestString(partialAgents[2].asObject(), "status"), "missing-result")
+            @Expect(partialAgents[2].asObject().get("elapsedMs").isSome(), true)
+
+            let allFailed = gatewayAgentTeamBroadcastAggregateJson(plan, [failed])
+            @Expect(agentsTestString(allFailed, "status"), "failed")
+            @Expect(allFailed.get("deliveredCount").getOrThrow().asInt().getValue(), 0)
+            let failedAgents = allFailed.get("agents").getOrThrow().asArray()
+            @Expect(agentsTestString(failedAgents[1].asObject(), "error"), "synthetic send failure")
+        })
+    }
+
+    @TestCase
+    public func agentTeamAliasMentionsPmWriterReviewerOverrideRouteBinding(): Unit {
+        withAgentsTempHome("metis-agent-team-alias-priority-home", { _home: Path =>
+            let bindings = JsonArray([])
+            bindings.add(agentsTestRouteBinding("content-pm", "telegram", accountId: "bot-a", peerKind: "group", peerId: "-100_content"))
+            let aliases = JsonArray([])
+            aliases.add(agentsTestTeamAlias("@pm", "content-pm"))
+            aliases.add(agentsTestTeamAlias("@writer", "content-writer"))
+            aliases.add(agentsTestTeamAlias("@reviewer", "content-reviewer"))
+            let createParams = JsonObject()
+            createParams.put("id", JsonString("content"))
+            createParams.put("template", JsonString("pm-writer-reviewer"))
+            createParams.put("bindings", bindings)
+            createParams.put("aliases", aliases)
+            @Expect(handleGatewayAgentsFamily("agents.teams.create", request: Some(GatewayRpcRequest("agents.teams.create", params: createParams))).getOrThrow().ok, true)
+
+            let root = MetisConfigManager.rawConfig().getOrThrow()
+            let pm = gatewayResolveSessionContextWithAgentRoute(GatewaySessionRequest(
+                GatewayIngressSource.Channel("telegram"),
+                channelName: "telegram",
+                text: "@pm triage this",
+                accountId: "bot-a",
+                peerId: "-100_content",
+                senderId: "sender-content",
+                routeRoot: root,
+                routeAccountId: "bot-a",
+                routePeerKind: "group",
+                routePeerId: "-100_content"
+            ))
+            let writer = gatewayResolveSessionContextWithAgentRoute(GatewaySessionRequest(
+                GatewayIngressSource.Channel("telegram"),
+                channelName: "telegram",
+                text: "@writer draft this",
+                accountId: "bot-a",
+                peerId: "-100_content",
+                senderId: "sender-content",
+                routeRoot: root,
+                routeAccountId: "bot-a",
+                routePeerKind: "group",
+                routePeerId: "-100_content"
+            ))
+            let reviewer = gatewayResolveSessionContextWithAgentRoute(GatewaySessionRequest(
+                GatewayIngressSource.Channel("telegram"),
+                channelName: "telegram",
+                text: "@reviewer check this",
+                accountId: "bot-a",
+                peerId: "-100_content",
+                senderId: "sender-content",
+                routeRoot: root,
+                routeAccountId: "bot-a",
+                routePeerKind: "group",
+                routePeerId: "-100_content"
+            ))
+
+            @Expect(pm.agentId, "content-pm")
+            @Expect(pm.matchedBy, "alias.mention")
+            @Expect(writer.agentId, "content-writer")
+            @Expect(writer.matchedBy, "alias.mention")
+            @Expect(reviewer.agentId, "content-reviewer")
+            @Expect(reviewer.matchedBy, "alias.mention")
         })
     }
 

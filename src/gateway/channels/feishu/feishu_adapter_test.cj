@@ -713,6 +713,28 @@ public class FeishuAdapterTest {
     }
 
     @TestCase
+    public func streamingControllerSupportsFlushThrottleAndMessageIdRecovery(): Unit {
+        let client = FeishuFakeApiClient()
+        let controller = FeishuStreamingCardController(
+            client,
+            accountId: "tenant-a",
+            rawPeerId: "oc_stream",
+            receiveId: "oc_stream",
+            receiveIdType: "chat_id"
+        )
+        @Expect(controller.patchChunkThrottled("before recovery", nowMs: 1000, throttleMs: 500), false)
+        @Expect(controller.recoverCardMessageId("om_recovered_card"), true)
+        @Expect(controller.currentPhase(), "streaming")
+        @Expect(controller.patchChunkThrottled("first visible chunk", nowMs: 1000, throttleMs: 500), true)
+        @Expect(client.cardPatchCount(), 1)
+        @Expect(controller.patchChunkThrottled("second staged chunk", nowMs: 1100, throttleMs: 500), true)
+        @Expect(client.cardPatchCount(), 1)
+        @Expect(controller.flushPending(nowMs: 1600), true)
+        @Expect(client.cardPatchCount(), 2)
+        @Expect(client.patchedCard(1).fallbackText().contains("second staged chunk"), true)
+    }
+
+    @TestCase
     public func cardLiveSmokeChecklistIsExplicitOptInOnly(): Unit {
         let checklist = FeishuCardLiveSmokeChecklist.toJson()
         @Expect(checklist.get("optInRequired").getOrThrow().asBool().getValue(), true)
@@ -1219,6 +1241,83 @@ public class FeishuAdapterTest {
         @Expect(file.get("fileSize").getOrThrow().asInt().getValue(), 64)
         @Expect(media.get("mediaKind").getOrThrow().asString().getValue(), "media")
         @Expect(audio.get("mediaKind").getOrThrow().asString().getValue(), "audio")
+    }
+
+    @TestCase
+    public func supportedMessageTypesProjectRouteSessionAndMediaContext(): Unit {
+        let adapter = FeishuAdapter(config: FeishuConfig(enabled: true), accountId: "work")
+        adapter.start()
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload("om_text_all", "oc_group", "ou_1", "{\\\"text\\\":\\\"plain text\\\"}", messageType: "text")).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload("om_post_all", "oc_group", "ou_1", "{\\\"zh_cn\\\":{\\\"content\\\":[[{\\\"tag\\\":\\\"text\\\",\\\"text\\\":\\\"post text\\\"}]]}}", messageType: "post")).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload("om_image_all", "oc_group", "ou_1", "{\\\"image_key\\\":\\\"img_all\\\",\\\"file_name\\\":\\\"diagram.png\\\",\\\"mime_type\\\":\\\"image/png\\\"}", messageType: "image")).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload("om_file_all", "oc_group", "ou_1", "{\\\"file_key\\\":\\\"file_all\\\",\\\"file_name\\\":\\\"report.pdf\\\",\\\"mime_type\\\":\\\"application/pdf\\\"}", messageType: "file")).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload("om_audio_all", "oc_group", "ou_1", "{\\\"file_key\\\":\\\"audio_all\\\",\\\"file_name\\\":\\\"voice.ogg\\\",\\\"mime_type\\\":\\\"audio/ogg\\\"}", messageType: "audio")).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload("om_video_all", "oc_group", "ou_1", "{\\\"file_key\\\":\\\"video_all\\\",\\\"file_name\\\":\\\"demo.mp4\\\",\\\"mime_type\\\":\\\"video/mp4\\\"}", messageType: "video")).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload("om_media_all", "oc_group", "ou_1", "{\\\"file_key\\\":\\\"media_all\\\",\\\"file_name\\\":\\\"clip.mp4\\\",\\\"mime_type\\\":\\\"video/mp4\\\"}", messageType: "media")).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload("om_interactive_all", "oc_group", "ou_1", "{\\\"elements\\\":[{\\\"tag\\\":\\\"div\\\",\\\"text\\\":{\\\"tag\\\":\\\"lark_md\\\",\\\"content\\\":\\\"interactive text\\\"}}]}", messageType: "interactive")).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload("om_merge_all", "oc_group", "ou_1", "{\\\"title\\\":\\\"merged chat\\\"}", messageType: "merge_forward")).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload("om_sticker_all", "oc_group", "ou_1", "{\\\"sticker_key\\\":\\\"stk_all\\\"}", messageType: "sticker")).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload("om_share_chat_all", "oc_group", "ou_1", "{\\\"chat_id\\\":\\\"oc_shared\\\",\\\"chat_name\\\":\\\"shared chat\\\"}", messageType: "share_chat")).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload("om_share_user_all", "oc_group", "ou_1", "{\\\"user_id\\\":\\\"ou_shared\\\",\\\"name\\\":\\\"Shared User\\\"}", messageType: "share_user")).contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 12)
+        for (i in 0..inbound.size) {
+            @Expect(inbound[i].accountId, "work")
+            @Expect(inbound[i].conversationId.getOrThrow(), "oc_group")
+            @Expect(inbound[i].mediaContext.get("channel").getOrThrow().asString().getValue(), "feishu")
+            @Expect(inbound[i].mediaContext.get("accountId").getOrThrow().asString().getValue(), "work")
+            let route = inbound[i].mediaContext.get("context").getOrThrow().asObject()
+                .get("imRoute").getOrThrow().asObject()
+            @Expect(route.get("channel").getOrThrow().asString().getValue(), "feishu")
+            @Expect(route.get("accountId").getOrThrow().asString().getValue(), "work")
+            @Expect(route.get("peerKind").getOrThrow().asString().getValue(), "group")
+            @Expect(route.get("peerId").getOrThrow().asString().getValue(), "oc_group")
+            @Expect(route.get("senderId").getOrThrow().asString().getValue(), "ou_1")
+            @Expect(route.get("messageId").getOrThrow().asString().getValue().startsWith("om_"), true)
+            @Expect(inbound[i].text.trimAscii().isEmpty(), false)
+        }
+        @Expect(inbound[2].mediaContext.get("records").getOrThrow().asArray()[0].asObject().get("mediaKind").getOrThrow().asString().getValue(), "image")
+        @Expect(inbound[3].mediaContext.get("records").getOrThrow().asArray()[0].asObject().get("mediaKind").getOrThrow().asString().getValue(), "file")
+        @Expect(inbound[4].mediaContext.get("records").getOrThrow().asArray()[0].asObject().get("mediaKind").getOrThrow().asString().getValue(), "audio")
+        @Expect(inbound[5].mediaContext.get("records").getOrThrow().asArray()[0].asObject().get("mediaKind").getOrThrow().asString().getValue(), "video")
+        @Expect(inbound[6].mediaContext.get("records").getOrThrow().asArray()[0].asObject().get("mediaKind").getOrThrow().asString().getValue(), "media")
+        @Expect(inbound[8].mediaContext.get("context").getOrThrow().asObject().get("feishuMergeForward").getOrThrow().asObject().get("status").getOrThrow().asString().getValue(), "metadata_only")
+    }
+
+    @TestCase
+    public func mediaContextSeparatesCurrentHistoricalBotImageAndDocMediaBoundaries(): Unit {
+        let adapter = FeishuAdapter(config: FeishuConfig(enabled: true), accountId: "work")
+        adapter.start()
+        @Expect(adapter.ingestWebhookPayload(
+            this.webhookPayload(
+                "om_resource_boundary",
+                "oc_group",
+                "ou_1",
+                "{\\\"image_key\\\":\\\"img_boundary\\\",\\\"file_name\\\":\\\"diagram.png\\\",\\\"mime_type\\\":\\\"image/png\\\"}",
+                messageType: "image"
+            )
+        ).contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 1)
+        let boundary = inbound[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("feishuResourceBoundary").getOrThrow().asObject()
+        let current = boundary.get("currentTurn").getOrThrow().asObject()
+        let historical = boundary.get("historicalResource").getOrThrow().asObject()
+        let botImage = boundary.get("botImage").getOrThrow().asObject()
+        let docMedia = boundary.get("docMedia").getOrThrow().asObject()
+        @Expect(current.get("relation").getOrThrow().asString().getValue(), "current")
+        @Expect(current.get("status").getOrThrow().asString().getValue(), "staged_metadata")
+        @Expect(historical.get("relation").getOrThrow().asString().getValue(), "historical")
+        @Expect(historical.get("status").getOrThrow().asString().getValue(), "auth_required")
+        @Expect(historical.get("tool").getOrThrow().asString().getValue(), "feishu_im_user_fetch_resource")
+        @Expect(botImage.get("identity").getOrThrow().asString().getValue(), "bot")
+        @Expect(botImage.get("status").getOrThrow().asString().getValue(), "not_configured")
+        @Expect(docMedia.get("tool").getOrThrow().asString().getValue(), "feishu_doc_media")
+        @Expect(docMedia.get("status").getOrThrow().asString().getValue(), "auth_required")
+        @Expect(boundary.toJsonString().contains("Authorization"), false)
+        @Expect(boundary.toJsonString().contains("Bearer "), false)
     }
 
     @TestCase

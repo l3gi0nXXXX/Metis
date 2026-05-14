@@ -329,6 +329,9 @@ public class FeishuStreamingCardController {
     private var lastFallbackCategoryValue: String = ""
     private var lastFallbackStatusValue: String = ""
     private var lastFallbackDetailValue: String = ""
+    private var pendingFlush: Bool = false
+    private var pendingFlushText: String = ""
+    private var lastFlushAtMs: Int64 = 0
 
     public init(
         client: FeishuApiClient,
@@ -401,6 +404,61 @@ public class FeishuStreamingCardController {
         this.patchCurrent(None<FeishuReplyFooterMetrics>)
     }
 
+    public func recoverCardMessageId(messageId: String): Bool {
+        let normalized = messageId.trimAscii()
+        if (normalized.isEmpty() || this.isTerminalPhase()) {
+            return false
+        }
+        this.cardMessageId = normalized
+        this.aborted = false
+        if (this.phase == "idle" || this.phase == "creating") {
+            this.phase = "streaming"
+        }
+        true
+    }
+
+    public func patchChunkThrottled(text: String, nowMs!: Int64, throttleMs!: Int64): Bool {
+        if (this.aborted || this.cardMessageId.isEmpty() || this.isTerminalPhase()) {
+            return false
+        }
+        let normalized = text.trimAscii()
+        if (normalized == this.currentText && !this.pendingFlush) {
+            return true
+        }
+        let effectiveThrottleMs = if (throttleMs < 0) { 0 } else { throttleMs }
+        if (this.lastFlushAtMs <= 0 || nowMs - this.lastFlushAtMs >= effectiveThrottleMs) {
+            this.currentText = normalized
+            this.pendingFlush = false
+            this.pendingFlushText = ""
+            let ok = this.patchCurrent(None<FeishuReplyFooterMetrics>)
+            if (ok) {
+                this.lastFlushAtMs = nowMs
+            }
+            return ok
+        }
+        this.currentText = normalized
+        this.pendingFlush = true
+        this.pendingFlushText = normalized
+        true
+    }
+
+    public func flushPending(nowMs!: Int64): Bool {
+        if (!this.pendingFlush) {
+            return true
+        }
+        if (this.aborted || this.cardMessageId.isEmpty() || this.isTerminalPhase()) {
+            return false
+        }
+        this.currentText = this.pendingFlushText
+        this.pendingFlush = false
+        this.pendingFlushText = ""
+        let ok = this.patchCurrent(None<FeishuReplyFooterMetrics>)
+        if (ok) {
+            this.lastFlushAtMs = nowMs
+        }
+        ok
+    }
+
     public func updateToolPayload(name: String, payload: String): Bool {
         if (this.aborted || this.cardMessageId.isEmpty() || this.isTerminalPhase() || !this.showToolUse) {
             return false
@@ -434,6 +492,8 @@ public class FeishuStreamingCardController {
         if (this.cardMessageId.isEmpty()) {
             this.aborted = true
             this.phase = "aborted"
+            this.pendingFlush = false
+            this.pendingFlushText = ""
             return false
         }
         this.aborted = true
@@ -444,6 +504,8 @@ public class FeishuStreamingCardController {
             FeishuInteractiveCard(title: "Metis", text: "Aborted: ${message}")
         )
         this.phase = "aborted"
+        this.pendingFlush = false
+        this.pendingFlushText = ""
         result.ok
     }
 

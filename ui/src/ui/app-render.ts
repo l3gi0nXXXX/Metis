@@ -1357,7 +1357,7 @@ export function renderApp(state: AppViewState) {
                 onLoadWorkspaceFiles: () => loadAgentTeamWorkspaceFiles(state),
                 onLoadWorkspaceFile: (name) => loadAgentTeamWorkspaceFile(state, name),
                 onSaveWorkspaceFile: () => saveAgentTeamWorkspaceFile(state),
-                onStartFeishuOAuth: (accountId) => startAgentTeamFeishuOAuth(state, accountId),
+                onStartFeishuOAuth: (accountId, action) => startAgentTeamFeishuOAuth(state, accountId, action),
                 onSkillsFilterChange: (next) => (state.skillsFilter = next),
                 onSkillsRefresh: () => {
                   if (resolvedAgentId) {

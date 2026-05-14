@@ -29,6 +29,7 @@ import {
   type AgentTeamBindingDraft,
   type AgentTeamBindingPreview,
   type AgentTeamEditorDraft,
+  type AgentTeamFeishuAuthAction,
   type AgentTeamFeishuAuthResult,
   type AgentTeamModelDraft,
   type AgentTeamWorkspaceDraft,
@@ -79,7 +80,7 @@ export type AgentTeamsPanelProps = AgentTeamsPanelState & {
   onLoadWorkspaceFiles: () => void;
   onLoadWorkspaceFile: (name: string) => void;
   onSaveWorkspaceFile: () => void;
-  onStartFeishuOAuth: (accountId: string) => void;
+  onStartFeishuOAuth: (accountId: string, action?: AgentTeamFeishuAuthAction) => void;
 };
 
 export function renderAgentTeamsPanel(props: AgentTeamsPanelProps) {
@@ -1281,11 +1282,43 @@ function renderFeishuAuthDoctorPanel(props: AgentTeamsPanelProps) {
         >
           ${props.feishuAuthLoading ? "Starting OAuth..." : "Start OAuth via Gateway"}
         </button>
+        <button
+          type="button"
+          class="btn btn--sm"
+          ?disabled=${props.feishuAuthLoading}
+          @click=${() => props.onStartFeishuOAuth(defaultAccount, "status")}
+        >
+          Status
+        </button>
+        <button
+          type="button"
+          class="btn btn--sm"
+          ?disabled=${props.feishuAuthLoading}
+          @click=${() => props.onStartFeishuOAuth(defaultAccount, "poll")}
+        >
+          Poll
+        </button>
+        <button
+          type="button"
+          class="btn btn--sm"
+          ?disabled=${props.feishuAuthLoading}
+          @click=${() => props.onStartFeishuOAuth(defaultAccount, "complete")}
+        >
+          Complete
+        </button>
+        <button
+          type="button"
+          class="btn btn--sm danger"
+          ?disabled=${props.feishuAuthLoading}
+          @click=${() => props.onStartFeishuOAuth(defaultAccount, "revoke")}
+        >
+          Revoke local auth
+        </button>
       </div>
       ${props.feishuAuthResult
         ? html`
             <div class="agent-kv" style="margin-top: 12px;">
-              <div class="label">OAuth start result</div>
+              <div class="label">OAuth lifecycle result</div>
               <pre class="mono" style="white-space: pre-wrap; margin: 0;">${redactedJsonText(props.feishuAuthResult)}</pre>
             </div>
           `

@@ -15,7 +15,7 @@ import metis.utils.InfoUtils
 import std.collection.{ArrayList, HashMap}
 import std.convert.Parsable
 import std.fs.{Directory, File, FileInfo, Path, copy, exists, remove}
-import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString, JsonValue}
 
 private func gatewayAgentRpcStringParam(request: GatewayRpcRequest, keys: Array<String>, defaultValue: String): String {
     for (key in keys) {
@@ -2075,11 +2075,23 @@ private func gatewayAgentBindingConflictError(conflicts: Array<GatewayAgentBindi
     "Binding conflict for ${gatewayAgentBindingDescribe(first.binding)}; existing agent is \"${first.existingAgentId}\"."
 }
 
+private func gatewayAgentTeamProductSemanticsJson(): JsonObject {
+    let out = JsonObject()
+    out.put("singleRoute", JsonString("deterministic-single-agent"))
+    out.put("broadcast", JsonString("explicit-fan-out"))
+    out.put("manager", JsonString("member-or-default-agent-only"))
+    out.put("autonomousManagerRuntime", JsonBool(false))
+    out.put("crudSurface", JsonString("cli-ui-gateway-rpc"))
+    out.put("imSurface", JsonString("runtime-route-alias-native-command"))
+    return out
+}
+
 private func gatewayAgentTeamsListJson(_request: GatewayRpcRequest): GatewayRpcResponse {
     let result = JsonObject()
     let teams = gatewayAgentTeamsList(gatewayAgentConfigRootCloneReadOnly())
     result.put("teams", teams)
     result.put("count", teams.size().toJsonValue())
+    result.put("semantics", gatewayAgentTeamProductSemanticsJson())
     GatewayRpcResponse(true, "agents.teams.list", result: result)
 }
 
@@ -2093,6 +2105,7 @@ private func gatewayAgentTeamGetJson(request: GatewayRpcRequest): GatewayRpcResp
     }
     let result = JsonObject()
     result.put("team", teams[index])
+    result.put("semantics", gatewayAgentTeamProductSemanticsJson())
     GatewayRpcResponse(true, request.method, result: result)
 }
 
@@ -2159,6 +2172,7 @@ private func gatewayAgentTeamCreateJson(request: GatewayRpcRequest): GatewayRpcR
     result.put("team", team)
     result.put("agents", memberAgents)
     result.put("bindingApply", bindingApply)
+    result.put("semantics", gatewayAgentTeamProductSemanticsJson())
     GatewayRpcResponse(true, request.method, result: result)
 }
 
@@ -2249,6 +2263,7 @@ private func gatewayAgentTeamUpdateJson(request: GatewayRpcRequest): GatewayRpcR
     result.put("team", team)
     result.put("agents", memberAgents)
     result.put("bindingApply", bindingApply)
+    result.put("semantics", gatewayAgentTeamProductSemanticsJson())
     GatewayRpcResponse(true, request.method, result: result)
 }
 
@@ -2274,6 +2289,7 @@ private func gatewayAgentTeamDeleteJson(request: GatewayRpcRequest): GatewayRpcR
     let result = JsonObject()
     result.put("team", removed)
     result.put("removed", true.toJsonValue())
+    result.put("semantics", gatewayAgentTeamProductSemanticsJson())
     GatewayRpcResponse(true, request.method, result: result)
 }
 

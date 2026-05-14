@@ -33,6 +33,10 @@ private class FeishuOapiToolsetScopeMissingTokenProvider <: FeishuOapiTokenProvi
     public func userAccessToken(_accountId: String, requiredScopes: Array<String>): FeishuOapiTokenLookup {
         FeishuOapiTokenLookup("scope_missing", missingScopes: requiredScopes, error: "missing test scope")
     }
+
+    public func tokenLookup(_accountId: String, _tokenMode: String, requiredScopes: Array<String>): FeishuOapiTokenLookup {
+        FeishuOapiTokenLookup("scope_missing", missingScopes: requiredScopes, error: "missing test scope")
+    }
 }
 
 private class FeishuOapiToolsetAppScopeMissingTokenProvider <: FeishuOapiTokenProvider {
@@ -41,9 +45,15 @@ private class FeishuOapiToolsetAppScopeMissingTokenProvider <: FeishuOapiTokenPr
     public func userAccessToken(_accountId: String, requiredScopes: Array<String>): FeishuOapiTokenLookup {
         FeishuOapiTokenLookup("app_scope_missing", missingScopes: requiredScopes, error: "missing app scope")
     }
+
+    public func tokenLookup(_accountId: String, _tokenMode: String, requiredScopes: Array<String>): FeishuOapiTokenLookup {
+        FeishuOapiTokenLookup("app_scope_missing", missingScopes: requiredScopes, error: "missing app scope")
+    }
 }
 
 private class FeishuOapiToolsetOkTokenProvider <: FeishuOapiTokenProvider {
+    public let modes = ArrayList<String>()
+
     public init() {}
 
     public func userAccessToken(_accountId: String, _requiredScopes: Array<String>): FeishuOapiTokenLookup {
@@ -53,6 +63,22 @@ private class FeishuOapiToolsetOkTokenProvider <: FeishuOapiTokenProvider {
             grantedScopes: ["im:message", "im:message.send_as_user", "im:chat:read"],
             hasOfflineAccess: false
         )
+    }
+
+    public func tokenLookup(accountId: String, tokenMode: String, requiredScopes: Array<String>): FeishuOapiTokenLookup {
+        this.modes.add(tokenMode)
+        if (tokenMode == "user_access_token") {
+            return this.userAccessToken(accountId, requiredScopes)
+        }
+        if (tokenMode == "tenant_access_token" || tokenMode == "bot_access_token" || tokenMode == "app_access_token") {
+            return FeishuOapiTokenLookup(
+                "authorized",
+                accessToken: "fake-${tokenMode}",
+                grantedScopes: requiredScopes,
+                hasOfflineAccess: false
+            )
+        }
+        FeishuOapiTokenLookup("token_mode_unsupported", error: "unsupported token mode ${tokenMode}")
     }
 }
 
@@ -758,9 +784,92 @@ public class GatewayFeishuOapiToolsetTest {
             let request = feishuOapiBuildRequest(row.tool, row.action, "tenant-a", JsonObject())
             @Expect(request.path, row.path)
             @Expect(request.method, row.method)
-            @Expect(request.tokenMode, "user_access_token")
+            @Expect(request.tokenMode.isEmpty(), false)
             @Expect(request.requiredScopes[0], row.firstScope)
         }
+    }
+
+    @TestCase
+    public func openClawActionParityIsTrackedAtActionLevelAndIncludesBasicBatch(): Unit {
+        let keys = feishuOapiOpenClawActionKeys()
+        @Expect(keys.size >= 96, true)
+        @Expect(keys.contains("feishu_get_user.basic_batch"), true)
+        @Expect(keys.contains("feishu_chat.get"), true)
+        @Expect(keys.contains("feishu_bitable_app_table_record.batch_update"), true)
+        @Expect(keys.contains("feishu_sheet.export"), true)
+
+        for (key in keys) {
+            @Expect(feishuOapiIsSupportedActionKey(key), true)
+            @Expect(feishuOapiPathForActionKeyForTest(key).isEmpty(), false)
+            @Expect(feishuOapiMethodForActionKeyForTest(key).isEmpty(), false)
+            @Expect(feishuOapiRequiredScopesForActionKeyForTest(key).size > 0, true)
+        }
+    }
+
+    @TestCase
+    public func getUserBasicBatchHasPathScopeTokenModeAndToolsetEntry(): Unit {
+        let request = feishuOapiBuildRequest("feishu_get_user", "basic_batch", "tenant-a", JsonObject())
+        @Expect(request.actionKey, "feishu_get_user.basic_batch")
+        @Expect(request.path, "/open-apis/contact/v3/users/basic_batch")
+        @Expect(request.method, "POST")
+        @Expect(request.tokenMode, "user_access_token")
+        @Expect(request.requiredScopes[0], "contact:user.basic_profile:readonly")
+        @Expect(request.supportedActions.contains("basic_batch"), true)
+
+        let out = GatewayFeishuOapiToolset().debugFeishuOapiInvokeForTest(
+            "feishu_get_user",
+            "basic_batch",
+            Some("tenant-a"),
+            Some("{\"body\":{\"user_ids\":[\"ou_1\"]},\"query\":{\"user_id_type\":\"open_id\"}}")
+        )
+        let json = JsonValue.fromStr(out).asObject()
+        @Expect(json.get("action_key").getOrThrow().asString().getValue(), "feishu_get_user.basic_batch")
+        @Expect(json.get("path").getOrThrow().asString().getValue(), "/open-apis/contact/v3/users/basic_batch")
+        @Expect(json.get("required_scopes").getOrThrow().asArray()[0].asString().getValue(), "contact:user.basic_profile:readonly")
+    }
+
+    @TestCase
+    public func actionAwareTokenModeSelectsUatTatBotAndAppPaths(): Unit {
+        let userRequest = feishuOapiBuildRequest("feishu_im_user_message", "send", "tenant-a", JsonObject())
+        @Expect(userRequest.tokenMode, "user_access_token")
+
+        let tenantRequest = feishuOapiBuildRequest("feishu_doc_comments", "list_replies", "tenant-a", JsonObject())
+        @Expect(tenantRequest.tokenMode, "tenant_access_token")
+
+        let botRequest = feishuOapiBuildRequest("feishu_im_bot_image", "default", "tenant-a", JsonObject())
+        @Expect(botRequest.tokenMode, "bot_access_token")
+
+        let appRequest = feishuOapiBuildRequest("feishu_ask_user_question", "default", "tenant-a", JsonObject())
+        @Expect(appRequest.tokenMode, "app_access_token")
+
+        let tokenProvider = FeishuOapiToolsetOkTokenProvider()
+        let success = MetisFeishuOapiClient(
+            tokenProvider: Some<FeishuOapiTokenProvider>(tokenProvider),
+            httpClient: Some<FeishuOapiHttpClient>(FeishuNativeOapiHttpClient(
+                transport: Some<FeishuOapiRawHttpTransport>(FeishuOapiToolsetStaticRawTransport(200, body: "{\"code\":0,\"data\":{\"ok\":true}}"))
+            ))
+        ).invoke(tenantRequest)
+        @Expect(success.get("status").getOrThrow().asString().getValue(), "success")
+        @Expect(tokenProvider.modes[0], "tenant_access_token")
+        let diagnostic = success.get("scope_diagnostic").getOrThrow().asObject()
+        @Expect(diagnostic.get("token_mode").getOrThrow().asString().getValue(), "tenant_access_token")
+        @Expect(diagnostic.get("offline_access").getOrThrow().asObject().get("required").getOrThrow().asBool().getValue(), false)
+    }
+
+    @TestCase
+    public func unsupportedTokenModeReturnsStructuredDiagnosticWithoutNetwork(): Unit {
+        let request = feishuOapiBuildRequest("feishu_task_task", "append_steps", "tenant-a", JsonObject())
+        @Expect(request.tokenMode, "tenant_access_token")
+        let json = MetisFeishuOapiClient(
+            tokenProvider: Some<FeishuOapiTokenProvider>(MetisFeishuOapiTokenProvider()),
+            httpClient: Some<FeishuOapiHttpClient>(FeishuNativeOapiHttpClient(
+                transport: Some<FeishuOapiRawHttpTransport>(FeishuOapiToolsetStaticRawTransport(200, body: "{\"code\":0}"))
+            ))
+        ).invoke(request)
+        @Expect(json.get("ok").getOrThrow().asBool().getValue(), false)
+        @Expect(json.get("status").getOrThrow().asString().getValue(), "token_mode_unsupported")
+        @Expect(json.get("token_mode").getOrThrow().asString().getValue(), "tenant_access_token")
+        @Expect(json.get("scope_diagnostic").getOrThrow().asObject().get("token_mode").getOrThrow().asString().getValue(), "tenant_access_token")
     }
 
     @TestCase
