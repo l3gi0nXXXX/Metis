@@ -1532,16 +1532,20 @@ public class GatewayServerMethodsAgentsTest {
             @Expect(agentsTestString(partialAgents[0].asObject(), "agentId"), "content-pm")
             @Expect(agentsTestString(partialAgents[0].asObject(), "status"), "delivered")
             @Expect(partialAgents[0].asObject().get("elapsedMs").isSome(), true)
+            @Expect(agentsTestString(partialAgents[0].asObject(), "detail"), "delivered")
             @Expect(agentsTestString(partialAgents[1].asObject(), "error"), "synthetic send failure")
             @Expect(partialAgents[1].asObject().get("elapsedMs").isSome(), true)
+            @Expect(agentsTestString(partialAgents[1].asObject(), "detail"), "send-failed: synthetic send failure")
             @Expect(agentsTestString(partialAgents[2].asObject(), "status"), "missing-result")
             @Expect(partialAgents[2].asObject().get("elapsedMs").isSome(), true)
+            @Expect(agentsTestString(partialAgents[2].asObject(), "detail"), "missing-result: no execution result for broadcast member")
 
             let allFailed = gatewayAgentTeamBroadcastAggregateJson(plan, [failed])
             @Expect(agentsTestString(allFailed, "status"), "failed")
             @Expect(allFailed.get("deliveredCount").getOrThrow().asInt().getValue(), 0)
             let failedAgents = allFailed.get("agents").getOrThrow().asArray()
             @Expect(agentsTestString(failedAgents[1].asObject(), "error"), "synthetic send failure")
+            @Expect(agentsTestString(failedAgents[1].asObject(), "detail"), "send-failed: synthetic send failure")
         })
     }
 

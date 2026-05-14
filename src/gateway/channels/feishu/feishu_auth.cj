@@ -12,6 +12,7 @@ import metis.gateway.core.{
 
 import std.collection.{ArrayList, HashMap}
 import std.convert.Parsable
+import std.env.getVariable
 import std.fs.{Directory, File, Path, exists, remove}
 import std.time.DateTime
 import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString, JsonValue}
@@ -520,6 +521,44 @@ public func feishuGatewayNativeAuthSessionStoreRoot(): Path {
     MetisPaths.homeRoot().join("feishu").join("auth-sessions")
 }
 
+public class FeishuAuthLiveSmokeChecklist {
+    public static func optInEnvName(): String {
+        "METIS_FEISHU_LIVE_AUTH_SMOKE"
+    }
+
+    public static func isOptInValueEnabled(value: String): Bool {
+        let normalized = value.trimAscii().toAsciiLower()
+        normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on"
+    }
+
+    public static func toJson(): JsonObject {
+        let root = JsonObject()
+        root.put("optInRequired", JsonBool(true))
+        root.put("optInEnv", JsonString(FeishuAuthLiveSmokeChecklist.optInEnvName()))
+        root.put("defaultNetwork", JsonString("disabled"))
+        root.put("credentialPolicy", JsonString("use only a test Feishu app, test tenant, and test account; never record appSecret, accessToken, refreshToken, or Authorization headers"))
+        root.put("requiredConfig", JsonArray([
+            JsonString("accountId"),
+            JsonString("appId"),
+            JsonString("appSecret"),
+            JsonString("domain"),
+            JsonString("offline_access"),
+            JsonString("testTenant"),
+            JsonString("testUser")
+        ]))
+        root.put("phases", JsonArray([
+            JsonString("start"),
+            JsonString("status-pending"),
+            JsonString("poll"),
+            JsonString("complete"),
+            JsonString("refresh-expired-token"),
+            JsonString("revoke-local"),
+            JsonString("redaction")
+        ]))
+        root
+    }
+}
+
 public func feishuInstallGatewayNativeAuthRunner(): Unit {
     setGatewayFeishuNativeAuthRunner(Some({ accountId: String, user: GatewayUserSettings =>
         feishuGatewayNativeAuthStart(accountId, user)
@@ -826,6 +865,160 @@ public func feishuGatewayNativeAuthRevokeWithClient(
     out
 }
 
+public func feishuGatewayNativeAuthLiveSmoke(
+    accountId: String,
+    user: GatewayUserSettings,
+    outputRoot!: String = ""
+): JsonObject {
+    feishuGatewayNativeAuthLiveSmokeFromEnvWithClient(
+        accountId,
+        user,
+        FeishuNativeAuthHttpClient(),
+        outputRoot: outputRoot
+    )
+}
+
+public func feishuGatewayNativeAuthLiveSmokeFromEnvWithClient(
+    accountId: String,
+    user: GatewayUserSettings,
+    http: FeishuAuthHttpClient,
+    outputRoot!: String = "",
+    nowMs!: Int64 = DateTime.now().toUnixTimeStamp().toMilliseconds()
+): JsonObject {
+    feishuGatewayNativeAuthLiveSmokeWithClient(
+        accountId,
+        user,
+        http,
+        outputRoot: if (outputRoot.trimAscii().isEmpty()) { feishuAuthEnvValue("METIS_FEISHU_LIVE_AUTH_REPORT_DIR") } else { outputRoot },
+        liveOptIn: feishuAuthEnvEnabled(feishuAuthEnvValue("METIS_FEISHU_LIVE_AUTH_SMOKE")),
+        nowMs: nowMs
+    )
+}
+
+public func feishuGatewayNativeAuthLiveSmokeWithClient(
+    accountId: String,
+    user: GatewayUserSettings,
+    http: FeishuAuthHttpClient,
+    outputRoot!: String = "",
+    liveOptIn!: Bool = false,
+    nowMs!: Int64 = DateTime.now().toUnixTimeStamp().toMilliseconds()
+): JsonObject {
+    let normalized = feishuAuthNativeAccountId(accountId, user)
+    let root = feishuAuthLiveOutputRoot(outputRoot)
+    let report = feishuAuthLiveBaseReport(normalized, root, liveOptIn, nowMs)
+
+    if (!liveOptIn) {
+        report.put("status", JsonString("skipped"))
+        report.put("reason", JsonString("env_gate_disabled"))
+        report.put("networkAttempted", JsonBool(false))
+        report.put("steps", feishuAuthLiveSkippedSteps(root, "skipped"))
+        return feishuAuthLiveWriteReport(root, report)
+    }
+
+    let account = feishuAuthNativeAccountConfig(normalized, user)
+    let appId = feishuAuthJsonStringFallback(account, ["appId", "app_id"], user.feishu.appId)
+    let appSecret = feishuAuthJsonStringFallback(account, ["appSecret", "app_secret"], user.feishu.appSecret)
+    if (appId.isEmpty() || appSecret.isEmpty()) {
+        let missing = JsonArray([])
+        if (appId.isEmpty()) {
+            missing.add(JsonString("app_id"))
+        }
+        if (appSecret.isEmpty()) {
+            missing.add(JsonString("app_secret"))
+        }
+        report.put("status", JsonString("configuration_error"))
+        report.put("reason", JsonString("missing_app_credentials"))
+        report.put("missingConfig", missing)
+        report.put("networkAttempted", JsonBool(false))
+        report.put("steps", feishuAuthLiveSkippedSteps(root, "blocked"))
+        return feishuAuthLiveWriteReport(root, report)
+    }
+
+    let tokenStore = FeishuFileTokenStore(root.join("tokens"))
+    let sessionStore = FeishuFileAuthSessionStore(root.join("sessions"))
+    let steps = JsonArray([])
+    var failureCount: Int64 = 0
+
+    let started = feishuGatewayNativeAuthStartWithClient(
+        normalized,
+        user,
+        http,
+        tokenStore,
+        sessionStore: sessionStore,
+        nowMs: nowMs
+    )
+    failureCount += feishuAuthLiveAddStep(steps, root, "start", "channels.feishu.auth.start", started)
+
+    let status = feishuGatewayNativeAuthStatusWithStores(
+        normalized,
+        user,
+        tokenStore,
+        sessionStore,
+        nowMs: nowMs,
+        http: None<FeishuAuthHttpClient>
+    )
+    failureCount += feishuAuthLiveAddStep(steps, root, "status", "channels.feishu.auth.status", status)
+
+    let polled = feishuGatewayNativeAuthPollWithClient(
+        normalized,
+        user,
+        http,
+        tokenStore,
+        sessionStore,
+        nowMs: nowMs + 1000
+    )
+    failureCount += feishuAuthLiveAddStep(steps, root, "poll", "channels.feishu.auth.poll", polled)
+
+    let completed = feishuGatewayNativeAuthCompleteWithClient(
+        normalized,
+        user,
+        http,
+        tokenStore,
+        sessionStore,
+        nowMs: nowMs + 2000
+    )
+    failureCount += feishuAuthLiveAddStep(steps, root, "complete", "channels.feishu.auth.complete", completed)
+
+    match (tokenStore.load(normalized)) {
+        case Some(token) =>
+            tokenStore.save(normalized, FeishuUserToken(
+                accessToken: token.accessToken,
+                refreshToken: token.refreshToken,
+                expiresAtMs: if (nowMs > 1000) { nowMs - 1000 } else { 1 },
+                scopes: token.scopes
+            ))
+            let refreshed = feishuGatewayNativeAuthStatusWithStores(
+                normalized,
+                user,
+                tokenStore,
+                sessionStore,
+                nowMs: nowMs,
+                http: Some<FeishuAuthHttpClient>(http)
+            )
+            failureCount += feishuAuthLiveAddStep(steps, root, "refresh", "channels.feishu.auth.status", refreshed)
+        case None =>
+            let skippedRefresh = feishuAuthLiveNotRun(normalized, "refresh_requires_authorized_token")
+            failureCount += feishuAuthLiveAddStep(steps, root, "refresh", "channels.feishu.auth.status", skippedRefresh)
+    }
+
+    let revoked = feishuGatewayNativeAuthRevokeWithClient(
+        normalized,
+        user,
+        http,
+        tokenStore,
+        sessionStore,
+        serverRevoke: true
+    )
+    failureCount += feishuAuthLiveAddStep(steps, root, "revoke", "channels.feishu.auth.revoke", revoked)
+
+    report.put("status", JsonString(if (failureCount == 0) { "ok" } else { "completed_with_failures" }))
+    report.put("reason", JsonString(if (failureCount == 0) { "" } else { "one_or_more_steps_failed" }))
+    report.put("networkAttempted", JsonBool(true))
+    report.put("failureCount", JsonInt(failureCount))
+    report.put("steps", steps)
+    feishuAuthLiveWriteReport(root, report)
+}
+
 public func feishuSaveAuthorizedUserToken(
     store: FeishuTokenStore,
     accountId: String,
@@ -956,6 +1149,183 @@ private func feishuAuthNormalizeDomain(raw: String): String {
         out = out[0..out.size - 1]
     }
     out
+}
+
+private func feishuAuthEnvValue(name: String): String {
+    match (getVariable(name)) {
+        case Some(value) => value.trimAscii()
+        case None => ""
+    }
+}
+
+private func feishuAuthEnvEnabled(raw: String): Bool {
+    match (raw.trimAscii().toAsciiLower()) {
+        case "1" => true
+        case "true" => true
+        case "yes" => true
+        case "on" => true
+        case _ => false
+    }
+}
+
+private func feishuAuthLiveOutputRoot(raw: String): Path {
+    let out = raw.trimAscii()
+    if (out.isEmpty()) {
+        return Path("/tmp").join("metis-feishu-live-auth-smoke")
+    }
+    Path(out)
+}
+
+private func feishuAuthLiveBaseReport(accountId: String, root: Path, liveOptIn: Bool, nowMs: Int64): JsonObject {
+    let out = JsonObject()
+    out.put("kind", JsonString("feishu_auth_live_smoke"))
+    out.put("accountId", JsonString(gatewayFeishuNormalizeAccountId(accountId)))
+    out.put("live", JsonBool(liveOptIn))
+    out.put("liveOptIn", JsonBool(liveOptIn))
+    out.put("nowMs", JsonInt(nowMs))
+    out.put("fixtureRoot", JsonString(root.toString()))
+    out.put("tokenStoreRoot", JsonString(root.join("tokens").toString()))
+    out.put("sessionStoreRoot", JsonString(root.join("sessions").toString()))
+    out.put("requiresEnv", JsonArray([
+        JsonString("METIS_FEISHU_LIVE_AUTH_SMOKE"),
+        JsonString("METIS_FEISHU_LIVE_AUTH_REPORT_DIR")
+    ]))
+    out.put("redacted", JsonBool(true))
+    out
+}
+
+private func feishuAuthLiveSkippedSteps(root: Path, status: String): JsonArray {
+    let steps = JsonArray([])
+    for ((operation, method) in feishuAuthLiveOperations()) {
+        let row = JsonObject()
+        row.put("operation", JsonString(operation))
+        row.put("method", JsonString(method))
+        row.put("status", JsonString(status))
+        row.put("fixturePath", JsonString(root.join("${operation}.json").toString()))
+        row.put("redacted", JsonBool(true))
+        steps.add(row)
+    }
+    steps
+}
+
+private func feishuAuthLiveOperations(): Array<(String, String)> {
+    [
+        ("start", "channels.feishu.auth.start"),
+        ("status", "channels.feishu.auth.status"),
+        ("poll", "channels.feishu.auth.poll"),
+        ("complete", "channels.feishu.auth.complete"),
+        ("refresh", "channels.feishu.auth.status"),
+        ("revoke", "channels.feishu.auth.revoke")
+    ]
+}
+
+private func feishuAuthLiveAddStep(
+    steps: JsonArray,
+    root: Path,
+    operation: String,
+    method: String,
+    result: JsonObject
+): Int64 {
+    let safe = feishuAuthLiveRedactedObject(result)
+    let fixturePath = feishuAuthLiveWriteFixture(root, operation, safe)
+    let row = JsonObject()
+    row.put("operation", JsonString(operation))
+    row.put("method", JsonString(method))
+    row.put("fixturePath", JsonString(fixturePath))
+    row.put("status", JsonString(feishuAuthString(safe, "status")))
+    row.put("result", safe)
+    row.put("redacted", JsonBool(true))
+    steps.add(row)
+    if (feishuAuthLiveStepFailed(safe)) { 1 } else { 0 }
+}
+
+private func feishuAuthLiveStepFailed(result: JsonObject): Bool {
+    match (feishuAuthString(result, "status")) {
+        case "error" => true
+        case "network_error" => true
+        case "parse_error" => true
+        case "missing_app_credentials" => true
+        case _ => false
+    }
+}
+
+private func feishuAuthLiveNotRun(accountId: String, reason: String): JsonObject {
+    let out = JsonObject()
+    out.put("accountId", JsonString(gatewayFeishuNormalizeAccountId(accountId)))
+    out.put("status", JsonString("not_run"))
+    out.put("reason", JsonString(reason))
+    out.put("redacted", JsonBool(true))
+    out
+}
+
+private func feishuAuthLiveWriteReport(root: Path, report: JsonObject): JsonObject {
+    let reportPath = root.join("report.json")
+    report.put("reportPath", JsonString(reportPath.toString()))
+    let safe = feishuAuthLiveRedactedObject(report)
+    if (!exists(root)) {
+        Directory.create(root, recursive: true)
+    }
+    File.writeTo(reportPath, safe.toJsonString().toArray())
+    safe
+}
+
+private func feishuAuthLiveWriteFixture(root: Path, operation: String, result: JsonObject): String {
+    if (!exists(root)) {
+        Directory.create(root, recursive: true)
+    }
+    let path = root.join("${feishuAuthSafeSegment(operation)}.json")
+    File.writeTo(path, feishuAuthLiveRedactedObject(result).toJsonString().toArray())
+    path.toString()
+}
+
+private func feishuAuthLiveRedactedObject(obj: JsonObject): JsonObject {
+    try { feishuAuthLiveRedactJsonValue(obj).asObject() } catch (_e: Exception) { JsonObject() }
+}
+
+private func feishuAuthLiveRedactJsonValue(value: JsonValue): JsonValue {
+    try {
+        let obj = value.asObject()
+        let out = JsonObject()
+        for ((key, entry) in obj.getFields()) {
+            if (feishuAuthLiveIsSecretKey(key)) {
+                out.put(key, JsonString("[redacted]"))
+            } else {
+                out.put(key, feishuAuthLiveRedactJsonValue(entry))
+            }
+        }
+        return out
+    } catch (_: Exception) {
+        try {
+            let arr = value.asArray()
+            let out = JsonArray([])
+            for (i in 0..arr.size()) {
+                out.add(feishuAuthLiveRedactJsonValue(arr[i]))
+            }
+            return out
+        } catch (_inner: Exception) {
+            try {
+                return JsonString(feishuAuthRedactSensitiveText(value.asString().getValue()))
+            } catch (_text: Exception) {
+                return value
+            }
+        }
+    }
+}
+
+private func feishuAuthLiveIsSecretKey(raw: String): Bool {
+    match (raw.trimAscii().toAsciiLower()) {
+        case "accesstoken" => true
+        case "access_token" => true
+        case "refreshtoken" => true
+        case "refresh_token" => true
+        case "devicecode" => true
+        case "device_code" => true
+        case "appsecret" => true
+        case "app_secret" => true
+        case "client_secret" => true
+        case "authorization" => true
+        case _ => false
+    }
 }
 
 private func feishuAuthRedactSensitiveText(raw: String): String {

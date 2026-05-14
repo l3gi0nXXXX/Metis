@@ -269,6 +269,36 @@ public class FeishuFakeApiClient <: FeishuApiClient {
     }
 }
 
+public class FeishuEventReplayLiveSmokeChecklist {
+    public static func optInEnvName(): String {
+        "METIS_FEISHU_LIVE_EVENT_REPLAY_SMOKE"
+    }
+
+    public static func isOptInValueEnabled(value: String): Bool {
+        let normalized = value.trimAscii().toAsciiLower()
+        normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on"
+    }
+
+    public static func toJson(): JsonObject {
+        let root = JsonObject()
+        root.put("optInRequired", JsonBool(true))
+        root.put("optInEnv", JsonString(FeishuEventReplayLiveSmokeChecklist.optInEnvName()))
+        root.put("defaultNetwork", JsonString("disabled"))
+        root.put("redaction", JsonString("live event fixtures must be redacted before persistence: remove tokens, authorization headers, secrets, tenant credentials, and private user content"))
+        root.put("matrix", JsonArray([
+            JsonString("message"),
+            JsonString("reaction"),
+            JsonString("card"),
+            JsonString("drive"),
+            JsonString("bot"),
+            JsonString("vc"),
+            JsonString("bitable"),
+            JsonString("media")
+        ]))
+        root
+    }
+}
+
 public class FeishuAdapter <: ChannelAdapter {
     private var running = false
     private let queueMutex = Mutex()
@@ -597,6 +627,9 @@ public class FeishuAdapter <: ChannelAdapter {
         }
         if (headerEventType == "card.action.trigger") {
             if (let Some(inbound) <- this.mapCardActionToInbound(root)) {
+                if (!this.tryRecordFeishuEvent(inbound.accountId, inbound.messageId)) {
+                    return this.feishuIgnoredResponse("duplicate_event", eventType: headerEventType)
+                }
                 synchronized(this.queueMutex) {
                     this.inboundQueue.add(inbound)
                 }
@@ -939,6 +972,11 @@ public class FeishuAdapter <: ChannelAdapter {
         if (effectivePeerId.isEmpty()) {
             return None<InboundMessage>
         }
+        let threadId = this.firstNonEmpty([
+            this.readStringField(context, "open_thread_id"),
+            this.readStringField(context, "thread_id"),
+            this.readStringField(context, "threadId")
+        ])
         let mediaContext = JsonObject()
         mediaContext.put("channel", JsonString("feishu"))
         mediaContext.put("accountId", JsonString(accountId))
@@ -950,6 +988,7 @@ public class FeishuAdapter <: ChannelAdapter {
         actionContext.put("operatorId", JsonString(operatorId))
         actionContext.put("messageId", JsonString(messageId))
         actionContext.put("peerId", JsonString(effectivePeerId))
+        actionContext.put("threadId", JsonString(threadId))
         actionContext.put("status", JsonString("accepted"))
         contextObj.put("feishuCardAction", actionContext)
         mediaContext.put("context", contextObj)
@@ -965,6 +1004,7 @@ public class FeishuAdapter <: ChannelAdapter {
             true,
             DateTime.now(),
             conversationId: Some(effectivePeerId),
+            threadId: if (threadId.isEmpty()) { None<String> } else { Some(threadId) },
             replyTargetMessageId: if (messageId.isEmpty()) { None<String> } else { Some(messageId) },
             raw: Some(root.toJsonString()),
             accountId: accountId,
@@ -1553,6 +1593,11 @@ public class FeishuAdapter <: ChannelAdapter {
         context.put("imRoute", route)
         mediaContext.put("channel", JsonString("feishu"))
         mediaContext.put("accountId", JsonString(normalizedAccountId))
+        let envelopePeerId = match (chatType) {
+            case ChatType.Direct => if (!chatId.trimAscii().isEmpty()) { chatId.trimAscii() } else { senderId.trimAscii() }
+            case ChatType.Group => chatId.trimAscii()
+        }
+        mediaContext.put("peerId", JsonString(envelopePeerId))
         mediaContext.put("context", context)
     }
 

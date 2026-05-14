@@ -17,11 +17,11 @@ Manager delegation can coexist with this model, but it is not a separate product
 | Agent isolation | Managed agents have separate workspace, `agentDir`, `models.json`, auth profile path, and sessions path. | Some runtime fallback diagnostics still need broader end-to-end coverage. |
 | Team management | `agents.teams.*` and Control UI can create, list, update, delete, edit members, set default member, edit aliases, edit bindings JSON, and reject binding conflicts without partial writes. | Template library and assisted onboarding remain intentionally small. |
 | Route bindings | Telegram and Feishu can use shared route semantics for channel, account, peer, thread, team, and role matches through Gateway RPC. The Control UI binding builder previews simple and structured payloads before apply. | Feishu real-account thread capability cache and deeper group-policy diagnostics are still being expanded. |
-| Broadcast | Team broadcast settings persist selected member fanout and the Control UI can select or clear broadcast members. | Runtime failure aggregation and channel-specific UX diagnostics remain partial. |
+| Broadcast | Team broadcast settings persist selected member fanout, Gateway runs selected members as isolated turns, and aggregate rows expose per-agent status, error, detail, elapsed placeholder, delivery id, and answer. | Channel-specific live UX diagnostics still need Telegram/Feishu opt-in validation. |
 | Workspace profiles | Control UI and RPC can list, read, and write `AGENTS.md`, `SOUL.md`, `TOOLS.md`, `IDENTITY.md`, `USER.md`, `HEARTBEAT.md`, `BOOTSTRAP.md`, and `MEMORY.md` through Gateway only. | `BOOTSTRAP.md` is supported but not auto-created. |
 | Model state | Control UI and RPC can read/write per-agent `models.json` state, render provider/model chips from `agents.models.*`, and display redacted credential-source summaries. | Operators still need to configure real provider credentials explicitly per agent or allowed fallback source. |
 | Telegram | Existing Telegram adapter has broad fake-tested group/topic/media/native-command coverage and AgentTeam alias routing baseline. | Telegram remains the first full IM validation path for future ChannelAdapter route extensions. |
-| Feishu | Built-in Feishu adapter maps fake webhook payloads to unified route context, account id, group/thread context, gate diagnostics, metadata-only attachments, native `/feishu ...` command replies, redacted account status surfaces, and Control UI auth/doctor fallback rows. | Full OpenClaw Lark-style OAuth/UAT runtime, real OAPI tools, historical resource fetch, streaming cards, and thread-capable real-client cache are partial or planned. |
+| Feishu | Built-in Feishu support includes unified route context, account id, group/thread context, rich-event baselines, native `/feishu ...` command replies, OAuth lifecycle RPC/buttons, native OAPI client/toolset baseline, 108 action parity reporting, streaming-card controller, and redacted status/doctor surfaces. | Real tenant UAT/TAT/app-scope repair, scope-exact OAPI parity closure, historical resource fetch, complete CardKit parity, and live event matrix validation remain release gates. |
 | Migration | `agents.migration.dryRun` is read-only, previews doctor findings, binding apply, redacted config preview, and Feishu single-account migration suggestions. | Future migration may add apply-mode helpers after dry-run acceptance, but it must not rewrite user config silently. |
 
 ## Start Gateway
@@ -54,6 +54,21 @@ Telegram: configure the built-in Telegram channel with an existing bot token, th
 Feishu: create the Feishu app/bot manually in the Feishu developer console, configure the app credentials and event subscription in Metis, then use native `/feishu start`, `/feishu doctor`, `/feishu auth`, and `/feishu info --all` from Feishu conversations when available. Bind `feishu:<accountId>` or structured group/thread routes to member agents. Metis can guide setup, validate status, and save Gateway-backed configuration, but it cannot non-interactively create a Feishu bot/app or grant tenant permissions on your behalf. OAuth/OAPI and card behavior remain Gateway-backed and are not handled by browser-local files.
 
 Control UI: open Agents -> Teams to create teams, edit members and aliases, preview bindings, apply Gateway RPC changes, edit allowed profile files, inspect per-agent model state, and review Feishu readiness/doctor guidance. The browser is a Gateway RPC client only.
+
+## Team Collaboration Semantics
+
+`agents.teams.list`, `agents.teams.get`, `agents.teams.create`, `agents.teams.update`, and `agents.teams.delete` include a `semantics` object so CLI, UI, and automation can present the same product contract:
+
+```json
+{
+  "singleRoute": "deterministic-single-agent",
+  "broadcast": "explicit-fan-out",
+  "manager": "member-or-default-agent-only",
+  "autonomousManagerRuntime": false
+}
+```
+
+Normal CLI, Telegram, and Feishu turns resolve to one route and one agent-scoped session. Broadcast is opt-in fan-out through `broadcast.enabled=true` and an explicit `broadcast.members` list. A manager is just another configured agent member or `defaultAgentId`; manager-style behavior comes from profile instructions and route bindings, not from a separate autonomous manager runtime.
 
 ## Create One Agent
 
@@ -143,6 +158,7 @@ The current Phase A/C management workflow also includes:
 - model/provider chips derived from the selected member's `agents.models.get` response;
 - a redacted credential-source preview so operators can see whether the member is using agent-local auth, model-local provider state, global config, or environment fallback;
 - a Metis capabilities panel that lists only Metis-owned Gateway RPC surfaces, built-in profile files, built-in tools, built-in skills, and channel capabilities;
+- a Feishu setup/repair wizard covering app credentials, event subscriptions, scope repair, group/thread routing, OAuth, OAPI, and card readiness with copyable redacted operator steps;
 - a Feishu Auth & Doctor panel that consumes redacted `channels.status.channels.feishu.auth` or `.oauth`, `.doctor` or `.diagnostics`, and advertised OAPI capability strings when the Gateway provides them;
 - explicit fallback rows when those Feishu status fields are missing.
 
@@ -268,6 +284,41 @@ When broadcast is disabled, Gateway falls back to normal single-agent route reso
 
 Keep broadcast member ids aligned with the team's `members` array. The Control UI filters duplicate or unknown selected members during save.
 
+The broadcast aggregate response is deterministic in team member order and includes one `agents[]` row per planned turn:
+
+```json
+{
+  "kind": "agent-team-broadcast-aggregate",
+  "teamId": "content",
+  "status": "partial",
+  "deliveredCount": 1,
+  "agents": [
+    {
+      "agentId": "content-writer",
+      "status": "delivered",
+      "delivered": true,
+      "deliveryStatus": "delivered",
+      "error": "",
+      "detail": "delivered",
+      "elapsedMs": 0,
+      "answer": "writer answer"
+    },
+    {
+      "agentId": "content-reviewer",
+      "status": "not-delivered",
+      "delivered": false,
+      "deliveryStatus": "send-failed",
+      "error": "synthetic send failure",
+      "detail": "send-failed: synthetic send failure",
+      "elapsedMs": 0,
+      "answer": ""
+    }
+  ]
+}
+```
+
+`elapsedMs` is present for every row. The current aggregate builder does not receive precise per-agent runner timing, so it emits `0` as a stable placeholder and uses `detail` for the testable human-facing reason. `detail` is derived from delivery status and error, and missing execution results are reported as `missing-result: no execution result for broadcast member`.
+
 ## Feishu Startup And Status
 
 Metis does not create a Feishu app or bot automatically. Before Metis can receive Feishu events, an operator must create or select a Feishu app in the Feishu developer console, enable the bot and event subscriptions, configure the app credentials in the Gateway-backed Metis config, and install or authorize the app for the target tenant/chat. Metis then provides setup guidance, status checks, OAuth start/status helpers, route binding, and redacted diagnostics.
@@ -284,7 +335,28 @@ Feishu channel startup still uses the normal Gateway channel configuration. Afte
 
 The Control UI Teams page shows redacted `channels.status` account state, the default account, thread-session configuration, group count, and whether OAuth/OAPI/doctor capability signals are visible in the current Gateway status contract.
 
-Current Feishu status guidance is display-only in the Teams page. Configure Feishu accounts, app credentials, and OAuth state through Gateway configuration and Gateway-backed commands/RPCs, not by writing browser-local files. Secret-like values are redacted in status display; they should not be stored in workspace profile files.
+The Teams page is read-only for secrets and token files. Configure Feishu accounts, app credentials, and OAuth state through Gateway configuration, Gateway-backed commands/RPCs, or operator-managed backend files, not by writing browser-local files. Secret-like values are redacted in status display and repair copy text; they should not be stored in workspace profile files.
+
+### Feishu OAuth Live Smoke
+
+Feishu OAuth live validation is opt-in. By default, Metis does not contact the real Feishu network and does not write OAuth token files under the user's normal `~/.metis` token store. To prepare an operator-visible runbook/checklist without live network access, call:
+
+```bash
+metis gateway call channels.feishu.auth.liveSmoke '{"accountId":"tenant-a","outputDir":"/tmp/metis-feishu-auth-smoke"}'
+```
+
+Without `METIS_FEISHU_LIVE_AUTH_SMOKE=1`, the result is `skipped` with a redacted `report.json` under the output directory. The report still lists the live acceptance fixture paths for `start.json`, `status.json`, `poll.json`, `complete.json`, `refresh.json`, and `revoke.json`.
+
+For a real test tenant, use a temporary home and explicit report directory:
+
+```bash
+export METIS_HOME="/tmp/metis-feishu-live-auth-home"
+export METIS_FEISHU_LIVE_AUTH_SMOKE=1
+export METIS_FEISHU_LIVE_AUTH_REPORT_DIR="/tmp/metis-feishu-live-auth-report"
+metis gateway call channels.feishu.auth.liveSmoke '{"accountId":"tenant-a"}'
+```
+
+The live smoke uses temporary token/session stores under the report directory, runs the Feishu OAuth lifecycle in order (`start`, `status`, `poll`, `complete`, `refresh`, `revoke`), and writes only redacted JSON fixtures. The fixtures must not contain `appSecret`, `accessToken`, `refreshToken`, device codes, or `Authorization` headers. If app credentials are missing, the smoke writes a `configuration_error` report and performs no network call.
 
 For the richer Teams page, the preferred redacted Gateway status shape is:
 
@@ -309,7 +381,7 @@ For the richer Teams page, the preferred redacted Gateway status shape is:
 }
 ```
 
-If the Gateway does not expose those fields yet, the UI shows "Auth status RPC missing", "Doctor status RPC missing", or "OAPI status RPC missing" rather than pretending that Feishu OAuth or OAPI is fully wired.
+If a running Gateway does not expose one of these fields, the UI should show a clear unavailable diagnostic for that capability instead of pretending that Feishu OAuth, OAPI, or doctor status is fully wired.
 
 ## Migration Dry Run
 
@@ -350,13 +422,59 @@ This keeps direct-message session keys separated by agent, channel, account, and
 
 After editing `~/.metis/metis.json`, restart Gateway so the running process loads the new setting.
 
+## Manual Acceptance Gate
+
+Use an isolated test home for manual AgentTeam checks. Do not point live Telegram or Feishu tests at production bots, tenants, groups, or the real `~/.metis` unless that is an explicit release decision:
+
+```bash
+source /Users/l3gi0n/cangjie100/envsetup.sh
+export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
+export METIS_HOME="/tmp/metis-agentteam-manual-acceptance"
+```
+
+Run the helper before recording manual acceptance:
+
+```bash
+scripts/agentteam-manual-acceptance-gate.sh
+```
+
+The helper rejects the default real home, checks this doc for stale Feishu/AgentTeam claims, runs `git diff --check`, and runs the browser smoke only when `METIS_AGENTTEAM_CONTROL_UI_URL` is set. For example, after building the UI and starting Gateway or a static preview:
+
+```bash
+export METIS_AGENTTEAM_CONTROL_UI_URL="http://127.0.0.1:3000/"
+scripts/agentteam-manual-acceptance-gate.sh
+```
+
+The browser smoke verifies `customElements.get("metis-app")`, visible Metis UI content, no page errors, and no failed JavaScript/CSS requests. Live Telegram and Feishu steps are opt-in manual checks; set `METIS_AGENTTEAM_LIVE_TELEGRAM=1` or `METIS_AGENTTEAM_LIVE_FEISHU=1` only with test credentials and record account, tenant, date, scopes, pass/fail, and skipped items.
+
+Before handing an AgentTeam change to the release branch, run the focused checks for the touched area and the repository gate:
+
+```bash
+cjpm test src/gateway/core --filter GatewayAgentTeamBroadcastTest --no-color
+cjpm test src/gateway/runtime --filter GatewayServerMethodsAgentsTest --no-color
+git diff --check
+```
+
+For full integration, use:
+
+```bash
+cjpm clean
+cjpm build -i
+cjpm test
+npm --prefix ui test
+npm --prefix ui run build
+scripts/agentteam-manual-acceptance-gate.sh
+```
+
+Source-backed series13 acceptance details and result template live in `develop_steps/metis-agent-team-series-13-team-docs-runbook-2026-05-15.md`.
+
 ## Current Limits
 
 - `metis agents bind` intentionally exposes the simple `channel[:account]` form. Use Gateway RPC JSON payloads for peer/thread/team/role binding matches.
 - Migration dry-run is read-only. It previews diagnostics and route-binding application but does not rewrite `session.dmScope`, model state, auth profiles, or workspace files automatically.
 - Manager delegation is currently a configuration/profile pattern using a normal manager agent. Deterministic fan-out is the implemented team collaboration mode when `broadcast.enabled=true`; full manager-delegation product policy remains planned work.
-- Feishu AgentTeam routing is not the same as the full OpenClaw Lark plugin surface. Message routing, native command replies, redacted status, and dry-run diagnostics exist; real OAPI tools, historical resource downloads, streaming card parity, and complete OAuth/UAT runtime remain partial unless a later release note says otherwise.
+- Feishu AgentTeam routing is not the same as the full OpenClaw Lark plugin surface. Message routing, native command replies, OAuth lifecycle RPC/buttons, native OAPI client/toolset baseline, streaming-card controller, redacted status, and dry-run diagnostics exist; TAT/app-token provider parity, auto scope repair, historical resource downloads, complete CardKit parity, and live tenant event/OAPI validation remain release gates unless a later release note says otherwise.
 - The Control UI capability panel is not a plugin marketplace. It lists Metis-owned built-in tools, skills, profile files, channel capabilities, and RPC surfaces only.
-- Feishu auth controls in Control UI are status and guidance only until a stable Gateway auth-start/status RPC is present. Browser code must not create, edit, or delete Feishu token files.
-- Source-backed AgentTeam parity tracking lives under `develop_steps/`, with the series-07 source recheck and Phase 8-9 closure notes as the current UI/docs baseline.
+- Feishu auth controls in Control UI call Gateway-backed auth lifecycle RPCs when available. Browser code must not create, edit, or delete Feishu token files.
+- Source-backed AgentTeam parity tracking lives under `develop_steps/`; series13 is the current source-recheck, manual-acceptance, and runbook baseline for this guide.
 - Live Telegram and Feishu operation still depends on the normal channel credentials and account setup. This guide does not require real Telegram or Feishu network access.

@@ -35,7 +35,7 @@ import metis.gateway.core.{
 import std.convert.Parsable
 import std.collection.{ArrayList, HashMap}
 import std.env.{getVariable, setVariable}
-import std.fs.{Directory, Path, remove}
+import std.fs.{Directory, File, Path, exists, remove}
 import std.time.DateTime
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
@@ -337,6 +337,48 @@ public class GatewayServerMethodsChannelsTest {
             setGatewayFeishuNativeAuthPollRunnerForTest(None<(String, GatewayUserSettings) -> JsonObject>)
             setGatewayFeishuNativeAuthCompleteRunnerForTest(None<(String, GatewayUserSettings) -> JsonObject>)
             setGatewayFeishuNativeAuthRevokeRunnerForTest(None<(String, GatewayUserSettings) -> JsonObject>)
+        }
+    }
+
+    @TestCase
+    public func feishuAuthLiveSmokeRpcSkipsWithoutOptInAndWritesRedactedTempReport(): Unit {
+        let root = Path("/tmp/metis-gateway-feishu-auth-live-rpc-${DateTime.now().toUnixTimeStamp().toNanoseconds()}")
+        let oldOptIn = getVariable("METIS_FEISHU_LIVE_AUTH_SMOKE")
+        try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        try {
+            setVariable("METIS_FEISHU_LIVE_AUTH_SMOKE", "")
+            var user = GatewayUserSettings()
+            user.feishu.defaultAccount = "tenant-a"
+            user.feishu.appId = "app-id"
+            user.feishu.appSecret = "app-secret-never-visible"
+            let params = JsonObject()
+            params.put("accountId", JsonString("tenant-a"))
+            params.put("outputDir", JsonString(root.toString()))
+
+            let response = handleGatewayChannelsFamily(
+                "channels.feishu.auth.liveSmoke",
+                user,
+                request: Some(GatewayRpcRequest("channels.feishu.auth.liveSmoke", params: params))
+            ).getOrThrow()
+            let result = response.result.asObject()
+            let reportPath = channelsTestString(result, "reportPath")
+            let raw = String.fromUtf8(File.readFrom(Path(reportPath)))
+
+            @Expect(response.ok, true)
+            @Expect(channelsTestString(result, "status"), "skipped")
+            @Expect(channelsTestString(result, "reason"), "env_gate_disabled")
+            @Expect(channelsTestString(result, "fixtureRoot"), root.toString())
+            @Expect(exists(Path(reportPath)), true)
+            @Expect(raw.contains("start"), true)
+            @Expect(raw.contains("revoke"), true)
+            @Expect(raw.contains("app-secret-never-visible"), false)
+            @Expect(raw.contains("Authorization"), false)
+        } finally {
+            match (oldOptIn) {
+                case Some(value) => setVariable("METIS_FEISHU_LIVE_AUTH_SMOKE", value)
+                case None => setVariable("METIS_FEISHU_LIVE_AUTH_SMOKE", "")
+            }
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
         }
     }
 

@@ -513,6 +513,24 @@ private func gatewayBroadcastFindTurnResult(
     None<GatewayResolvedSessionTurnResult>
 }
 
+private func gatewayBroadcastAggregateDetail(delivered: Bool, deliveryStatus: String, deliveryError: String): String {
+    let status = deliveryStatus.trimAscii()
+    let err = deliveryError.trimAscii()
+    if (!err.isEmpty()) {
+        if (!status.isEmpty()) {
+            return "${status}: ${err}"
+        }
+        return err
+    }
+    if (!status.isEmpty()) {
+        return status
+    }
+    if (delivered) {
+        return "delivered"
+    }
+    "not-delivered"
+}
+
 public func gatewayAgentTeamBroadcastAggregateJson(
     plan: GatewayAgentTeamBroadcastPlan,
     results: Array<GatewayResolvedSessionTurnResult>
@@ -540,6 +558,8 @@ public func gatewayAgentTeamBroadcastAggregateJson(
                 row.put("deliveryStatus", JsonString(execution.deliveryStatus))
                 row.put("deliveryError", JsonString(execution.deliveryError))
                 row.put("error", JsonString(execution.deliveryError))
+                row.put("detail", JsonString(gatewayBroadcastAggregateDetail(execution.delivered,
+                    execution.deliveryStatus, execution.deliveryError)))
                 row.put("elapsedMs", JsonInt(0))
                 row.put("deliveryMessageId", JsonString(execution.deliveryMessageId))
                 row.put("answer", JsonString(execution.answer))
@@ -553,6 +573,7 @@ public func gatewayAgentTeamBroadcastAggregateJson(
                 row.put("deliveryStatus", JsonString("missing-result"))
                 row.put("deliveryError", JsonString(""))
                 row.put("error", JsonString(""))
+                row.put("detail", JsonString("missing-result: no execution result for broadcast member"))
                 row.put("elapsedMs", JsonInt(0))
                 row.put("deliveryMessageId", JsonString(""))
                 row.put("answer", JsonString(""))

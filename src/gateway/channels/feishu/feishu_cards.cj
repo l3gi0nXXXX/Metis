@@ -1,7 +1,7 @@
 package metis.gateway.channels.feishu
 
-import std.collection.ArrayList
-import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
+import std.collection.{ArrayList, HashMap}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString}
 
 public class FeishuInteractiveCard {
     public let title: String
@@ -312,6 +312,128 @@ public class FeishuReplyCardDraft {
     }
 }
 
+public class FeishuCardImageResolver {
+    private let resolved = HashMap<String, String>()
+    private let pending = HashMap<String, Bool>()
+    private let skipped = HashMap<String, Bool>()
+    private var lastStatusValue: String = "idle"
+
+    public init() {}
+
+    public func registerResolved(url: String, imageKey: String): Unit {
+        let normalizedUrl = url.trimAscii()
+        let normalizedKey = imageKey.trimAscii()
+        if (normalizedUrl.isEmpty() || !normalizedKey.startsWith("img_")) {
+            return
+        }
+        this.resolved[normalizedUrl] = normalizedKey
+        this.pending.remove(normalizedUrl)
+        this.lastStatusValue = "resolved"
+    }
+
+    public func markFailed(url: String): Unit {
+        let normalizedUrl = url.trimAscii()
+        if (normalizedUrl.isEmpty()) {
+            return
+        }
+        this.pending.remove(normalizedUrl)
+        this.skipped[normalizedUrl] = true
+        this.lastStatusValue = "failed"
+    }
+
+    public func resolveImages(text: String): String {
+        if (!text.contains("![")) {
+            return text
+        }
+        let out = StringBuilder()
+        var cursor: Int64 = 0
+        while (cursor < text.size) {
+            let start = this.findImageStart(text, cursor)
+            if (start < 0) {
+                out.append(text[cursor..])
+                break
+            }
+            out.append(text[cursor..start])
+            let altEnd = this.findByte(text, UInt8(93), start + 2)
+            if (altEnd < 0 || altEnd + 1 >= text.size || text[altEnd + 1] != UInt8(40)) {
+                out.append(text[start..start + 2])
+                cursor = start + 2
+                continue
+            }
+            let valueStart = altEnd + 2
+            let valueEnd = this.findByte(text, UInt8(41), valueStart)
+            if (valueEnd < 0) {
+                out.append(text[start..])
+                break
+            }
+            let alt = text[start + 2..altEnd]
+            let value = text[valueStart..valueEnd].trimAscii()
+            let replacement = this.resolveImageReference(alt, value)
+            if (!replacement.isEmpty()) {
+                out.append(replacement)
+            }
+            cursor = valueEnd + 1
+        }
+        out.toString()
+    }
+
+    public func toJson(): JsonObject {
+        let root = JsonObject()
+        root.put("networkEnabled", JsonBool(false))
+        root.put("resolvedCount", JsonInt(this.resolved.size))
+        root.put("pendingCount", JsonInt(this.pending.size))
+        root.put("skippedCount", JsonInt(this.skipped.size))
+        root.put("lastStatus", JsonString(this.lastStatusValue))
+        root
+    }
+
+    private func resolveImageReference(alt: String, value: String): String {
+        if (value.startsWith("img_")) {
+            return "![${alt}](${value})"
+        }
+        if (!(value.startsWith("http://") || value.startsWith("https://"))) {
+            if (!value.isEmpty()) {
+                this.skipped[value] = true
+                this.lastStatusValue = "skipped"
+            }
+            return ""
+        }
+        match (this.resolved.get(value)) {
+            case Some(imageKey) =>
+                this.lastStatusValue = "resolved"
+                return "![${alt}](${imageKey})"
+            case None => ()
+        }
+        if (!(this.skipped.get(value) ?? false)) {
+            this.pending[value] = true
+            this.lastStatusValue = "pending"
+        }
+        ""
+    }
+
+    private func findImageStart(text: String, from: Int64): Int64 {
+        var i = from
+        while (i + 1 < text.size) {
+            if (text[i] == UInt8(33) && text[i + 1] == UInt8(91)) {
+                return i
+            }
+            i += 1
+        }
+        -1
+    }
+
+    private func findByte(text: String, byte: UInt8, from: Int64): Int64 {
+        var i = from
+        while (i < text.size) {
+            if (text[i] == byte) {
+                return i
+            }
+            i += 1
+        }
+        -1
+    }
+}
+
 public class FeishuStreamingCardController {
     private let client: FeishuApiClient
     private let accountId: String
@@ -332,6 +454,14 @@ public class FeishuStreamingCardController {
     private var pendingFlush: Bool = false
     private var pendingFlushText: String = ""
     private var lastFlushAtMs: Int64 = 0
+    private var lastThrottleMs: Int64 = 0
+    private var cardKitSequence: Int64 = 0
+    private var lastFlushedText: String = ""
+    private var unavailableTerminated: Bool = false
+    private var unavailableSource: String = ""
+    private var unavailableStatus: String = ""
+    private var unavailableDetail: String = ""
+    private let imageResolver = FeishuCardImageResolver()
 
     public init(
         client: FeishuApiClient,
@@ -371,6 +501,8 @@ public class FeishuStreamingCardController {
         if (result.ok && !result.messageId.isEmpty()) {
             this.cardMessageId = result.messageId
             this.phase = "streaming"
+            this.cardKitSequence = 1
+            this.lastFlushedText = this.currentText
             this.clearFallbackDecision()
             return result.messageId
         }
@@ -401,7 +533,7 @@ public class FeishuStreamingCardController {
             return true
         }
         this.currentText = normalized
-        this.patchCurrent(None<FeishuReplyFooterMetrics>)
+        this.patchCurrent(None<FeishuReplyFooterMetrics>, source: "patch")
     }
 
     public func recoverCardMessageId(messageId: String): Bool {
@@ -430,7 +562,8 @@ public class FeishuStreamingCardController {
             this.currentText = normalized
             this.pendingFlush = false
             this.pendingFlushText = ""
-            let ok = this.patchCurrent(None<FeishuReplyFooterMetrics>)
+            this.lastThrottleMs = effectiveThrottleMs
+            let ok = this.patchCurrent(None<FeishuReplyFooterMetrics>, source: "patch")
             if (ok) {
                 this.lastFlushAtMs = nowMs
             }
@@ -439,6 +572,7 @@ public class FeishuStreamingCardController {
         this.currentText = normalized
         this.pendingFlush = true
         this.pendingFlushText = normalized
+        this.lastThrottleMs = effectiveThrottleMs
         true
     }
 
@@ -452,7 +586,7 @@ public class FeishuStreamingCardController {
         this.currentText = this.pendingFlushText
         this.pendingFlush = false
         this.pendingFlushText = ""
-        let ok = this.patchCurrent(None<FeishuReplyFooterMetrics>)
+        let ok = this.patchCurrent(None<FeishuReplyFooterMetrics>, source: "flush")
         if (ok) {
             this.lastFlushAtMs = nowMs
         }
@@ -473,7 +607,7 @@ public class FeishuStreamingCardController {
         } else {
             "Tool use\n- ${toolName}: ${preview}"
         }
-        this.patchCurrent(None<FeishuReplyFooterMetrics>)
+        this.patchCurrent(None<FeishuReplyFooterMetrics>, source: "tool")
     }
 
     public func finalize(text: String, footerMetrics!: Option<FeishuReplyFooterMetrics> = None<FeishuReplyFooterMetrics>): Bool {
@@ -481,7 +615,7 @@ public class FeishuStreamingCardController {
             return false
         }
         this.currentText = text.trimAscii()
-        let ok = this.patchCurrent(footerMetrics)
+        let ok = this.patchCurrent(footerMetrics, source: "finalize")
         if (ok && this.phase != "terminated") {
             this.phase = "completed"
         }
@@ -525,18 +659,69 @@ public class FeishuStreamingCardController {
         this.lastFallbackDetailValue
     }
 
+    public func registerResolvedImage(url: String, imageKey: String): Unit {
+        this.imageResolver.registerResolved(url, imageKey)
+    }
+
+    public func observableState(): JsonObject {
+        let root = JsonObject()
+        root.put("phase", JsonString(this.phase))
+        root.put("aborted", JsonBool(this.aborted))
+
+        let cardKit = JsonObject()
+        cardKit.put("status", JsonString(if (this.cardMessageId.isEmpty()) { "not_created" } else { "ready" }))
+        cardKit.put("cardMessageId", JsonString(this.cardMessageId))
+        cardKit.put("sequence", JsonInt(this.cardKitSequence))
+        root.put("cardKit", cardKit)
+
+        let text = JsonObject()
+        text.put("currentText", JsonString(this.currentText))
+        text.put("toolUseText", JsonString(this.toolUseText))
+        text.put("lastFlushedText", JsonString(this.lastFlushedText))
+        root.put("text", text)
+
+        let flush = JsonObject()
+        flush.put("pending", JsonBool(this.pendingFlush))
+        flush.put("pendingText", JsonString(this.pendingFlushText))
+        flush.put("lastFlushAtMs", JsonInt(this.lastFlushAtMs))
+        flush.put("throttleMs", JsonInt(this.lastThrottleMs))
+        root.put("flush", flush)
+
+        let fallback = JsonObject()
+        fallback.put("category", JsonString(this.lastFallbackCategoryValue))
+        fallback.put("status", JsonString(this.lastFallbackStatusValue))
+        fallback.put("detail", JsonString(this.lastFallbackDetailValue))
+        root.put("fallback", fallback)
+
+        let unavailable = JsonObject()
+        unavailable.put("terminated", JsonBool(this.unavailableTerminated))
+        unavailable.put("source", JsonString(this.unavailableSource))
+        unavailable.put("status", JsonString(this.unavailableStatus))
+        unavailable.put("detail", JsonString(this.unavailableDetail))
+        root.put("unavailable", unavailable)
+
+        root.put("imageResolver", this.imageResolver.toJson())
+        root
+    }
+
     private func isTerminalPhase(): Bool {
         this.phase == "completed" || this.phase == "aborted" || this.phase == "terminated"
     }
 
-    private func patchCurrent(footerMetrics: Option<FeishuReplyFooterMetrics>): Bool {
+    private func patchCurrent(footerMetrics: Option<FeishuReplyFooterMetrics>, source!: String = "patch"): Bool {
         let card = this.buildCard(footerMetrics)
         let result = this.client.patchInteractiveCard(this.accountId, this.cardMessageId, card)
         if (result.ok) {
+            this.cardKitSequence += 1
+            this.lastFlushedText = this.currentText
+            this.clearUnavailableState()
             return true
         }
         let decision = classifyFeishuCardFallback(result.status, error: result.error)
         this.recordFallbackDecision(decision)
+        if (decision.category == "message_unavailable") {
+            this.recordUnavailableState(source, decision)
+        }
         if (decision.shouldFallback) {
             let fallback = this.client.sendTextMessage(
                 this.accountId,
@@ -567,12 +752,26 @@ public class FeishuStreamingCardController {
         this.lastFallbackDetailValue = ""
     }
 
+    private func recordUnavailableState(source: String, decision: FeishuCardFallbackDecision): Unit {
+        this.unavailableTerminated = true
+        this.unavailableSource = if (source.trimAscii().isEmpty()) { "patch" } else { source.trimAscii() }
+        this.unavailableStatus = decision.status
+        this.unavailableDetail = decision.detail
+    }
+
+    private func clearUnavailableState(): Unit {
+        this.unavailableTerminated = false
+        this.unavailableSource = ""
+        this.unavailableStatus = ""
+        this.unavailableDetail = ""
+    }
+
     private func buildCard(footerMetrics: Option<FeishuReplyFooterMetrics>): FeishuInteractiveCard {
         let footer = match (footerMetrics) {
             case Some(metrics) => metrics.toFooterText()
             case None => ""
         }
-        FeishuInteractiveCard(title: "Metis", text: this.currentText, toolUseText: this.toolUseText, footerText: footer)
+        FeishuInteractiveCard(title: "Metis", text: this.imageResolver.resolveImages(this.currentText), toolUseText: this.toolUseText, footerText: footer)
     }
 }
 

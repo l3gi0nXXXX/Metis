@@ -2,7 +2,7 @@ package metis.gateway.channels.feishu
 
 import metis.core.renderGatewayEditText
 import metis.gateway.core.{gatewayPolicyFilteredChatToolNamesForTurnContext, gatewayPolicyFilteredSystemPromptForTurnContext, gatewayResolveSessionContextWithAgentRoute}
-import metis.gateway.model.{ChannelPolicyConfig, ChannelType, FeishuConfig, FeishuMediaConfig, OutboundMessage}
+import metis.gateway.model.{ChannelPolicyConfig, ChannelType, FeishuConfig, FeishuMediaConfig, InboundMessage, OutboundMessage}
 import metis.gateway.session.gatewaySessionRequestFromInbound
 import std.collection.ArrayList
 import std.core.Duration
@@ -162,6 +162,60 @@ public class FeishuAdapterTest {
             "\"content\":\"please review\"" +
             "}" +
             "}"
+    }
+
+    private func fixtureString(obj: JsonObject, key: String): String {
+        match (obj.get(key)) {
+            case Some(v) => try { v.asString().getValue() } catch (_e: Exception) { "" }
+            case None => ""
+        }
+    }
+
+    private func fixtureBool(obj: JsonObject, key: String, fallback: Bool): Bool {
+        match (obj.get(key)) {
+            case Some(v) => try { v.asBool().getValue() } catch (_e: Exception) { fallback }
+            case None => fallback
+        }
+    }
+
+    private func expectFixtureInbound(inbound: InboundMessage, expected: JsonObject): Unit {
+        let accountId = this.fixtureString(expected, "accountId")
+        if (!accountId.isEmpty()) {
+            @Expect(inbound.accountId, accountId)
+            @Expect(inbound.mediaContext.get("accountId").getOrThrow().asString().getValue(), accountId)
+        }
+        let peerId = this.fixtureString(expected, "peerId")
+        if (!peerId.isEmpty()) {
+            @Expect(inbound.peerId, peerId)
+            @Expect(inbound.mediaContext.get("peerId").getOrThrow().asString().getValue(), peerId)
+        }
+        let messageId = this.fixtureString(expected, "messageId")
+        if (!messageId.isEmpty()) {
+            @Expect(inbound.messageId, messageId)
+        }
+        let mediaMessageId = this.fixtureString(expected, "mediaMessageId")
+        if (!mediaMessageId.isEmpty()) {
+            @Expect(inbound.mediaContext.get("messageId").getOrThrow().asString().getValue(), mediaMessageId)
+        }
+        let threadId = this.fixtureString(expected, "threadId")
+        if (!threadId.isEmpty()) {
+            @Expect(inbound.threadId.getOrThrow(), threadId)
+        } else {
+            @Expect(inbound.threadId.isNone(), true)
+        }
+        let kind = this.fixtureString(expected, "systemEventKind")
+        if (kind.isEmpty()) {
+            @Expect(inbound.systemEvent, false)
+        } else {
+            @Expect(inbound.systemEvent, true)
+            @Expect(inbound.systemEventKind, kind)
+        }
+        let mediaKind = this.fixtureString(expected, "mediaKind")
+        if (!mediaKind.isEmpty()) {
+            let records = inbound.mediaContext.get("records").getOrThrow().asArray()
+            @Expect(records.size(), 1)
+            @Expect(records[0].asObject().get("mediaKind").getOrThrow().asString().getValue(), mediaKind)
+        }
     }
 
     @TestCase
@@ -735,6 +789,86 @@ public class FeishuAdapterTest {
     }
 
     @TestCase
+    public func streamingControllerExposesCardKitFlushFallbackAndUnavailableState(): Unit {
+        let client = FeishuFakeApiClient()
+        let controller = FeishuStreamingCardController(
+            client,
+            accountId: "tenant-a",
+            rawPeerId: "oc_stream",
+            receiveId: "oc_stream",
+            receiveIdType: "chat_id",
+            replyToMessageId: Some("om_source")
+        )
+
+        let idle = controller.observableState()
+        @Expect(idle.get("phase").getOrThrow().asString().getValue(), "idle")
+        @Expect(idle.get("cardKit").getOrThrow().asObject().get("status").getOrThrow().asString().getValue(), "not_created")
+        @Expect(idle.get("unavailable").getOrThrow().asObject().get("terminated").getOrThrow().asBool().getValue(), false)
+
+        @Expect(controller.create("first chunk"), "fake-feishu-card-1")
+        @Expect(controller.patchChunkThrottled("second chunk", nowMs: 1000, throttleMs: 500), true)
+        @Expect(controller.patchChunkThrottled("third chunk", nowMs: 1100, throttleMs: 500), true)
+        let staged = controller.observableState()
+        let stagedCardKit = staged.get("cardKit").getOrThrow().asObject()
+        let stagedText = staged.get("text").getOrThrow().asObject()
+        let stagedFlush = staged.get("flush").getOrThrow().asObject()
+        @Expect(staged.get("phase").getOrThrow().asString().getValue(), "streaming")
+        @Expect(stagedCardKit.get("cardMessageId").getOrThrow().asString().getValue(), "fake-feishu-card-1")
+        @Expect(stagedCardKit.get("sequence").getOrThrow().asInt().getValue(), 2)
+        @Expect(stagedText.get("currentText").getOrThrow().asString().getValue(), "third chunk")
+        @Expect(stagedFlush.get("pending").getOrThrow().asBool().getValue(), true)
+        @Expect(stagedFlush.get("pendingText").getOrThrow().asString().getValue(), "third chunk")
+        @Expect(stagedFlush.get("throttleMs").getOrThrow().asInt().getValue(), 500)
+
+        client.failNextCardPatch("message_unavailable", error: "message recalled")
+        @Expect(controller.flushPending(nowMs: 1600), true)
+        let terminated = controller.observableState()
+        let unavailable = terminated.get("unavailable").getOrThrow().asObject()
+        let fallback = terminated.get("fallback").getOrThrow().asObject()
+        @Expect(terminated.get("phase").getOrThrow().asString().getValue(), "terminated")
+        @Expect(unavailable.get("terminated").getOrThrow().asBool().getValue(), true)
+        @Expect(unavailable.get("source").getOrThrow().asString().getValue(), "flush")
+        @Expect(unavailable.get("status").getOrThrow().asString().getValue(), "message_unavailable")
+        @Expect(fallback.get("category").getOrThrow().asString().getValue(), "message_unavailable")
+        @Expect(client.textSendCount(), 1)
+        @Expect(client.lastTextMessage().contains("third chunk"), true)
+    }
+
+    @TestCase
+    public func cardImageResolverCachesImageKeysAndNeverFetchesByDefault(): Unit {
+        let resolver = FeishuCardImageResolver()
+        resolver.registerResolved("https://assets.example.test/diagram.png", "img_uploaded")
+        let resolved = resolver.resolveImages(
+            "A ![diagram](https://assets.example.test/diagram.png) ![known](img_known) ![local](file:///tmp/private.png) ![pending](https://assets.example.test/pending.png)"
+        )
+        @Expect(resolved.contains("![diagram](img_uploaded)"), true)
+        @Expect(resolved.contains("![known](img_known)"), true)
+        @Expect(resolved.contains("assets.example.test"), false)
+        @Expect(resolved.contains("file:///tmp/private.png"), false)
+        let state = resolver.toJson()
+        @Expect(state.get("resolvedCount").getOrThrow().asInt().getValue(), 1)
+        @Expect(state.get("pendingCount").getOrThrow().asInt().getValue(), 1)
+        @Expect(state.get("skippedCount").getOrThrow().asInt().getValue(), 1)
+        @Expect(state.get("networkEnabled").getOrThrow().asBool().getValue(), false)
+
+        let client = FeishuFakeApiClient()
+        let controller = FeishuStreamingCardController(
+            client,
+            accountId: "tenant-a",
+            rawPeerId: "oc_stream",
+            receiveId: "oc_stream",
+            receiveIdType: "chat_id"
+        )
+        controller.registerResolvedImage("https://assets.example.test/diagram.png", "img_uploaded")
+        @Expect(controller.create("final ![diagram](https://assets.example.test/diagram.png) ![pending](https://assets.example.test/pending.png)"), "fake-feishu-card-1")
+        @Expect(client.sentCard(0).fallbackText().contains("![diagram](img_uploaded)"), true)
+        @Expect(client.sentCard(0).fallbackText().contains("assets.example.test"), false)
+        let controllerImages = controller.observableState().get("imageResolver").getOrThrow().asObject()
+        @Expect(controllerImages.get("resolvedCount").getOrThrow().asInt().getValue(), 1)
+        @Expect(controllerImages.get("pendingCount").getOrThrow().asInt().getValue(), 1)
+    }
+
+    @TestCase
     public func cardLiveSmokeChecklistIsExplicitOptInOnly(): Unit {
         let checklist = FeishuCardLiveSmokeChecklist.toJson()
         @Expect(checklist.get("optInRequired").getOrThrow().asBool().getValue(), true)
@@ -747,6 +881,19 @@ public class FeishuAdapterTest {
         @Expect(FeishuCardLiveSmokeChecklist.isOptInValueEnabled("0"), false)
         @Expect(FeishuCardLiveSmokeChecklist.isOptInValueEnabled("true"), true)
         @Expect(FeishuCardLiveSmokeChecklist.isOptInValueEnabled("1"), true)
+    }
+
+    @TestCase
+    public func eventReplayLiveSmokeChecklistIsExplicitOptInOnly(): Unit {
+        let checklist = FeishuEventReplayLiveSmokeChecklist.toJson()
+        @Expect(checklist.get("optInRequired").getOrThrow().asBool().getValue(), true)
+        @Expect(checklist.get("optInEnv").getOrThrow().asString().getValue(), "METIS_FEISHU_LIVE_EVENT_REPLAY_SMOKE")
+        @Expect(checklist.get("defaultNetwork").getOrThrow().asString().getValue(), "disabled")
+        @Expect(checklist.toJsonString().contains("redacted"), true)
+        let matrix = checklist.get("matrix").getOrThrow().asArray()
+        @Expect(matrix.size(), 8)
+        @Expect(FeishuEventReplayLiveSmokeChecklist.isOptInValueEnabled(""), false)
+        @Expect(FeishuEventReplayLiveSmokeChecklist.isOptInValueEnabled("yes"), true)
     }
 
     @TestCase
@@ -1006,8 +1153,13 @@ public class FeishuAdapterTest {
         @Expect(raw.contains("Authorization"), false)
 
         let samples = JsonValue.fromStr(raw).asArray()
-        let adapter = FeishuAdapter(config: FeishuConfig(enabled: true), accountId: "tenant-a")
+        let tenant = JsonObject()
+        tenant.put("appId", JsonString("cli_app_a"))
+        let accounts = JsonObject()
+        accounts.put("tenant-a", tenant)
+        let adapter = FeishuAdapter(config: FeishuConfig(enabled: true, accounts: Some(accounts)), accountId: "tenant-a")
         adapter.start()
+        let expectedInbound = ArrayList<JsonObject>()
         var ignoredCount = 0
         for (item in samples.getItems()) {
             let sample = item.asObject()
@@ -1020,22 +1172,26 @@ public class FeishuAdapterTest {
                 @Expect(response.get("reason").getOrThrow().asString().getValue(), expected.get("reason").getOrThrow().asString().getValue())
             } else {
                 @Expect(response.get("ok").getOrThrow().asBool().getValue(), true)
+                expectedInbound.add(expected)
+                if (this.fixtureBool(expected, "dedup", false)) {
+                    let duplicate = JsonValue.fromStr(adapter.ingestWebhookPayload(payload)).asObject()
+                    @Expect(duplicate.get("ignored").getOrThrow().asBool().getValue(), true)
+                    @Expect(duplicate.get("reason").getOrThrow().asString().getValue(), "duplicate_event")
+                }
             }
         }
 
         let inbound = adapter.pullInbound()
-        @Expect(samples.size(), 9)
-        @Expect(ignoredCount, 2)
-        @Expect(inbound.size, 7)
-        @Expect(inbound[0].systemEvent, false)
-        @Expect(inbound[0].messageId, "om_fixture_message")
+        @Expect(samples.size(), 11)
+        @Expect(ignoredCount, 3)
+        @Expect(inbound.size, expectedInbound.size)
+        @Expect(inbound.size, 8)
+        for (i in 0..inbound.size) {
+            this.expectFixtureInbound(inbound[i], expectedInbound[i])
+        }
         @Expect(inbound[0].text.contains("fixture hello"), true)
-        @Expect(inbound[1].systemEventKind, "feishu.reaction")
-        @Expect(inbound[2].systemEventKind, "feishu.card_action")
-        @Expect(inbound[3].systemEventKind, "feishu.drive_comment")
-        @Expect(inbound[4].systemEventKind, "feishu.bot_membership")
-        @Expect(inbound[5].systemEventKind, "feishu.vc_invited")
-        @Expect(inbound[6].systemEventKind, "feishu.bitable_field_changed")
+        @Expect(inbound[7].mediaContext.get("records").getOrThrow().asArray()[0].asObject()
+            .get("skippedReason").getOrThrow().asString().getValue(), "metadata_only")
     }
 
     @TestCase

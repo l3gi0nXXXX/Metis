@@ -284,8 +284,10 @@ public class GatewayAgentTeamBroadcastTest {
             @Expect(agents.size(), 2)
             @Expect(agents[0].asObject().get("agentId").getOrThrow().asString().getValue(), "writer")
             @Expect(agents[0].asObject().get("deliveryStatus").getOrThrow().asString().getValue(), "delivered")
+            @Expect(agents[0].asObject().get("detail").getOrThrow().asString().getValue(), "delivered")
             @Expect(agents[1].asObject().get("agentId").getOrThrow().asString().getValue(), "reviewer")
             @Expect(agents[1].asObject().get("status").getOrThrow().asString().getValue(), "not-delivered")
+            @Expect(agents[1].asObject().get("detail").getOrThrow().asString().getValue(), "not-requested")
             @Expect(aggregate.get("answer").getOrThrow().asString().getValue(), "[writer] writer answer\n[reviewer] reviewer answer")
         })
     }

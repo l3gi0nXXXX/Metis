@@ -98,6 +98,7 @@ export function renderAgentTeamsPanel(props: AgentTeamsPanelProps) {
   return html`
     ${renderWorkflowStrip(props, activeMembers, activeBroadcast)}
     ${renderTeamWizardCard(props, activeMembers)}
+    ${renderFeishuSetupRepairWizard(props)}
 
     <section class="grid grid-cols-2">
       ${renderTeamsList(props, teams)}
@@ -131,6 +132,15 @@ export function renderAgentTeamsPanel(props: AgentTeamsPanelProps) {
     </section>
   `;
 }
+
+type FeishuWizardStep = {
+  title: string;
+  status: "ready" | "needed" | "repair" | "manual";
+  message: string;
+  details: string[];
+  copyLabel: string;
+  copyText: string;
+};
 
 function renderWorkflowStrip(
   props: AgentTeamsPanelProps,
@@ -184,6 +194,306 @@ function renderWorkflowStrip(
       </div>
     </section>
   `;
+}
+
+function renderFeishuSetupRepairWizard(props: AgentTeamsPanelProps) {
+  const steps = buildFeishuSetupWizardSteps(props);
+  const readyCount = steps.filter((step) => step.status === "ready").length;
+  const defaultAccount =
+    resolveFeishuSettings(props).defaultAccount ||
+    props.channelsSnapshot?.channelDefaultAccountId?.feishu ||
+    "default";
+  return html`
+    <section class="card" style="margin-bottom: 16px;">
+      <div class="row" style="justify-content: space-between; align-items: flex-start;">
+        <div>
+          <div class="card-title">Feishu setup/repair wizard</div>
+          <div class="card-sub">
+            Read-only setup checklist for app credentials, event subscription, scopes, routing, OAuth, OAPI, and cards.
+          </div>
+        </div>
+        <span class="badge">${readyCount}/${steps.length} ready</span>
+      </div>
+      <div class="callout info" style="margin-top: 12px;">
+        Browser repair is limited to Gateway RPC actions and copyable repair steps. Token files, app credential files, and local Feishu config stay behind Gateway RPC or operator-managed backend configuration.
+      </div>
+      <div class="agents-overview-grid" style="margin-top: 14px;">
+        <div class="agent-kv">
+          <div class="label">Account</div>
+          <div class="mono">${defaultAccount}</div>
+        </div>
+        <div class="agent-kv">
+          <div class="label">Checklist</div>
+          <div>${readyCount} ready · ${steps.length - readyCount} need repair</div>
+        </div>
+        <div class="agent-kv">
+          <div class="label">Profile files</div>
+          <div>${AGENT_TEAM_PROFILE_FILES.length} supported</div>
+        </div>
+        <div class="agent-kv">
+          <div class="label">Write boundary</div>
+          <div>Gateway RPC only</div>
+        </div>
+      </div>
+      <div class="list" style="margin-top: 14px;">
+        ${steps.map(
+          (step) => html`
+            <div class="list-item">
+              <div class="list-main">
+                <div class="list-title">${step.title}</div>
+                <div class="list-sub">${step.message}</div>
+                <div class="list-sub" style="margin-top: 6px;">${step.details.join(" · ")}</div>
+              </div>
+              <div class="list-meta">
+                <span class="badge">${step.status}</span>
+                <button
+                  type="button"
+                  class="btn btn--sm"
+                  title="Copy repair steps"
+                  @click=${() => copyFeishuWizardSteps(step.copyText)}
+                >
+                  ${step.copyLabel}
+                </button>
+              </div>
+            </div>
+          `,
+        )}
+      </div>
+    </section>
+  `;
+}
+
+function buildFeishuSetupWizardSteps(props: AgentTeamsPanelProps): FeishuWizardStep[] {
+  const status = objectValue(props.channelsSnapshot?.channels?.feishu);
+  const capabilities = stringArrayFromUnknown(status?.capabilities).map((item) => item.toLowerCase());
+  const auth = objectValue(status?.auth) ?? objectValue(status?.oauth);
+  const doctor = objectValue(status?.doctor) ?? objectValue(status?.diagnostics);
+  const feishu = resolveFeishuSettings(props);
+  const config = resolveFeishuConfigObject(props);
+  const accountConfigs = resolveFeishuAccountConfigs(config);
+  const configuredAccount = feishu.accounts.some((account) => account.configured === true);
+  const appCredentialReady =
+    status?.configured === true ||
+    configuredAccount ||
+    hasFeishuCredentialFields(config) ||
+    accountConfigs.some((account) => hasFeishuCredentialFields(account));
+  const eventReady =
+    status?.running === true ||
+    capabilities.some((item) => item.includes("event") || item.includes("webhook") || item.includes("long")) ||
+    hasFeishuEventFields(config) ||
+    accountConfigs.some((account) => hasFeishuEventFields(account));
+  const appScopeGaps = missingScopes(auth, ["missingAppScopes", "missing_app_scopes", "appScopeMissing"]);
+  const userScopeGaps = missingScopes(auth, ["missingUserScopes", "missing_user_scopes", "userScopeMissing"]);
+  const authOk = isFeishuAuthAuthorized(auth);
+  const scopeSummary = auth ? statusText(auth, ["scopeSummary", "scopes", "userScopes", "grantedUserScopes"], "") : "";
+  const scopeReady = Boolean(auth && appScopeGaps.length === 0 && userScopeGaps.length === 0 && (scopeSummary || authOk));
+  const groupReady = feishu.groupCount > 0;
+  const threadReady = feishu.threadSession !== "not configured";
+  const oapiReady =
+    capabilities.some((item) => item.includes("oapi") || item.includes("openapi")) &&
+    appScopeGaps.length === 0;
+  const cardReady =
+    capabilities.some(
+      (item) =>
+        item.includes("card") ||
+        item.includes("interactive") ||
+        item.includes("blockstreaming") ||
+        item.includes("streaming-card"),
+    ) && !doctorHasFinding(doctor, "card_unavailable");
+
+  return [
+    {
+      title: "App credentials",
+      status: appCredentialReady ? "ready" : "needed",
+      message: appCredentialReady
+        ? "Feishu app credential presence is visible through redacted Gateway status."
+        : "Missing Feishu app credential signal. Configure app id, app secret, and domain behind Gateway.",
+      details: [
+        "Open Feishu developer console",
+        "confirm app id/app secret/domain",
+        "refresh channels.status",
+      ],
+      copyLabel: "Copy credential steps",
+      copyText: feishuCopyBlock("Feishu app credential repair", [
+        "Open Feishu developer console for the test app.",
+        "Confirm app id, app secret, and tenant domain in operator-managed Gateway configuration.",
+        "Restart or refresh Gateway and verify `channels.status` reports the Feishu account as configured.",
+        "Do not paste app secret values into the browser, team metadata, profile files, or comments.",
+      ]),
+    },
+    {
+      title: "Event subscription",
+      status: eventReady ? "ready" : "needed",
+      message: eventReady
+        ? "Gateway status/config shows Feishu event delivery or runtime activity."
+        : "Missing event subscription signal. Configure webhook or long-connection receive mode in Feishu and Gateway.",
+      details: [
+        "subscribe message events",
+        "include card/reaction/drive/bot events as needed",
+        "verify Gateway inbound logs",
+      ],
+      copyLabel: "Copy event steps",
+      copyText: feishuCopyBlock("Feishu event subscription repair", [
+        "Open Feishu developer console > Events and callbacks.",
+        "Configure the request URL or long-connection receive mode used by Gateway.",
+        "Subscribe to message receive, reaction, card action, drive comment, and bot membership events required by the team.",
+        "Refresh Control UI and verify `channels.status` plus Gateway logs show Feishu event readiness.",
+      ]),
+    },
+    {
+      title: "Scope repair",
+      status: scopeReady ? "ready" : auth ? "repair" : "needed",
+      message: scopeReady
+        ? `Scopes visible: ${scopeSummary || "authorized"}`
+        : `Missing app scopes: ${formatScopeList(appScopeGaps, "none reported")}; missing user scopes: ${formatScopeList(userScopeGaps, "offline_access or OAPI scopes")}.`,
+      details: [
+        "grant app scopes in Feishu console",
+        "grant user scopes through OAuth",
+        "rerun Gateway OAuth",
+      ],
+      copyLabel: "Copy scope repair steps",
+      copyText: feishuCopyBlock(
+        "Feishu scope repair",
+        [
+          `Grant missing app scopes in Feishu developer console: ${formatScopeList(appScopeGaps, "check OAPI capability requirements")}.`,
+          `Grant missing user scopes through OAuth: ${formatScopeList(userScopeGaps, "offline_access and action-specific user scopes")}.`,
+          "Run `channels.feishu.auth.start` from Gateway RPC or click Start OAuth via Gateway in Control UI.",
+          "Poll or complete the OAuth flow through Gateway RPC, then refresh `channels.status`.",
+        ],
+        auth ? `Current redacted auth diagnostic:\n${redactedJsonText(auth)}` : "Current auth diagnostic: not visible in channels.status.",
+      ),
+    },
+    {
+      title: "Group/thread routing",
+      status: groupReady && threadReady ? "ready" : "manual",
+      message:
+        groupReady && threadReady
+          ? "Group policy and thread session settings are visible."
+          : "Group allowlist or thread session policy is not fully visible. Repair belongs in non-secret Gateway configuration.",
+      details: [
+        `${groupReady ? "group policy visible" : "group policy missing"}`,
+        `${threadReady ? "thread policy visible" : "thread policy missing"}`,
+        "use Binding Builder for peer/thread routes",
+      ],
+      copyLabel: "Copy routing steps",
+      copyText: feishuCopyBlock("Feishu group/thread routing repair", [
+        "Confirm the Feishu account id matches the account used by the incoming group.",
+        "Configure allowed groups and thread session policy in Gateway backend configuration.",
+        "Use the Teams Binding Builder to preview a structured route with channel, account, peer, thread, team, and roles.",
+        "Apply the route through `agents.bind` or `agents.teams.update`; do not edit route files from the browser.",
+      ]),
+    },
+    {
+      title: "OAuth device flow",
+      status: authOk || props.feishuAuthResult ? "ready" : "repair",
+      message:
+        authOk || props.feishuAuthResult
+          ? "OAuth status or lifecycle result is visible through Gateway RPC."
+          : "Start OAuth through Gateway RPC after app credentials and scopes are configured.",
+      details: ["Start OAuth via Gateway", "Status", "Poll", "Complete", "Revoke local auth"],
+      copyLabel: "Copy OAuth steps",
+      copyText: feishuCopyBlock("Feishu OAuth device-flow repair", [
+        "Click Start OAuth via Gateway or call `channels.feishu.auth.start` with the account id.",
+        "Open the verification URL and enter the user code returned by Gateway.",
+        "Use Status, Poll, or Complete through Gateway RPC until tokenStatus is authorized.",
+        "Use Revoke local auth only when intentionally clearing local Gateway auth state.",
+      ]),
+    },
+    {
+      title: "OAPI readiness",
+      status: oapiReady ? "ready" : "manual",
+      message: oapiReady
+        ? "OAPI capability is advertised and no app scope gap is visible."
+        : "OAPI capability or app-scope readiness is incomplete; tools should return structured auth_required or scope_missing diagnostics.",
+      details: ["docs/wiki/drive/search/calendar/task/sheets/bitable", "Gateway tool calls only", "redacted diagnostics"],
+      copyLabel: "Copy OAPI steps",
+      copyText: feishuCopyBlock("Feishu OAPI readiness repair", [
+        "Grant the action-specific app and user scopes required by the Feishu OAPI tool.",
+        "Complete OAuth through Gateway so user access token scopes are refreshed.",
+        "Run the OAPI tool through Gateway or the agent runtime and inspect structured `auth_required`, `scope_missing`, or `app_scope_missing` diagnostics.",
+        "Do not call Feishu OAPI directly from Control UI browser code.",
+      ]),
+    },
+    {
+      title: "Card readiness",
+      status: cardReady ? "ready" : "manual",
+      message: cardReady
+        ? "Interactive or streaming card capability is visible in Gateway status."
+        : "Card readiness is not fully visible. Verify card events and live smoke through opt-in Gateway diagnostics.",
+      details: ["interactive card events", "streaming card fallback", "live smoke opt-in"],
+      copyLabel: "Copy card steps",
+      copyText: feishuCopyBlock("Feishu card readiness repair", [
+        "Enable interactive card callbacks or card action events in the Feishu developer console.",
+        "Verify Gateway receives card action events and can map them to route/session context.",
+        "Run card live smoke only with explicit opt-in test credentials.",
+        "If card patch fails or a message is unavailable, expect Gateway fallback text or a clear diagnostic.",
+      ]),
+    },
+  ];
+}
+
+function copyFeishuWizardSteps(text: string) {
+  const safeText = redactSecretText(text);
+  if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+    return;
+  }
+  void navigator.clipboard.writeText(safeText);
+}
+
+function feishuCopyBlock(title: string, steps: string[], context = ""): string {
+  const body = steps.map((step, index) => `${index + 1}. ${step}`).join("\n");
+  return [
+    title,
+    "",
+    body,
+    "",
+    "Safety: Control UI does not write token files, app credential files, or local Feishu config. Use Gateway RPC or operator-managed backend configuration for real changes.",
+    context ? `\n${context}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function resolveFeishuConfigObject(props: AgentTeamsPanelProps): Record<string, unknown> | null {
+  const gateway = objectValue(props.configForm?.gateway);
+  return objectValue(gateway?.feishu ?? props.configForm?.feishu);
+}
+
+function resolveFeishuAccountConfigs(config: Record<string, unknown> | null): Record<string, unknown>[] {
+  const accounts = objectValue(config?.accounts);
+  if (!accounts) {
+    return [];
+  }
+  return Object.values(accounts)
+    .map((value) => objectValue(value))
+    .filter((value): value is Record<string, unknown> => Boolean(value));
+}
+
+function hasFeishuCredentialFields(config: Record<string, unknown> | null): boolean {
+  if (!config) {
+    return false;
+  }
+  return hasAnyStringField(config, ["appId", "app_id", "clientId", "client_id", "domain"]) &&
+    hasAnyStringField(config, ["appSecret", "app_secret", "clientSecret", "client_secret"]);
+}
+
+function hasFeishuEventFields(config: Record<string, unknown> | null): boolean {
+  if (!config) {
+    return false;
+  }
+  return (
+    hasAnyStringField(config, ["webhook", "webhookUrl", "eventUrl", "requestUrl", "connectionMode", "receiveMode"]) ||
+    Array.isArray(config.events) ||
+    Array.isArray(config.eventSubscriptions)
+  );
+}
+
+function hasAnyStringField(config: Record<string, unknown>, keys: string[]): boolean {
+  return keys.some((key) => Boolean(stringOrEmpty(config[key]).trim()));
+}
+
+function formatScopeList(scopes: string[], fallback: string): string {
+  return scopes.length > 0 ? scopes.join(", ") : fallback;
 }
 
 function renderTeamWizardCard(props: AgentTeamsPanelProps, members: AgentTeamMember[]) {
@@ -1947,6 +2257,7 @@ function stringOrEmpty(value: unknown): string {
 
 function redactSecretText(value: string): string {
   return value
+    .replace(/\bBearer\s+[^\s"',;]+/gi, "Bearer [redacted]")
     .replace(/authorization:\s*bearer\s+[^\s,;]+/gi, "Authorization: Bearer [redacted]")
     .replace(/\b(access|refresh|bot|app)[_-]?token\s*[:=]\s*[^\s,;]+/gi, "$1_token=[redacted]")
     .replace(/(["']?(?:access|refresh|bot|app)[_-]?token["']?\s*[:=]\s*)["']?[^"',;\s]+["']?/gi, "$1[redacted]")

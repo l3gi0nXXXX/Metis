@@ -121,6 +121,47 @@ private class FeishuOapiToolsetErrorHttpClient <: FeishuOapiHttpClient {
     }
 }
 
+private class FeishuOapiToolsetCountingHttpClient <: FeishuOapiHttpClient {
+    public let accessTokens = ArrayList<String>()
+    public var calls: Int64 = 0
+
+    public init() {}
+
+    public func request(request: FeishuOapiRequest, accessToken: String): FeishuOapiHttpResponse {
+        this.calls++
+        this.accessTokens.add(accessToken)
+        let body = JsonObject()
+        body.put("code", JsonString("0"))
+        body.put("ok", JsonBool(true))
+        FeishuOapiHttpResponse(true, statusCode: 200, body: body)
+    }
+}
+
+private class FeishuOapiToolsetFakeAppTokenClient <: FeishuOapiAppTokenClient {
+    public let accountIds = ArrayList<String>()
+    public let modes = ArrayList<String>()
+    private let statusValue: String
+    private let errorValue: String
+
+    public init(status!: String = "authorized", error!: String = "") {
+        this.statusValue = status
+        this.errorValue = error
+    }
+
+    public func fetch(accountId: String, tokenMode: String, credentials: FeishuOapiAppCredentials): FeishuOapiAppTokenResult {
+        this.accountIds.add(accountId)
+        this.modes.add(tokenMode)
+        if (this.statusValue != "authorized") {
+            return FeishuOapiAppTokenResult(this.statusValue, error: this.errorValue)
+        }
+        FeishuOapiAppTokenResult(
+            "authorized",
+            accessToken: "issued-${tokenMode}",
+            expiresInSeconds: 7200
+        )
+    }
+}
+
 private class FeishuOapiToolsetFakeRefreshClient <: FeishuOapiRefreshClient {
     public let calls = ArrayList<String>()
 
@@ -857,19 +898,110 @@ public class GatewayFeishuOapiToolsetTest {
     }
 
     @TestCase
-    public func unsupportedTokenModeReturnsStructuredDiagnosticWithoutNetwork(): Unit {
+    public func allOpenClawActionsHaveKnownDefaultTokenModes(): Unit {
+        let allowed = ["user_access_token", "tenant_access_token", "bot_access_token", "app_access_token"]
+        var tenantCount: Int64 = 0
+        var botCount: Int64 = 0
+        for (key in feishuOapiOpenClawActionKeys()) {
+            let parts = key.split(".")
+            let request = feishuOapiBuildRequest(parts[0], parts[1], "tenant-a", JsonObject())
+            @Expect(allowed.contains(request.tokenMode), true)
+            if (request.tokenMode == "tenant_access_token") {
+                tenantCount++
+            } else if (request.tokenMode == "bot_access_token") {
+                botCount++
+            }
+        }
+        @Expect(tenantCount >= 2, true)
+        @Expect(botCount >= 1, true)
+    }
+
+    @TestCase
+    public func tatMissingAppCredentialsReturnsDiagnosticWithoutTokenOrOapiNetwork(): Unit {
         let request = feishuOapiBuildRequest("feishu_task_task", "append_steps", "tenant-a", JsonObject())
         @Expect(request.tokenMode, "tenant_access_token")
+        let appTokenClient = FeishuOapiToolsetFakeAppTokenClient()
+        let http = FeishuOapiToolsetCountingHttpClient()
         let json = MetisFeishuOapiClient(
-            tokenProvider: Some<FeishuOapiTokenProvider>(MetisFeishuOapiTokenProvider()),
-            httpClient: Some<FeishuOapiHttpClient>(FeishuNativeOapiHttpClient(
-                transport: Some<FeishuOapiRawHttpTransport>(FeishuOapiToolsetStaticRawTransport(200, body: "{\"code\":0}"))
-            ))
+            tokenProvider: Some<FeishuOapiTokenProvider>(MetisFeishuOapiTokenProvider(
+                appTokenClient: Some<FeishuOapiAppTokenClient>(appTokenClient)
+            )),
+            httpClient: Some<FeishuOapiHttpClient>(http)
         ).invoke(request)
         @Expect(json.get("ok").getOrThrow().asBool().getValue(), false)
-        @Expect(json.get("status").getOrThrow().asString().getValue(), "token_mode_unsupported")
+        @Expect(json.get("status").getOrThrow().asString().getValue(), "missing_credential")
         @Expect(json.get("token_mode").getOrThrow().asString().getValue(), "tenant_access_token")
+        let credential = json.get("credential").getOrThrow().asObject()
+        @Expect(credential.get("required").getOrThrow().asBool().getValue(), true)
+        @Expect(credential.get("redacted").getOrThrow().asBool().getValue(), true)
+        @Expect(credential.get("missing_fields").getOrThrow().asArray()[0].asString().getValue(), "app_id")
         @Expect(json.get("scope_diagnostic").getOrThrow().asObject().get("token_mode").getOrThrow().asString().getValue(), "tenant_access_token")
+        @Expect(appTokenClient.modes.size, 0)
+        @Expect(http.calls, 0)
+        @Expect(json.toJsonString().contains("issued-"), false)
+        @Expect(json.toJsonString().contains("app-secret-never-visible"), false)
+        @Expect(json.toJsonString().contains("Authorization"), false)
+    }
+
+    @TestCase
+    public func appTokenProviderFetchesCachesTenantAndAppTokensWithFakeClient(): Unit {
+        let appTokenClient = FeishuOapiToolsetFakeAppTokenClient()
+        let http = FeishuOapiToolsetCountingHttpClient()
+        let provider = MetisFeishuOapiTokenProvider(
+            appId: "app-id",
+            appSecret: "app-secret-never-visible",
+            appTokenClient: Some<FeishuOapiAppTokenClient>(appTokenClient),
+            nowMs: 1000
+        )
+
+        let tenantRequest = feishuOapiBuildRequest("feishu_task_task", "append_steps", "tenant-a", JsonObject())
+        let firstTenant = MetisFeishuOapiClient(
+            tokenProvider: Some<FeishuOapiTokenProvider>(provider),
+            httpClient: Some<FeishuOapiHttpClient>(http)
+        ).invoke(tenantRequest)
+        @Expect(firstTenant.get("status").getOrThrow().asString().getValue(), "success")
+        @Expect(appTokenClient.modes[0], "tenant_access_token")
+        @Expect(http.accessTokens[0], "issued-tenant_access_token")
+
+        let secondTenant = MetisFeishuOapiClient(
+            tokenProvider: Some<FeishuOapiTokenProvider>(provider),
+            httpClient: Some<FeishuOapiHttpClient>(http)
+        ).invoke(tenantRequest)
+        @Expect(secondTenant.get("status").getOrThrow().asString().getValue(), "success")
+        @Expect(appTokenClient.modes.size, 1)
+        @Expect(http.accessTokens[1], "issued-tenant_access_token")
+
+        let appRequest = feishuOapiBuildRequest("feishu_ask_user_question", "default", "tenant-a", JsonObject())
+        let appJson = MetisFeishuOapiClient(
+            tokenProvider: Some<FeishuOapiTokenProvider>(provider),
+            httpClient: Some<FeishuOapiHttpClient>(http)
+        ).invoke(appRequest)
+        @Expect(appJson.get("status").getOrThrow().asString().getValue(), "success")
+        @Expect(appTokenClient.modes[1], "app_access_token")
+        @Expect(http.accessTokens[2], "issued-app_access_token")
+        @Expect(appJson.toJsonString().contains("app-secret-never-visible"), false)
+        @Expect(appJson.toJsonString().contains("issued-app_access_token"), false)
+    }
+
+    @TestCase
+    public func appTokenEndpointFailureReturnsApiErrorWithoutOapiNetwork(): Unit {
+        let appTokenClient = FeishuOapiToolsetFakeAppTokenClient(status: "api_error", error: "token endpoint unavailable")
+        let http = FeishuOapiToolsetCountingHttpClient()
+        let request = feishuOapiBuildRequest("feishu_task_task", "append_steps", "tenant-a", JsonObject())
+        let json = MetisFeishuOapiClient(
+            tokenProvider: Some<FeishuOapiTokenProvider>(MetisFeishuOapiTokenProvider(
+                appId: "app-id",
+                appSecret: "app-secret-never-visible",
+                appTokenClient: Some<FeishuOapiAppTokenClient>(appTokenClient)
+            )),
+            httpClient: Some<FeishuOapiHttpClient>(http)
+        ).invoke(request)
+        @Expect(json.get("ok").getOrThrow().asBool().getValue(), false)
+        @Expect(json.get("status").getOrThrow().asString().getValue(), "api_error")
+        @Expect(json.get("error").getOrThrow().asString().getValue(), "token endpoint unavailable")
+        @Expect(appTokenClient.modes[0], "tenant_access_token")
+        @Expect(http.calls, 0)
+        @Expect(json.toJsonString().contains("app-secret-never-visible"), false)
     }
 
     @TestCase

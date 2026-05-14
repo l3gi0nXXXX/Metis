@@ -4,7 +4,7 @@ import magic.jsonable.*
 
 import metis.core.gatewayVideoGenerationResolveConfig
 import metis.core.config.{CliConfig, CliSettingManager, GatewayPluginUserSettings, GatewayUserSettings}
-import metis.gateway.channels.feishu.gatewayFeishuDescribeAccounts
+import metis.gateway.channels.feishu.{gatewayFeishuDescribeAccounts, feishuGatewayNativeAuthLiveSmoke}
 import metis.gateway.channels.telegram.{TelegramAdapter, telegramPairingAccountStore}
 import metis.gateway.model.{ChannelType, OutboundMessage}
 import metis.gateway.core.{
@@ -2358,6 +2358,16 @@ public func handleGatewayChannelsFamily(method: String, user: GatewayUserSetting
         let accountId = gatewayRpcStringParam(requestValue, ["accountId", "account"], "")
         let serverRevoke = gatewayRpcBoolParam(requestValue, ["serverRevoke", "server", "remote"], false)
         let result = gatewayFeishuNativeAuthRevoke(accountId, user, serverRevoke: serverRevoke)
+        return Some(GatewayRpcResponse(true, method, result: result))
+    }
+    if (method == "channels.feishu.auth.liveSmoke") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let accountId = gatewayRpcStringParam(requestValue, ["accountId", "account"], "")
+        let outputRoot = gatewayRpcStringParam(requestValue, ["outputDir", "outputRoot", "reportDir"], "")
+        let result = feishuGatewayNativeAuthLiveSmoke(accountId, user, outputRoot: outputRoot)
         return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "channels.logout") {

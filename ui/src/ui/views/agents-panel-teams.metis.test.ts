@@ -387,4 +387,95 @@ describe("renderAgentTeamsPanel", () => {
     expect(text).toContain("Doctor status RPC missing");
     expect(text).toContain("UI will not write token files");
   });
+
+  it("renders the Feishu setup wizard with missing configuration guidance", () => {
+    const container = document.createElement("div");
+    render(
+      renderAgentTeamsPanel(
+        createProps({
+          channelsSnapshot: {
+            ts: 1,
+            channelOrder: ["feishu"],
+            channelLabels: { feishu: "Feishu" },
+            channels: { feishu: { configured: false, running: false } },
+            channelAccounts: { feishu: [] },
+            channelDefaultAccountId: {},
+          },
+          configForm: { gateway: { feishu: {} } },
+        }),
+      ),
+      container,
+    );
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Feishu setup/repair wizard");
+    expect(text).toContain("App credentials");
+    expect(text).toContain("Event subscription");
+    expect(text).toContain("Scope repair");
+    expect(text).toContain("Group/thread routing");
+    expect(text).toContain("OAuth device flow");
+    expect(text).toContain("OAPI readiness");
+    expect(text).toContain("Card readiness");
+    expect(text).toContain("Open Feishu developer console");
+    expect(text).toContain("copyable repair steps");
+    expect(text).toContain("Gateway RPC or operator-managed backend configuration");
+    expect(text).toContain("AGENTS.md");
+    expect(text).toContain("BOOTSTRAP.md");
+    expect(text).not.toContain("secret-feishu-access-token");
+    expect(text).not.toContain("Authorization: Bearer secret");
+  });
+
+  it("copies redacted Feishu repair steps without mutating configuration", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const container = document.createElement("div");
+    render(
+      renderAgentTeamsPanel(
+        createProps({
+          channelsSnapshot: {
+            ts: 1,
+            channelOrder: ["feishu"],
+            channelLabels: { feishu: "Feishu" },
+            channels: {
+              feishu: {
+                configured: true,
+                running: true,
+                capabilities: ["doctor"],
+                auth: {
+                  accountId: "tenant-a",
+                  status: "scope_missing",
+                  missingAppScopes: ["im:message"],
+                  missingUserScopes: ["offline_access"],
+                  authorization: "Bearer secret-scope-token",
+                },
+              },
+            },
+            channelAccounts: {
+              feishu: [{ accountId: "tenant-a", configured: true, running: true }],
+            },
+            channelDefaultAccountId: { feishu: "tenant-a" },
+          },
+        }),
+      ),
+      container,
+    );
+
+    const button = Array.from(container.querySelectorAll("button")).find((entry) =>
+      (entry.textContent ?? "").includes("Copy scope repair steps"),
+    );
+    expect(button).toBeTruthy();
+    button?.click();
+    await Promise.resolve();
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const copied = String(writeText.mock.calls[0]?.[0] ?? "");
+    expect(copied).toContain("offline_access");
+    expect(copied).toContain("im:message");
+    expect(copied).toContain("channels.feishu.auth.start");
+    expect(copied).toContain("[redacted]");
+    expect(copied).not.toContain("secret-scope-token");
+  });
 });

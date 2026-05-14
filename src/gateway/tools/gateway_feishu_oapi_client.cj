@@ -195,6 +195,24 @@ public class FeishuOapiResult {
         )
     }
 
+    public static func missingCredential(
+        request: FeishuOapiRequest,
+        error!: String = "",
+        scopeDiagnostic!: Option<JsonObject> = None<JsonObject>
+    ): FeishuOapiResult {
+        FeishuOapiResult(
+            request,
+            false,
+            "missing_credential",
+            error: if (error.trimAscii().isEmpty()) {
+                "Feishu appId/appSecret is required before issuing ${request.tokenMode}."
+            } else {
+                error.trimAscii()
+            },
+            scopeDiagnostic: scopeDiagnostic
+        )
+    }
+
     public func toJson(): JsonObject {
         let out = this.request.toJson()
         out.put("ok", JsonBool(this.ok))
@@ -223,6 +241,14 @@ public class FeishuOapiResult {
             auth.put("state", JsonString(if (this.authState.isEmpty()) { "absent" } else { this.authState }))
             auth.put("mode", JsonString(this.request.tokenMode))
             out.put("auth", auth)
+        }
+        if (this.status == "missing_credential") {
+            let credential = JsonObject()
+            credential.put("required", JsonBool(true))
+            credential.put("mode", JsonString(this.request.tokenMode))
+            credential.put("missing_fields", feishuOapiJsonStringArray(["app_id", "app_secret"]))
+            credential.put("redacted", JsonBool(true))
+            out.put("credential", credential)
         }
         out
     }
@@ -292,6 +318,32 @@ public class FeishuOapiRefreshResult {
         this.refreshToken = refreshToken.trimAscii()
         this.expiresInSeconds = expiresInSeconds
         this.scopes = scopes
+        this.error = error.trimAscii()
+    }
+}
+
+public class FeishuOapiAppCredentials {
+    public let appId: String
+    public let appSecret: String
+    public let domain: String
+
+    public init(appId: String, appSecret: String, domain!: String = "https://open.feishu.cn") {
+        this.appId = appId.trimAscii()
+        this.appSecret = appSecret.trimAscii()
+        this.domain = feishuOapiNormalizeDomain(domain)
+    }
+}
+
+public class FeishuOapiAppTokenResult {
+    public let status: String
+    public let accessToken: String
+    public let expiresInSeconds: Int64
+    public let error: String
+
+    public init(status: String, accessToken!: String = "", expiresInSeconds!: Int64 = 0, error!: String = "") {
+        this.status = if (status.trimAscii().isEmpty()) { "api_error" } else { status.trimAscii() }
+        this.accessToken = accessToken.trimAscii()
+        this.expiresInSeconds = expiresInSeconds
         this.error = error.trimAscii()
     }
 }
@@ -419,6 +471,10 @@ public interface FeishuOapiRefreshClient {
     func refresh(accountId: String, refreshToken: String): FeishuOapiRefreshResult
 }
 
+public interface FeishuOapiAppTokenClient {
+    func fetch(accountId: String, tokenMode: String, credentials: FeishuOapiAppCredentials): FeishuOapiAppTokenResult
+}
+
 public interface FeishuOapiHttpClient {
     func request(request: FeishuOapiRequest, accessToken: String): FeishuOapiHttpResponse
 }
@@ -487,18 +543,41 @@ public interface FeishuOapiRawHttpTransport {
     func send(request: FeishuOapiRawHttpRequest): FeishuOapiRawHttpResponse
 }
 
+private class FeishuOapiCachedAppToken {
+    let accessToken: String
+    let expiresAtMs: Int64
+
+    init(accessToken: String, expiresAtMs: Int64) {
+        this.accessToken = accessToken.trimAscii()
+        this.expiresAtMs = expiresAtMs
+    }
+}
+
 public class MetisFeishuOapiTokenProvider <: FeishuOapiTokenProvider {
     private let root: Path
     private let refreshClient: Option<FeishuOapiRefreshClient>
+    private let appId: String
+    private let appSecret: String
+    private let appDomain: String
+    private let appTokenClient: Option<FeishuOapiAppTokenClient>
     private let nowMsValue: Int64
+    private let appTokenCache = HashMap<String, FeishuOapiCachedAppToken>()
 
     public init(
         root!: Path = feishuOapiDefaultTokenStoreRoot(),
         refreshClient!: Option<FeishuOapiRefreshClient> = None<FeishuOapiRefreshClient>,
+        appId!: String = feishuOapiEnvValue("METIS_FEISHU_OAPI_APP_ID"),
+        appSecret!: String = feishuOapiEnvValue("METIS_FEISHU_OAPI_APP_SECRET"),
+        appDomain!: String = feishuOapiEnvValue("METIS_FEISHU_OAPI_DOMAIN"),
+        appTokenClient!: Option<FeishuOapiAppTokenClient> = None<FeishuOapiAppTokenClient>,
         nowMs!: Int64 = DateTime.now().toUnixTimeStamp().toMilliseconds()
     ) {
         this.root = root
         this.refreshClient = refreshClient
+        this.appId = appId.trimAscii()
+        this.appSecret = appSecret.trimAscii()
+        this.appDomain = if (appDomain.trimAscii().isEmpty()) { "https://open.feishu.cn" } else { feishuOapiNormalizeDomain(appDomain) }
+        this.appTokenClient = appTokenClient
         this.nowMsValue = nowMs
     }
 
@@ -540,27 +619,61 @@ public class MetisFeishuOapiTokenProvider <: FeishuOapiTokenProvider {
     public func tokenLookup(accountId: String, tokenMode: String, requiredScopes: Array<String>): FeishuOapiTokenLookup {
         match (tokenMode.trimAscii()) {
             case "user_access_token" => this.userAccessToken(accountId, requiredScopes)
-            case "tenant_access_token" =>
-                FeishuOapiTokenLookup(
-                    "token_mode_unsupported",
-                    error: "Metis Feishu OAPI native token provider does not yet issue tenant_access_token."
-                )
-            case "bot_access_token" =>
-                FeishuOapiTokenLookup(
-                    "token_mode_unsupported",
-                    error: "Metis Feishu OAPI native token provider does not yet issue bot_access_token."
-                )
-            case "app_access_token" =>
-                FeishuOapiTokenLookup(
-                    "token_mode_unsupported",
-                    error: "Metis Feishu OAPI native token provider does not yet issue app_access_token."
-                )
+            case "tenant_access_token" => this.appToken(accountId, "tenant_access_token", requiredScopes)
+            case "bot_access_token" => this.appToken(accountId, "bot_access_token", requiredScopes)
+            case "app_access_token" => this.appToken(accountId, "app_access_token", requiredScopes)
             case _ =>
                 FeishuOapiTokenLookup(
                     "token_mode_unsupported",
                     error: "Unsupported Feishu OAPI token mode: ${tokenMode.trimAscii()}."
                 )
         }
+    }
+
+    private func appToken(accountId: String, tokenMode: String, requiredScopes: Array<String>): FeishuOapiTokenLookup {
+        let normalized = feishuOapiNormalizeAccountId(accountId)
+        let cleanMode = tokenMode.trimAscii()
+        if (this.appId.isEmpty() || this.appSecret.isEmpty()) {
+            return FeishuOapiTokenLookup(
+                "missing_credential",
+                error: "Feishu appId/appSecret is required before issuing ${cleanMode}."
+            )
+        }
+        let cacheKey = "${normalized}\u{0000}${cleanMode}"
+        match (this.appTokenCache.get(cacheKey)) {
+            case Some(cached) =>
+                if (!cached.accessToken.isEmpty() && this.nowMsValue < cached.expiresAtMs - 60 * 1000) {
+                    return FeishuOapiTokenLookup(
+                        "authorized",
+                        accessToken: cached.accessToken,
+                        grantedScopes: requiredScopes,
+                        hasOfflineAccess: false
+                    )
+                }
+            case None => ()
+        }
+        let credentials = FeishuOapiAppCredentials(this.appId, this.appSecret, domain: this.appDomain)
+        let result = match (this.appTokenClient) {
+            case Some(client) => client.fetch(normalized, cleanMode, credentials)
+            case None => FeishuNativeOapiAppTokenClient(domain: this.appDomain).fetch(normalized, cleanMode, credentials)
+        }
+        if (result.status != "authorized" || result.accessToken.isEmpty()) {
+            return FeishuOapiTokenLookup(
+                if (result.status.isEmpty()) { "api_error" } else { result.status },
+                error: if (result.error.isEmpty()) { "Feishu OAPI app token request failed." } else { result.error }
+            )
+        }
+        let ttlSeconds = if (result.expiresInSeconds > 0) { result.expiresInSeconds } else { 7200 }
+        this.appTokenCache[cacheKey] = FeishuOapiCachedAppToken(
+            result.accessToken,
+            this.nowMsValue + ttlSeconds * 1000
+        )
+        FeishuOapiTokenLookup(
+            "authorized",
+            accessToken: result.accessToken,
+            grantedScopes: requiredScopes,
+            hasOfflineAccess: false
+        )
     }
 
     private func refreshOrExpired(accountId: String, token: FeishuOapiStoredToken, requiredScopes: Array<String>): FeishuOapiTokenLookup {
@@ -660,6 +773,78 @@ private class FeishuOapiStoredToken {
         this.refreshToken = refreshToken.trimAscii()
         this.expiresAtMs = expiresAtMs
         this.scopes = scopes
+    }
+}
+
+public class FeishuNativeOapiAppTokenClient <: FeishuOapiAppTokenClient {
+    private let domain: String
+    private let transport: Option<FeishuOapiRawHttpTransport>
+
+    public init(
+        domain!: String = "https://open.feishu.cn",
+        transport!: Option<FeishuOapiRawHttpTransport> = None<FeishuOapiRawHttpTransport>
+    ) {
+        this.domain = feishuOapiNormalizeDomain(domain)
+        this.transport = transport
+    }
+
+    public func fetch(accountId: String, tokenMode: String, credentials: FeishuOapiAppCredentials): FeishuOapiAppTokenResult {
+        if (credentials.appId.isEmpty() || credentials.appSecret.isEmpty()) {
+            return FeishuOapiAppTokenResult(
+                "missing_credential",
+                error: "Feishu appId/appSecret is required before issuing ${tokenMode.trimAscii()}."
+            )
+        }
+        let cleanMode = tokenMode.trimAscii()
+        let path = match (cleanMode) {
+            case "tenant_access_token" => "/open-apis/auth/v3/tenant_access_token/internal"
+            case "bot_access_token" => "/open-apis/auth/v3/tenant_access_token/internal"
+            case "app_access_token" => "/open-apis/auth/v3/app_access_token/internal"
+            case _ => return FeishuOapiAppTokenResult(
+                "token_mode_unsupported",
+                error: "Unsupported Feishu OAPI app token mode: ${cleanMode}."
+            )
+        }
+        let headers = HashMap<String, String>([
+            ("Content-Type", "application/json; charset=utf-8"),
+            ("Accept", "application/json")
+        ])
+        let body = JsonObject()
+        body.put("app_id", JsonString(credentials.appId))
+        body.put("app_secret", JsonString(credentials.appSecret))
+        let raw = FeishuOapiRawHttpRequest(
+            accountId,
+            "POST",
+            "${this.domain}${path}",
+            headers,
+            body: body.toJsonString()
+        )
+        let response = match (this.transport) {
+            case Some(t) => t.send(raw)
+            case None => FeishuNativeOapiRawHttpTransport().send(raw)
+        }
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+            return FeishuOapiAppTokenResult(
+                "api_error",
+                error: if (response.error.isEmpty()) { "Feishu app token request failed with HTTP ${response.statusCode}." } else { response.error }
+            )
+        }
+        try {
+            let parsed = JsonValue.fromStr(response.body).asObject()
+            let code = feishuOapiResponseCode(parsed)
+            if (!code.isEmpty() && code != "0") {
+                return FeishuOapiAppTokenResult("api_error", error: "Feishu app token endpoint returned code ${code}.")
+            }
+            let field = if (cleanMode == "app_access_token") { "app_access_token" } else { "tenant_access_token" }
+            let token = feishuOapiJsonString(parsed, field)
+            if (token.isEmpty()) {
+                return FeishuOapiAppTokenResult("api_error", error: "Feishu app token endpoint did not return ${field}.")
+            }
+            let expires = feishuOapiJsonInt(parsed, "expire", 7200)
+            return FeishuOapiAppTokenResult("authorized", accessToken: token, expiresInSeconds: expires)
+        } catch (e: Exception) {
+            return FeishuOapiAppTokenResult("api_error", error: "Feishu app token response is not valid JSON: ${e.message}")
+        }
     }
 }
 
@@ -799,6 +984,12 @@ public class MetisFeishuOapiClient <: FeishuOapiClient {
         let scopeDiagnostic = Some(feishuOapiScopeDiagnostic(request, appScope, Some(token)))
         if (token.status == "token_mode_unsupported") {
             return FeishuOapiResult.tokenModeUnsupported(request, error: token.error, scopeDiagnostic: scopeDiagnostic).toJson()
+        }
+        if (token.status == "missing_credential") {
+            return FeishuOapiResult.missingCredential(request, error: token.error, scopeDiagnostic: scopeDiagnostic).toJson()
+        }
+        if (token.status == "api_error") {
+            return FeishuOapiResult.apiError(request, if (token.error.isEmpty()) { "Feishu OAPI token request failed." } else { token.error }, scopeDiagnostic: scopeDiagnostic).toJson()
         }
         if (token.status == "app_scope_missing") {
             return FeishuOapiResult.appScopeMissing(request, token.missingScopes, error: token.error, scopeDiagnostic: scopeDiagnostic).toJson()
