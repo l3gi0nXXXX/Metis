@@ -10,6 +10,20 @@ import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
 private const RUNTIME_STATE_GENERATED_BY = "metis"
 private const RUNTIME_STATE_MATERIALIZED_SOURCE = "agent-scope"
 
+private func runtimeStatePositiveInputLimit(value: Int64): Int64 {
+    if (value > 0) {
+        return value
+    }
+    128 * 1024
+}
+
+private func runtimeStatePositiveOutputLimit(value: Int64): Int64 {
+    if (value > 0) {
+        return value
+    }
+    32 * 1024
+}
+
 private func runtimeStateGetString(root: JsonObject, key: String): Option<String> {
     match (root.get(key)) {
         case Some(value) =>
@@ -213,8 +227,8 @@ public class CliModelRuntimeStateManager {
         root.put("runtimeFastModelRef", JsonString(fastRuntime))
         root.put("fallbackModelRefs", jsonArrayFromStrings(canonicalFallbacks))
         root.put("runtimeFallbackModelRefs", jsonArrayFromStrings(fallbackRuntime))
-        root.put("defaultInputLimit", CliConfig.defaultModelInputLimit.toJsonValue())
-        root.put("defaultOutputLimit", CliConfig.defaultModelOutputLimit.toJsonValue())
+        root.put("defaultInputLimit", runtimeStatePositiveInputLimit(CliConfig.defaultModelInputLimit).toJsonValue())
+        root.put("defaultOutputLimit", runtimeStatePositiveOutputLimit(CliConfig.defaultModelOutputLimit).toJsonValue())
 
         let providers = ArrayList<JsonValue>()
         for (descriptor in cliModelProviderCatalogDescriptors()) {
@@ -376,7 +390,12 @@ public class CliModelRuntimeStateManager {
                 match (root.get("defaultInputLimit")) {
                     case Some(value) =>
                         try {
-                            CliConfig.defaultModelInputLimit = value.asInt().getValue()
+                            let next = value.asInt().getValue()
+                            if (next > 0) {
+                                CliConfig.defaultModelInputLimit = next
+                            } else if (CliConfig.defaultModelInputLimit <= 0) {
+                                CliConfig.defaultModelInputLimit = runtimeStatePositiveInputLimit(next)
+                            }
                         } catch (_: Exception) {
                             ()
                         }
@@ -385,7 +404,12 @@ public class CliModelRuntimeStateManager {
                 match (root.get("defaultOutputLimit")) {
                     case Some(value) =>
                         try {
-                            CliConfig.defaultModelOutputLimit = value.asInt().getValue()
+                            let next = value.asInt().getValue()
+                            if (next > 0) {
+                                CliConfig.defaultModelOutputLimit = next
+                            } else if (CliConfig.defaultModelOutputLimit <= 0) {
+                                CliConfig.defaultModelOutputLimit = runtimeStatePositiveOutputLimit(next)
+                            }
                         } catch (_: Exception) {
                             ()
                         }

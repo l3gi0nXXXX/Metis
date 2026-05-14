@@ -41,4 +41,14 @@ public class GatewayCliHumanOutputTest {
         @Expect(help.contains("install <name>"), true)
         @Expect(help.contains("enable <id>"), true)
     }
+
+    @TestCase
+    public func runtimeHintIsOnlyForGatewayConnectionFailures(): Unit {
+        @Expect(gatewayCliShouldPrintRuntimeRequiredHint("Gateway client connect failed."), true)
+        @Expect(gatewayCliShouldPrintRuntimeRequiredHint("Http status: 401"), false)
+        @Expect(
+            gatewayCliShouldPrintRuntimeRequiredHint("Model replied an invalid message: Invalid max_tokens value"),
+            false
+        )
+    }
 }

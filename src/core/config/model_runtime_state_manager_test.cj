@@ -2,7 +2,7 @@ package metis.core.config
 
 import std.fs.{Directory, File, Path}
 import std.unittest.testmacro.*
-import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
+import stdx.encoding.json.{JsonArray, JsonInt, JsonObject, JsonString, JsonValue}
 
 private func runtimeStateTestString(obj: JsonObject, key: String): String {
     match (obj.get(key)) {
@@ -17,6 +17,14 @@ private func runtimeStateTestBool(obj: JsonObject, key: String): Bool {
         case Some(value) =>
             try { value.asBool().getValue() } catch (_: Exception) { false }
         case None => false
+    }
+}
+
+private func runtimeStateTestInt(obj: JsonObject, key: String): Int64 {
+    match (obj.get(key)) {
+        case Some(value) =>
+            try { value.asInt().getValue() } catch (_: Exception) { 0 }
+        case None => 0
     }
 }
 
@@ -41,6 +49,51 @@ private func runtimeStateTestRoot(agentId: String, modelRef: String): JsonObject
 
 @Test
 public class CliModelRuntimeStateManagerTest {
+    @TestCase
+    public func materializedRuntimeStateNormalizesZeroDefaultOutputLimit(): Unit {
+        withMetisConfigTestHome("runtime-state-zero-output-normalized", { _home: Path =>
+            let oldInput = CliConfig.defaultModelInputLimit
+            let oldOutput = CliConfig.defaultModelOutputLimit
+            try {
+                CliConfig.defaultModelInputLimit = 0
+                CliConfig.defaultModelOutputLimit = 0
+                CliModelRuntimeStateManager.writeMaterializedRuntimeState()
+                let root = runtimeStateTestRead(CliModelRuntimeStateManager.runtimePath())
+                @Expect(runtimeStateTestInt(root, "defaultInputLimit") > 0, true)
+                @Expect(runtimeStateTestInt(root, "defaultOutputLimit") > 0, true)
+            } finally {
+                CliConfig.defaultModelInputLimit = oldInput
+                CliConfig.defaultModelOutputLimit = oldOutput
+            }
+        })
+    }
+
+    @TestCase
+    public func applyingRuntimeStateIgnoresZeroDefaultOutputLimit(): Unit {
+        withMetisConfigTestHome("runtime-state-zero-output-ignored", { _home: Path =>
+            let oldInput = CliConfig.defaultModelInputLimit
+            let oldOutput = CliConfig.defaultModelOutputLimit
+            try {
+                CliConfig.defaultModelInputLimit = 128 * 1024
+                CliConfig.defaultModelOutputLimit = 32 * 1024
+                let root = JsonObject()
+                root.put("runtimePrimaryModelRef", JsonString("deepseek:deepseek-v4-pro"))
+                root.put("defaultInputLimit", JsonInt(0))
+                root.put("defaultOutputLimit", JsonInt(0))
+                File.writeTo(CliModelRuntimeStateManager.runtimePath(), root.toJsonString().toArray())
+
+                CliModelRuntimeStateManager.applyRuntimeStateToCliConfig()
+
+                @Expect(CliConfig.model, "deepseek:deepseek-v4-pro")
+                @Expect(CliConfig.defaultModelInputLimit, 128 * 1024)
+                @Expect(CliConfig.defaultModelOutputLimit, 32 * 1024)
+            } finally {
+                CliConfig.defaultModelInputLimit = oldInput
+                CliConfig.defaultModelOutputLimit = oldOutput
+            }
+        })
+    }
+
     @TestCase
     public func refreshAgentRuntimeStateUpdatesGeneratedModelsJsonForChangedScope(): Unit {
         withMetisConfigTestHome("agent-runtime-refresh-generated", { home: Path =>

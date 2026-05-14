@@ -5,6 +5,9 @@ import metis.core.config.CliConfig
 import std.collection.HashMap
 
 protected class ModelTokenLimits {
+    private static let FALLBACK_INPUT_LIMIT: Int64 = 128 * 1024
+    private static let FALLBACK_OUTPUT_LIMIT: Int64 = 32 * 1024
+
     /**
      * The maximum number of input tokens that can be used in a single request.
      */
@@ -64,13 +67,34 @@ protected class ModelTokenLimits {
         ("openrouter:qwen/qwen3-coder-30b-a3b-instruct", 32 * 1024)
     ])
 
+    private static let INPUT_PROVIDER_DEFAULTS = HashMap<String, Int64>([
+        ("deepseek:", 128 * 1024),
+        ("openai:", 128 * 1024),
+        ("openrouter:", 128 * 1024),
+        ("dashscope:", 128 * 1024),
+        ("qwen:", 128 * 1024),
+        ("google:", 1024 * 1024),
+        ("ark:", 128 * 1024),
+        ("moonshot:", 128 * 1024),
+        ("zhipuai:", 128 * 1024),
+        ("zai:", 128 * 1024)
+    ])
+
     public static func getInputLimit(model: String): Int64 {
         for ((key, value) in INPUT_LIMITS) {
             if (model.startsWith(key)) {
                 return value
             }
         }
-        return CliConfig.defaultModelInputLimit
+        for ((key, value) in INPUT_PROVIDER_DEFAULTS) {
+            if (model.startsWith(key)) {
+                return value
+            }
+        }
+        if (CliConfig.defaultModelInputLimit > 0) {
+            return CliConfig.defaultModelInputLimit
+        }
+        return FALLBACK_INPUT_LIMIT
     }
 
     /**
@@ -117,12 +141,33 @@ protected class ModelTokenLimits {
         ("openrouter:qwen/qwen3-coder-30b-a3b-instruct", 8 * 1024)
     ])
 
+    private static let OUTPUT_PROVIDER_DEFAULTS = HashMap<String, Int64>([
+        ("deepseek:", 32 * 1024),
+        ("openai:", 32 * 1024),
+        ("openrouter:", 32 * 1024),
+        ("dashscope:", 32 * 1024),
+        ("qwen:", 32 * 1024),
+        ("google:", 32 * 1024),
+        ("ark:", 32 * 1024),
+        ("moonshot:", 32 * 1024),
+        ("zhipuai:", 32 * 1024),
+        ("zai:", 32 * 1024)
+    ])
+
     public static func getOutputLimit(model: String): Int64 {
         for ((key, value) in OUTPUT_LIMITS) {
             if (model.startsWith(key)) {
                 return value
             }
         }
-        return CliConfig.defaultModelOutputLimit
+        for ((key, value) in OUTPUT_PROVIDER_DEFAULTS) {
+            if (model.startsWith(key)) {
+                return value
+            }
+        }
+        if (CliConfig.defaultModelOutputLimit > 0) {
+            return CliConfig.defaultModelOutputLimit
+        }
+        return FALLBACK_OUTPUT_LIMIT
     }
 }

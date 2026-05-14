@@ -374,13 +374,13 @@ protected class CliConfig {
      * The default input token limit for the model
      * The default value from CliSettingManager will be used.
      */
-    public static var defaultModelInputLimit: Int64 = 0
+    public static var defaultModelInputLimit: Int64 = 128 * 1024
 
     /**
      * The default output token limit for the model
      * The default value from CliSettingManager will be used.
      */
-    public static var defaultModelOutputLimit: Int64 = 0
+    public static var defaultModelOutputLimit: Int64 = 32 * 1024
 
     /**
      * Code compression

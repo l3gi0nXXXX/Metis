@@ -23,6 +23,13 @@ import stdx.encoding.json.{JsonObject, JsonString, JsonValue}
 
 private let GATEWAY_PREFIX: String = "gateway "
 
+public func gatewayCliShouldPrintRuntimeRequiredHint(error: String): Bool {
+    let normalized = error.trimAscii().toAsciiLower()
+    normalized.contains("gateway client connect failed") ||
+        normalized.contains("connect_failed") ||
+        (normalized.contains("gateway") && normalized.contains("connect failed"))
+}
+
 private func gatewayCliNowMs(): Int64 {
     DateTime.now().toUnixTimeStamp().toNanoseconds() / 1000000
 }

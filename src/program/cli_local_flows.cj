@@ -8,7 +8,7 @@ import metis.core.config.{CliConfig, MetisConfigManager, MetisPaths, CliSettingM
 import metis.core.mcp.{mcpConfiguredServerJson, mcpConfiguredServersJson, mcpConfiguredServersPath, mcpResolveSecretOption, mcpSetConfiguredServerJson, mcpUnsetConfiguredServerJson}
 import metis.gateway.channels.telegram.telegramPairingAccountStore
 import metis.mcp.{MetisMcpServeOptions, serveMetisChannelMcp}
-import metis.gateway.runtime.{gatewayCliClient, gatewayInvokeCliAgent, gatewayInvokeCliAgentResult}
+import metis.gateway.runtime.{gatewayCliClient, gatewayCliShouldPrintRuntimeRequiredHint, gatewayInvokeCliAgent, gatewayInvokeCliAgentResult}
 import metis.io.PrintUtils
 import metis.program_support.programSupportRenderLocalCommandSummary
 
@@ -1589,7 +1589,9 @@ public func cliRunAgentFlow(args: Array<String>): Int64 {
         )
         if (!ok) {
             PrintUtils.printLine("Gateway agent failed: ${err}")
-            PrintUtils.printLine("Start the unified Gateway main runtime with `metis gateway run`, or use `metis agent --local --message \"...\"` for explicit embedded mode.")
+            if (gatewayCliShouldPrintRuntimeRequiredHint(err)) {
+                PrintUtils.printLine("Start the unified Gateway main runtime with `metis gateway run`, or use `metis agent --local --message \"...\"` for explicit embedded mode.")
+            }
             return CLI_EXIT_USAGE_ERROR
         }
         return printJsonObject(result)
@@ -1614,7 +1616,9 @@ public func cliRunAgentFlow(args: Array<String>): Int64 {
     )
     if (!ok) {
         PrintUtils.printLine("Gateway agent failed: ${err}")
-        PrintUtils.printLine("Start the unified Gateway main runtime with `metis gateway run`, or use `metis agent --local --message \"...\"` for explicit embedded mode.")
+        if (gatewayCliShouldPrintRuntimeRequiredHint(err)) {
+            PrintUtils.printLine("Start the unified Gateway main runtime with `metis gateway run`, or use `metis agent --local --message \"...\"` for explicit embedded mode.")
+        }
         return CLI_EXIT_USAGE_ERROR
     }
     PrintUtils.printLine("")

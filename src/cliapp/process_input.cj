@@ -13,7 +13,7 @@ import metis.core.skills.tryHandleSkillsCommand
 import metis.core.mcp.MCPConfigManager
 import metis.core.conversation.ConversationManager
 import metis.core.commands.CustomCommandManager
-import metis.gateway.runtime.{gatewayInvokeCliAgent, runGatewayDashboardCli}
+import metis.gateway.runtime.{gatewayCliShouldPrintRuntimeRequiredHint, gatewayInvokeCliAgent, runGatewayDashboardCli}
 import metis.gateway.core.{GatewaySessionStore, gatewayMigrateLegacyGatewaySessionsIfNeeded, gatewayPersistedSessionsRootForUser}
 import metis.utils.ShellUtils
 import metis.telemetry.DataCollector
@@ -260,15 +260,18 @@ private func executeAgent(app: CliApp, input: String): Unit {
 }
 
 private func executeAgentWithForcedSkill(app: CliApp, input: String, forcedSkillName: Option<String>): Unit {
-    if (executeAgentViaGateway(input, forcedSkillName: forcedSkillName)) {
+    let (ok, needsRuntimeHint) = executeAgentViaGateway(input, forcedSkillName: forcedSkillName)
+    if (ok) {
         return
     }
-    PrintUtils.printLine(
-        "The unified Gateway main runtime is required for CLI chat. Start it with `metis gateway run`, or use `metis agent --local --message \"...\"` for explicit embedded mode."
-    )
+    if (needsRuntimeHint) {
+        PrintUtils.printLine(
+            "The unified Gateway main runtime is required for CLI chat. Start it with `metis gateway run`, or use `metis agent --local --message \"...\"` for explicit embedded mode."
+        )
+    }
 }
 
-private func executeAgentViaGateway(input: String, forcedSkillName!: Option<String> = None<String>): Bool {
+private func executeAgentViaGateway(input: String, forcedSkillName!: Option<String> = None<String>): (Bool, Bool) {
     let prompt = match (forcedSkillName) {
         case Some(skillName) =>
             let normalized = skillName.trimAscii()
@@ -285,13 +288,13 @@ private func executeAgentViaGateway(input: String, forcedSkillName!: Option<Stri
     if (!ok) {
         LogUtils.error("Gateway agent invoke failed: ${err}")
         PrintUtils.printLine("Gateway agent failed: ${err}")
-        return false
+        return (false, gatewayCliShouldPrintRuntimeRequiredHint(err))
     }
     PrintUtils.printLine("")
     PrintUtils.printLine(PrintUtils.renderAssistantResponseBox(answer))
     PrintUtils.printLine("")
     PrintUtils.printLine("")
-    true
+    (true, false)
 }
 
 private func executeAgentEmbeddedWithForcedSkill(app: CliApp, input: String, forcedSkillName: Option<String>): Unit {

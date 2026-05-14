@@ -4,7 +4,7 @@ import magic.log.LogUtils
 
 import metis.cliapp.CliApp
 import metis.core.config.CliConfig
-import metis.gateway.runtime.{gatewayInvokeCliAgent, runFeishuWebhookGatewayService, runGatewayP0Demo, runGatewayP1DemoWithFeishuWebhook}
+import metis.gateway.runtime.{gatewayCliShouldPrintRuntimeRequiredHint, gatewayInvokeCliAgent, runFeishuWebhookGatewayService, runGatewayP0Demo, runGatewayP1DemoWithFeishuWebhook}
 import metis.io.PrintUtils
 import metis.io.InputUtils
 import metis.program.{CLI_EXIT_OK, CLI_EXIT_USAGE_ERROR, cliDispatchProgramFastPath, cliProgramCommandArgs, cliProgramInteractiveMode, cliProgramShouldEnterInteractive,
@@ -86,7 +86,9 @@ public func runCliProgram(args: Array<String>): Int64 {
         let (ok, answer, err) = gatewayInvokeCliAgent(CliConfig.nonInteractivePrompt, sessionKey: "main", channel: "cli")
         if (!ok) {
             PrintUtils.printLine("Gateway agent failed: ${err}")
-            PrintUtils.printLine("Start the unified Gateway main runtime with `metis gateway run`, or use `metis agent --local --message \"...\"` for explicit embedded mode.")
+            if (gatewayCliShouldPrintRuntimeRequiredHint(err)) {
+                PrintUtils.printLine("Start the unified Gateway main runtime with `metis gateway run`, or use `metis agent --local --message \"...\"` for explicit embedded mode.")
+            }
             return CLI_EXIT_USAGE_ERROR
         }
         PrintUtils.printLine(answer)
