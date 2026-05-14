@@ -1,9 +1,16 @@
 package metis.gateway.channels.feishu
 
+import metis.core.config.{GatewayUserSettings, MetisPaths}
+import metis.gateway.core.setGatewayFeishuNativeAuthRunner
+
 import std.collection.{ArrayList, HashMap}
 import std.convert.Parsable
 import std.fs.{Directory, File, Path, exists, remove}
+import std.time.DateTime
 import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString, JsonValue}
+import stdx.encoding.url.URL
+import stdx.net.http.*
+import stdx.net.tls.*
 
 public class FeishuAuthHttpResponse {
     public let statusCode: Int64
@@ -19,6 +26,42 @@ public class FeishuAuthHttpResponse {
 
 public interface FeishuAuthHttpClient {
     func postForm(url: String, fields: HashMap<String, String>, headers: HashMap<String, String>): FeishuAuthHttpResponse
+}
+
+public class FeishuNativeAuthHttpClient <: FeishuAuthHttpClient {
+    private let timeoutSeconds: Int64
+
+    public init(timeoutSeconds!: Int64 = 30) {
+        this.timeoutSeconds = if (timeoutSeconds <= 0) { 30 } else { timeoutSeconds }
+    }
+
+    public func postForm(url: String, fields: HashMap<String, String>, headers: HashMap<String, String>): FeishuAuthHttpResponse {
+        try {
+            let builder = ClientBuilder()
+            builder.readTimeout(Duration.second * this.timeoutSeconds)
+            if (url.startsWith("https")) {
+                var tlsConfig = TlsClientConfig()
+                tlsConfig.domain = URL.parse(url).hostName
+                tlsConfig.alpnProtocolsList = ["http/1.1"]
+                builder.tlsConfig(tlsConfig)
+            }
+            let client = builder.build()
+            try {
+                let reqBuilder = HttpRequestBuilder().url(url).post().body(feishuAuthFormBody(fields))
+                for ((key, value) in headers) {
+                    reqBuilder.header(key, value)
+                }
+                let response = client.send(reqBuilder.build())
+                let bytes = feishuAuthReadAllBytes(response)
+                let body = try { String.fromUtf8(bytes) } catch (_e: Exception) { "" }
+                return FeishuAuthHttpResponse(Int64(response.status), body)
+            } finally {
+                client.close()
+            }
+        } catch (e: Exception) {
+            FeishuAuthHttpResponse(0, "", error: e.message)
+        }
+    }
 }
 
 public class FeishuDeviceAuthorizationResult {
@@ -282,6 +325,91 @@ public class FeishuFileTokenStore <: FeishuTokenStore {
     }
 }
 
+public func feishuGatewayNativeAuthTokenStoreRoot(): Path {
+    MetisPaths.homeRoot().join("feishu").join("user-tokens")
+}
+
+public func feishuInstallGatewayNativeAuthRunner(): Unit {
+    setGatewayFeishuNativeAuthRunner(Some({ accountId: String, user: GatewayUserSettings =>
+        feishuGatewayNativeAuthStart(accountId, user)
+    }))
+}
+
+public func feishuGatewayNativeAuthStart(accountId: String, user: GatewayUserSettings): JsonObject {
+    feishuGatewayNativeAuthStartWithClient(
+        accountId,
+        user,
+        FeishuNativeAuthHttpClient(),
+        FeishuFileTokenStore(feishuGatewayNativeAuthTokenStoreRoot())
+    )
+}
+
+public func feishuGatewayNativeAuthStartWithClient(
+    accountId: String,
+    user: GatewayUserSettings,
+    http: FeishuAuthHttpClient,
+    store: FeishuTokenStore,
+    nowMs!: Int64 = DateTime.now().toUnixTimeStamp().toMilliseconds()
+): JsonObject {
+    let normalized = feishuAuthNativeAccountId(accountId, user)
+    let stored = store.status(normalized)
+    let tokenStatus = feishuAuthString(stored, "status")
+    if (tokenStatus == "authorized") {
+        let out = JsonObject()
+        out.put("status", JsonString("authorized"))
+        out.put("accountId", JsonString(normalized))
+        out.put("tokenStatus", JsonString("authorized"))
+        out.put("scopeSummary", JsonString(feishuAuthScopeSummary(stored)))
+        out.put("redacted", JsonBool(true))
+        out.put("message", JsonString("Stored Feishu user authorization is available."))
+        return out
+    }
+
+    let account = feishuAuthNativeAccountConfig(normalized, user)
+    let appId = feishuAuthJsonStringFallback(account, ["appId", "app_id"], user.feishu.appId)
+    let appSecret = feishuAuthJsonStringFallback(account, ["appSecret", "app_secret"], user.feishu.appSecret)
+    if (appId.isEmpty() || appSecret.isEmpty()) {
+        let out = JsonObject()
+        out.put("status", JsonString("missing_app_credentials"))
+        out.put("accountId", JsonString(normalized))
+        out.put("tokenStatus", JsonString(tokenStatus))
+        out.put("redacted", JsonBool(true))
+        out.put("message", JsonString("Feishu appId/appSecret is required before user authorization can start."))
+        return out
+    }
+
+    let domain = feishuAuthJsonStringFallback(account, ["domain"], user.feishu.domain)
+    let client = FeishuDeviceFlowClient(http, domain: domain, appId: appId, appSecret: appSecret)
+    let started = client.start()
+    let out = started.toRedactedJson()
+    out.put("accountId", JsonString(normalized))
+    out.put("tokenStatus", JsonString(tokenStatus))
+    if (started.status == "pending") {
+        out.put("message", JsonString("Open the verification URL and enter the user code to authorize Feishu user access."))
+    }
+    out.put("expiresInSeconds", JsonString(started.expiresInSeconds.toString()))
+    out.put("redacted", JsonBool(true))
+    out
+}
+
+public func feishuSaveAuthorizedUserToken(
+    store: FeishuTokenStore,
+    accountId: String,
+    result: FeishuDeviceTokenResult,
+    nowMs!: Int64 = DateTime.now().toUnixTimeStamp().toMilliseconds()
+): JsonObject {
+    if (result.status == "authorized" && !result.accessToken.isEmpty()) {
+        store.save(gatewayFeishuNormalizeAccountId(accountId), FeishuUserToken(
+            accessToken: result.accessToken,
+            refreshToken: result.refreshToken,
+            expiresAtMs: nowMs + result.expiresInSeconds * 1000,
+            scopes: result.scopes
+        ))
+        return store.status(accountId)
+    }
+    result.toRedactedJson()
+}
+
 private func feishuAuthNormalizeDomain(raw: String): String {
     var out = raw.trimAscii()
     if (out.isEmpty()) {
@@ -291,6 +419,99 @@ private func feishuAuthNormalizeDomain(raw: String): String {
         out = out[0..out.size - 1]
     }
     out
+}
+
+private func feishuAuthReadAllBytes(response: HttpResponse): Array<Byte> {
+    let out = ArrayList<Byte>()
+    let buffer = Array<Byte>(8192, repeat: 0)
+    while (true) {
+        let n = response.body.read(buffer)
+        if (n <= 0) {
+            break
+        }
+        out.add(all: buffer[..n])
+    }
+    out.toArray()
+}
+
+private func feishuAuthFormBody(fields: HashMap<String, String>): String {
+    let parts = ArrayList<String>()
+    for ((key, value) in fields) {
+        parts.add("${feishuAuthFormEncode(key)}=${feishuAuthFormEncode(value)}")
+    }
+    String.join(parts.toArray(), delimiter: "&")
+}
+
+private func feishuAuthFormEncode(raw: String): String {
+    let out = StringBuilder()
+    let hex = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F"]
+    for (b in raw.toArray()) {
+        let v = Int64(b)
+        if ((v >= 48 && v <= 57) || (v >= 65 && v <= 90) || (v >= 97 && v <= 122) ||
+            v == 45 || v == 46 || v == 95 || v == 126) {
+            out.append(String.fromUtf8([b]))
+        } else if (v == 32) {
+            out.append("+")
+        } else {
+            out.append("%")
+            out.append(hex[(v >> 4) & 0x0F])
+            out.append(hex[v & 0x0F])
+        }
+    }
+    out.toString()
+}
+
+private func feishuAuthNativeAccountId(raw: String, user: GatewayUserSettings): String {
+    let trimmed = raw.trimAscii()
+    if (!trimmed.isEmpty()) {
+        return gatewayFeishuNormalizeAccountId(trimmed)
+    }
+    gatewayFeishuNormalizeAccountId(user.feishu.defaultAccount)
+}
+
+private func feishuAuthNativeAccountConfig(accountId: String, user: GatewayUserSettings): JsonObject {
+    match (user.feishu.accounts) {
+        case Some(accounts) =>
+            match (accounts.get(accountId)) {
+                case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+                case None => JsonObject()
+            }
+        case None => JsonObject()
+    }
+}
+
+private func feishuAuthJsonStringFallback(obj: JsonObject, keys: Array<String>, fallback: String): String {
+    for (key in keys) {
+        match (obj.get(key)) {
+            case Some(v) => try { return v.asString().getValue().trimAscii() } catch (_e: Exception) { () }
+            case None => ()
+        }
+    }
+    fallback.trimAscii()
+}
+
+private func feishuAuthScopeSummary(obj: JsonObject): String {
+    match (obj.get("scopes")) {
+        case Some(v) =>
+            try {
+                let arr = v.asArray()
+                let out = ArrayList<String>()
+                for (i in 0..arr.size()) {
+                    try {
+                        let scope = arr[i].asString().getValue().trimAscii()
+                        if (!scope.isEmpty()) {
+                            out.add(scope)
+                        }
+                    } catch (_e: Exception) {
+                        ()
+                    }
+                }
+                return String.join(out.toArray(), delimiter: " ")
+            } catch (_e: Exception) {
+                ""
+            }
+        case None => ""
+    }
 }
 
 private func feishuAuthScopeString(scopes: Array<String>): String {

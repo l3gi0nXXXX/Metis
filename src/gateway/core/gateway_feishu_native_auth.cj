@@ -7,8 +7,12 @@ import stdx.encoding.json.{JsonBool, JsonObject, JsonString}
 private var gatewayFeishuNativeAuthRunnerOverride: Option<(String, GatewayUserSettings) -> JsonObject> =
     None<(String, GatewayUserSettings) -> JsonObject>
 
-public func setGatewayFeishuNativeAuthRunnerForTest(runner: Option<(String, GatewayUserSettings) -> JsonObject>): Unit {
+public func setGatewayFeishuNativeAuthRunner(runner: Option<(String, GatewayUserSettings) -> JsonObject>): Unit {
     gatewayFeishuNativeAuthRunnerOverride = runner
+}
+
+public func setGatewayFeishuNativeAuthRunnerForTest(runner: Option<(String, GatewayUserSettings) -> JsonObject>): Unit {
+    setGatewayFeishuNativeAuthRunner(runner)
 }
 
 public func gatewayFeishuNativeAuthStart(accountId: String, user: GatewayUserSettings): JsonObject {
@@ -66,7 +70,7 @@ private func gatewayFeishuNativeJsonString(obj: JsonObject, keys: Array<String>,
 private func gatewayFeishuNativeRedactAuthResult(raw: JsonObject, accountId: String): JsonObject {
     let out = JsonObject()
     out.put("accountId", JsonString(accountId))
-    for (key in ["status", "verificationUri", "userCode", "expiresInSeconds", "message", "error"]) {
+    for (key in ["status", "verificationUri", "userCode", "expiresInSeconds", "message", "error", "tokenStatus", "scopeSummary"]) {
         match (raw.get(key)) {
             case Some(v) => out.put(key, v)
             case None => ()

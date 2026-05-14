@@ -267,6 +267,7 @@ public class FeishuAdapter <: ChannelAdapter {
         this.config = resolved.config
         this.accountId = resolved.accountId
         this.apiClient = apiClient
+        feishuInstallGatewayNativeAuthRunner()
     }
 
     public prop name: String {

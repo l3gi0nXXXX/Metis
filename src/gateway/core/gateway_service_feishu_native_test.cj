@@ -337,6 +337,8 @@ public class GatewayServiceFeishuNativeTest {
                 out.put("verificationUri", JsonString("https://verify.example/activate"))
                 out.put("userCode", JsonString("ABCD-EFGH"))
                 out.put("expiresInSeconds", JsonString("600"))
+                out.put("tokenStatus", JsonString("missing"))
+                out.put("scopeSummary", JsonString("offline_access im:message"))
                 out.put("accessToken", JsonString("must-not-render"))
                 out
             }))
@@ -350,8 +352,10 @@ public class GatewayServiceFeishuNativeTest {
                 @Expect(adapter.sentCount(), 1)
                 @Expect(reply.contains("Metis Feishu auth"), true)
                 @Expect(reply.contains("OAuth/user authorization: pending"), true)
+                @Expect(reply.contains("storedToken: missing"), true)
                 @Expect(reply.contains("https://verify.example/activate"), true)
                 @Expect(reply.contains("ABCD-EFGH"), true)
+                @Expect(reply.contains("offline_access im:message"), true)
                 @Expect(reply.contains("native-secret"), false)
                 @Expect(reply.contains("must-not-render"), false)
             } finally {

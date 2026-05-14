@@ -585,10 +585,15 @@ public class GatewayService {
         let userCode = this.feishuNativeJsonString(auth, "userCode")
         let expiresInSeconds = this.feishuNativeJsonString(auth, "expiresInSeconds")
         let message = this.feishuNativeJsonString(auth, "message")
+        let tokenStatus = this.feishuNativeJsonString(auth, "tokenStatus")
+        let scopeSummary = this.feishuNativeJsonString(auth, "scopeSummary")
         let lines = ArrayList<String>()
         lines.add("Metis Feishu auth")
         lines.add("accountId: ${this.feishuNativeAccountId(accountId, user)}")
         lines.add("app credentials: ${if (this.feishuNativeHasCredentials(accountId, user)) { "configured" } else { "missing appId/appSecret" }}")
+        if (!tokenStatus.isEmpty()) {
+            lines.add("storedToken: ${tokenStatus}")
+        }
         if (authStatus == "pending" || authStatus == "authorized" || authStatus == "authorization_pending") {
             lines.add("OAuth/user authorization: ${authStatus}")
         } else {
@@ -605,6 +610,9 @@ public class GatewayService {
         }
         if (!expiresInSeconds.isEmpty()) {
             lines.add("expiresInSeconds: ${expiresInSeconds}")
+        }
+        if (!scopeSummary.isEmpty()) {
+            lines.add("scopes: ${scopeSummary}")
         }
         if (!message.isEmpty()) {
             lines.add("message: ${message}")
@@ -698,7 +706,9 @@ public class GatewayService {
 
     private func feishuNativeJsonString(obj: JsonObject, key: String): String {
         match (obj.get(key)) {
-            case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
+            case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) {
+                try { v.asInt().getValue().toString() } catch (_inner: Exception) { "" }
+            }
             case None => ""
         }
     }
