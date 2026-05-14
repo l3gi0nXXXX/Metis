@@ -1,7 +1,13 @@
 package metis.gateway.channels.feishu
 
 import metis.core.config.{GatewayUserSettings, MetisPaths}
-import metis.gateway.core.setGatewayFeishuNativeAuthRunner
+import metis.gateway.core.{
+    setGatewayFeishuNativeAuthCompleteRunner,
+    setGatewayFeishuNativeAuthPollRunner,
+    setGatewayFeishuNativeAuthRevokeRunner,
+    setGatewayFeishuNativeAuthRunner,
+    setGatewayFeishuNativeAuthStatusRunner
+}
 
 import std.collection.{ArrayList, HashMap}
 import std.convert.Parsable
@@ -101,7 +107,7 @@ public class FeishuDeviceAuthorizationResult {
         out.put("hasDeviceCode", JsonBool(!this.deviceCode.isEmpty()))
         out.put("redacted", JsonBool(true))
         if (!this.error.isEmpty()) {
-            out.put("error", JsonString(this.error))
+            out.put("error", JsonString(feishuAuthRedactSensitiveText(this.error)))
         }
         out
     }
@@ -141,7 +147,7 @@ public class FeishuDeviceTokenResult {
         out.put("scopes", feishuAuthJsonStringArray(this.scopes))
         out.put("redacted", JsonBool(true))
         if (!this.error.isEmpty()) {
-            out.put("error", JsonString(this.error))
+            out.put("error", JsonString(feishuAuthRedactSensitiveText(this.error)))
         }
         out
     }
@@ -327,13 +333,131 @@ public class FeishuFileTokenStore <: FeishuTokenStore {
     }
 }
 
+public class FeishuPendingUserAuth {
+    public let deviceCode: String
+    public let userCode: String
+    public let verificationUri: String
+    public let expiresAtMs: Int64
+    public let intervalSeconds: Int64
+    public let createdAtMs: Int64
+
+    public init(
+        deviceCode!: String = "",
+        userCode!: String = "",
+        verificationUri!: String = "",
+        expiresAtMs!: Int64 = 0,
+        intervalSeconds!: Int64 = 5,
+        createdAtMs!: Int64 = 0
+    ) {
+        this.deviceCode = deviceCode.trimAscii()
+        this.userCode = userCode.trimAscii()
+        this.verificationUri = verificationUri.trimAscii()
+        this.expiresAtMs = expiresAtMs
+        this.intervalSeconds = if (intervalSeconds <= 0) { 5 } else { intervalSeconds }
+        this.createdAtMs = createdAtMs
+    }
+
+    public func toJson(): JsonObject {
+        let out = JsonObject()
+        out.put("deviceCode", JsonString(this.deviceCode))
+        out.put("userCode", JsonString(this.userCode))
+        out.put("verificationUri", JsonString(this.verificationUri))
+        out.put("expiresAtMs", JsonInt(this.expiresAtMs))
+        out.put("intervalSeconds", JsonInt(this.intervalSeconds))
+        out.put("createdAtMs", JsonInt(this.createdAtMs))
+        out
+    }
+
+    public func redactedStatus(accountId: String, nowMs!: Int64 = DateTime.now().toUnixTimeStamp().toMilliseconds()): JsonObject {
+        let expired = this.expiresAtMs > 0 && this.expiresAtMs <= nowMs
+        let out = JsonObject()
+        out.put("accountId", JsonString(gatewayFeishuNormalizeAccountId(accountId)))
+        out.put("status", JsonString(if (expired) { "expired" } else { "pending" }))
+        out.put("authorized", JsonBool(false))
+        out.put("pending", JsonBool(!expired))
+        out.put("userCode", JsonString(this.userCode))
+        out.put("verificationUri", JsonString(this.verificationUri))
+        out.put("expiresAtMs", JsonInt(this.expiresAtMs))
+        out.put("expiresInSeconds", JsonInt(if (expired || this.expiresAtMs <= 0) { 0 } else { (this.expiresAtMs - nowMs) / 1000 }))
+        out.put("intervalSeconds", JsonInt(this.intervalSeconds))
+        out.put("hasDeviceCode", JsonBool(!this.deviceCode.isEmpty()))
+        out.put("redacted", JsonBool(true))
+        out
+    }
+}
+
+public interface FeishuAuthSessionStore {
+    func save(accountId: String, pending: FeishuPendingUserAuth): Unit
+    func load(accountId: String): Option<FeishuPendingUserAuth>
+    func delete(accountId: String): Unit
+}
+
+public class FeishuFileAuthSessionStore <: FeishuAuthSessionStore {
+    private let root: Path
+
+    public init(root: Path) {
+        this.root = root
+    }
+
+    public func save(accountId: String, pending: FeishuPendingUserAuth): Unit {
+        if (!exists(this.root)) {
+            Directory.create(this.root, recursive: true)
+        }
+        File.writeTo(this.pathFor(accountId), pending.toJson().toJsonString().toArray())
+    }
+
+    public func load(accountId: String): Option<FeishuPendingUserAuth> {
+        let path = this.pathFor(accountId)
+        if (!exists(path)) {
+            return None<FeishuPendingUserAuth>
+        }
+        return try {
+            let root = JsonValue.fromStr(String.fromUtf8(File.readFrom(path))).asObject()
+            Some(FeishuPendingUserAuth(
+                deviceCode: feishuAuthString(root, "deviceCode"),
+                userCode: feishuAuthString(root, "userCode"),
+                verificationUri: feishuAuthString(root, "verificationUri"),
+                expiresAtMs: feishuAuthInt(root, "expiresAtMs", 0),
+                intervalSeconds: feishuAuthInt(root, "intervalSeconds", 5),
+                createdAtMs: feishuAuthInt(root, "createdAtMs", 0)
+            ))
+        } catch (_: Exception) {
+            None<FeishuPendingUserAuth>
+        }
+    }
+
+    public func delete(accountId: String): Unit {
+        try { remove(this.pathFor(accountId)) } catch (_: Exception) { () }
+    }
+
+    private func pathFor(accountId: String): Path {
+        this.root.join("${feishuAuthSafeSegment(accountId)}.json")
+    }
+}
+
 public func feishuGatewayNativeAuthTokenStoreRoot(): Path {
     MetisPaths.homeRoot().join("feishu").join("user-tokens")
+}
+
+public func feishuGatewayNativeAuthSessionStoreRoot(): Path {
+    MetisPaths.homeRoot().join("feishu").join("auth-sessions")
 }
 
 public func feishuInstallGatewayNativeAuthRunner(): Unit {
     setGatewayFeishuNativeAuthRunner(Some({ accountId: String, user: GatewayUserSettings =>
         feishuGatewayNativeAuthStart(accountId, user)
+    }))
+    setGatewayFeishuNativeAuthStatusRunner(Some({ accountId: String, user: GatewayUserSettings =>
+        feishuGatewayNativeAuthStatus(accountId, user)
+    }))
+    setGatewayFeishuNativeAuthPollRunner(Some({ accountId: String, user: GatewayUserSettings =>
+        feishuGatewayNativeAuthPoll(accountId, user)
+    }))
+    setGatewayFeishuNativeAuthCompleteRunner(Some({ accountId: String, user: GatewayUserSettings =>
+        feishuGatewayNativeAuthComplete(accountId, user)
+    }))
+    setGatewayFeishuNativeAuthRevokeRunner(Some({ accountId: String, user: GatewayUserSettings =>
+        feishuGatewayNativeAuthRevoke(accountId, user)
     }))
 }
 
@@ -342,7 +466,8 @@ public func feishuGatewayNativeAuthStart(accountId: String, user: GatewayUserSet
         accountId,
         user,
         FeishuNativeAuthHttpClient(),
-        FeishuFileTokenStore(feishuGatewayNativeAuthTokenStoreRoot())
+        FeishuFileTokenStore(feishuGatewayNativeAuthTokenStoreRoot()),
+        sessionStore: FeishuFileAuthSessionStore(feishuGatewayNativeAuthSessionStoreRoot())
     )
 }
 
@@ -351,6 +476,7 @@ public func feishuGatewayNativeAuthStartWithClient(
     user: GatewayUserSettings,
     http: FeishuAuthHttpClient,
     store: FeishuTokenStore,
+    sessionStore!: FeishuAuthSessionStore = FeishuFileAuthSessionStore(feishuGatewayNativeAuthSessionStoreRoot()),
     nowMs!: Int64 = DateTime.now().toUnixTimeStamp().toMilliseconds()
 ): JsonObject {
     let normalized = feishuAuthNativeAccountId(accountId, user)
@@ -387,10 +513,188 @@ public func feishuGatewayNativeAuthStartWithClient(
     out.put("accountId", JsonString(normalized))
     out.put("tokenStatus", JsonString(tokenStatus))
     if (started.status == "pending") {
+        sessionStore.save(normalized, FeishuPendingUserAuth(
+            deviceCode: started.deviceCode,
+            userCode: started.userCode,
+            verificationUri: started.verificationUri,
+            expiresAtMs: nowMs + started.expiresInSeconds * 1000,
+            intervalSeconds: started.intervalSeconds,
+            createdAtMs: nowMs
+        ))
         out.put("message", JsonString("Open the verification URL and enter the user code to authorize Feishu user access."))
     }
     out.put("expiresInSeconds", JsonString(started.expiresInSeconds.toString()))
     out.put("redacted", JsonBool(true))
+    out
+}
+
+public func feishuGatewayNativeAuthStatus(accountId: String, user: GatewayUserSettings): JsonObject {
+    feishuGatewayNativeAuthStatusWithStores(
+        accountId,
+        user,
+        FeishuFileTokenStore(feishuGatewayNativeAuthTokenStoreRoot()),
+        FeishuFileAuthSessionStore(feishuGatewayNativeAuthSessionStoreRoot())
+    )
+}
+
+public func feishuGatewayNativeAuthStatusWithStores(
+    accountId: String,
+    user: GatewayUserSettings,
+    store: FeishuTokenStore,
+    sessionStore: FeishuAuthSessionStore,
+    nowMs!: Int64 = DateTime.now().toUnixTimeStamp().toMilliseconds()
+): JsonObject {
+    let normalized = feishuAuthNativeAccountId(accountId, user)
+    let tokenStatus = store.status(normalized)
+    let tokenStatusText = feishuAuthString(tokenStatus, "status")
+    if (tokenStatusText == "authorized") {
+        return feishuAuthLifecycleTokenStatus(normalized, tokenStatus, "Stored Feishu user authorization is available.")
+    }
+    match (sessionStore.load(normalized)) {
+        case Some(pending) =>
+            let out = pending.redactedStatus(normalized, nowMs: nowMs)
+            out.put("tokenStatus", JsonString(tokenStatusText))
+            if (feishuAuthString(out, "status") == "expired") {
+                out.put("message", JsonString("Feishu OAuth device authorization has expired. Start authorization again."))
+            } else {
+                out.put("message", JsonString("Feishu OAuth device authorization is pending user confirmation."))
+            }
+            return out
+        case None => ()
+    }
+    feishuAuthLifecycleTokenStatus(normalized, tokenStatus, "Feishu user authorization is not available.")
+}
+
+public func feishuGatewayNativeAuthPoll(accountId: String, user: GatewayUserSettings): JsonObject {
+    feishuGatewayNativeAuthPollWithClient(
+        accountId,
+        user,
+        FeishuNativeAuthHttpClient(),
+        FeishuFileTokenStore(feishuGatewayNativeAuthTokenStoreRoot()),
+        FeishuFileAuthSessionStore(feishuGatewayNativeAuthSessionStoreRoot())
+    )
+}
+
+public func feishuGatewayNativeAuthPollWithClient(
+    accountId: String,
+    user: GatewayUserSettings,
+    http: FeishuAuthHttpClient,
+    store: FeishuTokenStore,
+    sessionStore: FeishuAuthSessionStore,
+    nowMs!: Int64 = DateTime.now().toUnixTimeStamp().toMilliseconds()
+): JsonObject {
+    let normalized = feishuAuthNativeAccountId(accountId, user)
+    let stored = store.status(normalized)
+    let tokenStatus = feishuAuthString(stored, "status")
+    if (tokenStatus == "authorized") {
+        return feishuAuthLifecycleTokenStatus(normalized, stored, "Stored Feishu user authorization is available.")
+    }
+    let pending = match (sessionStore.load(normalized)) {
+        case Some(v) => v
+        case None =>
+            let out = feishuAuthLifecycleTokenStatus(normalized, stored, "No pending Feishu OAuth device authorization is available.")
+            out.put("status", JsonString("missing_device_flow"))
+            out.put("pending", JsonBool(false))
+            return out
+    }
+    if (pending.expiresAtMs > 0 && pending.expiresAtMs <= nowMs) {
+        sessionStore.delete(normalized)
+        let out = pending.redactedStatus(normalized, nowMs: nowMs)
+        out.put("tokenStatus", JsonString(tokenStatus))
+        out.put("message", JsonString("Feishu OAuth device authorization has expired. Start authorization again."))
+        return out
+    }
+
+    let account = feishuAuthNativeAccountConfig(normalized, user)
+    let appId = feishuAuthJsonStringFallback(account, ["appId", "app_id"], user.feishu.appId)
+    let appSecret = feishuAuthJsonStringFallback(account, ["appSecret", "app_secret"], user.feishu.appSecret)
+    if (appId.isEmpty() || appSecret.isEmpty()) {
+        let out = feishuAuthLifecycleTokenStatus(normalized, stored, "Feishu appId/appSecret is required before user authorization can be polled.")
+        out.put("status", JsonString("missing_app_credentials"))
+        return out
+    }
+
+    let domain = feishuAuthJsonStringFallback(account, ["domain"], user.feishu.domain)
+    let result = FeishuDeviceFlowClient(http, domain: domain, appId: appId, appSecret: appSecret).poll(pending.deviceCode)
+    if (result.status == "authorized") {
+        let saved = feishuSaveAuthorizedUserToken(store, normalized, result, nowMs: nowMs)
+        sessionStore.delete(normalized)
+        return feishuAuthLifecycleTokenStatus(normalized, saved, "Feishu user authorization completed.")
+    }
+    if (result.status == "denied" || result.status == "expired") {
+        sessionStore.delete(normalized)
+    }
+    let out = result.toRedactedJson()
+    out.put("accountId", JsonString(normalized))
+    out.put("tokenStatus", JsonString(tokenStatus))
+    out.put("pending", JsonBool(result.status == "authorization_pending" || result.status == "slow_down"))
+    out.put("userCode", JsonString(pending.userCode))
+    out.put("verificationUri", JsonString(pending.verificationUri))
+    out.put("intervalSeconds", JsonInt(pending.intervalSeconds))
+    out.put("redacted", JsonBool(true))
+    return out
+}
+
+public func feishuGatewayNativeAuthComplete(accountId: String, user: GatewayUserSettings): JsonObject {
+    feishuGatewayNativeAuthCompleteWithClient(
+        accountId,
+        user,
+        FeishuNativeAuthHttpClient(),
+        FeishuFileTokenStore(feishuGatewayNativeAuthTokenStoreRoot()),
+        FeishuFileAuthSessionStore(feishuGatewayNativeAuthSessionStoreRoot())
+    )
+}
+
+public func feishuGatewayNativeAuthCompleteWithClient(
+    accountId: String,
+    user: GatewayUserSettings,
+    http: FeishuAuthHttpClient,
+    store: FeishuTokenStore,
+    sessionStore: FeishuAuthSessionStore,
+    nowMs!: Int64 = DateTime.now().toUnixTimeStamp().toMilliseconds()
+): JsonObject {
+    let normalized = feishuAuthNativeAccountId(accountId, user)
+    let stored = store.status(normalized)
+    if (feishuAuthString(stored, "status") == "authorized") {
+        return feishuAuthLifecycleTokenStatus(normalized, stored, "Stored Feishu user authorization is available.")
+    }
+    match (sessionStore.load(normalized)) {
+        case Some(_) => feishuGatewayNativeAuthPollWithClient(normalized, user, http, store, sessionStore, nowMs: nowMs)
+        case None =>
+            let out = feishuAuthLifecycleTokenStatus(normalized, stored, "No pending Feishu OAuth device authorization is available.")
+            out.put("status", JsonString("missing_device_flow"))
+            out.put("pending", JsonBool(false))
+            out
+    }
+}
+
+public func feishuGatewayNativeAuthRevoke(accountId: String, user: GatewayUserSettings): JsonObject {
+    feishuGatewayNativeAuthRevokeWithStores(
+        accountId,
+        user,
+        FeishuFileTokenStore(feishuGatewayNativeAuthTokenStoreRoot()),
+        FeishuFileAuthSessionStore(feishuGatewayNativeAuthSessionStoreRoot())
+    )
+}
+
+public func feishuGatewayNativeAuthRevokeWithStores(
+    accountId: String,
+    user: GatewayUserSettings,
+    store: FeishuTokenStore,
+    sessionStore: FeishuAuthSessionStore
+): JsonObject {
+    let normalized = feishuAuthNativeAccountId(accountId, user)
+    store.delete(normalized)
+    sessionStore.delete(normalized)
+    let out = JsonObject()
+    out.put("accountId", JsonString(normalized))
+    out.put("status", JsonString("revoked"))
+    out.put("tokenStatus", JsonString("missing"))
+    out.put("authorized", JsonBool(false))
+    out.put("pending", JsonBool(false))
+    out.put("revoked", JsonBool(true))
+    out.put("redacted", JsonBool(true))
+    out.put("message", JsonString("Local Feishu user authorization was removed."))
     out
 }
 
@@ -412,6 +716,26 @@ public func feishuSaveAuthorizedUserToken(
     result.toRedactedJson()
 }
 
+private func feishuAuthLifecycleTokenStatus(accountId: String, tokenStatus: JsonObject, message: String): JsonObject {
+    let out = JsonObject()
+    out.put("accountId", JsonString(gatewayFeishuNormalizeAccountId(accountId)))
+    let status = feishuAuthString(tokenStatus, "status")
+    out.put("status", JsonString(status))
+    out.put("tokenStatus", JsonString(status))
+    out.put("pending", JsonBool(false))
+    out.put("redacted", JsonBool(true))
+    for (key in ["authorized", "hasAccessToken", "hasRefreshToken", "expiresAtMs", "scopes"]) {
+        match (tokenStatus.get(key)) {
+            case Some(v) => out.put(key, v)
+            case None => ()
+        }
+    }
+    if (!message.isEmpty()) {
+        out.put("message", JsonString(message))
+    }
+    out
+}
+
 private func feishuAuthNormalizeDomain(raw: String): String {
     var out = raw.trimAscii()
     if (out.isEmpty()) {
@@ -421,6 +745,28 @@ private func feishuAuthNormalizeDomain(raw: String): String {
         out = out[0..out.size - 1]
     }
     out
+}
+
+private func feishuAuthRedactSensitiveText(raw: String): String {
+    let text = raw.trimAscii()
+    if (text.isEmpty()) {
+        return ""
+    }
+    let lower = text.toAsciiLower()
+    if (
+        lower.contains("authorization") ||
+        lower.contains("bearer ") ||
+        lower.contains("access_token") ||
+        lower.contains("refresh_token") ||
+        lower.contains("client_secret") ||
+        lower.contains("appsecret") ||
+        lower.contains("secret") ||
+        lower.contains("token") ||
+        lower.contains("password")
+    ) {
+        return "[redacted]"
+    }
+    text
 }
 
 private func feishuAuthReadAllBytes(response: HttpResponse): Array<Byte> {

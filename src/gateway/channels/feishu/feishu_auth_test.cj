@@ -97,6 +97,11 @@ public class FeishuAuthFoundationTest {
 
         let networkError = FeishuDeviceFlowClient(FeishuAuthFakeHttpClient(tokenBody: "{\"error\":\"bad_gateway\"}", tokenStatusCode: 502, tokenError: "upstream down"))
         @Expect(networkError.poll("device-1").status, "network_error")
+
+        let secretError = FeishuDeviceFlowClient(FeishuAuthFakeHttpClient(tokenBody: "{\"error\":\"bad_gateway\"}", tokenStatusCode: 502, tokenError: "Authorization: Bearer uat-secret"))
+        let secretRaw = secretError.poll("device-1").toRedactedJson().toJsonString()
+        @Expect(secretRaw.contains("uat-secret"), false)
+        @Expect(secretRaw.contains("[redacted]"), true)
     }
 
     @TestCase
@@ -284,6 +289,147 @@ public class FeishuAuthFoundationTest {
             @Expect(raw.contains("stored-access-secret"), false)
             @Expect(raw.contains("stored-refresh-secret"), false)
             @Expect(raw.contains("secret-never-visible"), false)
+        } finally {
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func nativeAuthLifecycleStatusPollCompleteAndRevokeUseLocalStoresWithoutLeakingSecrets(): Unit {
+        let root = Path("/tmp/metis-feishu-native-auth-lifecycle-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        try {
+            var user = GatewayUserSettings()
+            user.feishu.defaultAccount = "tenant-a"
+            user.feishu.appId = "app-id"
+            user.feishu.appSecret = "app-secret-never-visible"
+            let tokenStore = FeishuFileTokenStore(root.join("tokens"))
+            let sessionStore = FeishuFileAuthSessionStore(root.join("sessions"))
+            let http = FeishuAuthFakeHttpClient()
+            let nowMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
+
+            let started = feishuGatewayNativeAuthStartWithClient(
+                "tenant-a",
+                user,
+                http,
+                tokenStore,
+                sessionStore: sessionStore,
+                nowMs: nowMs
+            )
+            @Expect(feishuAuthTestString(started, "status"), "pending")
+            @Expect(started.toJsonString().contains("device-1"), false)
+            @Expect(sessionStore.load("tenant-a").isSome(), true)
+
+            let status = feishuGatewayNativeAuthStatusWithStores(
+                "tenant-a",
+                user,
+                tokenStore,
+                sessionStore,
+                nowMs: nowMs
+            )
+            @Expect(feishuAuthTestString(status, "status"), "pending")
+            @Expect(status.toJsonString().contains("ABCD-EFGH"), true)
+            @Expect(status.toJsonString().contains("device-1"), false)
+
+            let polled = feishuGatewayNativeAuthPollWithClient(
+                "tenant-a",
+                user,
+                http,
+                tokenStore,
+                sessionStore,
+                nowMs: nowMs + 1000
+            )
+            let polledRaw = polled.toJsonString()
+            @Expect(feishuAuthTestString(polled, "status"), "authorized")
+            @Expect(feishuAuthTestString(polled, "tokenStatus"), "authorized")
+            @Expect(tokenStore.load("tenant-a").isSome(), true)
+            @Expect(sessionStore.load("tenant-a").isNone(), true)
+            @Expect(polledRaw.contains("uat-secret"), false)
+            @Expect(polledRaw.contains("refresh-secret"), false)
+            @Expect(polledRaw.contains("app-secret-never-visible"), false)
+            @Expect(polledRaw.contains("device-1"), false)
+
+            let completed = feishuGatewayNativeAuthCompleteWithClient(
+                "tenant-a",
+                user,
+                http,
+                tokenStore,
+                sessionStore,
+                nowMs: nowMs + 2000
+            )
+            @Expect(feishuAuthTestString(completed, "status"), "authorized")
+            @Expect(completed.toJsonString().contains("uat-secret"), false)
+
+            let revoked = feishuGatewayNativeAuthRevokeWithStores(
+                "tenant-a",
+                user,
+                tokenStore,
+                sessionStore
+            )
+            @Expect(feishuAuthTestString(revoked, "status"), "revoked")
+            @Expect(tokenStore.load("tenant-a").isNone(), true)
+            @Expect(revoked.toJsonString().contains("refresh-secret"), false)
+        } finally {
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func nativeAuthLifecyclePollMapsPendingRetryDeniedRemoteExpiredAndLocalTimeout(): Unit {
+        let root = Path("/tmp/metis-feishu-native-auth-poll-statuses-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        try {
+            var user = GatewayUserSettings()
+            user.feishu.defaultAccount = "tenant-a"
+            user.feishu.appId = "app-id"
+            user.feishu.appSecret = "app-secret-never-visible"
+            let tokenStore = FeishuFileTokenStore(root.join("tokens"))
+            let sessionStore = FeishuFileAuthSessionStore(root.join("sessions"))
+
+            for ((body, expected) in [
+                ("{\"error\":\"authorization_pending\"}", "authorization_pending"),
+                ("{\"error\":\"slow_down\"}", "slow_down"),
+                ("{\"error\":\"access_denied\"}", "denied"),
+                ("{\"error\":\"expired_token\"}", "expired")
+            ]) {
+                sessionStore.save("tenant-a", FeishuPendingUserAuth(
+                    deviceCode: "device-1",
+                    userCode: "ABCD-EFGH",
+                    verificationUri: "https://verify.example/activate",
+                    expiresAtMs: 600000,
+                    intervalSeconds: 5
+                ))
+                let result = feishuGatewayNativeAuthPollWithClient(
+                    "tenant-a",
+                    user,
+                    FeishuAuthFakeHttpClient(tokenBody: body),
+                    tokenStore,
+                    sessionStore,
+                    nowMs: 2000
+                )
+                @Expect(feishuAuthTestString(result, "status"), expected)
+                @Expect(result.toJsonString().contains("app-secret-never-visible"), false)
+                @Expect(result.toJsonString().contains("device-1"), false)
+            }
+
+            sessionStore.save("tenant-a", FeishuPendingUserAuth(
+                deviceCode: "device-1",
+                userCode: "ABCD-EFGH",
+                verificationUri: "https://verify.example/activate",
+                expiresAtMs: 1000,
+                intervalSeconds: 5
+            ))
+            let timeoutHttp = FeishuAuthFakeHttpClient()
+            let timeout = feishuGatewayNativeAuthPollWithClient(
+                "tenant-a",
+                user,
+                timeoutHttp,
+                tokenStore,
+                sessionStore,
+                nowMs: 2000
+            )
+            @Expect(feishuAuthTestString(timeout, "status"), "expired")
+            @Expect(timeoutHttp.calls.size, 0)
         } finally {
             try { remove(root, recursive: true) } catch (_e: Exception) { () }
         }

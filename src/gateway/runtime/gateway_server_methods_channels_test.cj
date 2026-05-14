@@ -15,7 +15,11 @@ import metis.gateway.core.{
     gatewayChannelRuntimePrimeAccount,
     gatewayChannelRuntimeRegisterAccount,
     gatewayPluginManagerSummary,
+    setGatewayFeishuNativeAuthCompleteRunnerForTest,
+    setGatewayFeishuNativeAuthPollRunnerForTest,
+    setGatewayFeishuNativeAuthRevokeRunnerForTest,
     setGatewayFeishuNativeAuthRunnerForTest,
+    setGatewayFeishuNativeAuthStatusRunnerForTest,
     setGatewayOpenClawPluginSidecarRunnerForTest
 }
 
@@ -218,6 +222,83 @@ public class GatewayServerMethodsChannelsTest {
             @Expect(channelsTestBool(result, "redacted"), true)
         } finally {
             setGatewayFeishuNativeAuthRunnerForTest(None<(String, GatewayUserSettings) -> JsonObject>)
+        }
+    }
+
+    @TestCase
+    public func feishuAuthLifecycleRpcUsesGatewayRunnersAndRedactsSecrets(): Unit {
+        try {
+            setGatewayFeishuNativeAuthStatusRunnerForTest(Some({ accountId: String, _user: GatewayUserSettings =>
+                let out = JsonObject()
+                out.put("status", JsonString("pending"))
+                out.put("accountId", JsonString(accountId))
+                out.put("verificationUri", JsonString("https://verify.example/activate"))
+                out.put("userCode", JsonString("ABCD-EFGH"))
+                out.put("deviceCode", JsonString("device-secret"))
+                out.put("accessToken", JsonString("secret-access-token"))
+                out.put("error", JsonString("Authorization: Bearer secret-error-token"))
+                out.put("redacted", JsonBool(false))
+                out
+            }))
+            setGatewayFeishuNativeAuthPollRunnerForTest(Some({ accountId: String, _user: GatewayUserSettings =>
+                let out = JsonObject()
+                out.put("status", JsonString("authorized"))
+                out.put("accountId", JsonString(accountId))
+                out.put("tokenStatus", JsonString("authorized"))
+                out.put("refreshToken", JsonString("secret-refresh-token"))
+                out.put("redacted", JsonBool(false))
+                out
+            }))
+            setGatewayFeishuNativeAuthCompleteRunnerForTest(Some({ accountId: String, _user: GatewayUserSettings =>
+                let out = JsonObject()
+                out.put("status", JsonString("authorized"))
+                out.put("accountId", JsonString(accountId))
+                out.put("authorization", JsonString("Bearer secret-authorization-token"))
+                out.put("redacted", JsonBool(false))
+                out
+            }))
+            setGatewayFeishuNativeAuthRevokeRunnerForTest(Some({ accountId: String, _user: GatewayUserSettings =>
+                let out = JsonObject()
+                out.put("status", JsonString("revoked"))
+                out.put("accountId", JsonString(accountId))
+                out.put("appSecret", JsonString("secret-app-secret"))
+                out.put("redacted", JsonBool(false))
+                out
+            }))
+
+            var user = GatewayUserSettings()
+            user.feishu.defaultAccount = "tenant-a"
+            let params = JsonObject()
+            params.put("accountId", JsonString("tenant-a"))
+            for ((method, expected) in [
+                ("channels.feishu.auth.status", "pending"),
+                ("channels.feishu.auth.poll", "authorized"),
+                ("channels.feishu.auth.complete", "authorized"),
+                ("channels.feishu.auth.revoke", "revoked")
+            ]) {
+                let response = handleGatewayChannelsFamily(
+                    method,
+                    user,
+                    request: Some(GatewayRpcRequest(method, params: params))
+                ).getOrThrow()
+                @Expect(response.ok, true)
+                let result = response.result.asObject()
+                let raw = result.toJsonString()
+                @Expect(channelsTestString(result, "status"), expected)
+                @Expect(channelsTestString(result, "accountId"), "tenant-a")
+                @Expect(raw.contains("secret-access-token"), false)
+                @Expect(raw.contains("secret-refresh-token"), false)
+                @Expect(raw.contains("secret-authorization-token"), false)
+                @Expect(raw.contains("secret-app-secret"), false)
+                @Expect(raw.contains("secret-error-token"), false)
+                @Expect(raw.contains("device-secret"), false)
+                @Expect(channelsTestBool(result, "redacted"), true)
+            }
+        } finally {
+            setGatewayFeishuNativeAuthStatusRunnerForTest(None<(String, GatewayUserSettings) -> JsonObject>)
+            setGatewayFeishuNativeAuthPollRunnerForTest(None<(String, GatewayUserSettings) -> JsonObject>)
+            setGatewayFeishuNativeAuthCompleteRunnerForTest(None<(String, GatewayUserSettings) -> JsonObject>)
+            setGatewayFeishuNativeAuthRevokeRunnerForTest(None<(String, GatewayUserSettings) -> JsonObject>)
         }
     }
 

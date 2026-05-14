@@ -25,6 +25,10 @@ import metis.gateway.core.{
     gatewayListSessionCatalogViewsForUser,
     gatewayOpenClawPluginSidecarApplyMessageSendingHook,
     gatewayOpenClawPluginSidecarApplyMessageSentHook,
+    gatewayFeishuNativeAuthComplete,
+    gatewayFeishuNativeAuthPoll,
+    gatewayFeishuNativeAuthRevoke,
+    gatewayFeishuNativeAuthStatus,
     gatewayFeishuNativeAuthStart
 }
 import metis.gateway.config.{
@@ -2301,6 +2305,42 @@ public func handleGatewayChannelsFamily(method: String, user: GatewayUserSetting
         }
         let accountId = gatewayRpcStringParam(requestValue, ["accountId", "account"], "")
         let result = gatewayFeishuNativeAuthStart(accountId, user)
+        return Some(GatewayRpcResponse(true, method, result: result))
+    }
+    if (method == "channels.feishu.auth.status") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let accountId = gatewayRpcStringParam(requestValue, ["accountId", "account"], "")
+        let result = gatewayFeishuNativeAuthStatus(accountId, user)
+        return Some(GatewayRpcResponse(true, method, result: result))
+    }
+    if (method == "channels.feishu.auth.poll") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let accountId = gatewayRpcStringParam(requestValue, ["accountId", "account"], "")
+        let result = gatewayFeishuNativeAuthPoll(accountId, user)
+        return Some(GatewayRpcResponse(true, method, result: result))
+    }
+    if (method == "channels.feishu.auth.complete") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let accountId = gatewayRpcStringParam(requestValue, ["accountId", "account"], "")
+        let result = gatewayFeishuNativeAuthComplete(accountId, user)
+        return Some(GatewayRpcResponse(true, method, result: result))
+    }
+    if (method == "channels.feishu.auth.revoke") {
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        let accountId = gatewayRpcStringParam(requestValue, ["accountId", "account"], "")
+        let result = gatewayFeishuNativeAuthRevoke(accountId, user)
         return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "channels.logout") {
