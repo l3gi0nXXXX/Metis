@@ -31,6 +31,15 @@ redacted_flag() {
   fi
 }
 
+resource_status() {
+  local name="$1"
+  if [[ -n "${!name:-}" ]]; then
+    printf "provided-redacted"
+  else
+    printf "missing"
+  fi
+}
+
 write_evidence_pack() {
   local report_dir="$1"
   local report_json="$report_dir/report.json"
@@ -38,16 +47,35 @@ write_evidence_pack() {
   local created_at
   local head
   local telegram_status
+  local telegram_reason
+  local telegram_check_status
+  local telegram_check_reason
+  local telegram_opt_in
   local feishu_status
   local control_ui_status
 
   created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   head="$(git rev-parse HEAD)"
   telegram_status="skipped"
+  telegram_reason="opt-in-disabled"
+  telegram_check_status="skipped"
+  telegram_check_reason="opt-in-disabled"
+  telegram_opt_in="false"
   feishu_status="skipped"
   control_ui_status="skipped"
   if [[ "${METIS_AGENTTEAM_LIVE_TELEGRAM:-0}" == "1" ]]; then
-    telegram_status="manual-opt-in-record-required"
+    telegram_opt_in="true"
+    if [[ -z "${METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID:-}" || -z "${METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID:-}" ]]; then
+      telegram_status="skipped"
+      telegram_reason="external-resource-required"
+      telegram_check_status="skipped"
+      telegram_check_reason="external-resource-required"
+    else
+      telegram_status="manual-opt-in-record-required"
+      telegram_reason="operator-record-required"
+      telegram_check_status="manual-opt-in-record-required"
+      telegram_check_reason="operator-record-required"
+    fi
   fi
   if [[ "${METIS_AGENTTEAM_LIVE_FEISHU:-0}" == "1" ]]; then
     feishu_status="manual-opt-in-record-required"
@@ -72,8 +100,42 @@ write_evidence_pack() {
   "liveGates": {
     "telegram": {
       "status": "$telegram_status",
+      "reason": "$telegram_reason",
+      "optIn": $telegram_opt_in,
       "accountId": "$(redacted_flag "${METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID:-}")",
-      "chatOrTopic": "$(redacted_flag "${METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID:-}")"
+      "chatOrTopic": "$(redacted_flag "${METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID:-}")",
+      "requiredResources": [
+        {
+          "name": "METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID",
+          "status": "$(resource_status METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID)"
+        },
+        {
+          "name": "METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID",
+          "status": "$(resource_status METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID)"
+        }
+      ],
+      "manualChecks": [
+        {
+          "id": "account-route",
+          "status": "$telegram_check_status",
+          "reason": "$telegram_check_reason"
+        },
+        {
+          "id": "group-topic-session-isolation",
+          "status": "$telegram_check_status",
+          "reason": "$telegram_check_reason"
+        },
+        {
+          "id": "alias-route",
+          "status": "$telegram_check_status",
+          "reason": "$telegram_check_reason"
+        },
+        {
+          "id": "broadcast-aggregate",
+          "status": "$telegram_check_status",
+          "reason": "$telegram_check_reason"
+        }
+      ]
     },
     "feishu": {
       "status": "$feishu_status",
@@ -135,6 +197,15 @@ JSON
 | Binding conflict rejects same route/different agent without partial write | TODO pass/fail | TODO |
 | Broadcast aggregate includes per-agent status/detail/answer/sessionKey | TODO pass/fail | TODO |
 
+## Phase 3 Telegram Live Route Gate
+
+| Check | Gate Result | Evidence |
+| --- | --- | --- |
+| Account route | $telegram_check_status | $telegram_check_reason; redacted account only |
+| Group/topic session isolation | $telegram_check_status | $telegram_check_reason; redacted chat/topic only |
+| Alias route | $telegram_check_status | $telegram_check_reason; @writer or /agent writer manual smoke |
+| Broadcast aggregate | $telegram_check_status | $telegram_check_reason; aggregate rows must include agentId/status/sessionKey |
+
 ## Redaction Checklist
 
 - No real ~/.metis path was used.
@@ -151,14 +222,6 @@ MD
     fail "redaction scan found secret-like evidence in $report_dir"
   fi
   rm -f /tmp/metis-agentteam-gate-redaction.txt
-}
-
-require_env_for_gate() {
-  local gate="$1"
-  local name="$2"
-  if [[ "$gate" == "1" && -z "${!name:-}" ]]; then
-    fail "set $name for the opt-in Telegram live gate, or unset METIS_AGENTTEAM_LIVE_TELEGRAM to keep it skipped"
-  fi
 }
 
 require_command git
@@ -307,10 +370,12 @@ NODE
 fi
 
 if [[ "${METIS_AGENTTEAM_LIVE_TELEGRAM:-0}" == "1" ]]; then
-  require_env_for_gate "${METIS_AGENTTEAM_LIVE_TELEGRAM:-0}" METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID
-  require_env_for_gate "${METIS_AGENTTEAM_LIVE_TELEGRAM:-0}" METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID
-  info "live Telegram gate opted in for account=${METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID}; test chat/topic ids are operator-provided and must be redacted in reports"
-  info "live Telegram route checks remain manual: account route, group/topic session isolation, alias routing, and team broadcast aggregate"
+  if [[ -z "${METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID:-}" || -z "${METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID:-}" ]]; then
+    info "live Telegram gate skipped: external-resource-required; provide METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID and METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID to enable manual smoke"
+  else
+    info "live Telegram gate opted in for account=${METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID}; test chat/topic ids are operator-provided and must be redacted in reports"
+    info "live Telegram route checks remain manual: account route, group/topic session isolation, alias routing, and team broadcast aggregate"
+  fi
 else
   info "live Telegram gate skipped; set METIS_AGENTTEAM_LIVE_TELEGRAM=1 with METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID and METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID to enable manual smoke"
 fi
