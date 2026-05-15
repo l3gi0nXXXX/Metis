@@ -301,6 +301,21 @@ public class FeishuEventReplayLiveSmokeChecklist {
         ]))
         root
     }
+
+    public static func skippedExternalResourceReport(): JsonObject {
+        let root = FeishuEventReplayLiveSmokeChecklist.toJson()
+        root.put("status", JsonString("skipped"))
+        root.put("reason", JsonString("external-resource-required"))
+        root.put("networkAttempted", JsonBool(false))
+        root.put("redacted", JsonBool(true))
+        root.put("requiredExternalResources", JsonArray([
+            JsonString("test_event_subscription"),
+            JsonString("message/post/image/file/audio/video/card/reaction/drive/membership/vc/bitable"),
+            JsonString("redacted_live_event_replay_fixture"),
+            JsonString("isolated_test_tenant")
+        ]))
+        root
+    }
 }
 
 public class FeishuAdapter <: ChannelAdapter {

@@ -268,6 +268,21 @@ public class GatewayFeishuMediaToolsetTest {
     }
 
     @TestCase
+    public func feishuHistoricalResourceLiveMissingExternalResourcesReturnsSkippedDiagnostic(): Unit {
+        let report = GatewayFeishuResourceLiveSmokeChecklist.skippedExternalResourceReport()
+        let raw = report.toJsonString()
+        @Expect(report.get("status").getOrThrow().asString().getValue(), "skipped")
+        @Expect(report.get("reason").getOrThrow().asString().getValue(), "external-resource-required")
+        @Expect(report.get("networkAttempted").getOrThrow().asBool().getValue(), false)
+        @Expect(report.get("redacted").getOrThrow().asBool().getValue(), true)
+        @Expect(raw.contains("test_message_id"), true)
+        @Expect(raw.contains("test_file_key"), true)
+        @Expect(raw.contains("safe_temp_cache_root"), true)
+        @Expect(raw.contains("Authorization"), false)
+        @Expect(raw.contains("access_token"), false)
+    }
+
+    @TestCase
     public func feishuHistoricalFetchPropagatesOapiNotFoundForbiddenAndRateLimit(): Unit {
         let root = "/tmp/metis-feishu-oapi-errors-${DateTime.now().toUnixTimeStamp().toMilliseconds()}"
         try { remove(Path(root), recursive: true) } catch (_e: Exception) { () }

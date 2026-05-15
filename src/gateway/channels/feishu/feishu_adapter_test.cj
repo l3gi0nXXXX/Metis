@@ -924,6 +924,20 @@ public class FeishuAdapterTest {
     }
 
     @TestCase
+    public func cardLiveSmokeMissingExternalResourcesReturnsSkippedDiagnostic(): Unit {
+        let report = FeishuCardLiveSmokeChecklist.skippedExternalResourceReport()
+        let raw = report.toJsonString()
+        @Expect(report.get("status").getOrThrow().asString().getValue(), "skipped")
+        @Expect(report.get("reason").getOrThrow().asString().getValue(), "external-resource-required")
+        @Expect(report.get("networkAttempted").getOrThrow().asBool().getValue(), false)
+        @Expect(report.get("redacted").getOrThrow().asBool().getValue(), true)
+        @Expect(raw.contains("test_feishu_group"), true)
+        @Expect(raw.contains("card_create_patch_finalize_abort"), true)
+        @Expect(raw.contains("appSecret"), false)
+        @Expect(raw.contains("Authorization"), false)
+    }
+
+    @TestCase
     public func eventReplayLiveSmokeChecklistIsExplicitOptInOnly(): Unit {
         let checklist = FeishuEventReplayLiveSmokeChecklist.toJson()
         @Expect(checklist.get("optInRequired").getOrThrow().asBool().getValue(), true)
@@ -939,6 +953,20 @@ public class FeishuAdapterTest {
         @Expect(checklist.toJsonString().contains("video"), true)
         @Expect(FeishuEventReplayLiveSmokeChecklist.isOptInValueEnabled(""), false)
         @Expect(FeishuEventReplayLiveSmokeChecklist.isOptInValueEnabled("yes"), true)
+    }
+
+    @TestCase
+    public func eventReplayLiveSmokeMissingExternalResourcesReturnsSkippedDiagnostic(): Unit {
+        let report = FeishuEventReplayLiveSmokeChecklist.skippedExternalResourceReport()
+        let raw = report.toJsonString()
+        @Expect(report.get("status").getOrThrow().asString().getValue(), "skipped")
+        @Expect(report.get("reason").getOrThrow().asString().getValue(), "external-resource-required")
+        @Expect(report.get("networkAttempted").getOrThrow().asBool().getValue(), false)
+        @Expect(report.get("redacted").getOrThrow().asBool().getValue(), true)
+        @Expect(raw.contains("test_event_subscription"), true)
+        @Expect(raw.contains("message/post/image/file/audio/video/card/reaction/drive/membership/vc/bitable"), true)
+        @Expect(raw.contains("tenant_access_token"), false)
+        @Expect(raw.contains("Authorization"), false)
     }
 
     @TestCase

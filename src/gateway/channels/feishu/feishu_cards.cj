@@ -172,6 +172,22 @@ public class FeishuCardLiveSmokeChecklist {
         ]))
         root
     }
+
+    public static func skippedExternalResourceReport(): JsonObject {
+        let root = FeishuCardLiveSmokeChecklist.toJson()
+        root.put("status", JsonString("skipped"))
+        root.put("reason", JsonString("external-resource-required"))
+        root.put("networkAttempted", JsonBool(false))
+        root.put("redacted", JsonBool(true))
+        root.put("requiredExternalResources", JsonArray([
+            JsonString("test_feishu_group"),
+            JsonString("card_create_patch_finalize_abort"),
+            JsonString("cardkit_permissions"),
+            JsonString("test_thread"),
+            JsonString("image_key_or_upload_fixture")
+        ]))
+        root
+    }
 }
 
 public class FeishuReplyFooterMetrics {

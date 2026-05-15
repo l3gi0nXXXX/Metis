@@ -51,6 +51,50 @@ public func setGatewayFeishuHistoricalResourceClientForTest(client: Option<Feish
     gatewayFeishuHistoricalResourceClientForTest = client
 }
 
+public class GatewayFeishuResourceLiveSmokeChecklist {
+    public static func optInEnvName(): String {
+        "METIS_FEISHU_LIVE_RESOURCE_SMOKE"
+    }
+
+    public static func isOptInValueEnabled(value: String): Bool {
+        let normalized = value.trimAscii().toAsciiLower()
+        normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on"
+    }
+
+    public static func toJson(): JsonObject {
+        let root = JsonObject()
+        root.put("optInRequired", JsonBool(true))
+        root.put("optInEnv", JsonString(GatewayFeishuResourceLiveSmokeChecklist.optInEnvName()))
+        root.put("defaultNetwork", JsonString("disabled"))
+        root.put("redaction", JsonString("live resource fixtures must remove tokens, authorization headers, tenant secrets, and private user content before persistence"))
+        root.put("cachePolicy", JsonString("safe_temp_cache_root"))
+        root.put("matrix", JsonArray([
+            JsonString("historical_message_resource"),
+            JsonString("bot_image_resource"),
+            JsonString("safe_temp_cache_root"),
+            JsonString("permission_denied"),
+            JsonString("resource_missing")
+        ]))
+        root
+    }
+
+    public static func skippedExternalResourceReport(): JsonObject {
+        let root = GatewayFeishuResourceLiveSmokeChecklist.toJson()
+        root.put("status", JsonString("skipped"))
+        root.put("reason", JsonString("external-resource-required"))
+        root.put("networkAttempted", JsonBool(false))
+        root.put("redacted", JsonBool(true))
+        root.put("requiredExternalResources", JsonArray([
+            JsonString("test_message_id"),
+            JsonString("test_file_key"),
+            JsonString("safe_temp_cache_root"),
+            JsonString("im:message.resource:read scope"),
+            JsonString("isolated_test_tenant")
+        ]))
+        root
+    }
+}
+
 private func feishuMediaToolString(obj: JsonObject, key: String): String {
     match (obj.get(key)) {
         case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
