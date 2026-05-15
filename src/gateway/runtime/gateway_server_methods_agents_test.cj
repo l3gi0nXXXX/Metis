@@ -1061,13 +1061,23 @@ public class GatewayServerMethodsAgentsTest {
             let listResult = listResponse.result.asObject()
             @Expect(agentsTestString(listResult, "workspace"), home.join("workspaces").join("pm").toString())
             let files = listResult.get("files").getOrThrow().asArray()
+            @Expect(files.size(), 8)
+            var presentProfileCount = 0
+            var missingProfileCount = 0
             for (name in ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md", "MEMORY.md"]) {
                 let row = agentsTestFindObjectById(files, name)
                 @Expect(agentsTestString(row, "name"), name)
                 if (name != "BOOTSTRAP.md") {
                     @Expect(agentsTestBool(row, "missing"), false)
                 }
+                if (agentsTestBool(row, "missing")) {
+                    missingProfileCount += 1
+                } else {
+                    presentProfileCount += 1
+                }
             }
+            @Expect(presentProfileCount, 7)
+            @Expect(missingProfileCount, 1)
             let bootstrapRow = agentsTestFindObjectById(files, "BOOTSTRAP.md")
             @Expect(agentsTestBool(bootstrapRow, "missing"), true)
 
@@ -1111,6 +1121,121 @@ public class GatewayServerMethodsAgentsTest {
             let escaped = handleGatewayAgentsFamily("agents.files.set", request: Some(GatewayRpcRequest("agents.files.set", params: escapeParams))).getOrThrow()
             @Expect(escaped.ok, false)
             @Expect(exists(home.join("workspaces").join("outside.md")), false)
+        })
+    }
+
+    @TestCase
+    public func agentAAgentBModelsRpcKeepsModelsJsonPathAndModelRefSeparate(): Unit {
+        withAgentsTempHome("metis-agents-phase2-model-isolation-home", { home: Path =>
+            let agentAParams = JsonObject()
+            agentAParams.put("id", JsonString("agent-a"))
+            agentAParams.put("model", JsonString("openai:gpt-4o-mini"))
+            let agentAAdd = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: agentAParams))).getOrThrow()
+            @Expect(agentAAdd.ok, true)
+
+            let agentBParams = JsonObject()
+            agentBParams.put("id", JsonString("agent-b"))
+            agentBParams.put("model", JsonString("dashscope:qwen-plus"))
+            let agentBAdd = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: agentBParams))).getOrThrow()
+            @Expect(agentBAdd.ok, true)
+
+            let agentAState = JsonObject()
+            agentAState.put("primaryModelRef", JsonString("openai:gpt-4o-mini"))
+            agentAState.put("runtimePrimaryModelRef", JsonString("openai:gpt-4o-mini"))
+            agentAState.put("providers", JsonArray([]))
+            let agentASetParams = JsonObject()
+            agentASetParams.put("agentId", JsonString("agent-a"))
+            agentASetParams.put("state", agentAState)
+            let agentASet = handleGatewayAgentsFamily("agents.models.set", request: Some(GatewayRpcRequest("agents.models.set", params: agentASetParams))).getOrThrow()
+            @Expect(agentASet.ok, true)
+
+            let agentBState = JsonObject()
+            agentBState.put("primaryModelRef", JsonString("dashscope:qwen-plus"))
+            agentBState.put("runtimePrimaryModelRef", JsonString("dashscope:qwen-plus"))
+            agentBState.put("providers", JsonArray([]))
+            let agentBSetParams = JsonObject()
+            agentBSetParams.put("agentId", JsonString("agent-b"))
+            agentBSetParams.put("state", agentBState)
+            let agentBSet = handleGatewayAgentsFamily("agents.models.set", request: Some(GatewayRpcRequest("agents.models.set", params: agentBSetParams))).getOrThrow()
+            @Expect(agentBSet.ok, true)
+
+            let agentAGetParams = JsonObject()
+            agentAGetParams.put("agentId", JsonString("agent-a"))
+            let agentAGet = handleGatewayAgentsFamily("agents.models.get", request: Some(GatewayRpcRequest("agents.models.get", params: agentAGetParams))).getOrThrow()
+            @Expect(agentAGet.ok, true)
+            let agentAModels = agentAGet.result.asObject().get("models").getOrThrow().asObject()
+
+            let agentBGetParams = JsonObject()
+            agentBGetParams.put("agentId", JsonString("agent-b"))
+            let agentBGet = handleGatewayAgentsFamily("agents.models.get", request: Some(GatewayRpcRequest("agents.models.get", params: agentBGetParams))).getOrThrow()
+            @Expect(agentBGet.ok, true)
+            let agentBModels = agentBGet.result.asObject().get("models").getOrThrow().asObject()
+
+            let agentAPath = home.join("agents").join("agent-a").join("agent").join("models.json")
+            let agentBPath = home.join("agents").join("agent-b").join("agent").join("models.json")
+            @Expect(agentsTestString(agentAModels, "path"), agentAPath.toString())
+            @Expect(agentsTestString(agentBModels, "path"), agentBPath.toString())
+            @Expect(agentsTestString(agentAModels, "path") != agentsTestString(agentBModels, "path"), true)
+            @Expect(agentsTestString(agentAModels, "modelRef"), "openai:gpt-4o-mini")
+            @Expect(agentsTestString(agentBModels, "modelRef"), "dashscope:qwen-plus")
+            @Expect(agentsTestString(agentAModels, "runtimePrimaryModelRef"), "openai:gpt-4o-mini")
+            @Expect(agentsTestString(agentBModels, "runtimePrimaryModelRef"), "dashscope:qwen-plus")
+            @Expect(String.fromUtf8(File.readFrom(agentAPath)).contains("dashscope:qwen-plus"), false)
+            @Expect(String.fromUtf8(File.readFrom(agentBPath)).contains("openai:gpt-4o-mini"), false)
+        })
+    }
+
+    @TestCase
+    public func agentBWithoutExplicitAuthCopyDoesNotReadAgentAOrMainCredentialsAndRedactsOutput(): Unit {
+        withAgentsTempHome("metis-agents-phase2-auth-isolation-home", { home: Path =>
+            File.writeTo(home.join("auth-profiles.json"),
+                "{\"profiles\":[{\"id\":\"main-isolated\",\"provider\":\"isolated\",\"apiKey\":\"main-secret-never-log\"}]}\n".toArray())
+
+            let agentAParams = JsonObject()
+            agentAParams.put("id", JsonString("agent-a"))
+            agentAParams.put("model", JsonString("isolated:agent-a-model"))
+            let agentAAdd = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: agentAParams))).getOrThrow()
+            @Expect(agentAAdd.ok, true)
+
+            let agentBParams = JsonObject()
+            agentBParams.put("id", JsonString("agent-b"))
+            agentBParams.put("model", JsonString("isolated:agent-b-model"))
+            let agentBAdd = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: agentBParams))).getOrThrow()
+            @Expect(agentBAdd.ok, true)
+
+            File.writeTo(
+                home.join("agents").join("agent-a").join("agent").join("auth-profiles.json"),
+                "{\"profiles\":[{\"id\":\"agent-a-isolated\",\"provider\":\"isolated\",\"apiKey\":\"agent-a-secret-never-log\",\"baseUrl\":\"https://agent-a.example/v1\"}]}\n".toArray()
+            )
+
+            let agentAGetParams = JsonObject()
+            agentAGetParams.put("agentId", JsonString("agent-a"))
+            let agentAGet = handleGatewayAgentsFamily("agents.models.get", request: Some(GatewayRpcRequest("agents.models.get", params: agentAGetParams))).getOrThrow()
+            @Expect(agentAGet.ok, true)
+            let agentAModels = agentAGet.result.asObject().get("models").getOrThrow().asObject()
+            let agentASource = agentsTestObject(agentAModels, "credentialSource")
+            @Expect(agentsTestString(agentASource, "source"), "agent.auth-profiles.isolated")
+            @Expect(agentsTestString(agentASource, "status"), "configured")
+            @Expect(agentsTestBool(agentASource, "apiKeyConfigured"), true)
+
+            let agentBGetParams = JsonObject()
+            agentBGetParams.put("agentId", JsonString("agent-b"))
+            let agentBGet = handleGatewayAgentsFamily("agents.models.get", request: Some(GatewayRpcRequest("agents.models.get", params: agentBGetParams))).getOrThrow()
+            @Expect(agentBGet.ok, true)
+            let agentBModels = agentBGet.result.asObject().get("models").getOrThrow().asObject()
+            let agentBSource = agentsTestObject(agentBModels, "credentialSource")
+            @Expect(agentsTestString(agentBSource, "source"), "unconfigured")
+            @Expect(agentsTestString(agentBSource, "status"), "not-configured")
+            @Expect(agentsTestBool(agentBSource, "apiKeyConfigured"), false)
+            @Expect(agentsTestString(agentBSource, "path"), "")
+            @Expect(exists(home.join("agents").join("agent-b").join("agent").join("auth-profiles.json")), false)
+
+            let rendered = agentAModels.toJsonString() + agentBModels.toJsonString()
+            @Expect(rendered.contains("agent-a-secret-never-log"), false)
+            @Expect(rendered.contains("main-secret-never-log"), false)
+            @Expect(rendered.contains("\"apiKey\":\""), false)
+            @Expect(rendered.contains("\"api_key\":\""), false)
+            @Expect(rendered.contains("Authorization"), false)
         })
     }
 
