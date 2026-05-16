@@ -86,13 +86,13 @@ Metis 源码证据：
 - `ui/src/ui/navigation.ts:4-10`、`:48-50`：Control UI 有 agent 分组和 `/agent-teams` 路径。
 - `ui/src/ui/views/agents-panel-teams.ts:89-142`、`:145-215`、`:230-295`：Agent Team panel、manual evidence、外部资源 readiness、Feishu guided setup 边界。
 - `ui/src/ui/controllers/agent-teams.ts:180-189`、`:191-285`：profile 文件集合和 team templates。
-- `src/gateway/channels/feishu/feishu_accounts.cj:43-176`：Feishu 多账号解析和脱敏 account status。
+- `src/gateway/channels/feishu/feishu_accounts.cj:43-230`：Feishu 多账号解析、脱敏 account status、routeDiagnostics、routeDiagnostic、liveReadiness。
 - `src/gateway/core/gateway_service.cj:197-208`、`:468-642`、`:645-745`：Feishu native commands 在 GatewayService 中处理，绕过模型路径，输出 start/doctor/auth/info。
 - `src/gateway/core/gateway_service_feishu_native_test.cj:240-475`：native commands 绕过 group gate、输出配置/OAuth/OAPI/Card 状态、脱敏 token/secret。
 - `src/gateway/channels/feishu/feishu_auth.cj:191-256`、`:590-780`：Feishu device flow start/poll/status，pending session，scope missing，redacted result。
 - `src/gateway/core/gateway_feishu_native_auth.cj:68-120`、`:161-203`：native auth runner 和强制脱敏。
-- `src/gateway/tools/gateway_feishu_oapi_client.cj:607-700`、`:977-1095`：user/tenant/bot/app token lookup、统一 invoke、auth/scope/app-scope/API error 分类、message resource fetch。
-- `src/gateway/tools/gateway_feishu_oapi_toolset.cj:102-285`：Feishu OAPI toolset 覆盖 doc、wiki、drive、search、bitable、calendar、task、sheet、chat、user。
+- `src/gateway/tools/gateway_feishu_oapi_client.cj:607-700`、`:977-1095`：user/tenant/bot/app token lookup、统一 invoke、auth/scope/app-scope/API error 分类、mode-specific repair_hints、message resource fetch。
+- `src/gateway/tools/gateway_feishu_oapi_toolset.cj:102-305`：Feishu OAPI toolset 覆盖 doc、wiki、drive、search、bitable、calendar、task、sheet、chat、user，并提供 `feishu_oapi_smoke_plan` dry-run request plan。
 - `src/gateway/channels/feishu/feishu_cards.cj:6-210`：interactive card JSON、fallback 分类、CardKit live smoke checklist。
 - `src/gateway/channels/feishu/feishu_adapter.cj:1720-1885`、`:1960-2110`：group policy context、alias candidates、attachment context、quote、merge_forward、resource boundary。
 - `scripts/agentteam-manual-acceptance-gate.sh:71-198`、`:206-433`、`:442-608`：series23 live opt-in、G01-G26、M01-M32、releaseVerification 和 redacted evidence pack gate status。
@@ -178,16 +178,16 @@ Metis 与 OpenClaw 的对应关系：
 | G09 | team CRUD/member 自动创建 | OpenClaw agents/workspace 管理 | `gateway_server_methods_agents.cj:2123-2305` | closed-local | 已具备 | 验收 delete 不删 workspace。 |
 | G10 | team broadcast/fan-out | broadcast docs `160-184` | `gateway_agent_team_broadcast.cj:463-514` | closed-local | 已具备本地 plan | live delivery 见 G11/G13。 |
 | G11 | Telegram private/group/topic/broadcast live | OpenClaw channel route 模型 | Metis Telegram adapter + route/broadcast gate | external-live | 代码已有，缺真实 bot/group/topic evidence | 提供测试 Telegram 资源，跑 M12-M14。 |
-| G12 | Feishu 多 accountId route | `accounts.ts:85-208` | `feishu_accounts.cj:43-176` | external-live | 代码已有，缺两个真实 app/bot | 提供 account A/B，跑 M15。 |
+| G12 | Feishu 多 accountId route | `accounts.ts:85-208` | `feishu_accounts.cj:43-230`，含 `routeDiagnostics`/`routeDiagnostic`/`liveReadiness` | external-live | 本地多账号 status/route 诊断已补，缺两个真实 app/bot | 提供 account A/B，跑 M15。 |
 | G13 | Feishu groupPolicy/requireMention/threadSession | inbound handler `114-223` | `feishu_accounts.cj:81-110`、adapter `1720-1733` | external-live | 代码已有，缺群/话题 evidence | 跑 M16-M17。 |
 | G14 | Feishu OAuth/UAT device flow | `auth.ts:115-190`、ToolClient `139-250` | `feishu_auth.cj:191-256`、`:590-780` | external-live | 本地实现已有 | 提供 appId/appSecret/offline_access/test user。 |
-| G15 | TAT/app/bot token modes | ToolClient `199-250` | `gateway_feishu_oapi_client.cj:607-700` | external-live | 本地实现已有 | 真实 token endpoint smoke。 |
-| G16 | OAPI tool matrix | `openclaw.plugin.json:14-55` | `gateway_feishu_oapi_toolset.cj:102-285` | external-live | 工具入口已有 | 每个 family 跑低风险 read/write smoke。 |
-| G17 | scope diagnostic/repair hint | doctor `410-650` | OAPI client `977-1050` | external-live | 本地分类已有 | 制造缺 app scope/user scope 的真实诊断。 |
+| G15 | TAT/app/bot token modes | ToolClient `199-250` | `gateway_feishu_oapi_client.cj:607-700`、mode-specific `repair_hints` | external-live | 本地 token mode 选择和修复提示已有 | 真实 token endpoint smoke。 |
+| G16 | OAPI tool matrix | `openclaw.plugin.json:14-55` | `gateway_feishu_oapi_toolset.cj:102-305`、`feishuOapiSmokeDryRunPlanFromCases` | external-live | 工具入口和 read/write dry-run plan 已有 | 每个 family 跑低风险 read/write live smoke。 |
+| G17 | scope diagnostic/repair hint | doctor `410-650`、auth `115-190` 的 `self_manage`/`offline_access` 预检 | OAPI client `977-1050`、`repair_hints` | external-live | 本地分类和 mode-specific repair hint 已有；不把 `application:application:self_manage` 当作 app/bot 自动创建依据 | 制造缺 app scope/user scope 的真实诊断。 |
 | G18 | CardKit streaming | `cardkit.ts:69-277` | `feishu_cards.cj:6-210` | external-live + product-ux | Metis 有 card JSON/fallback/checklist，真实 streaming 需 live 闭环 | create/stream patch/final/settings/abort/fallback 验收；若无真实 API path 则补代码。 |
 | G19 | Rich events/resource | inbound pipeline + media/reaction capabilities | `feishu_adapter.cj:1785-1885`、`:1960-2110` | external-live + product-ux | 当前为 metadata/resource boundary，缺真实事件 evidence | 图片/文件/音频/视频/reaction/quote/merge_forward 验收。 |
 | G20 | `/feishu start/doctor/auth` | `commands/index.ts:95-260` | `gateway_service.cj:468-642`、tests `240-475` | closed-local + external-live | 本地已补齐，真实会话待验收 | 在真实飞书 bot 中截图/脱敏日志。 |
-| G21 | 自动创建 Feishu app/bot | 飞书官方文章称官方安装器支持新建/关联 | Metis UI 明确只 guided setup | platform-boundary | 不能本地承诺 | 先调研飞书 API/权限/审核；不可行则保持“关联已有机器人”。 |
+| G21 | 自动创建 Feishu app/bot | OpenClaw `auth.ts:137-170` 只把 `application:application:self_manage` 用于 scope/app info 预检，不是创建 app/bot；官方安装器文章属于平台产品能力，不等同第三方 OAPI | Metis OAPI `repair_hints.platform.app_bot_autocreate=not_supported`，UI/docs 保持 guided setup | platform-boundary | 2026-05-16 本地结论：不伪实现自动创建；保持关联已有 app/bot | 只有拿到飞书开放平台明确 endpoint、token 类型、scope、租户角色和审核路径后，另起实现计划。 |
 | G22 | 多机器人映射不同 agent/team | accountId + bindings | `feishu_accounts.cj` + route resolver | external-live | 代码已有 | 两个真实 bot 分别绑定不同 agent/team。 |
 | G23 | Miaoda-like 管理 UI | 飞书/Miaoda 产品形态 | `agents-panel-teams.ts:89-295` | product-ux | 工程管理面已有，普通用户管理台未完全达标 | 模板库、导入导出、状态看板、证据包、向导闭环。 |
 | G24 | evidence pack/manual gate | OpenClaw doctor/info/fix 思路 | `agentteam-manual-acceptance-gate.sh:71-608` | closed-local | 已具备 series23 本地 gate、skipped/external-resource-required/operator-record-required 区分和证据字段 | 接真实资源后补 live evidence。 |
@@ -324,6 +324,7 @@ Feishu 是 IM runtime channel + native command channel。
 - 准备两个测试 Feishu app/bot/accountId。
 - 分别绑定到不同 agent/team。
 - 验证 requireMention、groupPolicy、threadSession、allowlist。
+- 本地先使用 `gatewayFeishuDescribeAccounts` 的 `routeDiagnostics`、每账号 `routeDiagnostic`、`liveReadiness` 判断 accountId 是否可绑定、是否缺凭据、是否 disabled、是否已 runtime running；该诊断只脱敏输出，不触真实 Feishu。
 
 验收项：
 
@@ -340,6 +341,7 @@ Feishu 是 IM runtime channel + native command channel。
 
 - 开通 `offline_access` 和低风险 OAPI scopes。
 - 完成 `/feishu auth` device flow。
+- 使用 `feishu_oapi_smoke_plan` 或 `feishuOapiSmokeDryRunPlanFromCases` 先生成 redacted read/write request plan，确认 method/path/token_mode/scopes/read-write 分类，不做 token lookup、不发网络。
 - 对 doc/wiki/calendar/task/bitable/sheet/im 跑 read smoke。
 - 对测试资源跑受控 write smoke。
 
@@ -349,7 +351,7 @@ Feishu 是 IM runtime channel + native command channel。
 - user_access_token、tenant_access_token、bot_access_token、app_access_token 按预期工作或给出准确诊断。
 - 每个 OAPI family 至少一个 read smoke 成功。
 - 写操作只影响测试资源。
-- 缺 scope repair hint 指向正确权限。
+- 缺 scope repair hint 指向正确权限；`scope_diagnostic.repair_hints` 区分 user auth、app scope、app credentials 和 platform boundary。
 
 ### Phase 4：Feishu CardKit streaming live 闭环
 
@@ -424,6 +426,13 @@ Feishu 是 IM runtime channel + native command channel。
 
 目标：不要做伪实现。
 
+2026-05-16 本地结论：
+
+- Metis 不自动创建 Feishu app/bot，也不通过 Control UI、doctor 或 OAPI tool 暗示可以自动创建。
+- `application:application:self_manage` 在 OpenClaw auth 语义里用于查询 app info / granted scopes、生成 scope 申请入口和做 `offline_access` 预检；它不是“第三方 API 创建自建应用、启用机器人、配置事件订阅、导入 scopes、发布版本、通过审核”的证据。
+- Metis 当前行为保持 guided setup + 关联已有 Feishu app/bot。OAPI `repair_hints.platform` 明确 `app_bot_autocreate=not_supported`、`setup_mode=guided_existing_app_bot`、`self_manage_scope_is_app_creation=false`。
+- 只有当飞书开放平台提供明确 endpoint、token 类型、scope、租户角色、审核要求和 live/operator evidence 后，才应另起实现计划；否则任何“自动创建 app/bot”都是伪实现。
+
 工作：
 
 - 查询飞书开放平台是否允许第三方 API 创建自建应用、启用机器人、配置事件订阅、导入 scopes、发布版本、通过审核。
@@ -473,13 +482,13 @@ Feishu 是 IM runtime channel + native command channel。
 | M12 | Telegram 私聊 route | 测试 bot 私聊发送消息 | 命中指定 agent，回复成功，sessionKey 正确。 |
 | M13 | Telegram 群/topic route | 测试群和 topic 中 @ bot | group/topic 独立 session，日志脱敏。 |
 | M14 | Telegram team broadcast | 触发绑定 team broadcast | selected members 均执行，聚合回复可读。 |
-| M15 | Feishu account status | 配两个测试 accountId，打开 channels status 或 `/feishu info --all` | 两个 account 均显示 configured/enabled/running 或明确错误；凭据脱敏。 |
+| M15 | Feishu account status | 配两个测试 accountId，打开 channels status 或 `/feishu info --all` | 两个 account 均显示 configured/enabled/running 或明确错误；`routeDiagnostic` 和 `liveReadiness` 可读；凭据脱敏。 |
 | M16 | Feishu group policy/mention | 群内非 @ 和 @ bot 分别测试 | requireMention 行为正确，allowlist 生效。 |
 | M17 | Feishu thread session | 话题群两个 topic 分别对话 | 上下文不串，replyInThread 行为正确。 |
 | M18 | Feishu OAuth start/status/poll | `/feishu auth` 后完成 device flow，再看 status/poll | pending/authorized/scope_missing 状态正确；不泄露 deviceCode/token。 |
-| M19 | Feishu app/token modes | 用测试 app 运行 app/tenant/bot/user token OAPI smoke | 成功或返回准确 missing_credential/auth_required/scope_missing/app_scope_missing。 |
-| M20 | Feishu OAPI read smoke | doc/wiki/calendar/task/bitable/sheet/im 各读一个测试资源 | 每类至少一个 read 成功。 |
-| M21 | Feishu OAPI write smoke | 对测试资源执行低风险 create/update | 只影响测试资源，有回滚或清理记录。 |
+| M19 | Feishu app/token modes | 先跑 OAPI dry-run plan，再用测试 app 运行 app/tenant/bot/user token OAPI smoke | 成功或返回准确 missing_credential/auth_required/scope_missing/app_scope_missing；repair hint 不泄露 token/secret。 |
+| M20 | Feishu OAPI read smoke | doc/wiki/calendar/task/bitable/sheet/im 各读一个测试资源；无资源时先保留 dry-run request plan | 每类至少一个 read 成功；dry-run 不触网且标记 external-resource-required。 |
+| M21 | Feishu OAPI write smoke | 对测试资源执行低风险 create/update；无资源时先保留 dry-run request plan | 只影响测试资源，有回滚或清理记录；dry-run 标记 writeRequiresLiveOptIn。 |
 | M22 | Feishu CardKit streaming | 测试群跑 create/patch/final/settings/abort | card 可见、patch 有序、final 正确、fallback 可读。 |
 | M23 | Feishu resource read | 图片/文件/音频/视频消息触发 resource context/fetch | current-turn metadata 正确；historical fetch 成功或准确诊断。 |
 | M24 | Feishu rich events | reaction、quote、merge_forward 测试 | 事件不破坏 dispatch，context/diagnostic 可读。 |

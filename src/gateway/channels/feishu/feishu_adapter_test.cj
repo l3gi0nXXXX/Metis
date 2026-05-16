@@ -440,6 +440,49 @@ public class FeishuAdapterTest {
     }
 
     @TestCase
+    public func accountDescriptionsExposeRouteAndLiveReadinessDiagnostics(): Unit {
+        let tenantA = JsonObject()
+        tenantA.put("appId", JsonString("tenant-a-app"))
+        tenantA.put("appSecret", JsonString("tenant-a-secret-never-visible"))
+        tenantA.put("threadSession", JsonBool(true))
+        tenantA.put("replyInThread", JsonString("enabled"))
+        let tenantB = JsonObject()
+        tenantB.put("enabled", JsonBool(false))
+        let accounts = JsonObject()
+        accounts.put("tenant-a", tenantA)
+        accounts.put("tenant-b", tenantB)
+        let config = FeishuConfig(
+            enabled: true,
+            defaultAccount: "tenant-a",
+            appId: "top-app",
+            appSecret: "top-secret-never-visible",
+            accounts: Some(accounts),
+            groupPolicy: "allowlist",
+            requireMention: true
+        )
+
+        let descriptions = gatewayFeishuDescribeAccounts(config)
+        let routeDiagnostics = descriptions.get("routeDiagnostics").getOrThrow().asObject()
+        @Expect(routeDiagnostics.get("status").getOrThrow().asString().getValue(), "multi_account_ready")
+        @Expect(routeDiagnostics.get("bindingMatchDimensions").getOrThrow().asArray()[1].asString().getValue(), "accountId")
+        @Expect(routeDiagnostics.get("manualAcceptance").getOrThrow().asArray()[0].asString().getValue(), "M15")
+
+        let rows = descriptions.get("accounts").getOrThrow().asArray()
+        let tenantARoute = rows[0].asObject().get("routeDiagnostic").getOrThrow().asObject()
+        @Expect(tenantARoute.get("channel").getOrThrow().asString().getValue(), "feishu")
+        @Expect(tenantARoute.get("accountId").getOrThrow().asString().getValue(), "tenant-a")
+        @Expect(tenantARoute.get("bindingStatus").getOrThrow().asString().getValue(), "ready_for_binding")
+        @Expect(tenantARoute.get("threadSession").getOrThrow().asBool().getValue(), true)
+        @Expect(tenantARoute.get("replyInThread").getOrThrow().asString().getValue(), "enabled")
+
+        let tenantBLive = rows[1].asObject().get("liveReadiness").getOrThrow().asObject()
+        @Expect(tenantBLive.get("state").getOrThrow().asString().getValue(), "disabled")
+        @Expect(tenantBLive.get("nextStep").getOrThrow().asString().getValue(), "enable_account_or_remove_binding")
+        @Expect(descriptions.toJsonString().contains("top-secret-never-visible"), false)
+        @Expect(descriptions.toJsonString().contains("tenant-a-secret-never-visible"), false)
+    }
+
+    @TestCase
     public func disabledAccountOverrideDoesNotRunAdapterTransport(): Unit {
         let accounts = JsonObject()
         let disabled = JsonObject()

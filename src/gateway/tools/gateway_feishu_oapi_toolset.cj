@@ -107,6 +107,26 @@ public class GatewayFeishuOapiToolset {
         feishuOapiInvokeByTool(toolName, action, paramsJson, accountId)
     }
 
+    public func debugFeishuOapiSmokeDryRunPlanForTest(casesJson: String, defaultAccountId: String, domain: String): String {
+        feishuOapiSmokeDryRunPlanFromCases(casesJson, defaultAccountId: defaultAccountId, domain: domain).toJsonString()
+    }
+
+    @tool[description: "Build a redacted Feishu OAPI read/write smoke request plan without credentials, token lookup, or network. Pass cases_json as an array of {tool, action, accountId, params}; write cases remain external-resource-required until an operator enables live smoke."]
+    public func feishu_oapi_smoke_plan(cases_json: String, default_account_id: Option<String>, domain: Option<String>): String {
+        PrintUtils.printTool("feishu_oapi_smoke_plan", shortMessage: "dry-run")
+        feishuOapiSmokeDryRunPlanFromCases(
+            cases_json,
+            defaultAccountId: match (default_account_id) {
+                case Some(value) => value
+                case None => "default"
+            },
+            domain: match (domain) {
+                case Some(value) => value
+                case None => "https://open.feishu.cn"
+            }
+        ).toJsonString()
+    }
+
     @tool[description: "Fetch a Feishu document through the Metis-native Feishu OAPI client boundary. When auth is absent it returns structured auth_required JSON. Pass OpenClaw-compatible parameters as params_json."]
     public func feishu_fetch_doc(action: String, params_json: Option<String>, account_id: Option<String>): String {
         PrintUtils.printTool("feishu_fetch_doc", shortMessage: action)

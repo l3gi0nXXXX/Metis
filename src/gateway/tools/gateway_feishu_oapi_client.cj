@@ -1830,6 +1830,74 @@ public func feishuOapiLiveSmokeHarnessFromEnv(): JsonObject {
     feishuOapiWriteLiveSmokeReportIfRequested(out)
 }
 
+public func feishuOapiSmokeDryRunPlanFromCases(
+    casesRaw: String,
+    defaultAccountId!: String = "default",
+    domain!: String = "https://open.feishu.cn"
+): JsonObject {
+    let out = JsonObject()
+    out.put("status", JsonString("dry_run"))
+    out.put("live", JsonBool(false))
+    out.put("networkAttempted", JsonBool(false))
+    out.put("externalResourceRequired", JsonBool(true))
+    out.put("redacted", JsonBool(true))
+    out.put("writeRequiresLiveOptIn", JsonBool(true))
+    out.put("domain", JsonString(feishuOapiNormalizeDomain(domain)))
+
+    let cases = try {
+        JsonValue.fromStr(casesRaw.trimAscii()).asArray()
+    } catch (e: Exception) {
+        out.put("status", JsonString("invalid_request"))
+        out.put("reason", JsonString("cases_json must be a JSON array: ${e.message}"))
+        out.put("requests", JsonArray([]))
+        out.put("caseCount", JsonInt(0))
+        out.put("readCount", JsonInt(0))
+        out.put("writeCount", JsonInt(0))
+        return out
+    }
+
+    let requests = JsonArray([])
+    var readCount: Int64 = 0
+    var writeCount: Int64 = 0
+    for (i in 0..cases.size()) {
+        let item = try { cases[i].asObject() } catch (_e: Exception) { JsonObject() }
+        let tool = feishuOapiJsonString(item, "tool")
+        let action = if (feishuOapiJsonString(item, "action").isEmpty()) { "default" } else { feishuOapiJsonString(item, "action") }
+        let accountId = if (feishuOapiJsonString(item, "accountId").isEmpty()) { defaultAccountId } else { feishuOapiJsonString(item, "accountId") }
+        let params = match (feishuOapiObjectField(item, "params")) {
+            case Some(v) => v
+            case None => JsonObject()
+        }
+        let request = feishuOapiBuildRequest(tool, action, if (accountId.trimAscii().isEmpty()) { "default" } else { accountId }, params)
+        let raw = feishuOapiBuildRawHttpRequest(domain, request, "dry-run-redacted-token")
+        let row = raw.toRedactedJson()
+        let operation = feishuOapiOperationKind(request.method)
+        if (operation == "read") {
+            readCount++
+        } else {
+            writeCount++
+        }
+        row.put("tool", JsonString(request.toolName))
+        row.put("action", JsonString(request.action))
+        row.put("action_key", JsonString(request.actionKey))
+        row.put("account_id", JsonString(request.accountId))
+        row.put("path", JsonString(request.path))
+        row.put("token_mode", JsonString(request.tokenMode))
+        row.put("required_scopes", feishuOapiJsonStringArray(request.requiredScopes))
+        row.put("operation", JsonString(operation))
+        row.put("supported", JsonBool(request.supported))
+        row.put("networkAttempted", JsonBool(false))
+        row.put("redacted", JsonBool(true))
+        requests.add(row)
+    }
+
+    out.put("caseCount", JsonInt(cases.size()))
+    out.put("readCount", JsonInt(readCount))
+    out.put("writeCount", JsonInt(writeCount))
+    out.put("requests", requests)
+    out
+}
+
 public func feishuOapiBuildRawHttpRequest(domain: String, request: FeishuOapiRequest, accessToken: String): FeishuOapiRawHttpRequest {
     let headers = feishuOapiHeadersFromParams(request.params)
     headers["Authorization"] = "Bearer ${accessToken}"
@@ -1841,6 +1909,10 @@ public func feishuOapiBuildRawHttpRequest(domain: String, request: FeishuOapiReq
     let query = feishuOapiQueryString(request.params)
     let url = "${feishuOapiNormalizeDomain(domain)}${path}${if (query.isEmpty()) { "" } else { "?${query}" }}"
     FeishuOapiRawHttpRequest(request.accountId, request.method, url, headers, body: feishuOapiBodyString(request.params))
+}
+
+private func feishuOapiOperationKind(method: String): String {
+    if (method.trimAscii().toAsciiUpper() == "GET") { "read" } else { "write" }
 }
 
 private func feishuOapiNormalizeDomain(raw: String): String {
@@ -1960,6 +2032,53 @@ private func feishuOapiScopeDiagnostic(
             offline.put("status", JsonString("not_checked"))
             out.put("offline_access", offline)
     }
+    out.put("repair_hints", feishuOapiRepairHints(request))
+    out
+}
+
+private func feishuOapiRepairHints(request: FeishuOapiRequest): JsonObject {
+    let out = JsonObject()
+    out.put("token_mode", JsonString(request.tokenMode))
+    out.put("required_scopes", feishuOapiJsonStringArray(request.requiredScopes))
+
+    let user = JsonObject()
+    user.put("required", JsonBool(request.tokenMode == "user_access_token"))
+    user.put("repair_method", JsonString("channels.feishu.auth.start"))
+    user.put("network", JsonString("not_started"))
+    user.put("can_start", JsonBool(request.tokenMode == "user_access_token"))
+    user.put("scopes", feishuOapiJsonStringArray(request.requiredScopes))
+    out.put("user_authorization", user)
+
+    let appScope = JsonObject()
+    appScope.put("required", JsonBool(true))
+    appScope.put("repair_method", JsonString("feishu_developer_console_scope_grant"))
+    appScope.put("status", JsonString("operator_required"))
+    appScope.put("network", JsonString("not_started"))
+    appScope.put("self_manage_scope", JsonString("application:application:self_manage"))
+    appScope.put("self_manage_scope_is_app_creation", JsonBool(false))
+    appScope.put("scopes", feishuOapiJsonStringArray(request.requiredScopes))
+    out.put("app_scope", appScope)
+
+    let credentials = JsonObject()
+    credentials.put("required", JsonBool(request.tokenMode != "user_access_token"))
+    credentials.put("repair_method", JsonString("configure_feishu_app_credentials"))
+    credentials.put("missing_fields", feishuOapiJsonStringArray(["app_id", "appSecret"]))
+    credentials.put("network", JsonString("not_started"))
+    credentials.put("redacted", JsonBool(true))
+    out.put("app_credentials", credentials)
+
+    let platform = JsonObject()
+    platform.put("app_bot_autocreate", JsonString("not_supported"))
+    platform.put("setup_mode", JsonString("guided_existing_app_bot"))
+    platform.put("self_manage_scope_is_app_creation", JsonBool(false))
+    platform.put(
+        "boundary",
+        JsonString("Metis can guide setup and bind an existing Feishu app/bot, but it must not claim OAPI app/bot auto-creation without platform evidence.")
+    )
+    platform.put("network", JsonString("not_started"))
+    out.put("platform", platform)
+
+    out.put("redacted", JsonBool(true))
     out
 }
 

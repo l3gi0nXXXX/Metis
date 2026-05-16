@@ -140,16 +140,21 @@ public func gatewayFeishuDescribeAccounts(config: FeishuConfig, runtime!: JsonOb
     out.put("unsupportedFieldCount", diagnostics.get("unsupportedFieldCount") ?? JsonInt(0))
     out.put("ignoredFieldCount", diagnostics.get("ignoredFieldCount") ?? JsonInt(0))
     let rows = JsonArray([])
-    for (accountId in gatewayFeishuListAccountIds(config)) {
+    let accountIds = gatewayFeishuListAccountIds(config)
+    out.put("routeDiagnostics", gatewayFeishuRouteDiagnostics(defaultAccount, accountIds.size))
+    for (accountId in accountIds) {
         let resolved = gatewayFeishuResolveAccount(config, accountId)
         let runtimeRow = gatewayFeishuRuntimeAccount(runtime, resolved.accountId)
+        let configured = !resolved.config.appId.trimAscii().isEmpty() && !resolved.config.appSecret.trimAscii().isEmpty()
+        let running = gatewayFeishuRuntimeBool(runtimeRow, "running", false)
+        let lastError = gatewayFeishuRedactSecretText(gatewayFeishuRuntimeString(runtimeRow, "lastError", ""))
         let row = JsonObject()
         row.put("accountId", JsonString(resolved.accountId))
         row.put("defaultAccount", JsonBool(resolved.accountId == defaultAccount))
         row.put("enabled", JsonBool(resolved.config.enabled))
-        row.put("configured", JsonBool(!resolved.config.appId.trimAscii().isEmpty() && !resolved.config.appSecret.trimAscii().isEmpty()))
-        row.put("running", JsonBool(gatewayFeishuRuntimeBool(runtimeRow, "running", false)))
-        row.put("lastError", JsonString(gatewayFeishuRedactSecretText(gatewayFeishuRuntimeString(runtimeRow, "lastError", ""))))
+        row.put("configured", JsonBool(configured))
+        row.put("running", JsonBool(running))
+        row.put("lastError", JsonString(lastError))
         row.put("credentialSource", JsonString(resolved.credentialSource))
         let credentialSources = JsonObject()
         credentialSources.put("summary", JsonString(resolved.credentialSource))
@@ -168,10 +173,102 @@ public func gatewayFeishuDescribeAccounts(config: FeishuConfig, runtime!: JsonOb
         row.put("groupPolicy", JsonString(resolved.config.groupPolicy))
         row.put("requireMention", JsonBool(resolved.config.requireMention))
         row.put("mediaDownloadEnabled", JsonBool(resolved.config.media.downloadEnabled))
+        row.put("routeDiagnostic", gatewayFeishuAccountRouteDiagnostic(resolved, defaultAccount, configured))
+        row.put("liveReadiness", gatewayFeishuAccountLiveReadiness(resolved, configured, running, lastError))
         rows.add(row)
     }
     out.put("accounts", rows)
     out.put("count", JsonInt(rows.size()))
+    out
+}
+
+private func gatewayFeishuRouteDiagnostics(defaultAccount: String, accountCount: Int64): JsonObject {
+    let out = JsonObject()
+    out.put("status", JsonString(if (accountCount > 1) { "multi_account_ready" } else { "single_account_ready" }))
+    out.put("channel", JsonString("feishu"))
+    out.put("defaultAccountId", JsonString(defaultAccount))
+    out.put("bindingMatchDimensions", JsonArray([
+        JsonString("channel"),
+        JsonString("accountId"),
+        JsonString("peer"),
+        JsonString("team"),
+        JsonString("roles")
+    ]))
+    out.put("manualAcceptance", JsonArray([
+        JsonString("M15"),
+        JsonString("M16"),
+        JsonString("M17"),
+        JsonString("M22")
+    ]))
+    out.put("redacted", JsonBool(true))
+    out
+}
+
+private func gatewayFeishuBindingStatus(enabled: Bool, configured: Bool): String {
+    if (!enabled) {
+        return "disabled"
+    }
+    if (!configured) {
+        return "missing_credential"
+    }
+    "ready_for_binding"
+}
+
+private func gatewayFeishuAccountRouteDiagnostic(
+    resolved: FeishuResolvedAccount,
+    defaultAccount: String,
+    configured: Bool
+): JsonObject {
+    let route = JsonObject()
+    route.put("channel", JsonString("feishu"))
+    route.put("accountId", JsonString(resolved.accountId))
+    route.put("defaultAccountId", JsonString(defaultAccount))
+    route.put("bindingMatchAccountId", JsonString(resolved.accountId))
+    route.put("bindingStatus", JsonString(gatewayFeishuBindingStatus(resolved.config.enabled, configured)))
+    route.put("groupPolicy", JsonString(resolved.config.groupPolicy))
+    route.put("requireMention", JsonBool(resolved.config.requireMention))
+    route.put("threadSession", JsonBool(resolved.config.threadSession))
+    route.put("groupSessionScope", JsonString(resolved.config.groupSessionScope))
+    route.put("replyInThread", JsonString(resolved.config.replyInThread))
+    route.put("sessionKeyBoundary", JsonString(if (resolved.config.threadSession) { "account_peer_thread" } else { "account_peer" }))
+    route.put("redacted", JsonBool(true))
+    route
+}
+
+private func gatewayFeishuAccountLiveReadiness(
+    resolved: FeishuResolvedAccount,
+    configured: Bool,
+    running: Bool,
+    lastError: String
+): JsonObject {
+    let out = JsonObject()
+    let state = if (!resolved.config.enabled) {
+        "disabled"
+    } else if (!configured) {
+        "missing_credential"
+    } else if (running) {
+        "running"
+    } else if (!lastError.trimAscii().isEmpty()) {
+        "error"
+    } else {
+        "configured"
+    }
+    let nextStep = match (state) {
+        case "disabled" => "enable_account_or_remove_binding"
+        case "missing_credential" => "configure_feishu_app_credentials"
+        case "running" => "run_live_route_smoke"
+        case "error" => "inspect_redacted_runtime_error"
+        case _ => "start_gateway_or_run_live_route_smoke"
+    }
+    out.put("state", JsonString(state))
+    out.put("nextStep", JsonString(nextStep))
+    out.put("externalResourceRequired", JsonBool(state != "running"))
+    out.put("manualAcceptance", JsonArray([
+        JsonString("M15"),
+        JsonString("M16"),
+        JsonString("M17")
+    ]))
+    out.put("redacted", JsonBool(true))
     out
 }
 

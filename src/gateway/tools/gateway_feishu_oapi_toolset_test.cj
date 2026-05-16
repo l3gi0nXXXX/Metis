@@ -1157,6 +1157,70 @@ public class GatewayFeishuOapiToolsetTest {
     }
 
     @TestCase
+    public func scopeDiagnosticIncludesModeSpecificRepairHintsAndPlatformBoundary(): Unit {
+        let userRequest = feishuOapiBuildRequest("feishu_im_user_message", "send", "tenant-a", JsonObject())
+        let userJson = MetisFeishuOapiClient(
+            tokenProvider: Some<FeishuOapiTokenProvider>(FeishuOapiToolsetScopeMissingTokenProvider())
+        ).invoke(userRequest)
+        let userHints = userJson.get("scope_diagnostic").getOrThrow().asObject()
+            .get("repair_hints").getOrThrow().asObject()
+        @Expect(userHints.get("token_mode").getOrThrow().asString().getValue(), "user_access_token")
+        @Expect(userHints.get("user_authorization").getOrThrow().asObject().get("repair_method").getOrThrow().asString().getValue(), "channels.feishu.auth.start")
+        @Expect(userHints.get("app_scope").getOrThrow().asObject().get("repair_method").getOrThrow().asString().getValue(), "feishu_developer_console_scope_grant")
+
+        let tenantRequest = feishuOapiBuildRequest("feishu_task_task", "append_steps", "tenant-a", JsonObject())
+        let tenantJson = MetisFeishuOapiClient(
+            tokenProvider: Some<FeishuOapiTokenProvider>(MetisFeishuOapiTokenProvider())
+        ).invoke(tenantRequest)
+        let tenantHints = tenantJson.get("scope_diagnostic").getOrThrow().asObject()
+            .get("repair_hints").getOrThrow().asObject()
+        @Expect(tenantHints.get("token_mode").getOrThrow().asString().getValue(), "tenant_access_token")
+        @Expect(tenantHints.get("app_credentials").getOrThrow().asObject().get("repair_method").getOrThrow().asString().getValue(), "configure_feishu_app_credentials")
+        let platform = tenantHints.get("platform").getOrThrow().asObject()
+        @Expect(platform.get("app_bot_autocreate").getOrThrow().asString().getValue(), "not_supported")
+        @Expect(platform.get("setup_mode").getOrThrow().asString().getValue(), "guided_existing_app_bot")
+        @Expect(platform.get("self_manage_scope_is_app_creation").getOrThrow().asBool().getValue(), false)
+        @Expect(tenantJson.toJsonString().contains("Authorization"), false)
+        @Expect(tenantJson.toJsonString().contains("Bearer"), false)
+    }
+
+    @TestCase
+    public func smokeDryRunPlanBuildsReadWriteRequestsWithoutNetworkOrSecrets(): Unit {
+        let casesRaw =
+            "[" +
+            "{\"tool\":\"feishu_fetch_doc\",\"action\":\"default\",\"accountId\":\"tenant-a\",\"params\":{\"document_id\":\"doccn_demo\"}}," +
+            "{\"tool\":\"feishu_calendar_event\",\"action\":\"create\",\"params\":{\"path\":{\"calendar_id\":\"primary\"},\"body\":{\"summary\":\"smoke\"}}}" +
+            "]"
+        let plan = feishuOapiSmokeDryRunPlanFromCases(
+            casesRaw,
+            defaultAccountId: "tenant-a",
+            domain: "https://open.feishu.cn"
+        )
+        @Expect(plan.get("status").getOrThrow().asString().getValue(), "dry_run")
+        @Expect(plan.get("networkAttempted").getOrThrow().asBool().getValue(), false)
+        @Expect(plan.get("externalResourceRequired").getOrThrow().asBool().getValue(), true)
+        @Expect(plan.get("readCount").getOrThrow().asInt().getValue(), 1)
+        @Expect(plan.get("writeCount").getOrThrow().asInt().getValue(), 1)
+        @Expect(plan.get("writeRequiresLiveOptIn").getOrThrow().asBool().getValue(), true)
+
+        let rows = plan.get("requests").getOrThrow().asArray()
+        let read = rows[0].asObject()
+        @Expect(read.get("operation").getOrThrow().asString().getValue(), "read")
+        @Expect(read.get("method").getOrThrow().asString().getValue(), "GET")
+        @Expect(read.get("url").getOrThrow().asString().getValue().contains("/open-apis/docx/v1/documents/doccn_demo/raw_content"), true)
+
+        let write = rows[1].asObject()
+        @Expect(write.get("operation").getOrThrow().asString().getValue(), "write")
+        @Expect(write.get("method").getOrThrow().asString().getValue(), "POST")
+        @Expect(write.get("hasBody").getOrThrow().asBool().getValue(), true)
+        @Expect(write.get("url").getOrThrow().asString().getValue().contains("/open-apis/calendar/v4/calendars/primary/events"), true)
+        let headers = write.get("headers").getOrThrow().asObject()
+        @Expect(headers.get("Authorization").getOrThrow().asString().getValue(), "[redacted]")
+        @Expect(plan.toJsonString().contains("live-access-token"), false)
+        @Expect(plan.toJsonString().contains("Bearer"), false)
+    }
+
+    @TestCase
     public func unknownOapiActionReturnsStructuredUnsupportedActionDiagnostic(): Unit {
         let out = GatewayFeishuOapiToolset().debugFeishuOapiInvokeForTest(
             "feishu_chat",

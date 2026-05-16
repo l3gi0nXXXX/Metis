@@ -340,7 +340,7 @@ Feishu channel startup still uses the normal Gateway channel configuration. Afte
 /feishu help
 ```
 
-The Control UI Teams page shows redacted `channels.status` account state, the default account, thread-session configuration, group count, and whether OAuth/OAPI/doctor capability signals are visible in the current Gateway status contract.
+The Control UI Teams page shows redacted `channels.status` account state, the default account, thread-session configuration, group count, and whether OAuth/OAPI/doctor capability signals are visible in the current Gateway status contract. Feishu account status now also carries route diagnostics (`channel`, `accountId`, binding status, group/thread/session settings) and live-readiness next steps so operators can distinguish missing credentials, disabled accounts, stopped runtimes, and true live-routing blockers without exposing app credentials.
 
 The Teams page is read-only for secrets and token files. Configure Feishu accounts, app credentials, and OAuth state through Gateway configuration, Gateway-backed commands/RPCs, or operator-managed backend files, not by writing browser-local files. Secret-like values are redacted in status display and repair copy text; they should not be stored in workspace profile files.
 
@@ -349,6 +349,19 @@ The Teams page is read-only for secrets and token files. Configure Feishu accoun
 Feishu OAPI tools return structured JSON instead of writing auth files from the tool layer. When a user token is absent, user scopes are missing, app scopes are missing, or app credentials are missing, the tool result includes a redacted `repair_action` that Gateway, IM commands, and Control UI can consume. User-auth repair actions point at `channels.feishu.auth.start`; app-scope and credential repair actions are `operator_required` and do not start network calls.
 
 Multiple `auth_required` or `scope_missing` tool failures in the same turn, account, and user context are merged into one repair payload with `merged_scopes`. The merge is a diagnostic/UX contract only; tools must not directly write real token files, app secrets, or authorization headers.
+
+Each OAPI `scope_diagnostic` includes mode-specific repair hints for `user_access_token`, `tenant_access_token`, `bot_access_token`, and `app_access_token`. User authorization hints point to `/feishu auth` / `channels.feishu.auth.start`; app-scope and app-credential hints stay operator-required and point to Feishu Developer Console guided setup.
+
+To prepare read/write OAPI smoke requests without credentials or network, use the `feishu_oapi_smoke_plan` tool from the normal tool runtime:
+
+```json
+{
+  "cases_json": "[{\"tool\":\"feishu_fetch_doc\",\"action\":\"default\",\"accountId\":\"tenant-a\",\"params\":{\"document_id\":\"doccn_demo\"}}]",
+  "default_account_id": "tenant-a"
+}
+```
+
+The planner returns redacted method/path/query/body metadata, required scopes, token mode, and read/write classification. It never performs token lookup, never sends Feishu network traffic, and marks write smoke as external-resource-required until a real test tenant/resource is provided.
 
 Feishu OAPI live validation is also opt-in. Without `METIS_FEISHU_OAPI_LIVE_SMOKE=1`, `feishuOapiLiveSmokeHarnessFromEnv()` returns `skipped`; when `METIS_FEISHU_OAPI_LIVE_REPORT_DIR` is set, it also writes a redacted `report.json` in that directory. Real OAPI smoke additionally requires `METIS_FEISHU_OAPI_LIVE_ACCESS_TOKEN`, `METIS_FEISHU_OAPI_LIVE_USER_SCOPES`, `METIS_FEISHU_OAPI_LIVE_APP_SCOPES`, and `METIS_FEISHU_OAPI_LIVE_CASES_JSON`.
 
@@ -508,6 +521,7 @@ Source-backed series23 acceptance details live in `develop_steps/metis-agent-tea
 - Migration dry-run is read-only. It previews diagnostics and route-binding application but does not rewrite `session.dmScope`, model state, auth profiles, or workspace files automatically.
 - Manager delegation is currently a configuration/profile pattern using a normal manager agent. Deterministic fan-out is the implemented team collaboration mode when `broadcast.enabled=true`; full manager-delegation product policy remains planned work.
 - Feishu AgentTeam routing is not the same as the full OpenClaw Lark plugin surface. Message routing, native command replies, OAuth lifecycle RPC/buttons, native OAPI client/toolset baseline, user/TAT/bot/app token provider support, tool-level repair diagnostics, streaming-card controller, redacted status, and dry-run diagnostics exist. Real tenant token behavior, operator-completed scope repair, historical resource downloads, complete CardKit parity, and live tenant event/OAPI validation remain release gates unless a later release note says otherwise.
+- Metis does not automatically create Feishu apps or bots. `application:application:self_manage` is treated as a diagnostic/setup permission for scope/app inspection, not as proof that Metis can create an app, enable a bot, configure event subscriptions, import scopes, publish, or pass review through OAPI. Use guided setup to link an existing Feishu app/bot until Feishu platform evidence proves a supported API path.
 - The Control UI capability panel is not a plugin marketplace. It lists Metis-owned built-in tools, skills, profile files, channel capabilities, and RPC surfaces only.
 - Feishu auth controls in Control UI call Gateway-backed auth lifecycle RPCs when available. Browser code must not create, edit, or delete Feishu token files.
 - Source-backed AgentTeam parity tracking lives under `develop_steps/`; series23 is the current source-recheck and manual-acceptance baseline for this guide.
