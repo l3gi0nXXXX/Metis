@@ -333,9 +333,9 @@ private func gatewayProbeActionsJson(user: GatewayUserSettings, issues: JsonArra
     actions
 }
 
-private func gatewayDoctorActionsJson(user: GatewayUserSettings, checks: JsonArray, issues: JsonArray): JsonArray {
+private func gatewayDoctorActionsJson(user: GatewayUserSettings, checks: JsonArray, issues: JsonArray, routeRoot!: JsonObject = JsonObject()): JsonArray {
     let actions = gatewayProbeActionsJson(user, issues)
-    let telegramActions = gatewayTelegramDiagnosticsActionsJson(gatewayTelegramDiagnosticsJson(user))
+    let telegramActions = gatewayTelegramDiagnosticsActionsJson(gatewayTelegramDiagnosticsJson(user, routeRoot: routeRoot))
     for (idx in 0..telegramActions.size()) {
         actions.add(telegramActions[idx])
     }
@@ -470,8 +470,9 @@ private func gatewayOpsRawConfigReadOnly(): JsonObject {
     }
 }
 
-private func gatewayOpsAgentTeamDiagnosticsJson(): JsonObject {
-    gatewayAgentTeamDoctorScan(gatewayOpsRawConfigReadOnly(), homeRoot: MetisPaths.homeRootReadOnly(),
+private func gatewayOpsAgentTeamDiagnosticsJson(routeRoot!: JsonObject = JsonObject()): JsonObject {
+    let root = if (routeRoot.size() > 0) { routeRoot } else { gatewayOpsRawConfigReadOnly() }
+    gatewayAgentTeamDoctorScan(root, homeRoot: MetisPaths.homeRootReadOnly(),
         defaultWorkspace: MetisPaths.workspaceRootReadOnly())
 }
 
@@ -584,6 +585,7 @@ private func gatewaySecretsSummaryJson(cfgUser: GatewayUserSettings): JsonObject
 }
 
 private func gatewayDoctorStatusJson(user: GatewayUserSettings): JsonObject {
+    let routeRoot = gatewayOpsRawConfigReadOnly()
     let cfg = gatewayOpsConfig(user)
     let rpc = gatewayOpsServerRuntime()
     let doctor = JsonObject()
@@ -601,10 +603,10 @@ private func gatewayDoctorStatusJson(user: GatewayUserSettings): JsonObject {
     let issues = gatewayProbeIssuesJson(user, checks)
     doctor.put("checks", checks)
     doctor.put("issues", issues)
-    doctor.put("telegramDiagnostics", gatewayTelegramDiagnosticsJson(user))
-    doctor.put("agentTeamDiagnostics", gatewayOpsAgentTeamDiagnosticsJson())
+    doctor.put("telegramDiagnostics", gatewayTelegramDiagnosticsJson(user, routeRoot: routeRoot))
+    doctor.put("agentTeamDiagnostics", gatewayOpsAgentTeamDiagnosticsJson(routeRoot: routeRoot))
     doctor.put("summary", gatewayProbeSummaryJson(checks, issues))
-    doctor.put("actions", gatewayDoctorActionsJson(user, checks, issues))
+    doctor.put("actions", gatewayDoctorActionsJson(user, checks, issues, routeRoot: routeRoot))
     return doctor
 }
 

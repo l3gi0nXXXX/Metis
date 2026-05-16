@@ -137,3 +137,33 @@ test("live opt-in with redacted resources records operator evidence requirement,
   assert.doesNotMatch(combinedEvidence, /telegram-account-secret-shaped-value|feishu-account-a-secret-shaped-value|feishu-message-secret-shaped-value/);
   assert.doesNotMatch(combinedEvidence, /appSecret|accessToken|refreshToken|Authorization|bot token/i);
 });
+
+test("Telegram phase 1 evidence fields are explicit and redaction-safe", () => {
+  const result = runGate({
+    METIS_AGENTTEAM_LIVE_TELEGRAM: "1",
+    METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID: "telegram-account-secret-shaped-value",
+    METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID: "telegram-private-chat-secret-shaped-value",
+    METIS_AGENTTEAM_TELEGRAM_TEST_GROUP_ID: "telegram-group-secret-shaped-value",
+    METIS_AGENTTEAM_TELEGRAM_TEST_TOPIC_ID: "telegram-topic-secret-shaped-value",
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const report = readReport(result.reportDir);
+  assert.equal(report.telegramLiveReadiness.phase, "phase1");
+  assert.equal(report.telegramLiveReadiness.gap, "G11");
+  assert.deepEqual(report.telegramLiveReadiness.manualItems, ["M12", "M13", "M14"]);
+  assert.deepEqual(report.telegramLiveReadiness.routePreflight.requiredPeerKinds, ["private", "group", "topic"]);
+  assert(report.telegramLiveReadiness.broadcastEvidenceFields.includes("selectedAgentIds"));
+  assert(report.telegramLiveReadiness.broadcastEvidenceFields.includes("agents[].sessionKey"));
+  assert(report.telegramLiveReadiness.logEvidence.requiredMarkers.includes("Gateway.inbound: channel=telegram"));
+  assert(report.telegramLiveReadiness.logEvidence.forbiddenMarkerRefs.includes("auth-header"));
+  assert.equal(report.telegramLiveReadiness.redacted, true);
+
+  const combinedEvidence = [
+    fs.readFileSync(path.join(result.reportDir, "report.json"), "utf8"),
+    fs.readFileSync(path.join(result.reportDir, "manual-acceptance-template.md"), "utf8"),
+  ].join("\n");
+  assert.match(combinedEvidence, /privateBindingCount/);
+  assert.match(combinedEvidence, /selectedAgentIds/);
+  assert.doesNotMatch(combinedEvidence, /telegram-account-secret-shaped-value|telegram-private-chat-secret-shaped-value|telegram-group-secret-shaped-value|telegram-topic-secret-shaped-value/);
+});

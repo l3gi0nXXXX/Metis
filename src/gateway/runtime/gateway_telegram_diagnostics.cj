@@ -5,6 +5,7 @@ import magic.jsonable.*
 import metis.core.{gatewayImageGenerationOutputRoot, gatewayImageGenerationResolveConfig, gatewayVideoGenerationOutputRoot, gatewayVideoGenerationResolveConfig}
 import metis.core.config.GatewayUserSettings
 
+import std.collection.ArrayList
 import std.convert.Parsable
 import stdx.encoding.json.{JsonArray, JsonObject, JsonString}
 
@@ -24,11 +25,26 @@ private func gatewayTelegramDiagBool(obj: JsonObject, key: String, defaultValue:
     }
 }
 
+private func gatewayTelegramDiagIntString(obj: JsonObject, key: String): String {
+    match (obj.get(key)) {
+        case Some(v) => v.toJsonString()
+        case None => "0"
+    }
+}
+
 private func gatewayTelegramDiagObject(obj: JsonObject, key: String): JsonObject {
     match (obj.get(key)) {
         case Some(v) =>
             try { v.asObject() } catch (_e: Exception) { JsonObject() }
         case None => JsonObject()
+    }
+}
+
+private func gatewayTelegramDiagArray(obj: JsonObject, key: String): JsonArray {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
+        case None => JsonArray([])
     }
 }
 
@@ -132,6 +148,172 @@ private func gatewayTelegramDiagArray(values: Array<String>): JsonArray {
         out.add(JsonString(value))
     }
     out
+}
+
+private func gatewayTelegramAddUnique(values: ArrayList<String>, value: String): Unit {
+    let normalized = value.trimAscii()
+    if (!normalized.isEmpty() && !values.contains(normalized)) {
+        values.add(normalized)
+    }
+}
+
+private func gatewayTelegramDiagBoolStrict(obj: JsonObject, key: String): Bool {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asBool().getValue() } catch (_e: Exception) { false }
+        case None => false
+    }
+}
+
+private func gatewayTelegramDiagPeerKindFromBinding(binding: JsonObject): String {
+    let matchObj = gatewayTelegramDiagObject(binding, "match")
+    if (gatewayTelegramDiagString(matchObj, "channel", "").trimAscii().toAsciiLower() != "telegram") {
+        return ""
+    }
+    let peer = gatewayTelegramDiagObject(matchObj, "peer")
+    gatewayTelegramDiagString(peer, "kind", "").trimAscii().toAsciiLower()
+}
+
+private func gatewayTelegramDiagAddBindingPeerKind(peerKinds: ArrayList<String>, binding: JsonObject): Unit {
+    let kind = gatewayTelegramDiagPeerKindFromBinding(binding)
+    if (!kind.isEmpty()) {
+        peerKinds.add(kind)
+    }
+}
+
+private func gatewayTelegramDiagAddBindingArrayPeerKinds(peerKinds: ArrayList<String>, bindings: JsonArray): Unit {
+    for (i in 0..bindings.size()) {
+        let binding = try { bindings[i].asObject() } catch (_e: Exception) { JsonObject() }
+        gatewayTelegramDiagAddBindingPeerKind(peerKinds, binding)
+    }
+}
+
+private func gatewayTelegramDiagSelectedAgentIds(broadcast: JsonObject): Array<String> {
+    for (key in ["members", "agentIds", "selectedMembers", "selected"]) {
+        let arr = gatewayTelegramDiagArray(broadcast, key)
+        if (arr.size() == 0) {
+            continue
+        }
+        let out = ArrayList<String>()
+        for (i in 0..arr.size()) {
+            var agentId = ""
+            try {
+                agentId = arr[i].asString().getValue().trimAscii()
+            } catch (_e: Exception) {
+                let obj = try { arr[i].asObject() } catch (_e2: Exception) { JsonObject() }
+                agentId = gatewayTelegramDiagString(obj, "agentId", gatewayTelegramDiagString(obj, "id", ""))
+            }
+            gatewayTelegramAddUnique(out, agentId)
+        }
+        return out.toArray()
+    }
+    []
+}
+
+private func gatewayTelegramDiagAddTeamArray(teams: ArrayList<JsonObject>, arr: JsonArray): Unit {
+    for (i in 0..arr.size()) {
+        let team = try { arr[i].asObject() } catch (_e: Exception) { JsonObject() }
+        if (team.size() > 0) {
+            teams.add(team)
+        }
+    }
+}
+
+private func gatewayTelegramDiagTeams(root: JsonObject): Array<JsonObject> {
+    let teams = ArrayList<JsonObject>()
+    gatewayTelegramDiagAddTeamArray(teams, gatewayTelegramDiagArray(gatewayTelegramDiagObject(root, "agentTeams"), "list"))
+    match (root.get("teams")) {
+        case Some(value) =>
+            try {
+                gatewayTelegramDiagAddTeamArray(teams, value.asArray())
+            } catch (_e: Exception) {
+                try {
+                    gatewayTelegramDiagAddTeamArray(teams, gatewayTelegramDiagArray(value.asObject(), "list"))
+                } catch (_e2: Exception) {
+                    ()
+                }
+            }
+        case None => ()
+    }
+    teams.toArray()
+}
+
+private func gatewayTelegramDiagRouteBroadcastReadiness(routeRoot: JsonObject): JsonObject {
+    let out = JsonObject()
+    let peerKinds = ArrayList<String>()
+    let selectedAgentIds = ArrayList<String>()
+    var broadcastTeamCount: Int64 = 0
+
+    gatewayTelegramDiagAddBindingArrayPeerKinds(peerKinds, gatewayTelegramDiagArray(routeRoot, "bindings"))
+    for (team in gatewayTelegramDiagTeams(routeRoot)) {
+        gatewayTelegramDiagAddBindingArrayPeerKinds(peerKinds, gatewayTelegramDiagArray(team, "bindings"))
+        let broadcast = gatewayTelegramDiagObject(team, "broadcast")
+        gatewayTelegramDiagAddBindingArrayPeerKinds(peerKinds, gatewayTelegramDiagArray(broadcast, "bindings"))
+        let matchObj = gatewayTelegramDiagObject(broadcast, "match")
+        if (matchObj.size() > 0) {
+            let synthetic = JsonObject()
+            synthetic.put("match", matchObj)
+            gatewayTelegramDiagAddBindingPeerKind(peerKinds, synthetic)
+        }
+        if (gatewayTelegramDiagBoolStrict(broadcast, "enabled")) {
+            let selected = gatewayTelegramDiagSelectedAgentIds(broadcast)
+            if (selected.size > 0) {
+                broadcastTeamCount += 1
+                for (agentId in selected) {
+                    gatewayTelegramAddUnique(selectedAgentIds, agentId)
+                }
+            }
+        }
+    }
+
+    var privateBindingCount: Int64 = 0
+    var groupBindingCount: Int64 = 0
+    var topicBindingCount: Int64 = 0
+    for (kind in peerKinds.toArray()) {
+        if (kind == "direct" || kind == "private" || kind == "user") {
+            privateBindingCount += 1
+        } else if (kind == "group" || kind == "supergroup") {
+            groupBindingCount += 1
+        } else if (kind == "topic" || kind == "thread") {
+            topicBindingCount += 1
+        }
+    }
+
+    let missing = ArrayList<String>()
+    if (privateBindingCount == 0) { missing.add("private-binding") }
+    if (groupBindingCount == 0) { missing.add("group-binding") }
+    if (topicBindingCount == 0) { missing.add("topic-binding") }
+    if (broadcastTeamCount == 0 || selectedAgentIds.size == 0) { missing.add("team-broadcast-selected-members") }
+
+    let rootPresent = routeRoot.size() > 0
+    let liveReady = rootPresent && missing.size == 0
+    out.put("status", JsonString(if (!rootPresent) { "skipped" } else if (liveReady) { "passed" } else { "failed" }))
+    out.put("liveReady", liveReady.toJsonValue())
+    out.put("redacted", true.toJsonValue())
+    out.put("privateBindingCount", privateBindingCount.toJsonValue())
+    out.put("groupBindingCount", groupBindingCount.toJsonValue())
+    out.put("topicBindingCount", topicBindingCount.toJsonValue())
+    out.put("broadcastTeamCount", broadcastTeamCount.toJsonValue())
+    out.put("selectedMemberCount", selectedAgentIds.size.toJsonValue())
+    out.put("selectedAgentIds", gatewayTelegramDiagArray(selectedAgentIds.toArray()))
+    out.put("missingRequirements", gatewayTelegramDiagArray(missing.toArray()))
+    out.put("requiredPeerKinds", gatewayTelegramDiagArray(["private", "group", "topic"]))
+    out.put("broadcastEvidenceFields", gatewayTelegramDiagArray([
+        "teamId",
+        "selectedAgentIds",
+        "agents[].agentId",
+        "agents[].sessionKey",
+        "agents[].deliveryStatus",
+        "agents[].deliveryMessageId",
+        "answer"
+    ]))
+    out
+}
+
+private func gatewayTelegramDiagMissingRequirementsString(readiness: JsonObject): String {
+    match (readiness.get("missingRequirements")) {
+        case Some(value) => value.toJsonString()
+        case None => "[]"
+    }
 }
 
 private func gatewayTelegramNormalizeSenderId(raw: String): String {
@@ -309,7 +491,7 @@ private func gatewayTelegramRuntimeMembershipSummary(runtime: JsonObject): (Stri
     ("passed", "membership probes healthy=${healthy}, warnings=0, errors=0")
 }
 
-private func gatewayTelegramBuildDiagnosticFindings(user: GatewayUserSettings, runtime: JsonObject): JsonArray {
+private func gatewayTelegramBuildDiagnosticFindings(user: GatewayUserSettings, runtime: JsonObject, routeRoot: JsonObject): JsonArray {
     let findings = JsonArray([])
     if (!user.telegram.enabled) {
         gatewayTelegramAddFinding(
@@ -381,6 +563,18 @@ private func gatewayTelegramBuildDiagnosticFindings(user: GatewayUserSettings, r
         "Telegram live membership probe is reported by doctor.",
         membership[1],
         "Run live channel diagnostics with a mocked or trusted Bot API path; verify getChatMember status for configured groups."
+    )
+
+    let routeReadiness = gatewayTelegramDiagRouteBroadcastReadiness(routeRoot)
+    let routeStatus = gatewayTelegramDiagString(routeReadiness, "status", "skipped")
+    gatewayTelegramAddFinding(
+        findings,
+        "telegram-route-broadcast-live-ready",
+        if (routeStatus == "failed") { "warning" } else { "info" },
+        routeStatus,
+        "Telegram route and team broadcast live-readiness preflight is explicit.",
+        "privateBindingCount=${gatewayTelegramDiagIntString(routeReadiness, "privateBindingCount")}, groupBindingCount=${gatewayTelegramDiagIntString(routeReadiness, "groupBindingCount")}, topicBindingCount=${gatewayTelegramDiagIntString(routeReadiness, "topicBindingCount")}, broadcastTeamCount=${gatewayTelegramDiagIntString(routeReadiness, "broadcastTeamCount")}, selectedMemberCount=${gatewayTelegramDiagIntString(routeReadiness, "selectedMemberCount")}, missingRequirements=${gatewayTelegramDiagMissingRequirementsString(routeReadiness)}.",
+        "Before live M12-M14, configure one Telegram private binding, one group binding, one topic binding, and one enabled team broadcast with selected members."
     )
 
     let invalidDm = gatewayTelegramInvalidSenderTokens(user.telegram.allowFrom)
@@ -763,14 +957,16 @@ private func gatewayTelegramDiagnosticsSummary(findings: JsonArray): JsonObject 
     return out
 }
 
-public func gatewayTelegramDiagnosticsJson(user: GatewayUserSettings, runtime!: JsonObject = JsonObject()): JsonObject {
-    let findings = gatewayTelegramBuildDiagnosticFindings(user, runtime)
+public func gatewayTelegramDiagnosticsJson(user: GatewayUserSettings, runtime!: JsonObject = JsonObject(), routeRoot!: JsonObject = JsonObject()): JsonObject {
+    let findings = gatewayTelegramBuildDiagnosticFindings(user, runtime, routeRoot)
+    let routeReadiness = gatewayTelegramDiagRouteBroadcastReadiness(routeRoot)
     let out = JsonObject()
     out.put("summary", gatewayTelegramDiagnosticsSummary(findings))
     out.put("findings", findings)
     out.put("videoUnderstanding", gatewayTelegramVideoUnderstandingDiagnostics(user))
     out.put("videoGeneration", gatewayTelegramVideoGenerationDiagnostics(user))
     out.put("imageGeneration", gatewayTelegramImageGenerationDiagnostics(user))
+    out.put("routeBroadcastReadiness", routeReadiness)
     out.put("checkedInputs", gatewayTelegramDiagArray([
         "token",
         "getMe",
@@ -793,6 +989,8 @@ public func gatewayTelegramDiagnosticsJson(user: GatewayUserSettings, runtime!: 
         "membership",
         "threadBindings",
         "groupHistory",
+        "routeBindingPreflight",
+        "teamBroadcast",
         "targetWriteback",
         "chatActionBackoff",
         "directoryAggregation",

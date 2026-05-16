@@ -80,6 +80,8 @@ public class GatewayServerMethodsOpsPlatformTest {
         let diagnostics = doctor.get("telegramDiagnostics").getOrThrow().asObject()
         let findings = diagnostics.get("findings").getOrThrow().asArray().toJsonString()
         @Expect(findings.contains("telegram-token-missing"), true)
+        @Expect(findings.contains("telegram-route-broadcast-live-ready"), true)
+        @Expect(diagnostics.get("routeBroadcastReadiness").isSome(), true)
         let agentTeamDiagnostics = doctor.get("agentTeamDiagnostics").getOrThrow().asObject()
         @Expect(opsPlatformTestString(agentTeamDiagnostics, "mode"), "read-only")
         let actions = doctor.get("actions").getOrThrow().asArray().toJsonString()

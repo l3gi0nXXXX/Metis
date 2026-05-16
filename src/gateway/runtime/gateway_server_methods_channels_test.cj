@@ -78,6 +78,71 @@ private func channelsRowsContainStringField(rows: JsonArray, key: String, value:
     false
 }
 
+private func channelsTelegramRouteBinding(agentId: String, peerKind: String, peerId: String): JsonObject {
+    let binding = JsonObject()
+    binding.put("type", JsonString("route"))
+    binding.put("agentId", JsonString(agentId))
+    let matchObj = JsonObject()
+    matchObj.put("channel", JsonString("telegram"))
+    matchObj.put("accountId", JsonString("bot-a"))
+    let peer = JsonObject()
+    peer.put("kind", JsonString(peerKind))
+    peer.put("id", JsonString(peerId))
+    matchObj.put("peer", peer)
+    binding.put("match", matchObj)
+    binding
+}
+
+private func channelsTelegramAgent(id: String): JsonObject {
+    let agent = JsonObject()
+    agent.put("id", JsonString(id))
+    agent
+}
+
+private func channelsTelegramTeamMember(agentId: String): JsonObject {
+    let member = JsonObject()
+    member.put("agentId", JsonString(agentId))
+    member
+}
+
+private func channelsTelegramLiveRouteRoot(): JsonObject {
+    let root = JsonObject()
+    let agents = JsonObject()
+    agents.put("list", JsonArray([
+        channelsTelegramAgent("private-agent"),
+        channelsTelegramAgent("group-agent"),
+        channelsTelegramAgent("topic-agent"),
+        channelsTelegramAgent("writer"),
+        channelsTelegramAgent("reviewer")
+    ]))
+    root.put("agents", agents)
+
+    let bindings = JsonArray([])
+    bindings.add(channelsTelegramRouteBinding("private-agent", "direct", "8734062810"))
+    bindings.add(channelsTelegramRouteBinding("group-agent", "group", "-1001234567890"))
+    bindings.add(channelsTelegramRouteBinding("topic-agent", "topic", "42"))
+    root.put("bindings", bindings)
+
+    let team = JsonObject()
+    team.put("id", JsonString("content"))
+    team.put("defaultAgentId", JsonString("group-agent"))
+    team.put("members", JsonArray([
+        channelsTelegramTeamMember("writer"),
+        channelsTelegramTeamMember("reviewer")
+    ]))
+    team.put("bindings", JsonArray([
+        channelsTelegramRouteBinding("group-agent", "group", "-1001234567890")
+    ]))
+    let broadcast = JsonObject()
+    broadcast.put("enabled", JsonBool(true))
+    broadcast.put("members", JsonArray([JsonString("writer"), JsonString("reviewer")]))
+    team.put("broadcast", broadcast)
+    let agentTeams = JsonObject()
+    agentTeams.put("list", JsonArray([team]))
+    root.put("agentTeams", agentTeams)
+    root
+}
+
 private class GatewayChannelsFeishuAuthFakeHttpClient <: FeishuAuthHttpClient {
     public let calls = ArrayList<String>()
     private let tokenBody: String
@@ -1130,6 +1195,39 @@ public class GatewayServerMethodsChannelsTest {
         let diagnostics = gatewayTelegramDiagnosticsJson(user)
         let findings = diagnostics.get("findings").getOrThrow().asArray().toJsonString()
         @Expect(findings.contains("telegram-group-no-sender-allowlist"), true)
+    }
+
+    @TestCase
+    public func telegramDiagnosticsExposeRouteBroadcastLiveReadinessPreflight(): Unit {
+        var user = GatewayUserSettings()
+        user.telegram.enabled = true
+        user.telegram.botToken = "123456:secret-live-ready-token"
+        user.telegram.groupPolicy = "allowlist"
+        user.telegram.groupAllowFrom = ["8734062810"]
+
+        let diagnostics = gatewayTelegramDiagnosticsJson(user, routeRoot: channelsTelegramLiveRouteRoot())
+        let readiness = diagnostics.get("routeBroadcastReadiness").getOrThrow().asObject()
+        @Expect(channelsTestBool(readiness, "liveReady"), true)
+        @Expect(channelsTestInt(readiness, "privateBindingCount"), 1)
+        @Expect(channelsTestInt(readiness, "groupBindingCount"), 2)
+        @Expect(channelsTestInt(readiness, "topicBindingCount"), 1)
+        @Expect(channelsTestInt(readiness, "broadcastTeamCount"), 1)
+        @Expect(channelsTestInt(readiness, "selectedMemberCount"), 2)
+        @Expect(readiness.get("missingRequirements").getOrThrow().asArray().size(), 0)
+        let selectedAgentIds = readiness.get("selectedAgentIds").getOrThrow().asArray().toJsonString()
+        @Expect(selectedAgentIds.contains("writer"), true)
+        @Expect(selectedAgentIds.contains("reviewer"), true)
+        let evidenceFields = readiness.get("broadcastEvidenceFields").getOrThrow().asArray().toJsonString()
+        @Expect(evidenceFields.contains("selectedAgentIds"), true)
+        @Expect(evidenceFields.contains("agents[].sessionKey"), true)
+        @Expect(evidenceFields.contains("agents[].deliveryStatus"), true)
+
+        let checkedInputs = diagnostics.get("checkedInputs").getOrThrow().asArray().toJsonString()
+        @Expect(checkedInputs.contains("routeBindingPreflight"), true)
+        @Expect(checkedInputs.contains("teamBroadcast"), true)
+        let findings = diagnostics.get("findings").getOrThrow().asArray().toJsonString()
+        @Expect(findings.contains("telegram-route-broadcast-live-ready"), true)
+        @Expect(findings.contains("secret-live-ready-token"), false)
     }
 
     @TestCase

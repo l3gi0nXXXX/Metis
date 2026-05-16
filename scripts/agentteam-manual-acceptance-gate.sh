@@ -278,6 +278,33 @@ write_report_json() {
     {"id": "M31", "status": "operator-record-required", "phase": "phase9", "title": "runtime log redaction", "evidence": "operator records Gateway and channel logs from test resources"},
     {"id": "M32", "status": "local-pass", "phase": "phase9", "title": "evidence pack", "evidence": "report and template generated with redaction scan"}
   ],
+  "telegramLiveReadiness": {
+    "phase": "phase1",
+    "gap": "G11",
+    "manualItems": ["M12", "M13", "M14"],
+    "status": "$PHASE3_STATUS",
+    "reason": "$PHASE3_REASON",
+    "redacted": true,
+    "routePreflight": {
+      "requiredPeerKinds": ["private", "group", "topic"],
+      "evidenceFields": ["privateBindingCount", "groupBindingCount", "topicBindingCount", "missingRequirements"],
+      "operatorRecordRequired": true
+    },
+    "broadcastEvidenceFields": [
+      "teamId",
+      "selectedAgentIds",
+      "agents[].agentId",
+      "agents[].sessionKey",
+      "agents[].deliveryStatus",
+      "agents[].deliveryMessageId",
+      "answer"
+    ],
+    "logEvidence": {
+      "requiredMarkers": ["Gateway.inbound: channel=telegram", "outbound success"],
+      "forbiddenMarkerRefs": ["auth-header", "bearer-secret", "proxy-credential", "telegram-credential"],
+      "operatorRecordRequired": true
+    }
+  },
   "externalResources": [
 $(resource_json_line telegram METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID "Telegram account id" phase3 ",")
 $(resource_json_line telegram METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID "Telegram private chat or topic id" phase3 ",")
@@ -343,6 +370,9 @@ write_manual_template() {
 | M12 Telegram private route | $PHASE3_STATUS | TODO | redacted account and chat ids only |
 | M13 Telegram group/topic route | $PHASE3_STATUS | TODO | redacted group/topic ids only |
 | M14 Telegram team broadcast | $PHASE3_STATUS | TODO | aggregate rows with agentId/status/sessionKey |
+| Route preflight | $PHASE3_STATUS | TODO | privateBindingCount, groupBindingCount, topicBindingCount, missingRequirements |
+| Broadcast selected members | $PHASE3_STATUS | TODO | teamId, selectedAgentIds, agents[].agentId, agents[].sessionKey, agents[].deliveryStatus, agents[].deliveryMessageId |
+| Log redaction scan | operator-record-required | TODO | required marker Gateway.inbound: channel=telegram; forbidden refs auth-header, bearer-secret, proxy-credential, telegram-credential |
 
 Required env state is in report.json externalResources. The gate does not call Telegram by default.
 
