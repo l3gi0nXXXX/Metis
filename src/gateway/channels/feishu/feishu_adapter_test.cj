@@ -1909,6 +1909,123 @@ public class FeishuAdapterTest {
     }
 
     @TestCase
+    public func richResourceLiveReadyContextExposesOperatorEvidenceAndFetchClasses(): Unit {
+        let client = FeishuFakeApiClient()
+        client.setResourceError(
+            "work",
+            "om_scope",
+            "img_scope",
+            "image",
+            "scope_missing",
+            error: "missing im:message.resource:read"
+        )
+        client.setResourceError(
+            "work",
+            "om_api",
+            "file_api",
+            "file",
+            "api_error",
+            error: "Authorization: Bearer must-not-render"
+        )
+        let adapter = FeishuAdapter(
+            config: FeishuConfig(
+                enabled: true,
+                media: FeishuMediaConfig(downloadEnabled: true)
+            ),
+            accountId: "work",
+            apiClient: client
+        )
+        adapter.start()
+        @Expect(adapter.ingestWebhookPayload(
+            this.webhookPayload(
+                "om_scope",
+                "oc_group",
+                "ou_image_sender",
+                "{\\\"image_key\\\":\\\"img_scope\\\",\\\"file_name\\\":\\\"diagram.png\\\",\\\"mime_type\\\":\\\"image/png\\\"}",
+                messageType: "image"
+            )
+        ).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(
+            this.webhookPayload(
+                "om_api",
+                "oc_group",
+                "ou_file_sender",
+                "{\\\"file_key\\\":\\\"file_api\\\",\\\"file_name\\\":\\\"report.pdf\\\",\\\"mime_type\\\":\\\"application/pdf\\\"}",
+                messageType: "file"
+            )
+        ).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(
+            this.webhookPayload(
+                "om_quote_live",
+                "oc_group",
+                "ou_reply",
+                "{\\\"text\\\":\\\"quoted reply\\\"}",
+                rootId: "om_root_live",
+                threadId: "omt_live"
+            )
+        ).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.reactionPayload(accountId: "work")).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(
+            this.webhookPayload(
+                "om_merge_live",
+                "oc_group",
+                "ou_forwarder",
+                "{\\\"title\\\":\\\"forwarded thread\\\",\\\"message_count\\\":2}",
+                messageType: "merge_forward"
+            )
+        ).contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 5)
+        let imageRecord = inbound[0].mediaContext.get("records").getOrThrow().asArray()[0].asObject()
+        let imageCurrent = imageRecord.get("currentTurnContext").getOrThrow().asObject()
+        @Expect(imageCurrent.get("relation").getOrThrow().asString().getValue(), "current")
+        @Expect(imageCurrent.get("messageType").getOrThrow().asString().getValue(), "image")
+        @Expect(imageCurrent.get("source").getOrThrow().asString().getValue(), "im.message.receive_v1")
+        @Expect(imageCurrent.get("operatorId").getOrThrow().asString().getValue(), "ou_image_sender")
+        let imageFetch = imageRecord.get("resourceFetch").getOrThrow().asObject()
+        @Expect(imageFetch.get("status").getOrThrow().asString().getValue(), "scope_missing")
+        @Expect(imageFetch.get("errorClass").getOrThrow().asString().getValue(), "scope_missing")
+        @Expect(imageFetch.get("redacted").getOrThrow().asBool().getValue(), true)
+
+        let fileRecord = inbound[1].mediaContext.get("records").getOrThrow().asArray()[0].asObject()
+        let fileFetch = fileRecord.get("resourceFetch").getOrThrow().asObject()
+        @Expect(fileFetch.get("status").getOrThrow().asString().getValue(), "api_error")
+        @Expect(fileFetch.get("errorClass").getOrThrow().asString().getValue(), "api_error")
+        @Expect(fileFetch.toJsonString().contains("must-not-render"), false)
+
+        let boundary = inbound[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("feishuResourceBoundary").getOrThrow().asObject()
+        let historical = boundary.get("historicalResource").getOrThrow().asObject()
+        let historicalClasses = historical.get("errorClasses").getOrThrow().asArray()
+        @Expect(historical.get("status").getOrThrow().asString().getValue(), "auth_required")
+        @Expect(historicalClasses[0].asString().getValue(), "auth_required")
+        @Expect(historicalClasses[1].asString().getValue(), "scope_missing")
+        @Expect(historicalClasses[2].asString().getValue(), "api_error")
+
+        let quoteLive = inbound[2].mediaContext.get("context").getOrThrow().asObject()
+            .get("feishuQuote").getOrThrow().asObject()
+        let quoteEvidence = quoteLive.get("operatorEvidence").getOrThrow().asObject()
+        @Expect(quoteEvidence.get("operatorId").getOrThrow().asString().getValue(), "ou_reply")
+        @Expect(quoteEvidence.get("operation").getOrThrow().asString().getValue(), "quote_reply")
+        @Expect(quoteLive.get("historicalFetch").getOrThrow().asObject().get("status").getOrThrow().asString().getValue(), "auth_required")
+
+        let reaction = inbound[3].mediaContext.get("context").getOrThrow().asObject()
+            .get("feishuReaction").getOrThrow().asObject()
+        let reactionEvidence = reaction.get("operatorEvidence").getOrThrow().asObject()
+        @Expect(reactionEvidence.get("operatorId").getOrThrow().asString().getValue(), "ou_reactor")
+        @Expect(reactionEvidence.get("operation").getOrThrow().asString().getValue(), "reaction_created")
+        @Expect(reactionEvidence.get("redacted").getOrThrow().asBool().getValue(), true)
+
+        let merge = inbound[4].mediaContext.get("context").getOrThrow().asObject()
+            .get("feishuMergeForward").getOrThrow().asObject()
+        let mergeEvidence = merge.get("operatorEvidence").getOrThrow().asObject()
+        @Expect(mergeEvidence.get("operatorId").getOrThrow().asString().getValue(), "ou_forwarder")
+        @Expect(mergeEvidence.get("operation").getOrThrow().asString().getValue(), "merge_forward")
+        @Expect(merge.get("historicalFetch").getOrThrow().asObject().get("status").getOrThrow().asString().getValue(), "auth_required")
+    }
+
+    @TestCase
     public func imageResourceDownloadPersistsToConfiguredSafeTempPath(): Unit {
         let root = "/tmp/metis-feishu-media-download-${DateTime.now().toUnixTimeStamp().toMilliseconds()}"
         try { remove(Path(root), recursive: true) } catch (_e: Exception) { () }

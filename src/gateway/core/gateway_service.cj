@@ -473,7 +473,7 @@ public class GatewayService {
         let reply = match (command) {
             case "start" => this.renderFeishuStartCommand(message, accountId, user)
             case "doctor" => this.renderFeishuDoctorCommand(message, accountId, user)
-            case "auth" => this.renderFeishuAuthCommand(accountId, user)
+            case "auth" => this.renderFeishuAuthCommand(message, accountId, user)
             case "info" => this.renderFeishuInfoCommand(accountId, user)
             case _ => this.renderFeishuHelpCommand()
         }
@@ -536,8 +536,10 @@ public class GatewayService {
         lines.add("receiveMode: ${user.feishu.receiveMode}")
         lines.add("peer: ${message.peerId}")
         lines.add("threadSession: ${if (user.feishu.threadSession) { "enabled" } else { "disabled" }}")
+        lines.add(this.feishuNativeRouteReadinessLine(message, normalized))
         lines.add("route: AgentTeam bindings=${this.feishuNativeBindingsCount()} agents=${this.feishuNativeAgentsCount()}")
         lines.add("OAPI: ${this.feishuNativeOapiDisplayStatus(hasCredentials, oauthStatus)}")
+        this.appendFeishuNativeReadinessLines(lines, hasCredentials, oauthStatus)
         if (!hasCredentials) {
             lines.add("warning: appId/appSecret is missing for this account.")
         }
@@ -561,6 +563,8 @@ public class GatewayService {
         lines.add("CardKit/live cards: external-resource-required")
         lines.add("live resource smoke: external-resource-required")
         lines.add("liveNetwork: not_started")
+        lines.add(this.feishuNativeRouteReadinessLine(_message, normalized))
+        this.appendFeishuNativeReadinessLines(lines, hasCredentials, oauthStatus)
         lines.add("threadSession: ${if (user.feishu.threadSession) { "enabled" } else { "disabled" }}")
         lines.add("groupPolicy: ${user.feishu.groupPolicy}")
         lines.add("requireMention: ${if (user.feishu.requireMention) { "true" } else { "false" }}")
@@ -595,20 +599,24 @@ public class GatewayService {
         String.join(lines.toArray(), delimiter: "\n")
     }
 
-    private func renderFeishuAuthCommand(accountId: String, user: GatewayUserSettings): String {
+    private func renderFeishuAuthCommand(message: InboundMessage, accountId: String, user: GatewayUserSettings): String {
         let auth = gatewayFeishuNativeAuthStart(this.feishuNativeAccountId(accountId, user), user)
         let authStatus = this.feishuNativeJsonString(auth, "status")
         let verificationUri = this.feishuNativeJsonString(auth, "verificationUri")
         let userCode = this.feishuNativeJsonString(auth, "userCode")
         let expiresInSeconds = this.feishuNativeJsonString(auth, "expiresInSeconds")
         let intervalSeconds = this.feishuNativeJsonString(auth, "intervalSeconds")
-        let message = this.feishuNativeJsonString(auth, "message")
+        let authMessage = this.feishuNativeJsonString(auth, "message")
         let tokenStatus = this.feishuNativeJsonString(auth, "tokenStatus")
         let scopeSummary = this.feishuNativeJsonString(auth, "scopeSummary")
+        let hasCredentials = this.feishuNativeHasCredentials(accountId, user)
+        let oauthStatus = this.feishuNativeOAuthDisplayStatus(auth)
         let lines = ArrayList<String>()
         lines.add("Metis Feishu auth")
         lines.add("accountId: ${this.feishuNativeAccountId(accountId, user)}")
-        lines.add("app credentials: ${if (this.feishuNativeHasCredentials(accountId, user)) { "configured" } else { "missing appId/appSecret" }}")
+        lines.add("app credentials: ${if (hasCredentials) { "configured" } else { "missing appId/appSecret" }}")
+        lines.add(this.feishuNativeRouteReadinessLine(message, this.feishuNativeAccountId(accountId, user)))
+        this.appendFeishuNativeReadinessLines(lines, hasCredentials, oauthStatus)
         if (!tokenStatus.isEmpty()) {
             lines.add("storedToken: ${tokenStatus}")
         }
@@ -635,8 +643,8 @@ public class GatewayService {
         if (!scopeSummary.isEmpty()) {
             lines.add("scopes: ${scopeSummary}")
         }
-        if (!message.isEmpty()) {
-            lines.add("message: ${message}")
+        if (!authMessage.isEmpty()) {
+            lines.add("message: ${authMessage}")
         }
         lines.add("redaction: tokens and secrets are not displayed")
         String.join(lines.toArray(), delimiter: "\n")
@@ -744,6 +752,37 @@ public class GatewayService {
         "external-resource-required"
     }
 
+    private func appendFeishuNativeReadinessLines(lines: ArrayList<String>, hasCredentials: Bool, oauthStatus: String): Unit {
+        lines.add("OAPI readiness: ${this.feishuNativeOapiDisplayStatus(hasCredentials, oauthStatus)}")
+        lines.add("CardKit readiness: external-resource-required")
+        lines.add("live resource readiness: external-resource-required")
+        lines.add("AgentTeam readiness: ${this.feishuNativeAgentTeamReadiness()}")
+    }
+
+    private func feishuNativeRouteReadinessLine(message: InboundMessage, accountId: String): String {
+        "route: native-command peer=${message.peerId} chatType=${this.feishuNativeChatTypeName(message.chatType)} account=${accountId.trimAscii()}"
+    }
+
+    private func feishuNativeChatTypeName(chatType: ChatType): String {
+        match (chatType) {
+            case ChatType.Direct => "direct"
+            case ChatType.Group => "group"
+        }
+    }
+
+    private func feishuNativeAgentTeamReadiness(): String {
+        let bindings = this.feishuNativeBindingsCount()
+        let agents = this.feishuNativeAgentsCount()
+        let status = if (agents == 0) {
+            "missing_agents"
+        } else if (bindings == 0) {
+            "missing_bindings"
+        } else {
+            "ready"
+        }
+        "${status} bindings=${bindings} agents=${agents}"
+    }
+
     private func feishuNativeAccountConfig(accountId: String, user: GatewayUserSettings): JsonObject {
         let normalized = this.feishuNativeAccountId(accountId, user)
         match (user.feishu.accounts) {
@@ -776,7 +815,17 @@ public class GatewayService {
             case Some(value) => value
             case None => JsonObject()
         }
-        this.feishuNativeJsonArray(root, "agents").size()
+        match (root.get("agents")) {
+            case Some(v) =>
+                try { return v.asArray().size() } catch (_e: Exception) { () }
+                try {
+                    let obj = v.asObject()
+                    return this.feishuNativeJsonArray(obj, "list").size()
+                } catch (_e: Exception) {
+                    0
+                }
+            case None => 0
+        }
     }
 
     private func feishuNativeRedactedValue(value: String): String {

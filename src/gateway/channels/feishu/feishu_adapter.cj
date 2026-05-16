@@ -1076,13 +1076,22 @@ public class FeishuAdapter <: ChannelAdapter {
             case None => JsonObject()
         }
         let reaction = JsonObject()
+        let eventType = this.readHeaderEventType(root)
         reaction.put("messageId", JsonString(messageId.trimAscii()))
         reaction.put("operatorId", JsonString(operatorId.trimAscii()))
         reaction.put("emojiType", JsonString(emojiType.trimAscii()))
         reaction.put("chatId", JsonString(chatId.trimAscii()))
         reaction.put("threadId", JsonString(threadId.trimAscii()))
-        reaction.put("eventType", JsonString(this.readHeaderEventType(root)))
+        reaction.put("eventType", JsonString(eventType))
         reaction.put("status", JsonString("accepted"))
+        reaction.put("operatorEvidence", this.feishuOperatorEvidence(
+            operatorId,
+            if (eventType == "im.message.reaction.deleted_v1") { "reaction_deleted" } else { "reaction_created" },
+            eventType: eventType,
+            messageId: messageId,
+            chatId: chatId,
+            accountId: accountId
+        ))
         reaction.put("resourceFetch", this.feishuNoResourceFetchDiagnostic("not_required", reason: "reaction events do not carry downloadable message resources"))
         context.put("feishuReaction", reaction)
         mediaContext.put("context", context)
@@ -1530,10 +1539,10 @@ public class FeishuAdapter <: ChannelAdapter {
         let mediaContext = JsonObject()
         this.attachFeishuImRouteContext(mediaContext, accountConfig, accountId, chatId, chatType, senderId, messageId, rootId, threadId)
         this.attachFeishuGateContext(mediaContext, accountConfig, chatType, mentioned, chatId, senderId)
-        this.attachFeishuQuoteContext(mediaContext, messageId, rootId, threadId, chatType)
+        this.attachFeishuQuoteContext(mediaContext, accountId, chatId, senderId, messageId, rootId, threadId, chatType)
         this.attachFeishuAliasCandidates(mediaContext, accountConfig, messageObj)
-        this.attachFeishuAttachmentContext(mediaContext, accountConfig, accountId, chatId, messageId, messageType, contentJsonString)
-        this.attachFeishuRichMessageContext(mediaContext, messageType, contentJsonString)
+        this.attachFeishuAttachmentContext(mediaContext, accountConfig, accountId, chatId, senderId, messageId, messageType, contentJsonString)
+        this.attachFeishuRichMessageContext(mediaContext, accountId, chatId, senderId, messageId, messageType, contentJsonString)
         this.attachFeishuResourceBoundaryContext(mediaContext, accountConfig, accountId, messageId, messageType)
 
         return InboundMessage(
@@ -1832,6 +1841,7 @@ public class FeishuAdapter <: ChannelAdapter {
         cfg: FeishuConfig,
         accountId: String,
         chatId: String,
+        senderId: String,
         messageId: String,
         messageType: String,
         contentJsonString: String
@@ -1931,13 +1941,26 @@ public class FeishuAdapter <: ChannelAdapter {
         record.put("skippedReason", JsonString(skippedReason))
         record.put("localPath", JsonString(localPath))
         record.put("downloadPath", JsonString(localPath))
+        let finalStatus = if (downloaded) { "downloaded" } else { skippedReason }
+        record.put("currentTurnContext", this.feishuCurrentTurnResourceContext(
+            accountId,
+            chatId,
+            senderId,
+            messageId,
+            normalizedType,
+            fileId,
+            resourceType,
+            finalStatus,
+            resourceNetworkAttempted,
+            this.feishuAttachmentEligibility(normalizedType)
+        ))
         record.put("resourceFetch", this.feishuResourceFetchDiagnostic(
             accountId,
             messageId,
             fileId,
             resourceType,
             normalizedType,
-            if (downloaded) { "downloaded" } else { skippedReason },
+            finalStatus,
             resourceNetworkAttempted,
             this.feishuAttachmentEligibility(normalizedType)
         ))
@@ -1948,6 +1971,9 @@ public class FeishuAdapter <: ChannelAdapter {
 
     private func attachFeishuQuoteContext(
         mediaContext: JsonObject,
+        accountId: String,
+        chatId: String,
+        senderId: String,
         messageId: String,
         rootId: String,
         threadId: String,
@@ -1973,6 +1999,18 @@ public class FeishuAdapter <: ChannelAdapter {
             case Some(target) => quoteContext.put("replyTargetMessageId", JsonString(target))
             case None => quoteContext.put("replyTargetMessageId", JsonString(""))
         }
+        quoteContext.put("operatorEvidence", this.feishuOperatorEvidence(
+            senderId,
+            "quote_reply",
+            eventType: "im.message.receive_v1",
+            messageId: messageId,
+            chatId: chatId,
+            accountId: accountId
+        ))
+        quoteContext.put("historicalFetch", this.feishuHistoricalResourceFetchDiagnostic(
+            "auth_required",
+            reason: "quote expansion requires Feishu historical message/resource scopes"
+        ))
         quoteContext.put("resourceFetch", this.feishuNoResourceFetchDiagnostic(
             "auth_required",
             reason: "quote expansion requires Feishu historical message/resource scopes"
@@ -1983,6 +2021,10 @@ public class FeishuAdapter <: ChannelAdapter {
 
     private func attachFeishuRichMessageContext(
         mediaContext: JsonObject,
+        accountId: String,
+        chatId: String,
+        senderId: String,
+        messageId: String,
         messageType: String,
         contentJsonString: String
     ): Unit {
@@ -2003,6 +2045,18 @@ public class FeishuAdapter <: ChannelAdapter {
         forward.put("title", JsonString(this.readStringField(content, "title").trimAscii()))
         forward.put("status", JsonString("metadata_only"))
         forward.put("declaredMessageCount", JsonInt(this.readIntField(content, "message_count")))
+        forward.put("operatorEvidence", this.feishuOperatorEvidence(
+            senderId,
+            "merge_forward",
+            eventType: "im.message.receive_v1",
+            messageId: messageId,
+            chatId: chatId,
+            accountId: accountId
+        ))
+        forward.put("historicalFetch", this.feishuHistoricalResourceFetchDiagnostic(
+            "auth_required",
+            reason: "merge_forward expansion requires Feishu historical message scopes"
+        ))
         let fetch = JsonObject()
         fetch.put("status", JsonString("external_resource_required"))
         fetch.put("networkAttempted", JsonBool(false))
@@ -2028,7 +2082,9 @@ public class FeishuAdapter <: ChannelAdapter {
         eligibleFor: String
     ): JsonObject {
         let out = JsonObject()
-        out.put("status", JsonString(if (status.trimAscii().isEmpty()) { "metadata_only" } else { status.trimAscii() }))
+        let cleanStatus = if (status.trimAscii().isEmpty()) { "metadata_only" } else { status.trimAscii() }
+        out.put("status", JsonString(cleanStatus))
+        out.put("errorClass", JsonString(this.feishuClassifyResourceFetchStatus(cleanStatus)))
         out.put("networkAttempted", JsonBool(networkAttempted))
         out.put("tool", JsonString("feishu_im_user_fetch_resource"))
         out.put("accountId", JsonString(this.normalizeAccountId(accountId)))
@@ -2044,9 +2100,128 @@ public class FeishuAdapter <: ChannelAdapter {
         out
     }
 
+    private func feishuCurrentTurnResourceContext(
+        accountId: String,
+        chatId: String,
+        senderId: String,
+        messageId: String,
+        messageType: String,
+        fileKey: String,
+        resourceType: String,
+        status: String,
+        networkAttempted: Bool,
+        eligibleFor: String
+    ): JsonObject {
+        let cleanStatus = if (status.trimAscii().isEmpty()) { "metadata_only" } else { status.trimAscii() }
+        let out = JsonObject()
+        out.put("relation", JsonString("current"))
+        out.put("source", JsonString("im.message.receive_v1"))
+        out.put("accountId", JsonString(this.normalizeAccountId(accountId)))
+        out.put("peerId", JsonString(chatId.trimAscii()))
+        out.put("operatorId", JsonString(senderId.trimAscii()))
+        out.put("messageId", JsonString(messageId.trimAscii()))
+        out.put("messageType", JsonString(messageType.trimAscii().toAsciiLower()))
+        out.put("fileKey", JsonString(fileKey.trimAscii()))
+        out.put("resourceType", JsonString(resourceType.trimAscii()))
+        out.put("eligibleFor", JsonString(eligibleFor.trimAscii()))
+        out.put("status", JsonString(cleanStatus))
+        out.put("errorClass", JsonString(this.feishuClassifyResourceFetchStatus(cleanStatus)))
+        out.put("networkAttempted", JsonBool(networkAttempted))
+        out.put("redacted", JsonBool(true))
+        out
+    }
+
+    private func feishuHistoricalResourceFetchDiagnostic(status: String, reason!: String = ""): JsonObject {
+        let cleanStatus = if (status.trimAscii().isEmpty()) { "auth_required" } else { status.trimAscii().toAsciiLower() }
+        let out = JsonObject()
+        out.put("relation", JsonString("historical"))
+        out.put("status", JsonString(cleanStatus))
+        out.put("errorClass", JsonString(this.feishuClassifyResourceFetchStatus(cleanStatus)))
+        out.put("networkAttempted", JsonBool(false))
+        out.put("tool", JsonString("feishu_im_user_fetch_resource"))
+        out.put("reason", JsonString(reason.trimAscii()))
+        out.put("requiredScopes", JsonArray([
+            JsonString("im:message"),
+            JsonString("im:message.resource:read")
+        ]))
+        out.put("errorClasses", this.feishuHistoricalResourceErrorClasses())
+        out.put("redacted", JsonBool(true))
+        out
+    }
+
+    private func feishuHistoricalResourceErrorClasses(): JsonArray {
+        JsonArray([
+            JsonString("auth_required"),
+            JsonString("scope_missing"),
+            JsonString("api_error")
+        ])
+    }
+
+    private func feishuClassifyResourceFetchStatus(status: String): String {
+        let clean = status.trimAscii().toAsciiLower()
+        if (clean.isEmpty() || clean == "metadata_only" || clean == "external_resource_required" || clean == "not_required") {
+            return "not_attempted"
+        }
+        if (clean == "downloaded" || clean == "ok") {
+            return "ok"
+        }
+        if (
+            clean == "auth_required" ||
+            clean == "missing_credential" ||
+            clean == "missing_credentials" ||
+            clean == "missing_user_auth" ||
+            clean == "not_configured" ||
+            clean == "forbidden" ||
+            clean == "unauthorized" ||
+            clean == "401" ||
+            clean == "403"
+        ) {
+            return "auth_required"
+        }
+        if (clean == "scope_missing" || clean == "user_scope_missing" || clean == "app_scope_missing") {
+            return "scope_missing"
+        }
+        if (
+            clean == "api_error" ||
+            clean == "network_error" ||
+            clean == "parse_error" ||
+            clean == "download_failed" ||
+            clean == "not_found" ||
+            clean == "rate_limited" ||
+            clean == "429" ||
+            clean.startsWith("http_")
+        ) {
+            return "api_error"
+        }
+        clean
+    }
+
+    private func feishuOperatorEvidence(
+        operatorId: String,
+        operation: String,
+        eventType!: String = "",
+        messageId!: String = "",
+        chatId!: String = "",
+        accountId!: String = "",
+        idType!: String = "open_id"
+    ): JsonObject {
+        let out = JsonObject()
+        out.put("operatorId", JsonString(operatorId.trimAscii()))
+        out.put("operatorIdType", JsonString(idType.trimAscii()))
+        out.put("operation", JsonString(operation.trimAscii()))
+        out.put("eventType", JsonString(eventType.trimAscii()))
+        out.put("accountId", JsonString(this.normalizeAccountId(accountId)))
+        out.put("chatId", JsonString(chatId.trimAscii()))
+        out.put("messageId", JsonString(messageId.trimAscii()))
+        out.put("source", JsonString("feishu_event"))
+        out.put("redacted", JsonBool(true))
+        out
+    }
+
     private func feishuNoResourceFetchDiagnostic(status: String, reason!: String = ""): JsonObject {
         let out = JsonObject()
         out.put("status", JsonString(if (status.trimAscii().isEmpty()) { "not_required" } else { status.trimAscii() }))
+        out.put("errorClass", JsonString(this.feishuClassifyResourceFetchStatus(status)))
         out.put("networkAttempted", JsonBool(false))
         out.put("reason", JsonString(reason.trimAscii()))
         out.put("redacted", JsonBool(true))
@@ -2083,7 +2258,15 @@ public class FeishuAdapter <: ChannelAdapter {
         historical.put("tool", JsonString("feishu_im_user_fetch_resource"))
         historical.put("accountId", JsonString(this.normalizeAccountId(accountId)))
         historical.put("status", JsonString("auth_required"))
+        historical.put("errorClass", JsonString("auth_required"))
+        historical.put("errorClasses", this.feishuHistoricalResourceErrorClasses())
+        historical.put("networkAttempted", JsonBool(false))
+        historical.put("requiredScopes", JsonArray([
+            JsonString("im:message"),
+            JsonString("im:message.resource:read")
+        ]))
         historical.put("reason", JsonString("historical Feishu resources require user authorization and message resource scopes"))
+        historical.put("redacted", JsonBool(true))
         boundary.put("historicalResource", historical)
 
         let botImage = JsonObject()
@@ -2091,14 +2274,18 @@ public class FeishuAdapter <: ChannelAdapter {
         botImage.put("source", JsonString("oapi"))
         botImage.put("tool", JsonString("feishu_im_bot_image"))
         botImage.put("status", JsonString("not_configured"))
+        botImage.put("errorClass", JsonString("auth_required"))
         botImage.put("reason", JsonString("bot image fetch must be configured through the Feishu OAPI boundary"))
+        botImage.put("redacted", JsonBool(true))
         boundary.put("botImage", botImage)
 
         let docMedia = JsonObject()
         docMedia.put("source", JsonString("oapi"))
         docMedia.put("tool", JsonString("feishu_doc_media"))
         docMedia.put("status", JsonString("auth_required"))
+        docMedia.put("errorClass", JsonString("auth_required"))
         docMedia.put("reason", JsonString("document media requires Feishu document authorization and scope checks"))
+        docMedia.put("redacted", JsonBool(true))
         boundary.put("docMedia", docMedia)
 
         context.put("feishuResourceBoundary", boundary)
