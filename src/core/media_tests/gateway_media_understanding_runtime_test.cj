@@ -3,6 +3,9 @@ package metis.core.media_tests
 import metis.core.*
 
 import metis.core.config.GatewayUserSettings
+import magic.core.message.Message
+import magic.core.model.{AsyncChatResponse, ChatModel, ChatRequest, ChatResponse}
+import magic.model.ModelManager
 
 import std.fs.{Directory, File, Path}
 import std.time.*
@@ -35,11 +38,69 @@ private func mediaVideoTestRecord(path: String, channel!: String = "telegram"): 
     record
 }
 
+private func mediaImageTestRecord(path: String, channel!: String = "telegram", kind!: String = "photo"): JsonObject {
+    let record = JsonObject()
+    record.put("mediaKind", JsonString(kind))
+    record.put("mimeType", JsonString("image/jpeg"))
+    record.put("localPath", JsonString(path))
+    record.put("downloaded", JsonBool(true))
+    record.put("channel", JsonString(channel))
+    record
+}
+
+private class GatewayImageRuntimeFakeModel <: ChatModel {
+    private var _maxTokens: Option<Int64> = None
+
+    public prop provider: String {
+        get() { "fake" }
+    }
+
+    public prop name: String {
+        get() { "image-runtime" }
+    }
+
+    public prop contextLength: Int64 {
+        get() { 8192 }
+    }
+
+    public mut prop maxTokens: Option<Int64> {
+        get() { this._maxTokens }
+        set(v) { this._maxTokens = v }
+    }
+
+    public func create(request: ChatRequest): ChatResponse {
+        let first = request.messageList[0]
+        let prefix = match (first.image) {
+            case Some(v) => if (v.startsWith("data:image/jpeg;base64,")) { "image-ok" } else { "image-bad" }
+            case None => "image-missing"
+        }
+        ChatResponse(this.fullName, Message.assistant("${prefix}: configured runtime image"))
+    }
+
+    public func asyncCreate(request: ChatRequest): AsyncChatResponse {
+        throw Exception("async not used in gateway image runtime tests")
+    }
+}
+
 private func mediaAsrTestProvider(text: String): JsonObject {
     let provider = JsonObject()
     provider.put("kind", JsonString("command"))
     provider.put("command", JsonArray([JsonString("sh"), JsonString("-c"), JsonString("printf '${text}'")]))
     return provider
+}
+
+private func mediaImageConfigForModel(modelRef: String): JsonObject {
+    let entry = JsonObject()
+    let parts = modelRef.split(":", 2)
+    entry.put("provider", JsonString(parts[0]))
+    entry.put("model", JsonString(parts[1]))
+    entry.put("capabilities", JsonArray([JsonString("image")]))
+    let models = JsonArray([])
+    models.add(entry)
+    let image = JsonObject()
+    image.put("enabled", JsonBool(true))
+    image.put("models", models)
+    image
 }
 
 private func mediaAsrTestConfig(providerId: String, provider: JsonObject): JsonObject {
@@ -188,5 +249,29 @@ public class GatewayMediaUnderstandingRuntimeTest {
         @Expect(mediaAsrString(result, "status"), "too_large")
         @Expect(mediaAsrString(result, "videoUnderstandingStatus"), "too_large")
         @Expect(result.get("fileBytes").isSome(), true)
+    }
+
+    @TestCase
+    public func configuredImageCandidateProducesImageDescriptionOutput(): Unit {
+        let root = mediaAsrTestTempRoot("image-runtime")
+        let image = root.join("image.jpg")
+        File.writeTo(image, "fake-image".toArray())
+        let modelRef = "fake:image-runtime"
+        ModelManager.registerChatModel(modelRef, { => GatewayImageRuntimeFakeModel() })
+        var user = GatewayUserSettings()
+        let telegram = JsonObject()
+        telegram.put("image", mediaImageConfigForModel(modelRef))
+        let extra = JsonObject()
+        extra.put("telegram", telegram)
+        user.channelsExtra = Some(extra)
+
+        let result = gatewayMediaUnderstandingForRecordWithSettings(mediaImageTestRecord(image.toString()), user, capability: "image")
+        @Expect(mediaAsrString(result, "status"), "ok")
+        @Expect(mediaAsrString(result, "imageDescription").contains("image-ok"), true)
+        @Expect(mediaAsrString(result, "provider"), "fake")
+        @Expect(mediaAsrString(result, "model"), "fake:image-runtime")
+        let outputs = result.get("outputs").getOrThrow().asArray()
+        @Expect(outputs[0].asObject().get("kind").getOrThrow().asString().getValue(), "image.description")
+        @Expect(outputs[0].asObject().get("source").getOrThrow().asString().getValue(), "gateway_image_understanding_runtime")
     }
 }

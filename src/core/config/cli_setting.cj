@@ -124,6 +124,17 @@ protected class CliSetting {
     // ["moonshot:kimi-k2-0905-preview", "zhipuai:glm-4.5"]
 
     /**
+     * Dedicated image-understanding model. This prevents media channels from
+     * sending image payloads to the primary chat model when it is text-only.
+     */
+    protected var imageModel: String = ""
+
+    /**
+     * Dedicated image-understanding fallback models.
+     */
+    protected var imageFallbackModels: Array<String> = []
+
+    /**
      * Temperature agents will use
      */
     protected var temperature: Float64 = 1.0
@@ -274,6 +285,30 @@ protected class CliSettingManager {
         }
     }
 
+    private static func normalizedModelArray(value: JsonValue): Array<String> {
+        let out = ArrayList<String>()
+        let seen = ArrayList<String>()
+        try {
+            let arr = value.asArray()
+            for (item in arr.getItems()) {
+                try {
+                    let normalized = MetisConfigManager.normalizeModelRef(
+                        item.asString().getValue()
+                    ).trimAscii()
+                    if (!normalized.isEmpty() && !seen.contains(normalized)) {
+                        seen.add(normalized)
+                        out.add(normalized)
+                    }
+                } catch (_: Exception) {
+                    ()
+                }
+            }
+        } catch (_: Exception) {
+            ()
+        }
+        out.toArray()
+    }
+
     private static func normalizeGatewayTelegramCompat(gateway: JsonObject): JsonObject {
         let normalized = cloneJsonObjectShallow(gateway)
         match (rootGetObject(gateway, "telegram")) {
@@ -403,6 +438,29 @@ protected class CliSettingManager {
                                         } catch (_: Exception) {
                                             ()
                                         }
+                                    case None => ()
+                                }
+                            case None => ()
+                        }
+                        match (rootGetObject(defaults, "imageModel")) {
+                            case Some(modelObj) =>
+                                match (modelObj.get("primary")) {
+                                    case Some(primaryValue) =>
+                                        try {
+                                            let primary = MetisConfigManager.normalizeModelRef(
+                                                primaryValue.asString().getValue()
+                                            ).trimAscii()
+                                            if (!primary.isEmpty()) {
+                                                merged.imageModel = primary
+                                            }
+                                        } catch (_: Exception) {
+                                            ()
+                                        }
+                                    case None => ()
+                                }
+                                match (modelObj.get("fallbacks")) {
+                                    case Some(fallbacksValue) =>
+                                        merged.imageFallbackModels = normalizedModelArray(fallbacksValue)
                                     case None => ()
                                 }
                             case None => ()
@@ -648,10 +706,12 @@ protected class CliSettingManager {
         let s = setting
         let rawRoot = MetisConfigManager.rawConfig()
         CliConfig.model = MetisConfigManager.normalizeModelRef(s.model)
+        CliConfig.imageModel = MetisConfigManager.normalizeModelRef(s.imageModel)
         CliConfig.temperature = s.temperature
         CliConfig.defaultModelInputLimit = s.defaultModelInputLimit
         CliConfig.defaultModelOutputLimit = s.defaultModelOutputLimit
         CliConfig.fallbackModels = s.fallbackModels
+        CliConfig.imageFallbackModels = s.imageFallbackModels
         CliConfig.collectData = s.collectData
         CliConfig.language = s.language
         CliConfig.memoryProvider = CliSettingManager.resolvedMemoryProvider(s, root: rawRoot)

@@ -421,6 +421,67 @@ public class MetisConfigManagerTest {
     }
 
     @TestCase
+    public func setImageModelRefPreservesPrimaryModelAndGateway(): Unit {
+        let testHome = metisConfigTestTempHome("metis-image-model-preserves-primary-gateway").toString()
+        try {
+            remove(Path(testHome), recursive: true)
+        } catch (_: Exception) {
+            ()
+        }
+        Directory.create(testHome, recursive: true)
+        let oldHome = getVariable("METIS_HOME")
+        setVariable("METIS_HOME", testHome)
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+
+        let root = JsonObject()
+        let agents = JsonObject()
+        let defaults = JsonObject()
+        let model = JsonObject()
+        model.put("primary", JsonString("deepseek/deepseek-v4-pro"))
+        defaults.put("model", model)
+        agents.put("defaults", defaults)
+        root.put("agents", agents)
+        let gateway = JsonObject()
+        let auth = JsonObject()
+        auth.put("token", JsonString("keep-token"))
+        gateway.put("auth", auth)
+        root.put("gateway", gateway)
+        MetisConfigManager.writeRoot(root)
+
+        let nextModel = MetisConfigManager.setImageModelRef("qwen/qwen-vl-max")
+        let nextFallbacks = MetisConfigManager.setImageFallbackModelRefs(["openai/gpt-4o", "openai:gpt-4o"])
+
+        @Expect(nextModel, "qwen:qwen-vl-max")
+        @Expect(nextFallbacks.size, 1)
+        @Expect(nextFallbacks[0], "openai:gpt-4o")
+        @Expect(MetisConfigManager.readImageModel().getOrThrow(), "dashscope:qwen-vl-max")
+        @Expect(MetisConfigManager.readImageFallbackModels()[0], "openai:gpt-4o")
+
+        let persisted = MetisConfigManager.rawConfig().getOrThrow()
+        @Expect(
+            persisted.get("agents").getOrThrow().asObject()
+                .get("defaults").getOrThrow().asObject()
+                .get("model").getOrThrow().asObject()
+                .get("primary").getOrThrow().asString().getValue(),
+            "deepseek/deepseek-v4-pro"
+        )
+        @Expect(
+            persisted.get("gateway").getOrThrow().asObject()
+                .get("auth").getOrThrow().asObject()
+                .get("token").getOrThrow().asString().getValue(),
+            "keep-token"
+        )
+
+        match (oldHome) {
+            case Some(value) => setVariable("METIS_HOME", value)
+            case None => setVariable("METIS_HOME", "")
+        }
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+    }
+
+    @TestCase
     public func setFallbackModelRefsPreservesExistingPrimaryModelAndGateway(): Unit {
         let testHome = metisConfigTestTempHome("metis-phase2-fallbacks-preserve-model-gateway").toString()
         try {

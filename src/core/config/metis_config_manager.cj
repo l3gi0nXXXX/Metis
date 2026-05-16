@@ -870,6 +870,73 @@ public class MetisConfigManager {
         }
     }
 
+    public static func readImageModel(): Option<String> {
+        match (rawConfig()) {
+            case Some(root) =>
+                match (cfgGetObject(root, "agents")) {
+                    case Some(agents) =>
+                        match (cfgGetObject(agents, "defaults")) {
+                            case Some(defaults) =>
+                                match (cfgGetObject(defaults, "imageModel")) {
+                                    case Some(model) =>
+                                        match (cfgGetString(model, "primary")) {
+                                            case Some(value) =>
+                                                let normalized = normalizeLegacyModelRef(value).trimAscii()
+                                                if (normalized.isEmpty()) { None } else { Some(normalized) }
+                                            case None => None
+                                        }
+                                    case None => None
+                                }
+                            case None => None
+                        }
+                    case None => None
+                }
+            case None => None
+        }
+    }
+
+    public static func readImageFallbackModels(): Array<String> {
+        match (rawConfig()) {
+            case Some(root) =>
+                match (cfgGetObject(root, "agents")) {
+                    case Some(agents) =>
+                        match (cfgGetObject(agents, "defaults")) {
+                            case Some(defaults) =>
+                                match (cfgGetObject(defaults, "imageModel")) {
+                                    case Some(model) =>
+                                        match (model.get("fallbacks")) {
+                                            case Some(value) =>
+                                                try {
+                                                    let arr = value.asArray()
+                                                    let out = ArrayList<String>()
+                                                    let seen = ArrayList<String>()
+                                                    for (item in arr.getItems()) {
+                                                        try {
+                                                            let text = normalizeLegacyModelRef(item.asString().getValue()).trimAscii()
+                                                            if (!text.isEmpty() && !seen.contains(text)) {
+                                                                seen.add(text)
+                                                                out.add(text)
+                                                            }
+                                                        } catch (_: Exception) {
+                                                            ()
+                                                        }
+                                                    }
+                                                    out.toArray()
+                                                } catch (_: Exception) {
+                                                    Array<String>()
+                                                }
+                                            case None => Array<String>()
+                                        }
+                                    case None => Array<String>()
+                                }
+                            case None => Array<String>()
+                        }
+                    case None => Array<String>()
+                }
+            case None => Array<String>()
+        }
+    }
+
     public static func readWorkspace(): Option<String> {
         match (rawConfig()) {
             case Some(root) =>
@@ -1566,6 +1633,15 @@ public class MetisConfigManager {
         if (!persistedFallbacks.isEmpty()) {
             CliConfig.fallbackModels = persistedFallbacks
         }
+        match (readImageModel()) {
+            case Some(model) =>
+                let trimmed = normalizeLegacyModelRef(model).trimAscii()
+                if (!trimmed.isEmpty()) {
+                    CliConfig.imageModel = trimmed
+                }
+            case None => ()
+        }
+        CliConfig.imageFallbackModels = readImageFallbackModels()
         match (readFastModel()) {
             case Some(model) =>
                 let trimmed = model.trimAscii()
@@ -1789,6 +1865,47 @@ public class MetisConfigManager {
             arr.add(JsonString(storageModelRef(item)))
         }
         model.put("fallbacks", JsonArray(arr))
+        writeRoot(root)
+        applyPersistedFieldsToCliConfig()
+        nextRefs.toArray()
+    }
+
+    public static func setImageModelRef(modelRef: String): String {
+        let canonical = canonicalModelRef(modelRef).trimAscii()
+        let nextModel = if (canonical.isEmpty()) {
+            canonicalModelRef(CliConfig.imageModelOrEmpty()).trimAscii()
+        } else {
+            canonical
+        }
+        let root = mutableRoot()
+        let agents = cfgEnsureObject(root, "agents")
+        let defaults = cfgEnsureObject(agents, "defaults")
+        let imageModel = cfgEnsureObject(defaults, "imageModel")
+        imageModel.put("primary", JsonString(storageModelRef(nextModel)))
+        writeRoot(root)
+        applyPersistedFieldsToCliConfig()
+        nextModel
+    }
+
+    public static func setImageFallbackModelRefs(modelRefs: Array<String>): Array<String> {
+        let nextRefs = ArrayList<String>()
+        let seen = ArrayList<String>()
+        for (raw in modelRefs) {
+            let canonical = canonicalModelRef(raw).trimAscii()
+            if (!canonical.isEmpty() && !seen.contains(canonical)) {
+                seen.add(canonical)
+                nextRefs.add(canonical)
+            }
+        }
+        let root = mutableRoot()
+        let agents = cfgEnsureObject(root, "agents")
+        let defaults = cfgEnsureObject(agents, "defaults")
+        let imageModel = cfgEnsureObject(defaults, "imageModel")
+        let arr = ArrayList<JsonValue>()
+        for (item in nextRefs) {
+            arr.add(JsonString(storageModelRef(item)))
+        }
+        imageModel.put("fallbacks", JsonArray(arr))
         writeRoot(root)
         applyPersistedFieldsToCliConfig()
         nextRefs.toArray()

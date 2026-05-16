@@ -15,7 +15,7 @@ import metis.program_support.{
     programSupportRenderModelsStatus
 }
 
-import std.collection.{filter, map, collectArray}
+import std.collection.{ArrayList, filter, map, collectArray}
 
 protected func modelProviderPresets(): Array<CliModelProviderPreset> {
     programSupportModelProviderPresets()
@@ -160,6 +160,60 @@ protected func handleModelsCommandLine(app: CliApp, raw: String): Unit {
     }
     if (sub == "status") {
         PrintUtils.printLine(renderModelsStatus())
+        return
+    }
+    if (sub == "set-image") {
+        if (tokens.size < 3) {
+            PrintUtils.printLine("Usage: /models set-image <provider:model>")
+            return
+        }
+        let applied = MetisConfigManager.setImageModelRef(tokens[2])
+        PrintUtils.printLine("Image understanding model updated: ${applied}")
+        return
+    }
+    if (sub == "image-fallbacks") {
+        if (tokens.size < 3) {
+            PrintUtils.printLine("Usage: /models image-fallbacks add|remove|clear <provider:model>")
+            return
+        }
+        let action = tokens[2].toAsciiLower()
+        let current = ArrayList<String>()
+        for (item in MetisConfigManager.readImageFallbackModels()) {
+            if (!item.trimAscii().isEmpty() && !current.contains(item.trimAscii())) {
+                current.add(item.trimAscii())
+            }
+        }
+        if (action == "clear") {
+            let applied = MetisConfigManager.setImageFallbackModelRefs([])
+            PrintUtils.printLine("Image understanding fallbacks cleared (${applied.size}).")
+            return
+        }
+        if (tokens.size < 4) {
+            PrintUtils.printLine("Usage: /models image-fallbacks ${action} <provider:model>")
+            return
+        }
+        let canonical = MetisConfigManager.canonicalModelRef(tokens[3]).trimAscii()
+        if (action == "add") {
+            if (!canonical.isEmpty() && !current.contains(canonical)) {
+                current.add(canonical)
+            }
+        } else if (action == "remove") {
+            let kept = ArrayList<String>()
+            for (item in current) {
+                if (item != canonical) {
+                    kept.add(item)
+                }
+            }
+            current.clear()
+            for (item in kept) {
+                current.add(item)
+            }
+        } else {
+            PrintUtils.printLine("Usage: /models image-fallbacks add|remove|clear <provider:model>")
+            return
+        }
+        let applied = MetisConfigManager.setImageFallbackModelRefs(current.toArray())
+        PrintUtils.printLine("Image understanding fallbacks: ${String.join(applied, delimiter: ", ")}")
         return
     }
     if (isModelsPageToken(sub)) {

@@ -2,8 +2,9 @@ package metis.gateway.runtime
 
 import magic.jsonable.*
 
-import metis.core.{gatewayImageGenerationOutputRoot, gatewayImageGenerationResolveConfig, gatewayVideoGenerationOutputRoot, gatewayVideoGenerationResolveConfig}
-import metis.core.config.GatewayUserSettings
+import metis.core.{gatewayImageGenerationOutputRoot, gatewayImageGenerationResolveConfig, gatewayImageUnderstandingDiagnosticSnapshot, gatewayImageUnderstandingResolveConfig, gatewayVideoGenerationOutputRoot, gatewayVideoGenerationResolveConfig}
+import metis.core.config.{CliConfig, GatewayUserSettings}
+import metis.core.model.gatewayImageCapabilityDecisionJson
 
 import std.collection.ArrayList
 import std.convert.Parsable
@@ -139,6 +140,37 @@ private func gatewayTelegramImageGenerationDiagnostics(user: GatewayUserSettings
     out.put("model", JsonString(model))
     out.put("outputRoot", JsonString(gatewayImageGenerationOutputRoot(config)))
     out.put("photoActionEnabled", user.telegram.actions.photo.toJsonValue())
+    return out
+}
+
+private func gatewayTelegramImageUnderstandingDiagnostics(user: GatewayUserSettings): JsonObject {
+    let config = gatewayImageUnderstandingResolveConfig(user, channel: "telegram")
+    let provider = gatewayTelegramDiagString(config, "provider", "")
+    let providerConfig = gatewayTelegramDiagProviderConfig(config, provider)
+    let model = gatewayTelegramDiagString(providerConfig, "model", gatewayTelegramDiagString(config, "model", ""))
+    let enabled = gatewayTelegramDiagBool(config, "enabled", true)
+    let snapshot = gatewayImageUnderstandingDiagnosticSnapshot(user, channel: "telegram")
+    let primaryDecision = gatewayImageCapabilityDecisionJson(CliConfig.modelOrEmpty())
+    let out = JsonObject()
+    out.put("enabled", enabled.toJsonValue())
+    out.put("configured", snapshot.get("configured").getOrDefault { => false.toJsonValue() })
+    out.put("status", JsonString(if (!enabled) { "disabled" } else if (gatewayTelegramDiagBool(snapshot, "configured", false)) { "configured" } else { "not_configured" }))
+    out.put("provider", JsonString(provider))
+    out.put("providerKind", JsonString(gatewayTelegramDiagString(providerConfig, "kind", "")))
+    out.put("model", JsonString(model))
+    out.put("imageModel", JsonString(CliConfig.imageModelOrEmpty()))
+    out.put("imageFallbackModels", gatewayTelegramDiagArray(CliConfig.imageFallbackModels))
+    out.put("candidateCount", snapshot.get("candidateCount").getOrDefault { => 0.toJsonValue() })
+    match (snapshot.get("candidates")) {
+        case Some(v) => out.put("candidates", v)
+        case None => out.put("candidates", JsonArray([]))
+    }
+    match (snapshot.get("rejected")) {
+        case Some(v) => out.put("rejected", v)
+        case None => out.put("rejected", JsonArray([]))
+    }
+    out.put("primaryVisionCapable", primaryDecision.get("supported").getOrDefault { => false.toJsonValue() })
+    out.put("primaryCapability", primaryDecision.toJsonValue())
     return out
 }
 
@@ -964,6 +996,7 @@ public func gatewayTelegramDiagnosticsJson(user: GatewayUserSettings, runtime!: 
     out.put("summary", gatewayTelegramDiagnosticsSummary(findings))
     out.put("findings", findings)
     out.put("videoUnderstanding", gatewayTelegramVideoUnderstandingDiagnostics(user))
+    out.put("imageUnderstanding", gatewayTelegramImageUnderstandingDiagnostics(user))
     out.put("videoGeneration", gatewayTelegramVideoGenerationDiagnostics(user))
     out.put("imageGeneration", gatewayTelegramImageGenerationDiagnostics(user))
     out.put("routeBroadcastReadiness", routeReadiness)

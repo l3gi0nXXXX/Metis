@@ -1,11 +1,16 @@
 package metis.core
 
 import metis.core.config.{CliSettingManager, GatewayUserSettings}
+import metis.core.model.modelCapabilityDecisionToJson
 
+import magic.core.message.Message
+import magic.core.model.ChatRequest
+import magic.model.ModelManager
 import magic.prelude.*
 
 import std.convert.*
 import std.fs.{File, Path, exists}
+import stdx.encoding.base64.toBase64String
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 
 private var gatewayMediaAsrRunnerOverride: Option<(String, String) -> String> = None<(String, String) -> String>
@@ -78,6 +83,90 @@ private func gatewayMediaDescribeImagePathForRuntime(path: String, mime: String,
         case Some(runner) => try { runner(normalizedPath, mime.trimAscii().toAsciiLower(), kind.trimAscii().toAsciiLower(), prompt, maxBytes).trimAscii() } catch (_e: Exception) { "" }
         case None => ""
     }
+}
+
+private func gatewayMediaConfiguredDescribeImagePathForRuntime(record: JsonObject, user: GatewayUserSettings, path: String, mime: String, kind: String, prompt: String, maxBytes: Int64): JsonObject {
+    let out = JsonObject()
+    let normalizedPath = path.trimAscii()
+    if (normalizedPath.isEmpty() || !exists(Path(normalizedPath))) {
+        out.put("status", JsonString("unsupported"))
+        out.put("error", JsonString("image input path is missing"))
+        return out
+    }
+    let channel = gatewayMediaRuntimeString(record, "channel").toAsciiLower()
+    let bytes = File.readFrom(Path(normalizedPath))
+    let rejected = JsonArray([])
+    let candidates = gatewayImageUnderstandingBuildCandidates(user, channel: channel, rejected: Some(rejected))
+    if (candidates.isEmpty()) {
+        out.put("status", JsonString("not_configured"))
+        out.put("error", JsonString("agents.defaults.imageModel.primary or gateway.media.image.models is not configured with a vision-capable model"))
+        out.put("attempts", rejected)
+        return out
+    }
+    let attempts = rejected
+    let safeMime = if (mime.trimAscii().startsWith("image/")) { mime.trimAscii() } else { "image/jpeg" }
+    let dataUrl = "data:${safeMime};base64,${toBase64String(bytes)}"
+    for (candidate in candidates) {
+        let limit = if (candidate.maxBytes > 0) {
+            candidate.maxBytes
+        } else if (maxBytes > 0) {
+            maxBytes
+        } else {
+            10 * 1024 * 1024
+        }
+        if (limit > 0 && Int64(bytes.size) > limit) {
+            out.put("status", JsonString("too_large"))
+            out.put("fileBytes", Int64(bytes.size).toJsonValue())
+            out.put("limitBytes", limit.toJsonValue())
+            out.put("error", JsonString("image exceeds configured maxBytes"))
+            return out
+        }
+        let effectivePrompt = if (!prompt.trimAscii().isEmpty()) {
+            prompt.trimAscii()
+        } else if (!candidate.prompt.trimAscii().isEmpty()) {
+            candidate.prompt.trimAscii()
+        } else {
+            "Describe this Telegram image clearly and concisely for the current user request."
+        }
+        try {
+            let model = ModelManager.createChatModel(candidate.modelRef)
+            let response = model.create(ChatRequest(Message.user(effectivePrompt, image: Some(dataUrl)), temperature: Some(0.0), maxTokens: Some(1024)))
+            var content = response.message.content.trimAscii()
+            if (!content.isEmpty()) {
+                var truncated = false
+                if (candidate.maxChars > 0 && Int64(content.size) > candidate.maxChars) {
+                    content = content[..candidate.maxChars]
+                    truncated = true
+                }
+                out.put("status", JsonString("ok"))
+                out.put("analysis", JsonString(content))
+                out.put("provider", JsonString(model.provider))
+                out.put("model", JsonString(model.fullName))
+                out.put("source", JsonString(candidate.source))
+                out.put("truncated", JsonBool(truncated))
+                out.put("attempts", attempts)
+                return out
+            }
+            let empty = JsonObject()
+            empty.put("model", JsonString(candidate.modelRef))
+            empty.put("source", JsonString(candidate.source))
+            empty.put("status", JsonString("empty_response"))
+            empty.put("capability", modelCapabilityDecisionToJson(candidate.decision).toJsonValue())
+            attempts.add(empty)
+        } catch (e: Exception) {
+            let err = JsonObject()
+            err.put("model", JsonString(candidate.modelRef))
+            err.put("source", JsonString(candidate.source))
+            err.put("status", JsonString("provider_error"))
+            err.put("error", JsonString(e.message))
+            err.put("capability", modelCapabilityDecisionToJson(candidate.decision).toJsonValue())
+            attempts.add(err)
+        }
+    }
+    out.put("status", JsonString("unsupported"))
+    out.put("error", JsonString("no configured image understanding model could analyze this image"))
+    out.put("attempts", attempts)
+    out
 }
 
 private func gatewayMediaDescribeVideoPathForRuntime(path: String, mime: String, prompt: String, maxBytes: Int64): String {
@@ -420,14 +509,21 @@ public func gatewayMediaUnderstandingForRecordWithSettings(
         } else {
             ""
         }
+        let configuredAnalysis = if (recordAnalysis.isEmpty() && recordDescription.isEmpty() && nativeAnalysis.isEmpty() && companionAnalysis.isEmpty()) {
+            gatewayMediaConfiguredDescribeImagePathForRuntime(record, user, localPath, mime, kind, prompt, maxBytes)
+        } else {
+            JsonObject()
+        }
         let text = if (!recordAnalysis.isEmpty()) {
             recordAnalysis
         } else if (!recordDescription.isEmpty()) {
             recordDescription
         } else if (!nativeAnalysis.isEmpty()) {
             nativeAnalysis
-        } else {
+        } else if (!companionAnalysis.isEmpty()) {
             companionAnalysis
+        } else {
+            gatewayMediaRuntimeString(configuredAnalysis, "analysis")
         }
         if (!text.isEmpty()) {
             let outputKind = if (resolvedCapability == "sticker" || kind == "sticker") { "sticker.description" } else { "image.description" }
@@ -435,17 +531,48 @@ public func gatewayMediaUnderstandingForRecordWithSettings(
                 "media_record_cache"
             } else if (!nativeAnalysis.isEmpty()) {
                 "native_vision_runtime"
-            } else {
+            } else if (!companionAnalysis.isEmpty()) {
                 "analysis_companion_file"
+            } else {
+                "gateway_image_understanding_runtime"
             }
             outputs.add(gatewayMediaRuntimeOutput(outputKind, text, source))
             let out = gatewayMediaRuntimeResult(record, resolvedCapability, "ok", outputs, gatewayMediaRuntimeDecision(resolvedCapability, "applied", source))
             out.put("analysis", JsonString(text))
+            match (configuredAnalysis.get("provider")) {
+                case Some(v) => out.put("provider", v)
+                case None => ()
+            }
+            match (configuredAnalysis.get("model")) {
+                case Some(v) => out.put("model", v)
+                case None => ()
+            }
+            match (configuredAnalysis.get("attempts")) {
+                case Some(v) => out.put("attempts", v)
+                case None => ()
+            }
             if (outputKind == "sticker.description") {
                 out.put("stickerDescription", JsonString(text))
             } else {
                 out.put("imageDescription", JsonString(text))
             }
+            return out
+        }
+        let configuredStatus = gatewayMediaRuntimeString(configuredAnalysis, "status")
+        if (!configuredStatus.isEmpty() && configuredStatus != "not_configured") {
+            let out = gatewayMediaRuntimeResult(
+                record,
+                resolvedCapability,
+                configuredStatus,
+                outputs,
+                gatewayMediaRuntimeDecision(resolvedCapability, configuredStatus, gatewayMediaRuntimeString(configuredAnalysis, "error")),
+                error: gatewayMediaRuntimeString(configuredAnalysis, "error")
+            )
+            match (configuredAnalysis.get("attempts")) {
+                case Some(v) => out.put("attempts", v)
+                case None => ()
+            }
+            out.put("visionStatus", JsonString(configuredStatus))
             return out
         }
         let out = gatewayMediaRuntimeResult(

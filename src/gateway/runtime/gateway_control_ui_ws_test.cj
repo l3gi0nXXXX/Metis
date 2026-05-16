@@ -582,6 +582,31 @@ public class GatewayControlUiWsTest {
     }
 
     @TestCase
+    public func configSchemaExposesImageUnderstandingManagementFields(): Unit {
+        let response = gatewayControlUiWsCompatResponse(
+            "config.schema",
+            JsonObject(),
+            buildGatewayConfigFromUserSettings(CliSettingManager.readGatewaySettings())
+        ).getOrThrow()
+        let result = response.result.asObject()
+        let schema = result.get("schema").getOrThrow().asObject()
+        let props = schema.get("properties").getOrThrow().asObject()
+        let agents = props.get("agents").getOrThrow().asObject()
+        let defaults = agents.get("properties").getOrThrow().asObject().get("defaults").getOrThrow().asObject()
+        let imageModel = defaults.get("properties").getOrThrow().asObject().get("imageModel").getOrThrow().asObject()
+        @Expect(imageModel.toJsonString().contains("\"primary\""), true)
+        @Expect(imageModel.toJsonString().contains("\"fallbacks\""), true)
+
+        let gateway = props.get("gateway").getOrThrow().asObject()
+        let gatewayProps = gateway.get("properties").getOrThrow().asObject()
+        let media = gatewayProps.get("media").getOrThrow().asObject()
+        let image = media.get("properties").getOrThrow().asObject().get("image").getOrThrow().asObject()
+        @Expect(image.toJsonString().contains("\"models\""), true)
+        let telegram = gatewayProps.get("telegram").getOrThrow().asObject()
+        @Expect(telegram.toJsonString().contains("\"image\""), true)
+    }
+
+    @TestCase
     public func skillsCompatResponsesReuseUnifiedGatewaySkillsFamily(): Unit {
         let slug = "ws-skills-detail-test"
         try {

@@ -55,8 +55,9 @@ public class CliappCommandSupportTest {
     @TestCase
     public func modelsHelpAndStatusAreExplicitAboutScope(): Unit {
         let help = programSupportRenderModelsHelp()
-        @Expect(help.contains("Usage: /models [status|help|<provider>|<page>]"), true)
+        @Expect(help.contains("Usage: /models [status|help|set-image|image-fallbacks|<provider>|<page>]"), true)
         @Expect(help.contains("/models status"), true)
+        @Expect(help.contains("/models set-image"), true)
         @Expect(help.contains("/models <provider>"), true)
         @Expect(help.contains("/models <page>"), true)
         @Expect(help.contains("may write metis.json"), true)
@@ -64,6 +65,7 @@ public class CliappCommandSupportTest {
 
         let status = programSupportRenderModelsStatus()
         @Expect(status.contains("Models status (CLI chat)"), true)
+        @Expect(status.contains("Image understanding model:"), true)
         @Expect(status.contains("read-only"), true)
         @Expect(status.contains("not a provider catalog"), true)
     }

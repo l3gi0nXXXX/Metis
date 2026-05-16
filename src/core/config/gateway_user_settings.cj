@@ -93,6 +93,7 @@ public struct GatewaySpeechUserSettings {
 
 @jsonable
 public struct GatewayMediaUserSettings {
+    public var image: JsonObject = JsonObject()
     public var video: JsonObject = JsonObject()
     public var videoGeneration: JsonObject = JsonObject()
     public var imageGeneration: JsonObject = JsonObject()
@@ -426,6 +427,7 @@ public struct TelegramUserSettings {
     public var autoTopicLabel: TelegramAutoTopicLabelUserSettings = TelegramAutoTopicLabelUserSettings()
     public var threadBindings: TelegramThreadBindingsUserSettings = TelegramThreadBindingsUserSettings()
     public var media: TelegramMediaUserSettings = TelegramMediaUserSettings()
+    public var image: JsonObject = JsonObject()
     public var video: JsonObject = JsonObject()
     public var videoGeneration: JsonObject = JsonObject()
     public var imageGeneration: JsonObject = JsonObject()
@@ -475,6 +477,7 @@ public struct FeishuUserSettings {
     public var requestMaxSkewSeconds: Int64 = 300
     public var media: FeishuMediaUserSettings = FeishuMediaUserSettings()
     public var speech: GatewayChannelSpeechUserSettings = GatewayChannelSpeechUserSettings()
+    public var image: JsonObject = JsonObject()
     public var video: JsonObject = JsonObject()
     public var videoGeneration: JsonObject = JsonObject()
     public var imageGeneration: JsonObject = JsonObject()
@@ -512,6 +515,7 @@ public struct QQUserSettings {
     public var officialSendPrivateUrlTemplate: String = ""
     public var officialSendGroupUrlTemplate: String = ""
     public var speech: GatewayChannelSpeechUserSettings = GatewayChannelSpeechUserSettings()
+    public var image: JsonObject = JsonObject()
     public var video: JsonObject = JsonObject()
     public var videoGeneration: JsonObject = JsonObject()
     public var imageGeneration: JsonObject = JsonObject()

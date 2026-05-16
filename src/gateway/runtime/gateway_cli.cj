@@ -1,6 +1,7 @@
 package metis.gateway.runtime
 
 import magic.jsonable.*
+import metis.core.gatewayImageUnderstandingDiagnosticSnapshot
 import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager, MetisPaths, GatewayUserSettings}
 import metis.core.memory.MemoryRuntimeRegistry
 import metis.core.skills.SkillsPrompt
@@ -19,7 +20,7 @@ import std.env.getVariable
 import std.fs.{Path, exists}
 import std.process.executeWithOutput
 import std.time.DateTime
-import stdx.encoding.json.{JsonObject, JsonString, JsonValue}
+import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
 
 private let GATEWAY_PREFIX: String = "gateway "
 
@@ -180,6 +181,7 @@ private func printGatewayHelp(): Unit {
     PrintUtils.printLine("  gateway stop                     Stop the running gateway process from the lock file")
     PrintUtils.printLine("  gateway restart                  Stop and relaunch the gateway in a new window")
     PrintUtils.printLine("  gateway channel ...              Inspect or update gateway channels")
+    PrintUtils.printLine("  gateway media image ...          Inspect or update image understanding")
     PrintUtils.printLine("  gateway plugin ...               Inspect or update gateway plugins")
     PrintUtils.printLine("  gateway sessions ...             Inspect persisted gateway sessions")
     PrintUtils.printLine("  gateway subagents ...            Spawn or control background subagent runs")
@@ -193,6 +195,191 @@ private func printGatewayHelp(): Unit {
     PrintUtils.printLine("Notes:")
     PrintUtils.printLine("  Interactive compatibility commands are still available inside the chat shell.")
     PrintUtils.printLine("  Gateway runtime reads persisted settings from ~/.metis/metis.json.")
+}
+
+private func gatewayMediaImageHelp(): Unit {
+    PrintUtils.printLine("Metis gateway media image")
+    PrintUtils.printLine("Inspect and update image understanding configuration.")
+    PrintUtils.printLine("")
+    PrintUtils.printLine("Usage:")
+    PrintUtils.printLine("  gateway media image status [--channel shared|telegram|feishu|qq]")
+    PrintUtils.printLine("  gateway media image set --provider <id> --model <model> [--channel shared|telegram|feishu|qq]")
+    PrintUtils.printLine("  gateway media image add-model --provider <id> --model <model> [--channel shared|telegram|feishu|qq]")
+    PrintUtils.printLine("  gateway media image remove-model --provider <id> --model <model> [--channel shared|telegram|feishu|qq]")
+}
+
+private func gatewayMediaImageFlag(args: Array<String>, key: String, start!: Int64 = 3): String {
+    var i = start
+    while (i < args.size) {
+        if (args[i].trimAscii() == key && i + 1 < args.size) {
+            return args[i + 1].trimAscii()
+        }
+        i += 1
+    }
+    ""
+}
+
+private func gatewayMediaImageNormalizeChannel(raw: String): String {
+    let normalized = raw.trimAscii().toAsciiLower()
+    if (normalized.isEmpty()) { "shared" } else { normalized }
+}
+
+private func gatewayMediaImageConfigForChannel(user: GatewayUserSettings, channel: String): JsonObject {
+    match (gatewayMediaImageNormalizeChannel(channel)) {
+        case "telegram" => user.telegram.image
+        case "feishu" => user.feishu.image
+        case "qq" => user.qq.image
+        case _ => user.media.image
+    }
+}
+
+private func gatewayMediaImageApplyChannel(user: GatewayUserSettings, channel: String, config: JsonObject): GatewayUserSettings {
+    var next = user
+    match (gatewayMediaImageNormalizeChannel(channel)) {
+        case "telegram" => next.telegram.image = config
+        case "feishu" => next.feishu.image = config
+        case "qq" => next.qq.image = config
+        case _ => next.media.image = config
+    }
+    next
+}
+
+private func gatewayMediaImageEnsureArray(obj: JsonObject, key: String): JsonArray {
+    match (obj.get(key)) {
+        case Some(value) =>
+            try {
+                value.asArray()
+            } catch (_e: Exception) {
+                let arr = JsonArray([])
+                obj.put(key, arr)
+                arr
+            }
+        case None =>
+            let arr = JsonArray([])
+            obj.put(key, arr)
+            arr
+    }
+}
+
+private func gatewayMediaImageEnsureObject(obj: JsonObject, key: String): JsonObject {
+    match (obj.get(key)) {
+        case Some(value) =>
+            try {
+                value.asObject()
+            } catch (_e: Exception) {
+                let child = JsonObject()
+                obj.put(key, child)
+                child
+            }
+        case None =>
+            let child = JsonObject()
+            obj.put(key, child)
+            child
+    }
+}
+
+private func gatewayMediaImageUpsertModel(config: JsonObject, provider: String, model: String, setActive: Bool): JsonObject {
+    let normalizedProvider = provider.trimAscii()
+    let normalizedModel = model.trimAscii()
+    if (normalizedProvider.isEmpty() || normalizedModel.isEmpty()) {
+        return config
+    }
+    let providers = gatewayMediaImageEnsureObject(config, "providers")
+    let providerConfig = gatewayMediaImageEnsureObject(providers, normalizedProvider)
+    providerConfig.put("kind", JsonString("chat-vision"))
+    providerConfig.put("model", JsonString(normalizedModel))
+    if (setActive) {
+        config.put("provider", JsonString(normalizedProvider))
+    }
+    config.put("enabled", true.toJsonValue())
+    let models = gatewayMediaImageEnsureArray(config, "models")
+    var existsModel = false
+    for (item in models.getItems()) {
+        try {
+            let row = item.asObject()
+            let p = row.get("provider").getOrThrow().asString().getValue().trimAscii()
+            let m = row.get("model").getOrThrow().asString().getValue().trimAscii()
+            if (p == normalizedProvider && m == normalizedModel) {
+                existsModel = true
+            }
+        } catch (_e: Exception) {
+            ()
+        }
+    }
+    if (!existsModel) {
+        let entry = JsonObject()
+        entry.put("provider", JsonString(normalizedProvider))
+        entry.put("model", JsonString(normalizedModel))
+        entry.put("capabilities", JsonArray([JsonString("image")]))
+        models.add(entry)
+    }
+    config
+}
+
+private func gatewayMediaImageRemoveModel(config: JsonObject, provider: String, model: String): JsonObject {
+    let normalizedProvider = provider.trimAscii()
+    let normalizedModel = model.trimAscii()
+    let nextModels = JsonArray([])
+    let models = gatewayMediaImageEnsureArray(config, "models")
+    for (item in models.getItems()) {
+        var keep = true
+        try {
+            let row = item.asObject()
+            let p = row.get("provider").getOrThrow().asString().getValue().trimAscii()
+            let m = row.get("model").getOrThrow().asString().getValue().trimAscii()
+            keep = !(p == normalizedProvider && m == normalizedModel)
+        } catch (_e: Exception) {
+            keep = true
+        }
+        if (keep) {
+            nextModels.add(item)
+        }
+    }
+    config.put("models", nextModels)
+    config
+}
+
+private func gatewayRunMediaImageCli(sub: Array<String>): Int64 {
+    if (sub.size < 3 || sub[2] == "help" || sub[2] == "-h" || sub[2] == "--help") {
+        gatewayMediaImageHelp()
+        return 0
+    }
+    let action = sub[2].trimAscii().toAsciiLower()
+    let channel = gatewayMediaImageNormalizeChannel(gatewayMediaImageFlag(sub, "--channel"))
+    if (action == "status") {
+        let user = CliSettingManager.readGatewaySettings()
+        let targetChannel = if (channel == "shared") { "telegram" } else { channel }
+        let result = gatewayImageUnderstandingDiagnosticSnapshot(user, channel: targetChannel)
+        result.put("configChannel", JsonString(channel))
+        gatewayPrintCommandOutput(result.toJsonString())
+        return 0
+    }
+    if (action == "set" || action == "add-model" || action == "remove-model") {
+        let provider = gatewayMediaImageFlag(sub, "--provider")
+        let model = gatewayMediaImageFlag(sub, "--model")
+        if (provider.isEmpty() || model.isEmpty()) {
+            PrintUtils.printLine("Usage: gateway media image ${action} --provider <id> --model <model> [--channel shared|telegram|feishu|qq]")
+            return 1
+        }
+        let user = CliSettingManager.readGatewaySettings()
+        let current = gatewayMediaImageConfigForChannel(user, channel)
+        let nextConfig = if (action == "remove-model") {
+            gatewayMediaImageRemoveModel(current, provider, model)
+        } else {
+            gatewayMediaImageUpsertModel(current, provider, model, action == "set")
+        }
+        let nextUser = gatewayMediaImageApplyChannel(user, channel, nextConfig)
+        CliSettingManager.writeGatewaySettings(nextUser)
+        let result = JsonObject()
+        result.put("ok", true.toJsonValue())
+        result.put("channel", JsonString(channel))
+        result.put("action", JsonString(action))
+        result.put("image", nextConfig)
+        gatewayPrintCommandOutput(result.toJsonString())
+        return 0
+    }
+    gatewayMediaImageHelp()
+    1
 }
 
 private func gatewayRunForeground(flowName!: String = "run"): Int64 {
@@ -957,6 +1144,9 @@ public func runGatewayCli(sub: Array<String>): Int64 {
     }
     if (cmd == "cron") {
         return runGatewayCronCli(sub)
+    }
+    if (cmd == "media" && sub.size >= 2 && sub[1].trimAscii().toAsciiLower() == "image") {
+        return gatewayRunMediaImageCli(sub)
     }
     if (cmd == "channel" || cmd == "channels") {
         return gatewayRunChannelCli(sub)

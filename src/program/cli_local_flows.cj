@@ -2185,8 +2185,9 @@ public func cliRunModelsFlow(args: Array<String>): Int64 {
             "Inspect models, providers, and model resolution",
             ["metis models", "metis models list", "metis models current", "metis models providers",
                 "metis models auth", "metis models resolve <model>", "metis models set <model>",
+                "metis models set-image <model>", "metis models image-fallbacks add <model>",
                 "metis models status", "metis models search <term>"],
-            "list | current | providers | auth | resolve <model> | set <model> | status | search <term> | help"
+            "list | current | providers | auth | resolve <model> | set <model> | set-image <model> | image-fallbacks add|remove|clear <model> | status | search <term> | help"
         )
     }
     if (sub == "list") {
@@ -2238,9 +2239,79 @@ public func cliRunModelsFlow(args: Array<String>): Int64 {
         putNextSteps(obj, ["metis models status", "metis config defaults"])
         return localPrintMutationResult(args, obj, "this updates local model configuration.")
     }
+    if (sub == "set-image") {
+        let model = argAt(args, 1)
+        if (model.isEmpty()) {
+            return cliReturnMissingArgument("models", "set-image", "<model>")
+        }
+        let applied = MetisConfigManager.setImageModelRef(model)
+        let obj = buildCommandEnvelope("models", "set-image")
+        obj.put("value", JsonString(applied))
+        obj.put("modelConfig", cliBuildCurrentModelConfigView())
+        putNextSteps(obj, ["metis models status", "metis config defaults"])
+        return localPrintMutationResult(args, obj, "this updates local image understanding model configuration.")
+    }
+    if (sub == "image-fallbacks") {
+        let action = argAt(args, 1).toAsciiLower()
+        if (action.isEmpty()) {
+            return cliReturnMissingArgument("models", "image-fallbacks", "add|remove|clear <model>")
+        }
+        let current = ArrayList<String>()
+        for (item in MetisConfigManager.readImageFallbackModels()) {
+            if (!item.trimAscii().isEmpty() && !current.contains(item.trimAscii())) {
+                current.add(item.trimAscii())
+            }
+        }
+        if (action == "clear") {
+            let applied = MetisConfigManager.setImageFallbackModelRefs([])
+            let obj = buildCommandEnvelope("models", "image-fallbacks")
+            obj.put("action", JsonString("clear"))
+            obj.put("values", JsonArray([]))
+            obj.put("count", applied.size.toJsonValue())
+            putNextSteps(obj, ["metis models status"])
+            return localPrintMutationResult(args, obj, "this clears local image understanding fallback models.")
+        }
+        let model = argAt(args, 2)
+        if (model.isEmpty()) {
+            return cliReturnMissingArgument("models", "image-fallbacks ${action}", "<model>")
+        }
+        let canonical = MetisConfigManager.canonicalModelRef(model).trimAscii()
+        if (action == "add") {
+            if (!canonical.isEmpty() && !current.contains(canonical)) {
+                current.add(canonical)
+            }
+        } else if (action == "remove") {
+            let kept = ArrayList<String>()
+            for (item in current) {
+                if (item != canonical) {
+                    kept.add(item)
+                }
+            }
+            current.clear()
+            for (item in kept) {
+                current.add(item)
+            }
+        } else {
+            printUnknownLocalSubcommand("models image-fallbacks", action, "add | remove | clear")
+            return CLI_EXIT_USAGE_ERROR
+        }
+        let applied = MetisConfigManager.setImageFallbackModelRefs(current.toArray())
+        let values = JsonArray([])
+        for (item in applied) {
+            values.add(JsonString(item))
+        }
+        let obj = buildCommandEnvelope("models", "image-fallbacks")
+        obj.put("action", JsonString(action))
+        obj.put("values", values)
+        obj.put("count", applied.size.toJsonValue())
+        putNextSteps(obj, ["metis models status"])
+        return localPrintMutationResult(args, obj, "this updates local image understanding fallback models.")
+    }
     if (sub == "status") {
         let obj = buildCommandEnvelope("models", "status")
         obj.put("currentModel", JsonString(cliCurrentModelRef()))
+        obj.put("imageModel", JsonString(CliConfig.imageModelOrEmpty()))
+        obj.put("imageFallbackModels", cliImageFallbackModelJson())
         obj.put("provider", JsonString(cliCurrentProviderId()))
         let providerIds = ArrayList<String>()
         for (descriptor in cliModelProviderCatalogDescriptors()) {
@@ -2268,7 +2339,7 @@ public func cliRunModelsFlow(args: Array<String>): Int64 {
         putNextSteps(obj, ["metis models resolve ${query}", "metis models providers"])
         return localPrintCommandResult(args, obj)
     }
-    printUnknownLocalSubcommand("models", sub, "list | current | providers | auth | resolve <model> | set <model> | status | search <term> | help")
+    printUnknownLocalSubcommand("models", sub, "list | current | providers | auth | resolve <model> | set <model> | set-image <model> | image-fallbacks add|remove|clear <model> | status | search <term> | help")
 }
 
 public func cliRunLogsFlow(args: Array<String>): Int64 {

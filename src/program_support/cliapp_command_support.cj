@@ -1,6 +1,6 @@
 package metis.program_support
 
-import metis.core.config.{CliConfig, cliFindModelAuthChoicesForProvider, cliSetupVisibleModelProviders}
+import metis.core.config.{CliConfig, MetisConfigManager, cliFindModelAuthChoicesForProvider, cliSetupVisibleModelProviders}
 
 import std.collection.{ArrayList, filter, map, collectArray}
 import std.convert.Parsable
@@ -122,9 +122,11 @@ public func programSupportIsModelsCommandLine(raw: String): Bool {
 }
 
 public func programSupportRenderModelsHelp(): String {
-    "Usage: /models [status|help|<provider>|<page>]\n" +
+    "Usage: /models [status|help|set-image|image-fallbacks|<provider>|<page>]\n" +
     "  /models              Open the interactive provider/model configuration flow and may write metis.json.\n" +
     "  /models status       Print read-only CLI chat model status.\n" +
+    "  /models set-image <provider:model>  Set the dedicated image-understanding model.\n" +
+    "  /models image-fallbacks add|remove|clear <provider:model>  Manage image-understanding fallbacks.\n" +
     "  /models help         Show this help.\n" +
     "  /models <provider>   Show read-only model candidates for a provider.\n" +
     "  /models <page>       Show a provider page.\n" +
@@ -134,10 +136,23 @@ public func programSupportRenderModelsHelp(): String {
 public func programSupportRenderModelsStatus(): String {
     let current = CliConfig.modelOrEmpty().trimAscii()
     let model = if (current.isEmpty()) { "not set in current runtime" } else { current }
+    let imageCurrent = CliConfig.imageModelOrEmpty().trimAscii()
+    let imageModel = if (imageCurrent.isEmpty()) { "not set" } else { MetisConfigManager.canonicalModelRef(imageCurrent) }
+    let imageFallbacks = if (CliConfig.imageFallbackModels.isEmpty()) {
+        "[]"
+    } else {
+        let rendered = ArrayList<String>()
+        for (item in CliConfig.imageFallbackModels) {
+            rendered.add(MetisConfigManager.canonicalModelRef(item))
+        }
+        String.join(rendered.toArray(), delimiter: ", ")
+    }
     "Models status (CLI chat)\n" +
     "  Current model: ${model}\n" +
-    "  Scope: read-only runtime/config summary for CLI chat; this is not a provider catalog.\n" +
-    "  Configure: use `/models` for the interactive writer or `metis config set model <provider:model>` outside chat.\n"
+    "  Image primary: ${imageModel}\n" +
+    "  Image fallbacks: ${imageFallbacks}\n" +
+    "  Scope: image understanding is independent from the main chat model; this is not gateway runtime status.\n" +
+    "  Configure: use `/models`, `/models set-image <provider:model>`, or `metis models set-image <provider:model>` outside chat.\n"
 }
 
 public func programSupportRenderModelsProviderIndex(page: Int64): String {

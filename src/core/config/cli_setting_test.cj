@@ -65,6 +65,39 @@ public class CliSettingManagerTest {
     }
 
     @TestCase
+    public func agentsDefaultsImageModelIsLoadedSeparatelyFromPrimaryModel(): Unit {
+        withMetisConfigTestHome("image-model-load") { _home =>
+            let oldModel = CliConfig.modelOrEmpty()
+            let oldImageModel = CliConfig.imageModelOrEmpty()
+            let oldFallbacks = CliConfig.fallbackModels
+            let oldImageFallbacks = CliConfig.imageFallbackModels
+            let root = JsonObject()
+            let agents = JsonObject()
+            let defaults = JsonObject()
+            let model = JsonObject()
+            model.put("primary", JsonString("deepseek/deepseek-v4-pro"))
+            defaults.put("model", model)
+            let imageModel = JsonObject()
+            imageModel.put("primary", JsonString("qwen/qwen-vl-max"))
+            imageModel.put("fallbacks", JsonArray([JsonString("openai/gpt-4o")]))
+            defaults.put("imageModel", imageModel)
+            agents.put("defaults", defaults)
+            root.put("agents", agents)
+            MetisConfigManager.writeRoot(root)
+            CliSettingManager.invalidate()
+            MetisConfigManager.applyPersistedFieldsToCliConfig()
+
+            @Expect(CliConfig.modelOrEmpty(), "deepseek:deepseek-v4-pro")
+            @Expect(CliConfig.imageModelOrEmpty(), "dashscope:qwen-vl-max")
+            @Expect(CliConfig.imageFallbackModels[0], "openai:gpt-4o")
+            CliConfig.model = oldModel
+            CliConfig.imageModel = oldImageModel
+            CliConfig.fallbackModels = oldFallbacks
+            CliConfig.imageFallbackModels = oldImageFallbacks
+        }
+    }
+
+    @TestCase
     public func settingAssignmentDoesNotPersistWithoutExplicitPatch(): Unit {
         withMetisConfigTestHome("setting-assignment-no-save") { _home =>
             let root = JsonObject()

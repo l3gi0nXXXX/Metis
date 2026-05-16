@@ -80,7 +80,18 @@ private func gatewayDreamingEnabledPatchValue(raw: String): Option<Bool> {
 private func applyGatewayConfigObjectPatch(raw: String): (Bool, String) {
     let dreamingEnabled = match (gatewayDreamingEnabledPatchValue(raw)) {
         case Some(value) => value
-        case None => return (false, "config.patch requires a non-empty path unless the raw object patch matches a supported control-ui partial update")
+        case None =>
+            let replacement = try {
+                JsonValue.fromStr(raw.trimAscii()).asObject()
+            } catch (_e: Exception) {
+                return (false, "config.patch requires a non-empty path unless the raw object patch is a supported control-ui partial update or full config root")
+            }
+            if (replacement.get("agents").isSome() || replacement.get("gateway").isSome()) {
+                MetisConfigManager.writeRoot(replacement)
+                CliSettingManager.applyPersistedFieldsToCliConfig()
+                return (true, "config root replaced")
+            }
+            return (false, "config.patch requires a non-empty path unless the raw object patch is a supported control-ui partial update or full config root")
     }
     MetisConfigManager.initializeIfMissing()
     let currentRoot = match (MetisConfigManager.rawConfig()) {
@@ -96,6 +107,14 @@ private func applyGatewayConfigObjectPatch(raw: String): (Bool, String) {
     MetisConfigManager.writeRoot(currentRoot)
     CliSettingManager.applyPersistedFieldsToCliConfig()
     (true, "config object patch merged: plugins.entries.memory-core.config.dreaming.enabled")
+}
+
+private func gatewayConfigPatchJsonObjectValue(raw: String): Option<JsonObject> {
+    try {
+        Some(JsonValue.fromStr(raw.trimAscii()).asObject())
+    } catch (_e: Exception) {
+        None
+    }
 }
 
 public func applyGatewayConfigPatch(path: String, raw: String): (Bool, String) {
@@ -233,6 +252,44 @@ public func applyGatewayConfigPatch(path: String, raw: String): (Bool, String) {
             g.telegram.webhookUrl = value
             CliSettingManager.writeGatewaySettings(g)
             return (true, "gateway.telegram.webhookUrl updated")
+        case "agents.defaults.imagemodel.primary" =>
+            if (value.isEmpty()) {
+                return (false, "agents.defaults.imageModel.primary requires a model ref")
+            }
+            MetisConfigManager.setImageModelRef(value)
+            return (true, "agents.defaults.imageModel.primary updated")
+        case "gateway.media.image" =>
+            match (gatewayConfigPatchJsonObjectValue(value)) {
+                case Some(obj) =>
+                    g.media.image = obj
+                    CliSettingManager.writeGatewaySettings(g)
+                    return (true, "gateway.media.image updated")
+                case None => return (false, "gateway.media.image requires a JSON object")
+            }
+        case "gateway.telegram.image" =>
+            match (gatewayConfigPatchJsonObjectValue(value)) {
+                case Some(obj) =>
+                    g.telegram.image = obj
+                    CliSettingManager.writeGatewaySettings(g)
+                    return (true, "gateway.telegram.image updated")
+                case None => return (false, "gateway.telegram.image requires a JSON object")
+            }
+        case "gateway.feishu.image" =>
+            match (gatewayConfigPatchJsonObjectValue(value)) {
+                case Some(obj) =>
+                    g.feishu.image = obj
+                    CliSettingManager.writeGatewaySettings(g)
+                    return (true, "gateway.feishu.image updated")
+                case None => return (false, "gateway.feishu.image requires a JSON object")
+            }
+        case "gateway.qq.image" =>
+            match (gatewayConfigPatchJsonObjectValue(value)) {
+                case Some(obj) =>
+                    g.qq.image = obj
+                    CliSettingManager.writeGatewaySettings(g)
+                    return (true, "gateway.qq.image updated")
+                case None => return (false, "gateway.qq.image requires a JSON object")
+            }
         case _ =>
             return (false, "Unsupported gateway config patch path: ${path.trimAscii()}")
     }

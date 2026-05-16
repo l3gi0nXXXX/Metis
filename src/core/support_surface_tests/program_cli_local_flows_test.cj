@@ -1,13 +1,22 @@
 package metis.core.support_surface_tests
 
+import metis.core.config.{CliSettingManager, MetisConfigManager}
 import metis.program_support.*
 
+import std.env.setVariable
 import std.unittest.testmacro.*
 import std.collection.ArrayList
 import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
 
 @Test
 public class CliLocalFlowsTest {
+    @BeforeAll
+    public func isolateMetisHome(): Unit {
+        setVariable("METIS_HOME", "/tmp/metis-program-cli-local-flows-test-home")
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+    }
+
     @TestCase
     public func localCommandSummaryRendersHumanTextWithoutRawJson(): Unit {
         let steps = ArrayList<JsonValue>()
@@ -45,5 +54,30 @@ public class CliLocalFlowsTest {
 
         @Expect(rendered.contains("Metis models providers"), true)
         @Expect(rendered.contains("Catalog details: available with --json"), true)
+    }
+
+    @TestCase
+    public func modelsStatusMentionsIndependentImageModel(): Unit {
+        let root = JsonObject()
+        let agents = JsonObject()
+        let defaults = JsonObject()
+        let model = JsonObject()
+        model.put("primary", JsonString("deepseek/deepseek-v4-pro"))
+        defaults.put("model", model)
+        let imageModel = JsonObject()
+        imageModel.put("primary", JsonString("qwen/qwen-vl-max"))
+        imageModel.put("fallbacks", JsonArray([JsonString("openai/gpt-4o")]))
+        defaults.put("imageModel", imageModel)
+        agents.put("defaults", defaults)
+        root.put("agents", agents)
+        root.put("gateway", JsonObject())
+        MetisConfigManager.writeRoot(root)
+        CliSettingManager.applyPersistedFieldsToCliConfig()
+
+        let rendered = programSupportRenderModelsStatus()
+
+        @Expect(rendered.contains("Image primary: qwen:qwen-vl-max"), true)
+        @Expect(rendered.contains("Image fallbacks: openai:gpt-4o"), true)
+        @Expect(rendered.contains("independent from the main chat model"), true)
     }
 }

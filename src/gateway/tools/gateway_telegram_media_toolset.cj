@@ -9,7 +9,8 @@ import magic.prelude.*
 import metis.core.gatewayCurrentToolRuntimeContext
 import metis.core.{renderGatewayAudioText, renderGatewayDeleteText, renderGatewayDocumentText, renderGatewayEditText, renderGatewayPhotoText, renderGatewayPollText, renderGatewayReactionText, renderGatewayStickerText, renderGatewayTopicCreateText, renderGatewayTopicEditText, renderGatewayVideoNoteText, renderGatewayVideoText, renderGatewayVoiceText}
 import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager, MetisPaths}
-import metis.core.{gatewayMediaUnderstandingFirstText, gatewayMediaUnderstandingForRecord, gatewayMediaUnderstandingOutputs}
+import metis.core.{gatewayImageUnderstandingCandidateSummary, gatewayMediaUnderstandingFirstText, gatewayMediaUnderstandingForRecord, gatewayMediaUnderstandingOutputs}
+import metis.core.model.gatewayImageCapabilityDecisionJson
 import metis.io.PrintUtils
 
 import std.collection.{ArrayList, HashSet}
@@ -363,6 +364,9 @@ private func telegramMediaToolProviderFromModelRef(modelRef: String): String {
     if (normalized.contains(":")) {
         return normalized.split(":", 2)[0].trimAscii().toAsciiLower()
     }
+    if (normalized.contains("/")) {
+        return normalized.split("/", 2)[0].trimAscii().toAsciiLower()
+    }
     ""
 }
 
@@ -372,17 +376,15 @@ private func telegramMediaToolVisionProviderSupported(modelRef: String): Bool {
         // Registered test/local models do not need a provider prefix.
         return !modelRef.trimAscii().isEmpty()
     }
-    provider == "openai" ||
-        provider == "dashscope" ||
-        provider == "ark" ||
-        provider == "deepseek" ||
-        provider == "siliconflow" ||
-        provider == "zhipuai" ||
-        provider == "maas" ||
-        provider == "google" ||
-        provider == "moonshot" ||
-        provider == "openrouter" ||
-        provider == "ollama"
+    try {
+        return gatewayImageCapabilityDecisionJson(modelRef)
+            .get("supported")
+            .getOrThrow()
+            .asBool()
+            .getValue()
+    } catch (_: Exception) {
+        false
+    }
 }
 
 private func telegramMediaToolAddVisionCandidate(out: ArrayList<String>, seen: ArrayList<String>, raw: String): Unit {
@@ -544,6 +546,18 @@ private func telegramMediaToolVisionCandidates(): Array<String> {
     let out = ArrayList<String>()
     let seen = ArrayList<String>()
     let settings = CliSettingManager.readGatewaySettings()
+    let imageCandidates = gatewayImageUnderstandingCandidateSummary(settings, channel: "telegram")
+    for (candidate in imageCandidates.getItems()) {
+        try {
+            telegramMediaToolAddVisionCandidate(
+                out,
+                seen,
+                candidate.asObject().get("modelRef").getOrThrow().asString().getValue()
+            )
+        } catch (_: Exception) {
+            ()
+        }
+    }
     telegramMediaToolAddVisionCandidate(out, seen, settings.channelModels.get("telegram") ?? "")
     telegramMediaToolAddVisionCandidate(out, seen, CliConfig.modelOrEmpty())
     for (modelRef in CliConfig.fallbackModels) {
@@ -602,7 +616,8 @@ private func telegramMediaToolDescribeImageWithModel(record: JsonObject, userPro
         if (!telegramMediaToolVisionProviderSupported(modelRef)) {
             let skipped = JsonObject()
             skipped.put("model", JsonString(modelRef))
-            skipped.put("status", JsonString("unsupported_provider"))
+            skipped.put("status", JsonString("unsupported_model"))
+            skipped.put("capability", gatewayImageCapabilityDecisionJson(modelRef).toJsonValue())
             errors.add(skipped)
             continue
         }
@@ -1019,6 +1034,12 @@ public class GatewayTelegramMediaToolset {
                 case Some(v) => out.put("capability", v)
                 case None => ()
             }
+            for (key in ["provider", "model", "attempts"]) {
+                match (understanding.get(key)) {
+                    case Some(v) => out.put(key, v)
+                    case None => ()
+                }
+            }
             let outputs = gatewayMediaUnderstandingOutputs(understanding)
             let source = if (outputs.size() > 0) {
                 try { outputs[0].asObject().get("source").getOrThrow().asString().getValue() } catch (_e: Exception) { "media_understanding_runtime" }
@@ -1038,7 +1059,7 @@ public class GatewayTelegramMediaToolset {
                 }
             }
             if (!(try { runtime.get("ok").getOrThrow().asBool().getValue() } catch (_e: Exception) { false })) {
-                out.put("fallback", JsonString("Bind gateway.channelModels.telegram or the primary/fallback model to a vision-capable OpenAI-compatible or Ollama model."))
+                out.put("fallback", JsonString("Configure agents.defaults.imageModel.primary or gateway.media.image.models with a vision-capable image understanding model."))
             } else if (kind == "sticker") {
                 telegramStickerCacheUpsertAnalysis(record, telegramMediaToolString(runtime, "analysis"))
             }

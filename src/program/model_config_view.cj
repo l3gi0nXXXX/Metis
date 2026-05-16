@@ -98,6 +98,17 @@ public func cliFallbackModelJson(): JsonArray {
     JsonArray(rows)
 }
 
+public func cliImageFallbackModelJson(): JsonArray {
+    let rows = ArrayList<JsonValue>()
+    for (model in CliConfig.imageFallbackModels) {
+        let trimmed = model.trimAscii()
+        if (!trimmed.isEmpty()) {
+            rows.add(JsonString(trimmed))
+        }
+    }
+    JsonArray(rows)
+}
+
 public func cliBuildCurrentModelConfigView(): JsonObject {
     let obj = JsonObject()
     let providerId = cliCurrentProviderId()
@@ -120,6 +131,8 @@ public func cliBuildCurrentModelConfigView(): JsonObject {
     }
     obj.put("fastModel", JsonString(cliFastModelRef()))
     obj.put("fallbackModels", cliFallbackModelJson())
+    obj.put("imageModelRef", JsonString(CliConfig.imageModelOrEmpty()))
+    obj.put("imageFallbackModels", cliImageFallbackModelJson())
     obj.put("defaultInputLimit", CliConfig.defaultModelInputLimit.toJsonValue())
     obj.put("defaultOutputLimit", CliConfig.defaultModelOutputLimit.toJsonValue())
     obj

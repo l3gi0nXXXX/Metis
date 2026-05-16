@@ -130,6 +130,24 @@ public class GatewayTelegramMediaToolsetTest {
         record
     }
 
+    private func writeAgentsImageModelConfig(primary: String, imagePrimary!: String = ""): Unit {
+        let root = JsonObject()
+        let agents = JsonObject()
+        let defaults = JsonObject()
+        let model = JsonObject()
+        model.put("primary", JsonString(primary))
+        defaults.put("model", model)
+        if (!imagePrimary.trimAscii().isEmpty()) {
+            let imageModel = JsonObject()
+            imageModel.put("primary", JsonString(imagePrimary))
+            defaults.put("imageModel", imageModel)
+        }
+        agents.put("defaults", defaults)
+        root.put("agents", agents)
+        MetisConfigManager.writeRoot(root)
+        CliSettingManager.applyPersistedFieldsToCliConfig()
+    }
+
     private func writeTelegramMediaState(accountId: String, records: JsonArray): Unit {
         let accountDir = CliConfig.dotDir.join("gateway-telegram").join("accounts").join(accountId)
         Directory.create(accountDir, recursive: true)
@@ -479,6 +497,94 @@ public class GatewayTelegramMediaToolsetTest {
         } finally {
             setGatewayTelegramMediaVisionCandidatesForTest(None<Array<String>>)
             try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func telegramImageAnalyzeSkipsDeepseekTextModelCandidate(): Unit {
+        let root = Path("/tmp/metis-telegram-image-deepseek-skip-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root, recursive: true)
+        let source = root.join("image.jpg")
+        File.writeTo(source, "fake".toArray())
+        setGatewayTelegramMediaVisionCandidatesForTest(Some(["deepseek/deepseek-v4-pro"]))
+        try {
+            let toolset = GatewayTelegramMediaToolset()
+            let out = gatewayWithToolRuntimeContext(
+                GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:1", mediaContext: this.mediaContext(source.toString())),
+                { => toolset.debugTelegramImageAnalyzeForTest(None<String>, None<Int64>, Some("describe this image")) }
+            )
+            let json = JsonValue.fromStr(out).asObject()
+            @Expect(json.get("status").getOrThrow().asString().getValue(), "unsupported")
+            @Expect(json.get("attempts").getOrThrow().asArray()[0].asObject().get("status").getOrThrow().asString().getValue(), "unsupported_model")
+            @Expect(json.get("fallback").getOrThrow().asString().getValue().contains("agents.defaults.imageModel.primary"), true)
+        } finally {
+            setGatewayTelegramMediaVisionCandidatesForTest(None<Array<String>>)
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func telegramImageAnalyzeSkipsDeepSeekPrimaryWhenImageModelIsMissing(): Unit {
+        this.withTelegramMediaToolsetConfigHome {
+            let root = Path("/tmp/metis-telegram-image-deepseek-primary-skip-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+            Directory.create(root, recursive: true)
+            let source = root.join("image.jpg")
+            File.writeTo(source, "fake".toArray())
+            let oldModel = CliConfig.modelOrEmpty()
+            this.writeAgentsImageModelConfig("deepseek/deepseek-v4-pro")
+            ModelManager.registerChatModel("deepseek:deepseek-v4-pro", { => TelegramMediaToolsetVisionFakeModel() })
+            try {
+                let toolset = GatewayTelegramMediaToolset()
+                let out = gatewayWithToolRuntimeContext(
+                    GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:1", mediaContext: this.mediaContext(source.toString())),
+                    { => toolset.debugTelegramImageAnalyzeForTest(None<String>, None<Int64>, Some("describe this image")) }
+                )
+                let json = JsonValue.fromStr(out).asObject()
+                @Expect(json.get("ok").getOrThrow().asBool().getValue(), false)
+                @Expect(out.contains("image-ok"), false)
+                @Expect(out.contains("provider_error"), false)
+                @Expect(out.contains("unsupported_model"), true)
+                @Expect(out.contains("agents.defaults.imageModel.primary"), true)
+            } finally {
+                if (oldModel.isEmpty()) {
+                    CliConfig.clearPrimaryModelForTest()
+                } else {
+                    CliConfig.model = oldModel
+                }
+                try { remove(root, recursive: true) } catch (_e: Exception) { () }
+            }
+        }
+    }
+
+    @TestCase
+    public func telegramImageAnalyzeUsesAgentsImageModelBeforeDeepSeekPrimary(): Unit {
+        this.withTelegramMediaToolsetConfigHome {
+            let root = Path("/tmp/metis-telegram-image-image-model-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+            Directory.create(root, recursive: true)
+            let source = root.join("image.jpg")
+            File.writeTo(source, "fake".toArray())
+            let oldModel = CliConfig.modelOrEmpty()
+            this.writeAgentsImageModelConfig("deepseek/deepseek-v4-pro", imagePrimary: "fake/telegram-vision")
+            ModelManager.registerChatModel("fake:telegram-vision", { => TelegramMediaToolsetVisionFakeModel() })
+            ModelManager.registerChatModel("deepseek:deepseek-v4-pro", { => TelegramMediaToolsetVisionFakeModel() })
+            try {
+                let toolset = GatewayTelegramMediaToolset()
+                let out = gatewayWithToolRuntimeContext(
+                    GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:1", mediaContext: this.mediaContext(source.toString())),
+                    { => toolset.debugTelegramImageAnalyzeForTest(None<String>, None<Int64>, Some("describe this image")) }
+                )
+                let json = JsonValue.fromStr(out).asObject()
+                @Expect(json.get("status").getOrThrow().asString().getValue(), "ok")
+                @Expect(json.get("analysis").getOrThrow().asString().getValue().contains("image-ok"), true)
+                @Expect(json.get("model").getOrThrow().asString().getValue(), "fake:telegram-vision")
+            } finally {
+                if (oldModel.isEmpty()) {
+                    CliConfig.clearPrimaryModelForTest()
+                } else {
+                    CliConfig.model = oldModel
+                }
+                try { remove(root, recursive: true) } catch (_e: Exception) { () }
+            }
         }
     }
 

@@ -2,7 +2,7 @@ package metis.gateway.runtime
 
 import metis.core.config.{CliSettingManager, MetisConfigManager}
 import std.env.setVariable
-import stdx.encoding.json.JsonString
+import stdx.encoding.json.{JsonArray, JsonString}
 
 import std.unittest.testmacro.*
 import stdx.encoding.json.JsonObject
@@ -111,6 +111,68 @@ public class GatewayRpcMutationsTest {
             @Expect(telegram.get("webhookUrl").getOrThrow().asString().getValue(), "https://example.test/telegram-webhook")
         } finally {
             let _ = original
+            MetisConfigManager.writeRoot(originalRoot)
+            CliSettingManager.applyPersistedFieldsToCliConfig()
+        }
+    }
+
+    @TestCase
+    public func configPatchSupportsImageUnderstandingAdminPaths(): Unit {
+        let originalRoot = MetisConfigManager.rawConfig() ?? JsonObject()
+        MetisConfigManager.writeRoot(gatewayRpcMutationsTestConfigRoot())
+        CliSettingManager.applyPersistedFieldsToCliConfig()
+        try {
+            let imageModelResult = applyGatewayConfigPatch("agents.defaults.imageModel.primary", "qwen/qwen-vl-max")
+            @Expect(imageModelResult[0], true)
+            @Expect(imageModelResult[1].contains("agents.defaults.imageModel.primary updated"), true)
+
+            let mediaImageResult = applyGatewayConfigPatch(
+                "gateway.media.image",
+                "{\"enabled\":true,\"models\":[{\"provider\":\"shared-qwen\",\"model\":\"qwen-vl-max\",\"capabilities\":[\"image\"]}]}"
+            )
+            @Expect(mediaImageResult[0], true)
+            @Expect(mediaImageResult[1].contains("gateway.media.image updated"), true)
+
+            let updatedRoot = MetisConfigManager.rawConfig().getOrThrow()
+            let defaults = updatedRoot.get("agents").getOrThrow().asObject().get("defaults").getOrThrow().asObject()
+            let imageModel = defaults.get("imageModel").getOrThrow().asObject()
+            @Expect(imageModel.get("primary").getOrThrow().asString().getValue(), "qwen/qwen-vl-max")
+
+            let gateway = updatedRoot.get("gateway").getOrThrow().asObject()
+            let media = gateway.get("media").getOrThrow().asObject()
+            let image = media.get("image").getOrThrow().asObject()
+            let models = image.get("models").getOrThrow().asArray()
+            @Expect(models.size(), 1)
+            @Expect(models[0].asObject().get("provider").getOrThrow().asString().getValue(), "shared-qwen")
+        } finally {
+            MetisConfigManager.writeRoot(originalRoot)
+            CliSettingManager.applyPersistedFieldsToCliConfig()
+        }
+    }
+
+    @TestCase
+    public func configPatchSupportsWholeRootControlUiSave(): Unit {
+        let originalRoot = MetisConfigManager.rawConfig() ?? JsonObject()
+        MetisConfigManager.writeRoot(gatewayRpcMutationsTestConfigRoot())
+        CliSettingManager.applyPersistedFieldsToCliConfig()
+        try {
+            let replacement = gatewayRpcMutationsTestConfigRoot()
+            let agents = replacement.get("agents").getOrThrow().asObject()
+            let defaults = agents.get("defaults").getOrThrow().asObject()
+            let imageModel = JsonObject()
+            imageModel.put("primary", JsonString("openai/gpt-4o"))
+            imageModel.put("fallbacks", JsonArray([JsonString("qwen/qwen-vl-max")]))
+            defaults.put("imageModel", imageModel)
+
+            let result = applyGatewayConfigPatch("", replacement.toJsonString())
+            @Expect(result[0], true)
+            @Expect(result[1].contains("config root replaced"), true)
+
+            let persisted = MetisConfigManager.rawConfig().getOrThrow()
+            let persistedDefaults = persisted.get("agents").getOrThrow().asObject().get("defaults").getOrThrow().asObject()
+            let persistedImageModel = persistedDefaults.get("imageModel").getOrThrow().asObject()
+            @Expect(persistedImageModel.get("primary").getOrThrow().asString().getValue(), "openai/gpt-4o")
+        } finally {
             MetisConfigManager.writeRoot(originalRoot)
             CliSettingManager.applyPersistedFieldsToCliConfig()
         }

@@ -184,6 +184,36 @@ protected class CliConfig {
         }
     }
 
+    public static func clearPrimaryModelForTest(): Unit {
+        _model = None
+    }
+
+    /**
+     * Dedicated image-understanding model. This is intentionally separate from
+     * the primary chat model because text-only models must not receive image
+     * inputs from Telegram or other media channels.
+     */
+    public static var _imageModel: Option<String> = None
+    public static mut prop imageModel: String {
+        get() {
+            return _imageModel.getOrThrow()
+        }
+        set(v) {
+            _imageModel = Some(v)
+        }
+    }
+
+    public static func imageModelOrEmpty(): String {
+        match (_imageModel) {
+            case Some(v) => v
+            case None => ""
+        }
+    }
+
+    public static func clearImageModelForTest(): Unit {
+        _imageModel = None
+    }
+
     /**
      * Fast model for auxiliary tasks in hybrid mode
      */
@@ -220,6 +250,21 @@ protected class CliConfig {
 
         set(v) {
             _fallbackModels = v
+        }
+    }
+
+    private static var _imageFallbackModels: Array<String> = []
+
+    public static mut prop imageFallbackModels: Array<String> {
+        get() {
+            if (_imageFallbackModels.isEmpty()) {
+                _imageFallbackModels = CliSettingManager.setting.imageFallbackModels
+            }
+            return _imageFallbackModels
+        }
+
+        set(v) {
+            _imageFallbackModels = v
         }
     }
 
