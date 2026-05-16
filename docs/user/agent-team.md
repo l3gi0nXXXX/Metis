@@ -51,7 +51,7 @@ CLI: use `metis agents team create/list/get/update/delete` for the common team l
 
 Telegram: configure the built-in Telegram channel with an existing bot token, then bind `telegram:<accountId>` or a structured route with group/topic peer data to a member agent. Native Telegram commands such as `/focus`, `/unfocus`, `/agents`, and `/subagents` continue to enter the same Gateway route/session path.
 
-Telegram Phase 3 acceptance is split between fake tests and an opt-in live smoke. The fake coverage checks account routes, group/topic session isolation, alias routing, and team broadcast aggregate rows without real Telegram network access. The live smoke is manual and skipped by default; only set `METIS_AGENTTEAM_LIVE_TELEGRAM=1` with an isolated `METIS_HOME`, a configured test bot account, `METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID`, and `METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID`. Record only redacted account, group, topic, route, and pass/fail evidence. Do not paste bot tokens, proxy credentials, Telegram authorization headers, or real `~/.metis` paths into reports.
+Telegram series23 Phase 1 acceptance is split between fake tests and an opt-in live smoke. The fake coverage checks account routes, group/topic session isolation, alias routing, and team broadcast aggregate rows without real Telegram network access. The live smoke is manual and skipped by default; only set `METIS_AGENTTEAM_LIVE_TELEGRAM=1` with an isolated `METIS_HOME`, a configured test bot account, `METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID`, and `METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID`. Record only redacted account, group, topic, route, and pass/fail evidence. Do not paste bot tokens, proxy credentials, Telegram authorization headers, or real `~/.metis` paths into reports.
 
 Feishu: create the Feishu app/bot manually in the Feishu developer console, configure the app credentials and event subscription in Metis, then use native `/feishu start`, `/feishu doctor`, `/feishu auth`, and `/feishu info --all` from Feishu conversations when available. Bind `feishu:<accountId>` or structured group/thread routes to member agents. Metis can guide setup, validate status, and save Gateway-backed configuration, but it cannot non-interactively create a Feishu bot/app or grant tenant permissions on your behalf. OAuth/OAPI and card behavior remain Gateway-backed and are not handled by browser-local files.
 
@@ -466,16 +466,16 @@ Run the helper before recording manual acceptance:
 scripts/agentteam-manual-acceptance-gate.sh
 ```
 
-The helper rejects the default real home, checks this doc for stale Feishu/AgentTeam claims, verifies the series14 evidence document and OAPI parity report baseline, runs `git diff --check`, and runs the browser smoke only when `METIS_AGENTTEAM_CONTROL_UI_URL` is set. For example, after building the UI and starting Gateway or a static preview:
+The helper rejects the default real home, checks this doc for stale Feishu/AgentTeam claims, verifies the series23 source-backed matrix, verifies the series14 OAPI parity baseline, runs `git diff --check`, and runs the browser smoke only when `METIS_AGENTTEAM_CONTROL_UI_URL` is set. For example, after building the UI and starting Gateway or a static preview:
 
 ```bash
 export METIS_AGENTTEAM_CONTROL_UI_URL="http://127.0.0.1:3000/"
 scripts/agentteam-manual-acceptance-gate.sh
 ```
 
-The helper also writes a redacted evidence pack. By default it is placed under the isolated `METIS_HOME` at `agentteam-manual-acceptance-report/`; set `METIS_AGENTTEAM_REPORT_DIR` to choose another isolated output directory. The pack contains `report.json` and `manual-acceptance-template.md`, records skipped live Telegram/Feishu gates when the opt-in variables are absent, and scans the pack for secret-like token/header patterns before passing.
+The helper also writes a redacted series23 evidence pack. By default it is placed under the isolated `METIS_HOME` at `agentteam-manual-acceptance-report/`; set `METIS_AGENTTEAM_REPORT_DIR` to choose another isolated output directory. The pack contains `report.json` and `manual-acceptance-template.md`, records skipped live Telegram/Feishu/OAuth/OAPI/CardKit/rich-event gates when the opt-in variables are absent, records `external-resource-required` when an opted-in gate is missing test resources, and scans the pack for secret-like token/header patterns before passing.
 
-The browser smoke verifies `customElements.get("metis-app")`, visible Metis UI content, no page errors, and no failed JavaScript/CSS requests. Live Telegram and Feishu steps are opt-in manual checks; set `METIS_AGENTTEAM_LIVE_TELEGRAM=1` or `METIS_AGENTTEAM_LIVE_FEISHU=1` only with test credentials and record account, tenant, date, scopes, pass/fail, and skipped items. When Telegram live smoke is opted in, also set `METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID` and `METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID`; the gate still does not read bot tokens or access real Telegram by itself.
+The browser smoke verifies `customElements.get("metis-app")`, visible Metis UI content, no page errors, and no failed JavaScript/CSS requests. Live Telegram and Feishu steps are opt-in manual checks; set `METIS_AGENTTEAM_LIVE_TELEGRAM=1` or `METIS_AGENTTEAM_LIVE_FEISHU=1` only with test credentials and record account, tenant, date, scopes, pass/fail, and skipped items. When Telegram live smoke is opted in, also set `METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID` and `METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID`; the gate still does not read bot tokens or access real Telegram by itself. For series23 Phase 9, `report.json` includes a `releaseVerification` section covering the Cangjie clean/build/test command, UI build, browser smoke URL state, the manual gate itself, and live-gate opt-in status. If default `cjpm test` concurrency flakes, record that result and a `cjpm test -j 1` run under G26 rather than treating it as an AgentTeam feature failure.
 
 Before handing an AgentTeam change to the release branch, run the focused checks for the touched area and the repository gate:
 
@@ -496,7 +496,7 @@ npm --prefix ui run build
 scripts/agentteam-manual-acceptance-gate.sh
 ```
 
-Source-backed series14 acceptance details live in `develop_steps/metis-agent-team-series-14-current-source-recheck-gap-quantification-manual-acceptance-2026-05-15.md`. Record redacted live evidence in `develop_steps/metis-agent-team-series-14-manual-acceptance-runbook-2026-05-15.md`.
+Source-backed series23 acceptance details live in `develop_steps/metis-agent-team-series-23-source-backed-gap-quantification-manual-acceptance-2026-05-16.md`. The series14 OAPI parity report remains the detailed Feishu action-count reference. Record redacted live evidence in the generated `manual-acceptance-template.md` and the matching release evidence document.
 
 ## Current Limits
 
@@ -506,5 +506,5 @@ Source-backed series14 acceptance details live in `develop_steps/metis-agent-tea
 - Feishu AgentTeam routing is not the same as the full OpenClaw Lark plugin surface. Message routing, native command replies, OAuth lifecycle RPC/buttons, native OAPI client/toolset baseline, user/TAT/bot/app token provider support, tool-level repair diagnostics, streaming-card controller, redacted status, and dry-run diagnostics exist. Real tenant token behavior, operator-completed scope repair, historical resource downloads, complete CardKit parity, and live tenant event/OAPI validation remain release gates unless a later release note says otherwise.
 - The Control UI capability panel is not a plugin marketplace. It lists Metis-owned built-in tools, skills, profile files, channel capabilities, and RPC surfaces only.
 - Feishu auth controls in Control UI call Gateway-backed auth lifecycle RPCs when available. Browser code must not create, edit, or delete Feishu token files.
-- Source-backed AgentTeam parity tracking lives under `develop_steps/`; series14 is the current source-recheck and manual-acceptance baseline for this guide.
+- Source-backed AgentTeam parity tracking lives under `develop_steps/`; series23 is the current source-recheck and manual-acceptance baseline for this guide.
 - Live Telegram and Feishu operation still depends on the normal channel credentials and account setup. This guide does not require real Telegram or Feishu network access.

@@ -68,29 +68,73 @@ resource_json_line() {
     "$domain" "$env_name" "$label" "$required_for" "$status" "$suffix"
 }
 
+manual_json_line() {
+  local id="$1"
+  local status="$2"
+  local phase="$3"
+  local title="$4"
+  local evidence="$5"
+  local next_step="$6"
+  local suffix="$7"
+  printf '    {"id": "%s", "status": "%s", "phase": "%s", "title": "%s", "evidence": "%s", "nextStep": "%s", "evidenceFields": ["operatorResult", "evidencePathOrLogExcerpt", "timestamp", "redactionNotes"], "redaction": "record redacted ids and statuses only; omit secret values, bearer headers, provider keys, proxy auth values"}%s\n' \
+    "$id" "$status" "$phase" "$(json_escape "$title")" "$(json_escape "$evidence")" "$(json_escape "$next_step")" "$suffix"
+}
+
+guidance_json_line() {
+  local id="$1"
+  local status="$2"
+  local next_step="$3"
+  local suffix="$4"
+  printf '    {"id": "%s", "status": "%s", "nextStep": "%s", "evidenceFields": ["operatorResult", "redactedIds", "timestamps", "logExcerptOrReportPath"], "redaction": "store only redacted account/resource ids, status codes, timestamps, and sanitized log excerpts"}%s\n' \
+    "$id" "$status" "$(json_escape "$next_step")" "$suffix"
+}
+
+release_json_line() {
+  local id="$1"
+  local status="$2"
+  local command="$3"
+  local next_step="$4"
+  local suffix="$5"
+  printf '    {"id": "%s", "status": "%s", "command": "%s", "nextStep": "%s", "evidenceFields": ["exitCode", "outputPath", "startedAt", "finishedAt", "redactionNotes"], "redaction": "attach logs only after removing secret values, bearer headers, provider keys, proxy auth values, and real user home paths"}%s\n' \
+    "$id" "$status" "$(json_escape "$command")" "$(json_escape "$next_step")" "$suffix"
+}
+
 compute_live_statuses() {
   TELEGRAM_OPT_IN=false
   FEISHU_OPT_IN=false
   CONTROL_UI_PROVIDED=false
 
-  PHASE3_STATUS="external-resource-required"
+  PHASE1_STATUS="skipped"
+  PHASE1_REASON="live-opt-in-disabled"
+  PHASE2_STATUS="skipped"
+  PHASE2_REASON="live-opt-in-disabled"
+  PHASE3_STATUS="skipped"
   PHASE3_REASON="live-opt-in-disabled"
-  PHASE4_STATUS="external-resource-required"
+  PHASE4_STATUS="skipped"
   PHASE4_REASON="live-opt-in-disabled"
-  PHASE5_STATUS="external-resource-required"
+  PHASE5_STATUS="skipped"
   PHASE5_REASON="live-opt-in-disabled"
+  PHASE6_STATUS="skipped"
+  PHASE6_REASON="live-opt-in-disabled"
+  PHASE7_STATUS="operator-record-required"
+  PHASE7_REASON="control-ui-product-operator-record-required"
+  PHASE8_STATUS="external-resource-required"
+  PHASE8_REASON="feishu-platform-boundary-evidence-required"
   PHASE9_STATUS="operator-record-required"
-  PHASE9_REASON="control-ui-operator-record-required"
+  PHASE9_REASON="release-verification-operator-record-required"
+  CONTROL_UI_SMOKE_STATUS="skipped"
+  CONTROL_UI_SMOKE_REASON="control-ui-url-not-provided"
 
   if flag_enabled METIS_AGENTTEAM_LIVE_TELEGRAM; then
     TELEGRAM_OPT_IN=true
     if all_resources_present \
       METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID \
       METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID; then
-      PHASE3_STATUS="operator-record-required"
-      PHASE3_REASON="manual-live-record-required"
+      PHASE1_STATUS="operator-record-required"
+      PHASE1_REASON="manual-live-record-required"
     else
-      PHASE3_REASON="missing-live-resource"
+      PHASE1_STATUS="external-resource-required"
+      PHASE1_REASON="missing-live-resource"
     fi
   fi
 
@@ -101,10 +145,15 @@ compute_live_statuses() {
       METIS_AGENTTEAM_FEISHU_ACCOUNT_ID_B \
       METIS_AGENTTEAM_FEISHU_TEST_GROUP_ID \
       METIS_AGENTTEAM_FEISHU_TEST_THREAD_ID; then
-      PHASE4_STATUS="operator-record-required"
-      PHASE4_REASON="manual-live-record-required"
+      PHASE2_STATUS="operator-record-required"
+      PHASE2_REASON="manual-live-record-required"
+      PHASE6_STATUS="operator-record-required"
+      PHASE6_REASON="manual-live-record-required"
     else
-      PHASE4_REASON="missing-live-resource"
+      PHASE2_STATUS="external-resource-required"
+      PHASE2_REASON="missing-live-resource"
+      PHASE6_STATUS="external-resource-required"
+      PHASE6_REASON="missing-live-resource"
     fi
 
     if all_resources_present \
@@ -117,16 +166,34 @@ compute_live_statuses() {
       METIS_AGENTTEAM_FEISHU_TEST_BITABLE_ID \
       METIS_AGENTTEAM_FEISHU_TEST_SHEET_ID \
       METIS_AGENTTEAM_FEISHU_TEST_MESSAGE_ID; then
+      PHASE3_STATUS="operator-record-required"
+      PHASE3_REASON="manual-live-record-required"
+    else
+      PHASE3_STATUS="external-resource-required"
+      PHASE3_REASON="missing-live-resource"
+    fi
+
+    if resource_present METIS_AGENTTEAM_FEISHU_CARDKIT_CHAT_ID; then
+      PHASE4_STATUS="operator-record-required"
+      PHASE4_REASON="manual-live-record-required"
+    else
+      PHASE4_STATUS="external-resource-required"
+      PHASE4_REASON="missing-live-resource"
+    fi
+
+    if resource_present METIS_AGENTTEAM_FEISHU_RICH_EVENT_CHAT_ID; then
       PHASE5_STATUS="operator-record-required"
       PHASE5_REASON="manual-live-record-required"
     else
+      PHASE5_STATUS="external-resource-required"
       PHASE5_REASON="missing-live-resource"
     fi
   fi
 
   if [[ -n "${METIS_AGENTTEAM_CONTROL_UI_URL:-}" ]]; then
     CONTROL_UI_PROVIDED=true
-    PHASE9_REASON="control-ui-url-provided-redacted"
+    CONTROL_UI_SMOKE_STATUS="operator-record-required"
+    CONTROL_UI_SMOKE_REASON="control-ui-url-provided-redacted"
   fi
 }
 
@@ -138,13 +205,13 @@ write_report_json() {
 
   cat >"$report_json" <<JSON
 {
-  "kind": "metis-agentteam-series21-manual-live-gate-report",
-  "series": "21",
+  "kind": "metis-agentteam-series23-manual-acceptance-gate-report",
+  "series": "23",
   "createdAt": "$created_at",
   "source": {
-    "id": "series21",
-    "path": "$SERIES21_DOC_REL",
-    "available": $SERIES21_SOURCE_AVAILABLE
+    "id": "series23",
+    "path": "$SERIES23_DOC_REL",
+    "available": $SERIES23_SOURCE_AVAILABLE
   },
   "git": {
     "head": "$head",
@@ -157,6 +224,7 @@ write_report_json() {
   },
   "statuses": {
     "localPass": "local-pass",
+    "skipped": "skipped",
     "externalResourceRequired": "external-resource-required",
     "operatorRecordRequired": "operator-record-required"
   },
@@ -180,41 +248,81 @@ write_report_json() {
       "id": "phase0",
       "title": "Freeze source-backed GAP matrix",
       "status": "local-pass",
-      "reason": "series21-source-backed-index-present",
+      "reason": "series23-source-backed-index-present",
       "gaps": ["G01", "G02", "G03", "G04", "G05", "G06", "G07", "G08", "G09", "G10", "G24", "G25"],
-      "manualItems": ["M01", "M02", "M31", "M32"]
+      "manualItems": ["M01", "M03", "M04", "M05", "M06", "M07", "M08", "M09", "M10", "M11", "M32"]
     },
     {
-      "id": "phase3",
+      "id": "phase1",
       "title": "Telegram live route and broadcast gate",
-      "status": "$PHASE3_STATUS",
-      "reason": "$PHASE3_REASON",
+      "status": "$PHASE1_STATUS",
+      "reason": "$PHASE1_REASON",
       "gaps": ["G11"],
       "manualItems": ["M12", "M13", "M14"]
     },
     {
-      "id": "phase4",
+      "id": "phase2",
       "title": "Feishu multi-account route gate",
-      "status": "$PHASE4_STATUS",
-      "reason": "$PHASE4_REASON",
+      "status": "$PHASE2_STATUS",
+      "reason": "$PHASE2_REASON",
       "gaps": ["G12", "G13", "G22"],
       "manualItems": ["M15", "M16", "M17"]
     },
     {
-      "id": "phase5",
+      "id": "phase3",
       "title": "Feishu OAuth and OAPI gate",
+      "status": "$PHASE3_STATUS",
+      "reason": "$PHASE3_REASON",
+      "gaps": ["G14", "G15", "G16", "G17"],
+      "manualItems": ["M18", "M19", "M20", "M21"]
+    },
+    {
+      "id": "phase4",
+      "title": "Feishu CardKit streaming gate",
+      "status": "$PHASE4_STATUS",
+      "reason": "$PHASE4_REASON",
+      "gaps": ["G18"],
+      "manualItems": ["M22"]
+    },
+    {
+      "id": "phase5",
+      "title": "Feishu rich event and resource gate",
       "status": "$PHASE5_STATUS",
       "reason": "$PHASE5_REASON",
-      "gaps": ["G14", "G15", "G16", "G17", "G20"],
-      "manualItems": ["M18", "M19", "M20", "M21", "M25", "M26"]
+      "gaps": ["G19"],
+      "manualItems": ["M23", "M24"]
+    },
+    {
+      "id": "phase6",
+      "title": "Feishu native command live gate",
+      "status": "$PHASE6_STATUS",
+      "reason": "$PHASE6_REASON",
+      "gaps": ["G20"],
+      "manualItems": ["M25", "M26", "M27"]
+    },
+    {
+      "id": "phase7",
+      "title": "Control UI product acceptance",
+      "status": "$PHASE7_STATUS",
+      "reason": "$PHASE7_REASON",
+      "gaps": ["G23"],
+      "manualItems": ["M28", "M29", "M30", "M31"]
+    },
+    {
+      "id": "phase8",
+      "title": "Feishu app and bot platform boundary",
+      "status": "$PHASE8_STATUS",
+      "reason": "$PHASE8_REASON",
+      "gaps": ["G21"],
+      "manualItems": []
     },
     {
       "id": "phase9",
-      "title": "Regression and evidence pack gate",
+      "title": "Release verification and evidence pack gate",
       "status": "$PHASE9_STATUS",
       "reason": "$PHASE9_REASON",
-      "gaps": ["G23", "G24", "G25"],
-      "manualItems": ["M27", "M28", "M29", "M30", "M31", "M32"]
+      "gaps": ["G24", "G25", "G26"],
+      "manualItems": ["M02", "M28", "M29", "M30", "M31", "M32"]
     }
   ],
   "gapStatus": [
@@ -228,75 +336,91 @@ write_report_json() {
     {"id": "G08", "status": "local-pass", "phase": "phase0", "title": "CLI UI Gateway management surface"},
     {"id": "G09", "status": "local-pass", "phase": "phase0", "title": "team CRUD and member creation"},
     {"id": "G10", "status": "local-pass", "phase": "phase0", "title": "team broadcast local fan-out plan"},
-    {"id": "G11", "status": "$PHASE3_STATUS", "phase": "phase3", "title": "Telegram live route and broadcast"},
-    {"id": "G12", "status": "$PHASE4_STATUS", "phase": "phase4", "title": "Feishu multi-account live route"},
-    {"id": "G13", "status": "$PHASE4_STATUS", "phase": "phase4", "title": "Feishu group and thread policy live route"},
-    {"id": "G14", "status": "$PHASE5_STATUS", "phase": "phase5", "title": "Feishu OAuth live grant"},
-    {"id": "G15", "status": "$PHASE5_STATUS", "phase": "phase5", "title": "Feishu app and tenant credential modes"},
-    {"id": "G16", "status": "$PHASE5_STATUS", "phase": "phase5", "title": "Feishu OAPI live tool matrix"},
-    {"id": "G17", "status": "$PHASE5_STATUS", "phase": "phase5", "title": "Feishu scope diagnostic live validation"},
-    {"id": "G18", "status": "external-resource-required", "phase": "phase5", "title": "Feishu CardKit streaming live validation"},
-    {"id": "G19", "status": "external-resource-required", "phase": "phase5", "title": "Feishu rich event and resource live validation"},
-    {"id": "G20", "status": "$PHASE5_STATUS", "phase": "phase5", "title": "Feishu native command parity live smoke"},
-    {"id": "G21", "status": "external-resource-required", "phase": "phase5", "title": "Feishu app and bot creation platform boundary"},
-    {"id": "G22", "status": "$PHASE4_STATUS", "phase": "phase4", "title": "multi-bot mapping to agent or team"},
-    {"id": "G23", "status": "operator-record-required", "phase": "phase9", "title": "Control UI product acceptance"},
+    {"id": "G11", "status": "$PHASE1_STATUS", "phase": "phase1", "title": "Telegram live route and broadcast"},
+    {"id": "G12", "status": "$PHASE2_STATUS", "phase": "phase2", "title": "Feishu multi-account live route"},
+    {"id": "G13", "status": "$PHASE2_STATUS", "phase": "phase2", "title": "Feishu group and thread policy live route"},
+    {"id": "G14", "status": "$PHASE3_STATUS", "phase": "phase3", "title": "Feishu OAuth live grant"},
+    {"id": "G15", "status": "$PHASE3_STATUS", "phase": "phase3", "title": "Feishu app and tenant credential modes"},
+    {"id": "G16", "status": "$PHASE3_STATUS", "phase": "phase3", "title": "Feishu OAPI live tool matrix"},
+    {"id": "G17", "status": "$PHASE3_STATUS", "phase": "phase3", "title": "Feishu scope diagnostic live validation"},
+    {"id": "G18", "status": "$PHASE4_STATUS", "phase": "phase4", "title": "Feishu CardKit streaming live validation"},
+    {"id": "G19", "status": "$PHASE5_STATUS", "phase": "phase5", "title": "Feishu rich event and resource live validation"},
+    {"id": "G20", "status": "$PHASE6_STATUS", "phase": "phase6", "title": "Feishu native command parity live smoke"},
+    {"id": "G21", "status": "$PHASE8_STATUS", "phase": "phase8", "title": "Feishu app and bot creation platform boundary"},
+    {"id": "G22", "status": "$PHASE2_STATUS", "phase": "phase2", "title": "multi-bot mapping to agent or team"},
+    {"id": "G23", "status": "$PHASE7_STATUS", "phase": "phase7", "title": "Control UI product acceptance"},
     {"id": "G24", "status": "local-pass", "phase": "phase9", "title": "manual acceptance and evidence pack"},
-    {"id": "G25", "status": "local-pass", "phase": "phase9", "title": "redaction discipline"}
+    {"id": "G25", "status": "local-pass", "phase": "phase9", "title": "redaction discipline"},
+    {"id": "G26", "status": "operator-record-required", "phase": "phase9", "title": "one-shot cjpm test stability"}
+  ],
+  "operatorGuidance": [
+$(guidance_json_line telegram-live "$PHASE1_STATUS" "Set METIS_AGENTTEAM_LIVE_TELEGRAM=1 with test bot account, chat, group, and topic ids; then record redacted route and broadcast evidence." ",")
+$(guidance_json_line feishu-route "$PHASE2_STATUS" "Set METIS_AGENTTEAM_LIVE_FEISHU=1 with two test Feishu accounts, a test group, and a test thread; then record redacted account and route evidence." ",")
+$(guidance_json_line feishu-oauth-oapi "$PHASE3_STATUS" "Provide test OAuth/OAPI resource ids and record auth status plus read/write smoke results without credential values." ",")
+$(guidance_json_line feishu-cardkit "$PHASE4_STATUS" "Provide a CardKit-capable test chat and record create, patch, final, settings, abort, and fallback outcomes." ",")
+$(guidance_json_line feishu-rich-events "$PHASE5_STATUS" "Provide rich-event test messages and record media/resource/reaction/quote/merge-forward outcomes." ",")
+$(guidance_json_line control-ui "$CONTROL_UI_SMOKE_STATUS" "Set METIS_AGENTTEAM_CONTROL_UI_URL for browser smoke, then record visible UI, custom element registration, asset status, and page errors." "")
+  ],
+  "releaseVerification": [
+$(release_json_line cangjie-build-test operator-record-required "source /Users/l3gi0n/cangjie100/envsetup.sh && export DYLD_LIBRARY_PATH=/opt/homebrew/opt/openssl@3/lib:\$DYLD_LIBRARY_PATH && cjpm clean && cjpm build -i && cjpm test" "Run the full Cangjie release check in an isolated METIS_HOME; if default test concurrency flakes, also record cjpm test -j 1 and file G26 follow-up evidence." ",")
+$(release_json_line ui-build operator-record-required "npm --prefix ui run build" "Run the UI production build and attach sanitized output." ",")
+$(release_json_line ui-browser-smoke "$CONTROL_UI_SMOKE_STATUS" "METIS_AGENTTEAM_CONTROL_UI_URL=http://127.0.0.1:<port>/ scripts/agentteam-manual-acceptance-gate.sh" "Serve built assets or a live Gateway page, then rerun this gate with METIS_AGENTTEAM_CONTROL_UI_URL." ",")
+$(release_json_line manual-gate local-pass "scripts/agentteam-manual-acceptance-gate.sh" "Keep report.json and manual-acceptance-template.md as the redacted evidence pack." ",")
+$(release_json_line live-gates skipped "METIS_AGENTTEAM_LIVE_TELEGRAM=1 or METIS_AGENTTEAM_LIVE_FEISHU=1 scripts/agentteam-manual-acceptance-gate.sh" "Enable only with test resources; otherwise retain skipped/external-resource-required statuses." "")
   ],
   "manualAcceptance": [
-    {"id": "M01", "status": "local-pass", "phase": "phase0", "title": "temporary environment safety", "evidence": "isolated METIS_HOME and report directory enforced"},
-    {"id": "M02", "status": "operator-record-required", "phase": "phase0", "title": "full Cangjie build and tests", "evidence": "operator records command output"},
-    {"id": "M03", "status": "local-pass", "phase": "phase0", "title": "CLI team create", "evidence": "source-backed Gateway RPC mapping"},
-    {"id": "M04", "status": "local-pass", "phase": "phase0", "title": "CLI team list and get", "evidence": "source-backed Gateway RPC mapping"},
-    {"id": "M05", "status": "local-pass", "phase": "phase0", "title": "CLI team update", "evidence": "source-backed Gateway RPC mapping"},
-    {"id": "M06", "status": "local-pass", "phase": "phase0", "title": "CLI team delete", "evidence": "source-backed preserve-member semantics"},
-    {"id": "M07", "status": "local-pass", "phase": "phase0", "title": "member agent auto creation", "evidence": "source-backed member workspace and agentDir creation"},
-    {"id": "M08", "status": "local-pass", "phase": "phase0", "title": "profile file isolation", "evidence": "local tests and source-backed scoped file IO"},
-    {"id": "M09", "status": "local-pass", "phase": "phase0", "title": "model isolation", "evidence": "local tests and source-backed per-agent model path"},
-    {"id": "M10", "status": "local-pass", "phase": "phase0", "title": "credential profile isolation", "evidence": "local tests and source-backed per-agent credential source"},
-    {"id": "M11", "status": "local-pass", "phase": "phase0", "title": "binding conflict", "evidence": "local route conflict tests reject duplicate route writes"},
-    {"id": "M12", "status": "$PHASE3_STATUS", "phase": "phase3", "title": "Telegram private route", "evidence": "$PHASE3_REASON"},
-    {"id": "M13", "status": "$PHASE3_STATUS", "phase": "phase3", "title": "Telegram group and topic route", "evidence": "$PHASE3_REASON"},
-    {"id": "M14", "status": "$PHASE3_STATUS", "phase": "phase3", "title": "Telegram team broadcast", "evidence": "$PHASE3_REASON"},
-    {"id": "M15", "status": "$PHASE4_STATUS", "phase": "phase4", "title": "Feishu account status", "evidence": "$PHASE4_REASON"},
-    {"id": "M16", "status": "$PHASE4_STATUS", "phase": "phase4", "title": "Feishu group policy and mention gate", "evidence": "$PHASE4_REASON"},
-    {"id": "M17", "status": "$PHASE4_STATUS", "phase": "phase4", "title": "Feishu thread session", "evidence": "$PHASE4_REASON"},
-    {"id": "M18", "status": "$PHASE5_STATUS", "phase": "phase5", "title": "Feishu OAuth start status and poll", "evidence": "$PHASE5_REASON"},
-    {"id": "M19", "status": "$PHASE5_STATUS", "phase": "phase5", "title": "Feishu OAuth revoke", "evidence": "$PHASE5_REASON"},
-    {"id": "M20", "status": "$PHASE5_STATUS", "phase": "phase5", "title": "Feishu OAPI read", "evidence": "$PHASE5_REASON"},
-    {"id": "M21", "status": "$PHASE5_STATUS", "phase": "phase5", "title": "Feishu OAPI write", "evidence": "$PHASE5_REASON"},
-    {"id": "M22", "status": "external-resource-required", "phase": "phase5", "title": "Feishu CardKit streaming", "evidence": "real CardKit-capable test chat required"},
-    {"id": "M23", "status": "external-resource-required", "phase": "phase5", "title": "Feishu resource read", "evidence": "real media and file test resources required"},
-    {"id": "M24", "status": "external-resource-required", "phase": "phase5", "title": "Feishu rich event", "evidence": "real reaction quote and merged-forward events required"},
-    {"id": "M25", "status": "$PHASE5_STATUS", "phase": "phase5", "title": "Feishu start command", "evidence": "$PHASE5_REASON"},
-    {"id": "M26", "status": "$PHASE5_STATUS", "phase": "phase5", "title": "Feishu doctor command", "evidence": "$PHASE5_REASON"},
-    {"id": "M27", "status": "operator-record-required", "phase": "phase9", "title": "Control UI browser smoke", "evidence": "$PHASE9_REASON"},
-    {"id": "M28", "status": "operator-record-required", "phase": "phase9", "title": "Control UI team CRUD", "evidence": "$PHASE9_REASON"},
-    {"id": "M29", "status": "operator-record-required", "phase": "phase9", "title": "Control UI profile model and binding", "evidence": "$PHASE9_REASON"},
-    {"id": "M30", "status": "operator-record-required", "phase": "phase9", "title": "Control UI Feishu wizard", "evidence": "$PHASE9_REASON"},
-    {"id": "M31", "status": "operator-record-required", "phase": "phase9", "title": "runtime log redaction", "evidence": "operator records Gateway and channel logs from test resources"},
-    {"id": "M32", "status": "local-pass", "phase": "phase9", "title": "evidence pack", "evidence": "report and template generated with redaction scan"}
+$(manual_json_line M01 local-pass phase0 "temporary environment safety" "isolated METIS_HOME and report directory enforced" "Keep METIS_HOME and METIS_AGENTTEAM_REPORT_DIR under temporary test directories." ",")
+$(manual_json_line M02 operator-record-required phase9 "full Cangjie build and tests" "operator records command output" "Run cjpm clean, cjpm build -i, and cjpm test with the Cangjie environment sourced." ",")
+$(manual_json_line M03 local-pass phase0 "CLI team create" "source-backed Gateway RPC mapping" "Record CLI JSON output from a temporary METIS_HOME when doing manual release acceptance." ",")
+$(manual_json_line M04 local-pass phase0 "CLI team list and get" "source-backed Gateway RPC mapping" "Record team list/get JSON from the temporary test home." ",")
+$(manual_json_line M05 local-pass phase0 "CLI team update" "source-backed Gateway RPC mapping" "Record update JSON and any conflict diagnostic from the temporary test home." ",")
+$(manual_json_line M06 local-pass phase0 "CLI team delete" "source-backed preserve-member semantics" "Record delete result and member workspace preservation evidence." ",")
+$(manual_json_line M07 local-pass phase0 "member agent auto creation" "source-backed member workspace and agentDir creation" "Record created member agent ids and redacted workspace paths." ",")
+$(manual_json_line M08 local-pass phase0 "profile file isolation" "local tests and source-backed scoped file IO" "Record per-agent profile read/write evidence from temporary files." ",")
+$(manual_json_line M09 local-pass phase0 "model isolation" "local tests and source-backed per-agent model path" "Record per-agent model state summaries without credential values." ",")
+$(manual_json_line M10 local-pass phase0 "credential profile isolation" "local tests and source-backed per-agent credential source" "Record redacted credential-source summaries only." ",")
+$(manual_json_line M11 local-pass phase0 "binding conflict" "local route conflict tests reject duplicate route writes" "Record conflict response and verify no partial binding write." ",")
+$(manual_json_line M12 "$PHASE1_STATUS" phase1 "Telegram private route" "$PHASE1_REASON" "Provide a test Telegram bot account and private chat; record redacted inbound/outbound route evidence." ",")
+$(manual_json_line M13 "$PHASE1_STATUS" phase1 "Telegram group and topic route" "$PHASE1_REASON" "Provide test group and topic ids; record session key separation evidence." ",")
+$(manual_json_line M14 "$PHASE1_STATUS" phase1 "Telegram team broadcast" "$PHASE1_REASON" "Trigger a test broadcast and record per-member aggregate rows." ",")
+$(manual_json_line M15 "$PHASE2_STATUS" phase2 "Feishu account status" "$PHASE2_REASON" "Provide two test Feishu accounts and record redacted configured/enabled/running status." ",")
+$(manual_json_line M16 "$PHASE2_STATUS" phase2 "Feishu group policy and mention gate" "$PHASE2_REASON" "Record @ and non-@ behavior plus allowlist result from a test group." ",")
+$(manual_json_line M17 "$PHASE2_STATUS" phase2 "Feishu thread session" "$PHASE2_REASON" "Record separate test thread context evidence." ",")
+$(manual_json_line M18 "$PHASE3_STATUS" phase3 "Feishu OAuth start status and poll" "$PHASE3_REASON" "Record pending/authorized/scope diagnostic states with safe user-facing auth fields only." ",")
+$(manual_json_line M19 "$PHASE3_STATUS" phase3 "Feishu app and token modes" "$PHASE3_REASON" "Record app, tenant, bot, and user credential mode smoke results or exact diagnostics." ",")
+$(manual_json_line M20 "$PHASE3_STATUS" phase3 "Feishu OAPI read" "$PHASE3_REASON" "Record one low-risk read result per OAPI family against test resources." ",")
+$(manual_json_line M21 "$PHASE3_STATUS" phase3 "Feishu OAPI write" "$PHASE3_REASON" "Record test-only create/update results and cleanup notes." ",")
+$(manual_json_line M22 "$PHASE4_STATUS" phase4 "Feishu CardKit streaming" "$PHASE4_REASON" "Record create, patch sequence, final, settings, abort, and fallback outcomes in a test chat." ",")
+$(manual_json_line M23 "$PHASE5_STATUS" phase5 "Feishu resource read" "$PHASE5_REASON" "Record current-turn resource context and fetch diagnostics for test media/files." ",")
+$(manual_json_line M24 "$PHASE5_STATUS" phase5 "Feishu rich event" "$PHASE5_REASON" "Record reaction, quote, and merged-forward behavior from test messages." ",")
+$(manual_json_line M25 "$PHASE6_STATUS" phase6 "Feishu start command" "$PHASE6_REASON" "Record redacted /feishu start response from a test conversation." ",")
+$(manual_json_line M26 "$PHASE6_STATUS" phase6 "Feishu doctor command" "$PHASE6_REASON" "Record redacted /feishu doctor diagnostics from a test conversation." ",")
+$(manual_json_line M27 "$PHASE6_STATUS" phase6 "Feishu auth command" "$PHASE6_REASON" "Record only safe auth URL/code summary fields and status transitions." ",")
+$(manual_json_line M28 "$CONTROL_UI_SMOKE_STATUS" phase9 "Control UI browser smoke" "$CONTROL_UI_SMOKE_REASON" "Set METIS_AGENTTEAM_CONTROL_UI_URL and rerun the gate against built assets or a live Gateway page." ",")
+$(manual_json_line M29 operator-record-required phase9 "Control UI team CRUD" "$PHASE9_REASON" "Record create/edit/delete persistence evidence after browser smoke is available." ",")
+$(manual_json_line M30 operator-record-required phase9 "Control UI profile model and binding" "$PHASE9_REASON" "Record Gateway RPC success or clear redacted error for profile/model/binding edits." ",")
+$(manual_json_line M31 operator-record-required phase9 "Control UI Feishu wizard" "$PHASE9_REASON" "Record setup/repair wizard states and next-step text without credential values." ",")
+$(manual_json_line M32 local-pass phase9 "evidence pack" "report and template generated with redaction scan" "review report.json and complete manual-acceptance-template.md with redacted operator evidence" "")
   ],
   "externalResources": [
-$(resource_json_line telegram METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID "Telegram account id" phase3 ",")
-$(resource_json_line telegram METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID "Telegram private chat or topic id" phase3 ",")
-$(resource_json_line telegram METIS_AGENTTEAM_TELEGRAM_TEST_GROUP_ID "Telegram test group id" phase3 ",")
-$(resource_json_line telegram METIS_AGENTTEAM_TELEGRAM_TEST_TOPIC_ID "Telegram test topic id" phase3 ",")
-$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_ACCOUNT_ID_A "Feishu account A id" phase4 ",")
-$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_ACCOUNT_ID_B "Feishu account B id" phase4 ",")
-$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_GROUP_ID "Feishu test group id" phase4 ",")
-$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_THREAD_ID "Feishu test thread id" phase4 ",")
-$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_APP_ID "Feishu test app id" phase5 ",")
-$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_USER_ID "Feishu test user id" phase5 ",")
-$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_DOC_ID "Feishu test doc id" phase5 ",")
-$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_WIKI_ID "Feishu test wiki id" phase5 ",")
-$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_CALENDAR_ID "Feishu test calendar id" phase5 ",")
-$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_TASK_ID "Feishu test task id" phase5 ",")
-$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_BITABLE_ID "Feishu test bitable id" phase5 ",")
-$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_SHEET_ID "Feishu test sheet id" phase5 ",")
-$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_MESSAGE_ID "Feishu test message id" phase5 ",")
-$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_CARDKIT_CHAT_ID "Feishu CardKit test chat id" phase5 ",")
+$(resource_json_line telegram METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID "Telegram account id" phase1 ",")
+$(resource_json_line telegram METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID "Telegram private chat or topic id" phase1 ",")
+$(resource_json_line telegram METIS_AGENTTEAM_TELEGRAM_TEST_GROUP_ID "Telegram test group id" phase1 ",")
+$(resource_json_line telegram METIS_AGENTTEAM_TELEGRAM_TEST_TOPIC_ID "Telegram test topic id" phase1 ",")
+$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_ACCOUNT_ID_A "Feishu account A id" phase2 ",")
+$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_ACCOUNT_ID_B "Feishu account B id" phase2 ",")
+$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_GROUP_ID "Feishu test group id" phase2 ",")
+$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_THREAD_ID "Feishu test thread id" phase2 ",")
+$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_APP_ID "Feishu test app id" phase3 ",")
+$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_USER_ID "Feishu test user id" phase3 ",")
+$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_DOC_ID "Feishu test doc id" phase3 ",")
+$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_WIKI_ID "Feishu test wiki id" phase3 ",")
+$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_CALENDAR_ID "Feishu test calendar id" phase3 ",")
+$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_TASK_ID "Feishu test task id" phase3 ",")
+$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_BITABLE_ID "Feishu test bitable id" phase3 ",")
+$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_SHEET_ID "Feishu test sheet id" phase3 ",")
+$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_TEST_MESSAGE_ID "Feishu test message id" phase3 ",")
+$(resource_json_line feishu METIS_AGENTTEAM_FEISHU_CARDKIT_CHAT_ID "Feishu CardKit test chat id" phase4 ",")
 $(resource_json_line feishu METIS_AGENTTEAM_FEISHU_RICH_EVENT_CHAT_ID "Feishu rich-event test chat id" phase5 ",")
 $(resource_json_line control-ui METIS_AGENTTEAM_CONTROL_UI_URL "Control UI smoke URL" phase9 "")
   ],
@@ -316,69 +440,93 @@ write_manual_template() {
   local head="$3"
 
   cat >"$template_md" <<MD
-# Metis AgentTeam Series21 Manual Acceptance Evidence
+# Metis AgentTeam Series23 Manual Acceptance Evidence
 
 - Date: $created_at
 - Git head: $head
-- Series source: $SERIES21_DOC_REL
+- Series source: $SERIES23_DOC_REL
 - METIS_HOME: $METIS_HOME_CANONICAL
 - Report dir: $REPORT_DIR_CANONICAL
 - Operator: TODO
 - Gateway URL: TODO local-only or redacted
 - Control UI URL state: $(redacted_status "${METIS_AGENTTEAM_CONTROL_UI_URL:-}")
 
+## Evidence fields
+
+For each manual item, record operator result, timestamp, redacted resource ids, sanitized log excerpt or report path, and redaction notes.
+
+## Redaction
+
+Do not record secret values, bearer headers, provider keys, proxy auth values, credential file contents, or real user home paths.
+
 ## Phase 0 Source Matrix
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Series21 source-backed matrix exists | local-pass | $SERIES21_DOC_REL |
-| G01-G25 are represented in report.json | local-pass | report.json gapStatus |
+| Series23 source-backed matrix exists | local-pass | $SERIES23_DOC_REL |
+| G01-G26 are represented in report.json | local-pass | report.json gapStatus |
 | M01-M32 are represented in report.json | local-pass | report.json manualAcceptance |
 | Real network gates are opt-in | local-pass | METIS_AGENTTEAM_LIVE_TELEGRAM / METIS_AGENTTEAM_LIVE_FEISHU |
 
-## Phase 3 Telegram Live Gate
+## Phase 1 Telegram Live Gate
 
 | Item | Gate status | Operator result | Evidence |
 | --- | --- | --- | --- |
-| M12 Telegram private route | $PHASE3_STATUS | TODO | redacted account and chat ids only |
-| M13 Telegram group/topic route | $PHASE3_STATUS | TODO | redacted group/topic ids only |
-| M14 Telegram team broadcast | $PHASE3_STATUS | TODO | aggregate rows with agentId/status/sessionKey |
+| M12 Telegram private route | $PHASE1_STATUS | TODO | redacted account and chat ids only |
+| M13 Telegram group/topic route | $PHASE1_STATUS | TODO | redacted group/topic ids only |
+| M14 Telegram team broadcast | $PHASE1_STATUS | TODO | aggregate rows with agentId/status/sessionKey |
 
 Required env state is in report.json externalResources. The gate does not call Telegram by default.
 
-## Phase 4 Feishu Route Live Gate
+## Phase 2 Feishu Route Live Gate
 
 | Item | Gate status | Operator result | Evidence |
 | --- | --- | --- | --- |
-| M15 Feishu account status | $PHASE4_STATUS | TODO | two account ids, redacted |
-| M16 Feishu group policy and mention gate | $PHASE4_STATUS | TODO | @ and non-@ behavior |
-| M17 Feishu thread session | $PHASE4_STATUS | TODO | separate thread context evidence |
+| M15 Feishu account status | $PHASE2_STATUS | TODO | two account ids, redacted |
+| M16 Feishu group policy and mention gate | $PHASE2_STATUS | TODO | @ and non-@ behavior |
+| M17 Feishu thread session | $PHASE2_STATUS | TODO | separate thread context evidence |
 
 Required env state is in report.json externalResources. The gate does not call Feishu by default.
 
-## Phase 5 Feishu OAuth And OAPI Live Gate
+## Phase 3 Feishu OAuth And OAPI Live Gate
 
 | Item | Gate status | Operator result | Evidence |
 | --- | --- | --- | --- |
-| M18 OAuth start/status/poll | $PHASE5_STATUS | TODO | verification URL and user code only |
-| M19 OAuth revoke | $PHASE5_STATUS | TODO | revoked or missing status |
-| M20 OAPI read | $PHASE5_STATUS | TODO | low-risk test resources only |
-| M21 OAPI write | $PHASE5_STATUS | TODO | test-only resources only |
-| M22 CardKit streaming | external-resource-required | TODO | create, stream patch, final update, close/fallback |
-| M23 Resource read | external-resource-required | TODO | image/file/audio/video test resources |
-| M24 Rich event | external-resource-required | TODO | reaction, quote, merged-forward event evidence |
-| M25 Feishu start command | $PHASE5_STATUS | TODO | account/version/status output |
-| M26 Feishu doctor command | $PHASE5_STATUS | TODO | config/event/scope/OAuth/OAPI/CardKit diagnostics |
+| M18 OAuth start/status/poll | $PHASE3_STATUS | TODO | safe auth URL/code summary only |
+| M19 Feishu app and token modes | $PHASE3_STATUS | TODO | app/tenant/bot/user credential-mode status or diagnostic |
+| M20 OAPI read | $PHASE3_STATUS | TODO | low-risk test resources only |
+| M21 OAPI write | $PHASE3_STATUS | TODO | test-only resources only |
 
-## Phase 9 Evidence Pack
+## Phase 4 CardKit Live Gate
 
 | Item | Gate status | Operator result | Evidence |
 | --- | --- | --- | --- |
-| M27 Control UI browser smoke | operator-record-required | TODO | no blank page, JS error, asset 404; metis-app registered |
-| M28 Control UI team CRUD | operator-record-required | TODO | create/edit/delete persists after refresh |
-| M29 Control UI profile/model/binding | operator-record-required | TODO | Gateway RPC success or clear error |
-| M30 Control UI Feishu wizard | operator-record-required | TODO | setup/repair wizard states |
-| M31 Runtime log redaction | operator-record-required | TODO | Gateway/channel/OAPI logs from test resources |
+| M22 CardKit streaming | $PHASE4_STATUS | TODO | create, stream patch, final update, settings, abort, fallback |
+
+## Phase 5 Rich Event Live Gate
+
+| Item | Gate status | Operator result | Evidence |
+| --- | --- | --- | --- |
+| M23 Resource read | $PHASE5_STATUS | TODO | image/file/audio/video test resources |
+| M24 Rich event | $PHASE5_STATUS | TODO | reaction, quote, merged-forward event evidence |
+
+## Phase 6 Feishu Native Command Gate
+
+| Item | Gate status | Operator result | Evidence |
+| --- | --- | --- | --- |
+| M25 Feishu start command | $PHASE6_STATUS | TODO | account/version/status output |
+| M26 Feishu doctor command | $PHASE6_STATUS | TODO | config/event/scope/OAuth/OAPI/CardKit diagnostics |
+| M27 Feishu auth command | $PHASE6_STATUS | TODO | safe auth fields and state transitions |
+
+## Phase 9 Release Evidence Pack
+
+| Item | Gate status | Operator result | Evidence |
+| --- | --- | --- | --- |
+| M02 Full Cangjie build and tests | operator-record-required | TODO | cjpm clean/build/test output |
+| M28 Control UI browser smoke | $CONTROL_UI_SMOKE_STATUS | TODO | no blank page, JS error, asset 404; metis-app registered |
+| M29 Control UI team CRUD | operator-record-required | TODO | create/edit/delete persists after refresh |
+| M30 Control UI profile/model/binding | operator-record-required | TODO | Gateway RPC success or clear error |
+| M31 Control UI Feishu wizard | operator-record-required | TODO | setup/repair wizard states |
 | M32 Evidence pack | local-pass | generated | report.json and this template |
 
 ## GAP Status Index
@@ -395,21 +543,22 @@ Required env state is in report.json externalResources. The gate does not call F
 | G08 | local-pass | CLI/UI/Gateway management boundary |
 | G09 | local-pass | team CRUD and member creation |
 | G10 | local-pass | local broadcast fan-out plan |
-| G11 | $PHASE3_STATUS | Telegram live route/broadcast gate |
-| G12 | $PHASE4_STATUS | Feishu multi-account route gate |
-| G13 | $PHASE4_STATUS | Feishu group/thread policy gate |
-| G14 | $PHASE5_STATUS | Feishu OAuth live grant |
-| G15 | $PHASE5_STATUS | Feishu app and tenant credential modes |
-| G16 | $PHASE5_STATUS | Feishu OAPI live tool matrix |
-| G17 | $PHASE5_STATUS | Feishu scope diagnostic live validation |
-| G18 | external-resource-required | Feishu CardKit streaming live validation |
-| G19 | external-resource-required | Feishu rich event and resource live validation |
-| G20 | $PHASE5_STATUS | Feishu native command parity live smoke |
-| G21 | external-resource-required | Feishu app and bot creation platform boundary |
-| G22 | $PHASE4_STATUS | multi-bot mapping to agent or team |
-| G23 | operator-record-required | Control UI product acceptance |
+| G11 | $PHASE1_STATUS | Telegram live route/broadcast gate |
+| G12 | $PHASE2_STATUS | Feishu multi-account route gate |
+| G13 | $PHASE2_STATUS | Feishu group/thread policy gate |
+| G14 | $PHASE3_STATUS | Feishu OAuth live grant |
+| G15 | $PHASE3_STATUS | Feishu app and tenant credential modes |
+| G16 | $PHASE3_STATUS | Feishu OAPI live tool matrix |
+| G17 | $PHASE3_STATUS | Feishu scope diagnostic live validation |
+| G18 | $PHASE4_STATUS | Feishu CardKit streaming live validation |
+| G19 | $PHASE5_STATUS | Feishu rich event and resource live validation |
+| G20 | $PHASE6_STATUS | Feishu native command parity live smoke |
+| G21 | $PHASE8_STATUS | Feishu app and bot creation platform boundary |
+| G22 | $PHASE2_STATUS | multi-bot mapping to agent or team |
+| G23 | $PHASE7_STATUS | Control UI product acceptance |
 | G24 | local-pass | manual acceptance and evidence pack |
 | G25 | local-pass | redaction discipline |
+| G26 | operator-record-required | one-shot cjpm test stability |
 
 ## M01-M32 Operator Checklist
 
@@ -426,26 +575,26 @@ Required env state is in report.json externalResources. The gate does not call F
 | M09 | local-pass | TODO | model isolation |
 | M10 | local-pass | TODO | credential profile isolation |
 | M11 | local-pass | TODO | binding conflict |
-| M12 | $PHASE3_STATUS | TODO | Telegram private route |
-| M13 | $PHASE3_STATUS | TODO | Telegram group/topic route |
-| M14 | $PHASE3_STATUS | TODO | Telegram team broadcast |
-| M15 | $PHASE4_STATUS | TODO | Feishu account status |
-| M16 | $PHASE4_STATUS | TODO | Feishu group policy and mention gate |
-| M17 | $PHASE4_STATUS | TODO | Feishu thread session |
-| M18 | $PHASE5_STATUS | TODO | OAuth start/status/poll |
-| M19 | $PHASE5_STATUS | TODO | OAuth revoke |
-| M20 | $PHASE5_STATUS | TODO | OAPI read |
-| M21 | $PHASE5_STATUS | TODO | OAPI write |
-| M22 | external-resource-required | TODO | CardKit streaming |
-| M23 | external-resource-required | TODO | resource read |
-| M24 | external-resource-required | TODO | rich event |
-| M25 | $PHASE5_STATUS | TODO | Feishu start command |
-| M26 | $PHASE5_STATUS | TODO | Feishu doctor command |
-| M27 | operator-record-required | TODO | Control UI browser smoke |
-| M28 | operator-record-required | TODO | Control UI team CRUD |
-| M29 | operator-record-required | TODO | Control UI profile/model/binding |
-| M30 | operator-record-required | TODO | Control UI Feishu wizard |
-| M31 | operator-record-required | TODO | runtime log redaction |
+| M12 | $PHASE1_STATUS | TODO | Telegram private route |
+| M13 | $PHASE1_STATUS | TODO | Telegram group/topic route |
+| M14 | $PHASE1_STATUS | TODO | Telegram team broadcast |
+| M15 | $PHASE2_STATUS | TODO | Feishu account status |
+| M16 | $PHASE2_STATUS | TODO | Feishu group policy and mention gate |
+| M17 | $PHASE2_STATUS | TODO | Feishu thread session |
+| M18 | $PHASE3_STATUS | TODO | OAuth start/status/poll |
+| M19 | $PHASE3_STATUS | TODO | Feishu app and token modes |
+| M20 | $PHASE3_STATUS | TODO | OAPI read |
+| M21 | $PHASE3_STATUS | TODO | OAPI write |
+| M22 | $PHASE4_STATUS | TODO | CardKit streaming |
+| M23 | $PHASE5_STATUS | TODO | resource read |
+| M24 | $PHASE5_STATUS | TODO | rich event |
+| M25 | $PHASE6_STATUS | TODO | Feishu start command |
+| M26 | $PHASE6_STATUS | TODO | Feishu doctor command |
+| M27 | $PHASE6_STATUS | TODO | Feishu auth command |
+| M28 | $CONTROL_UI_SMOKE_STATUS | TODO | Control UI browser smoke |
+| M29 | operator-record-required | TODO | Control UI team CRUD |
+| M30 | operator-record-required | TODO | Control UI profile/model/binding |
+| M31 | operator-record-required | TODO | Control UI Feishu wizard |
 | M32 | local-pass | generated | evidence pack |
 
 ## Redaction Checklist
@@ -497,15 +646,15 @@ write_evidence_pack() {
 require_command git
 require_command rg
 
-SERIES21_DOC_REL="develop_steps/metis-agent-team-series-21-post-phase20-source-backed-gap-quantification-manual-acceptance-2026-05-16.md"
-SERIES21_DOC_MAIN="/Users/l3gi0n/work/workspace_cangjie/Metis/$SERIES21_DOC_REL"
+SERIES23_DOC_REL="develop_steps/metis-agent-team-series-23-source-backed-gap-quantification-manual-acceptance-2026-05-16.md"
+SERIES23_DOC_MAIN="/Users/l3gi0n/work/workspace_cangjie/Metis/$SERIES23_DOC_REL"
 PARITY_REPORT="develop_steps/metis-agent-team-series-14-oapi-action-parity-report-2026-05-15.md"
 SERIES14_DOC="develop_steps/metis-agent-team-series-14-current-source-recheck-gap-quantification-manual-acceptance-2026-05-15.md"
 
-if [[ -f "$SERIES21_DOC_REL" || -f "$SERIES21_DOC_MAIN" ]]; then
-  SERIES21_SOURCE_AVAILABLE=true
+if [[ -f "$SERIES23_DOC_REL" || -f "$SERIES23_DOC_MAIN" ]]; then
+  SERIES23_SOURCE_AVAILABLE=true
 else
-  fail "missing series21 source-backed matrix: $SERIES21_DOC_REL or $SERIES21_DOC_MAIN"
+  fail "missing series23 source-backed matrix: $SERIES23_DOC_REL or $SERIES23_DOC_MAIN"
 fi
 
 METIS_HOME_VALUE="${METIS_HOME:-}"
@@ -648,7 +797,7 @@ NODE
 fi
 
 if [[ "$TELEGRAM_OPT_IN" == true ]]; then
-  if [[ "$PHASE3_STATUS" == "operator-record-required" ]]; then
+  if [[ "$PHASE1_STATUS" == "operator-record-required" ]]; then
     info "live Telegram gate opted in; operator must record private route, group/topic route, alias route, and broadcast evidence"
   else
     info "live Telegram gate opted in but external resources are missing"
@@ -658,7 +807,7 @@ else
 fi
 
 if [[ "$FEISHU_OPT_IN" == true ]]; then
-  if [[ "$PHASE4_STATUS" == "operator-record-required" || "$PHASE5_STATUS" == "operator-record-required" ]]; then
+  if [[ "$PHASE2_STATUS" == "operator-record-required" || "$PHASE3_STATUS" == "operator-record-required" || "$PHASE4_STATUS" == "operator-record-required" || "$PHASE5_STATUS" == "operator-record-required" || "$PHASE6_STATUS" == "operator-record-required" ]]; then
     info "live Feishu gate opted in; operator must record account route, OAuth, OAPI, CardKit, rich event, and redaction evidence"
   else
     info "live Feishu gate opted in but external resources are missing"
