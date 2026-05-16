@@ -65,9 +65,9 @@ public class CliappCommandSupportTest {
 
         let status = programSupportRenderModelsStatus()
         @Expect(status.contains("Models status (CLI chat)"), true)
-        @Expect(status.contains("Image understanding model:"), true)
-        @Expect(status.contains("read-only"), true)
-        @Expect(status.contains("not a provider catalog"), true)
+        @Expect(status.contains("Image primary:"), true)
+        @Expect(status.contains("Image fallbacks:"), true)
+        @Expect(status.contains("independent from the main chat model"), true)
     }
 
     @TestCase
