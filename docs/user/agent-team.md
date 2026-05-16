@@ -150,10 +150,12 @@ The Teams page supports this workflow:
 3. Choose the default member used when a route does not resolve to a more specific member.
 4. Add aliases such as `@writer` or `/agent review`.
 5. Configure broadcast and select the exact members included in fanout.
-6. Preview and apply simple `channel[:account]` bindings or structured JSON route bindings.
-7. List, load, edit, and save workspace profile files through `agents.files.*`.
-8. Load and save per-agent model JSON through `agents.models.*`.
-9. Review memory, heartbeat, Feishu account/status guidance, and local doctor checks.
+6. Check the channel readiness board for Telegram/Feishu runtime state, route coverage, repair steps, and the evidence-pack command.
+7. Preview simple `channel[:account]` bindings or structured JSON route bindings, then read the binding conflict preview before applying.
+8. Apply non-conflicting bindings through Gateway RPC.
+9. List, load, edit, and save workspace profile files through `agents.files.*`.
+10. Load and save per-agent model JSON through `agents.models.*`.
+11. Review memory, heartbeat, Feishu account/status guidance, and local doctor checks.
 
 The current Phase A/C management workflow also includes:
 
@@ -161,6 +163,8 @@ The current Phase A/C management workflow also includes:
 - a redacted credential-source preview so operators can see whether the member is using agent-local auth, model-local provider state, global config, or environment fallback;
 - a Metis capabilities panel that lists only Metis-owned Gateway RPC surfaces, built-in profile files, built-in tools, built-in skills, and channel capabilities;
 - a Feishu setup/repair wizard covering app credentials, event subscriptions, scope repair, group/thread routing, OAuth, OAPI, and card readiness with copyable redacted operator steps;
+- a Telegram/Feishu readiness board that separates local setup from live evidence, links the manual evidence-pack command, and keeps Feishu repair scoped to linking an existing app/bot;
+- a binding conflict preview that compares the current route preview with team binding metadata before `agents.bind`;
 - a Feishu Auth & Doctor panel that consumes redacted `channels.status.channels.feishu.auth` or `.oauth`, `.doctor` or `.diagnostics`, and advertised OAPI capability strings when the Gateway provides them;
 - a cultivation, memory, and heartbeat panel that summarizes `MEMORY.md`, `HEARTBEAT.md`, the currently loaded redacted file preview, and recent Feishu doctor findings from `channels.status`;
 - explicit fallback rows when those Feishu status fields are missing.

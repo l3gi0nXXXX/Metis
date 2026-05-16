@@ -16,8 +16,10 @@ import {
   AGENT_TEAM_TEMPLATE_GROUPS,
   applyAgentTeamTemplate,
   buildAgentTeamAcceptancePlan,
+  buildAgentTeamBindingConflictPreview,
   buildAgentTeamCultivationSnapshot,
   buildAgentTeamBindingPreview,
+  buildAgentTeamReadinessBoard,
   changeAgentTeamAlias,
   changeAgentTeamMember,
   exportAgentTeamTemplate,
@@ -101,6 +103,7 @@ export function renderAgentTeamsPanel(props: AgentTeamsPanelProps) {
   return html`
     ${renderAgentTeamManagementSummary(props, teams, activeMembers, activeAliases, activeBroadcast)}
     ${renderWorkflowStrip(props, activeMembers, activeBroadcast)}
+    ${renderRouteReadinessPanels(props)}
     ${renderTeamWizardCard(props, activeMembers)}
     ${renderFeishuSetupRepairWizard(props)}
     ${renderAcceptanceReadinessPanels(props, teams, activeMembers)}
@@ -354,6 +357,70 @@ function renderWorkflowStrip(
           `,
         )}
       </div>
+    </section>
+  `;
+}
+
+function renderRouteReadinessPanels(props: AgentTeamsPanelProps) {
+  const board = buildAgentTeamReadinessBoard({
+    draft: props.draft,
+    channelsSnapshot: props.channelsSnapshot,
+  });
+  const conflict = buildAgentTeamBindingConflictPreview(props.draft, props.binding);
+  return html`
+    <section class="grid grid-cols-2" style="margin-bottom: 16px;">
+      <section class="card">
+        <div class="row" style="justify-content: space-between; align-items: flex-start;">
+          <div>
+            <div class="card-title">Channel readiness board</div>
+            <div class="card-sub">Telegram and Feishu setup state, route coverage, and live evidence path.</div>
+          </div>
+          <span class="badge">${board.summary}</span>
+        </div>
+        <div class="agent-kv" style="margin-top: 12px;">
+          <div class="label">Evidence pack</div>
+          <div>${board.evidencePackHint}</div>
+        </div>
+        <div class="list" style="margin-top: 12px;">
+          ${board.channels.map(
+            (channel) => html`
+              <div class="list-item">
+                <div class="list-main">
+                  <div class="list-title">${channel.label}</div>
+                  <div class="list-sub">
+                    ${channel.runtimeStatus} · ${channel.accountStatus} · ${channel.routeStatus} · auth ${channel.authStatus}
+                  </div>
+                  <div class="list-sub" style="margin-top: 6px;">${channel.nextSteps.join(" ")}</div>
+                </div>
+                <div class="list-meta"><span class="badge">${channel.status}</span></div>
+              </div>
+            `,
+          )}
+        </div>
+      </section>
+      <section class="card">
+        <div class="row" style="justify-content: space-between; align-items: flex-start;">
+          <div>
+            <div class="card-title">Binding conflict preview</div>
+            <div class="card-sub">Compares the current Binding Builder route with saved team binding metadata before Apply.</div>
+          </div>
+          <span class="badge">${conflict.summary}</span>
+        </div>
+        <div class="list" style="margin-top: 12px;">
+          ${conflict.items.map(
+            (item) => html`
+              <div class="list-item">
+                <div class="list-main">
+                  <div class="list-title">${item.title}</div>
+                  <div class="list-sub">${item.detail}</div>
+                  <div class="list-sub" style="margin-top: 6px;">${item.repair}</div>
+                </div>
+                <div class="list-meta"><span class="badge">${item.status}</span></div>
+              </div>
+            `,
+          )}
+        </div>
+      </section>
     </section>
   `;
 }

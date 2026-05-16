@@ -6,8 +6,10 @@ import {
   applyAgentTeamTemplate,
   applyAgentTeamBinding,
   buildAgentTeamAcceptancePlan,
+  buildAgentTeamBindingConflictPreview,
   buildAgentTeamCultivationSnapshot,
   buildAgentTeamBindingPreview,
+  buildAgentTeamReadinessBoard,
   exportAgentTeamTemplate,
   changeAgentTeamMember,
   changeAgentTeamAlias,
@@ -202,6 +204,59 @@ describe("team mutations", () => {
     expect(plan.externalItems.every((item) => item.status === "external-resource-required")).toBe(true);
     expect(plan.externalItems[1]?.detail).toContain("guided setup and linking an existing Feishu bot");
     expect(plan.externalItems[1]?.detail).toContain("does not create a Feishu app or bot");
+  });
+
+  it("builds a user-facing Telegram and Feishu readiness board with repair paths", () => {
+    const board = buildAgentTeamReadinessBoard({
+      draft: {
+        ...createEmptyAgentTeamDraft(),
+        id: "content",
+        bindingsJson: '[{"agentId":"content-writer","match":{"channel":"telegram","accountId":"bot-a"}}]',
+      },
+      channelsSnapshot: {
+        ts: 1,
+        channelOrder: ["telegram", "feishu"],
+        channelLabels: { telegram: "Telegram", feishu: "Feishu" },
+        channels: {
+          telegram: { configured: true, running: true },
+          feishu: {
+            configured: false,
+            running: false,
+            auth: {
+              status: "scope_missing",
+              missingAppScopes: ["im:message"],
+              missingUserScopes: ["offline_access"],
+            },
+          },
+        },
+        channelAccounts: {
+          telegram: [{ accountId: "bot-a", configured: true, running: true }],
+          feishu: [],
+        },
+        channelDefaultAccountId: { telegram: "bot-a" },
+      },
+    });
+
+    expect(board.summary).toBe("1 ready · 1 needs repair");
+    expect(board.channels).toHaveLength(2);
+    expect(board.channels[0]).toMatchObject({
+      channel: "telegram",
+      label: "Telegram",
+      status: "ready",
+      routeStatus: "1 route",
+    });
+    expect(board.channels[0]?.nextSteps).toContain("Collect live Telegram DM, group, topic, and broadcast evidence.");
+    expect(board.channels[1]).toMatchObject({
+      channel: "feishu",
+      label: "Feishu",
+      status: "needs-repair",
+      routeStatus: "no route",
+    });
+    expect(board.channels[1]?.nextSteps).toContain("Configure an existing Feishu app/bot behind Gateway.");
+    expect(board.channels[1]?.nextSteps).toContain("Grant app scopes: im:message.");
+    expect(board.channels[1]?.nextSteps).toContain("Grant user scopes through OAuth: offline_access.");
+    expect(board.channels[1]?.nextSteps.join(" ")).not.toContain("automatically create");
+    expect(board.evidencePackHint).toContain("scripts/agentteam-manual-acceptance-gate.sh");
   });
 
   it("edits team members without requiring raw JSON textarea changes", () => {
@@ -426,6 +481,45 @@ describe("team binding and models", () => {
       bindings: [preview.routeBinding],
     });
     expect(preview.lines.join("\n")).toContain("read-only preview");
+  });
+
+  it("detects binding conflicts between the draft team routes and the current apply preview", () => {
+    const teamDraft = {
+      ...createEmptyAgentTeamDraft(),
+      id: "content",
+      bindingsJson: JSON.stringify([
+        {
+          agentId: "content-writer",
+          match: {
+            channel: "feishu",
+            accountId: "tenant-a",
+            peer: { kind: "group", id: "chat:oc_123" },
+            teamId: "content",
+          },
+        },
+      ]),
+    };
+    const bindingDraft = {
+      ...createEmptyAgentTeamBindingDraft(),
+      agentId: "content-reviewer",
+      useStructuredBinding: true,
+      channel: "feishu",
+      accountId: "tenant-a",
+      peer: "chat:oc_123",
+      team: "content",
+    };
+
+    const conflict = buildAgentTeamBindingConflictPreview(teamDraft, bindingDraft);
+
+    expect(conflict.summary).toBe("1 conflict");
+    expect(conflict.items).toEqual([
+      {
+        status: "conflict",
+        title: "Route already targets another member",
+        detail: "feishu tenant-a group:chat:oc_123 team:content is already assigned to content-writer.",
+        repair: "Change the member, account, peer, thread, or team before applying this binding.",
+      },
+    ]);
   });
 
   it("applies a team member binding through agents.bind", async () => {

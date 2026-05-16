@@ -1,4 +1,4 @@
-import{f as e,r as t,u as n}from"./i18n.js";import{d as r,l as i}from"./format.js";import{X as a,Z as o,c as s,l as c}from"./index.js";import{n as l,t as u}from"./channel-config-extras.js";function d(e,t){let n=e;for(let e of t){if(!n)return null;let t=o(n);if(t===`object`){let t=n.properties??{};if(typeof e==`string`&&t[e]){n=t[e];continue}let r=n.additionalProperties;if(typeof e==`string`&&r&&typeof r==`object`){n=r;continue}return null}if(t===`array`){if(typeof e!=`number`)return null;n=(Array.isArray(n.items)?n.items[0]:n.items)??null;continue}return null}return n}function f(e,t){return l(e,t)??{}}var p=[`groupPolicy`,`streamMode`,`dmPolicy`];function m(t){let n=p.flatMap(e=>e in t?[[e,t[e]]]:[]);return n.length===0?null:e`
+import{f as e,r as t,u as n}from"./i18n.js";import{d as r,l as i}from"./format.js";import{$ as a,Q as o,c as s,l as c}from"./index.js";import{n as l,t as u}from"./channel-config-extras.js";function d(e,t){let n=e;for(let e of t){if(!n)return null;let t=a(n);if(t===`object`){let t=n.properties??{};if(typeof e==`string`&&t[e]){n=t[e];continue}let r=n.additionalProperties;if(typeof e==`string`&&r&&typeof r==`object`){n=r;continue}return null}if(t===`array`){if(typeof e!=`number`)return null;n=(Array.isArray(n.items)?n.items[0]:n.items)??null;continue}return null}return n}function f(e,t){return l(e,t)??{}}var p=[`groupPolicy`,`streamMode`,`dmPolicy`];function m(t){let n=p.flatMap(e=>e in t?[[e,t[e]]]:[]);return n.length===0?null:e`
     <div class="status-list" style="margin-top: 12px;">
       ${n.map(([t,n])=>e`
           <div>
@@ -62,7 +62,7 @@ import{f as e,r as t,u as n}from"./i18n.js";import{d as r,l as i}from"./format.j
           ${o.probe.error??``}
         </div>`:n,configSection:g({channelId:`imessage`,props:a}),footer:e`<div class="row" style="margin-top: 12px;">
       <button class="btn" @click=${()=>a.onRefresh(!0)}>${t(`common.probe`)}</button>
-    </div>`})}function k(e){return e?e.length<=20?e:`${e.slice(0,8)}...${e.slice(-8)}`:t(`common.na`)}function A(r){let{props:o,nostr:s,nostrAccounts:c,accountCountLabel:l,profileFormState:u,profileFormCallbacks:d,onEditProfile:f}=r,p=c[0],m=s?.configured??p?.configured??!1,h=s?.running??p?.running??!1,_=s?.publicKey??p?.publicKey,v=s?.lastStartAt??p?.lastStartAt??null,y=s?.lastError??p?.lastError??null,b=c.length>1,x=u!=null,S=r=>{let a=r.publicKey,o=r.profile;return e`
+    </div>`})}function k(e){return e?e.length<=20?e:`${e.slice(0,8)}...${e.slice(-8)}`:t(`common.na`)}function A(r){let{props:a,nostr:s,nostrAccounts:c,accountCountLabel:l,profileFormState:u,profileFormCallbacks:d,onEditProfile:f}=r,p=c[0],m=s?.configured??p?.configured??!1,h=s?.running??p?.running??!1,_=s?.publicKey??p?.publicKey,v=s?.lastStartAt??p?.lastStartAt??null,y=s?.lastError??p?.lastError??null,b=c.length>1,x=u!=null,S=r=>{let a=r.publicKey,o=r.profile;return e`
       <div class="account-card">
         <div class="account-card-header">
           <div class="account-card-title">${o?.displayName??o?.name??r.name??r.accountId}</div>
@@ -124,7 +124,7 @@ import{f as e,r as t,u as n}from"./i18n.js";import{d as r,l as i}from"./format.j
             </div>
           `}
       ${y?e`<div class="callout danger" style="margin-top: 12px;">${y}</div>`:n}
-      ${(()=>{if(x&&d)return a({state:u,callbacks:d,accountId:c[0]?.accountId??`default`});let{name:r,displayName:i,about:o,picture:l,nip05:h}=p?.profile??s?.profile??{},g=r||i||o||l||h;return e`
+      ${(()=>{if(x&&d)return o({state:u,callbacks:d,accountId:c[0]?.accountId??`default`});let{name:r,displayName:i,about:a,picture:l,nip05:h}=p?.profile??s?.profile??{},g=r||i||a||l||h;return e`
       <div
         style="margin-top: 16px; padding: 12px; background: var(--bg-secondary); border-radius: var(--radius-md);"
       >
@@ -161,10 +161,10 @@ import{f as e,r as t,u as n}from"./i18n.js";import{d as r,l as i}from"./format.j
                       <span class="label">${t(`channels.nostr.displayName`)}</span
                       ><span>${i}</span>
                     </div>`:n}
-                ${o?e`<div>
+                ${a?e`<div>
                       <span class="label">${t(`channels.nostr.about`)}</span
                       ><span style="max-width: 300px; overflow: hidden; text-overflow: ellipsis;"
-                        >${o}</span
+                        >${a}</span
                       >
                     </div>`:n}
                 ${h?e`<div><span class="label">NIP-05</span><span>${h}</span></div>`:n}
@@ -175,10 +175,10 @@ import{f as e,r as t,u as n}from"./i18n.js";import{d as r,l as i}from"./format.j
               </div>
             `}
       </div>
-    `})()} ${g({channelId:`nostr`,props:o})}
+    `})()} ${g({channelId:`nostr`,props:a})}
 
       <div class="row" style="margin-top: 12px;">
-        <button class="btn" @click=${()=>o.onRefresh(!1)}>${t(`common.refresh`)}</button>
+        <button class="btn" @click=${()=>a.onRefresh(!1)}>${t(`common.refresh`)}</button>
       </div>
     </div>
   `}function j(r){let{props:a,signal:o,accountCountLabel:s}=r,c=x(`signal`,a);return C({title:`Signal`,subtitle:`signal-cli status and channel configuration.`,accountCountLabel:s,statusRows:[{label:t(`common.configured`),value:S(c)},{label:t(`common.running`),value:o?.running?t(`common.yes`):t(`common.no`)},{label:t(`common.baseUrl`),value:o?.baseUrl??t(`common.na`)},{label:t(`common.lastStart`),value:o?.lastStartAt?i(o.lastStartAt):t(`common.na`)},{label:t(`common.lastProbe`),value:o?.lastProbeAt?i(o.lastProbeAt):t(`common.na`)}],lastError:o?.lastError,secondaryCallout:o?.probe?e`<div class="callout" style="margin-top: 12px;">

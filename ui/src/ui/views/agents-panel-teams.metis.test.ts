@@ -295,6 +295,75 @@ describe("renderAgentTeamsPanel", () => {
     expect(text).not.toContain("secret-feishu-access-token");
   });
 
+  it("renders a channel readiness board and binding conflict preview", () => {
+    const container = document.createElement("div");
+    render(
+      renderAgentTeamsPanel(
+        createProps({
+          draft: {
+            ...createEmptyAgentTeamDraft(),
+            id: "content",
+            displayName: "Content Team",
+            defaultAgentId: "content-writer",
+            membersJson:
+              '[{"agentId":"content-writer","role":"writer","name":"Writer"},{"agentId":"content-reviewer","role":"reviewer","name":"Reviewer"}]',
+            aliasesJson: '[{"alias":"@writer","agentId":"content-writer"}]',
+            bindingsJson:
+              '[{"agentId":"content-writer","match":{"channel":"feishu","accountId":"tenant-a","peer":{"kind":"group","id":"chat:oc_123"},"teamId":"content"}}]',
+            broadcastJson: '{"enabled":true,"members":["content-writer","content-reviewer"]}',
+          },
+          binding: {
+            ...createEmptyAgentTeamBindingDraft(),
+            agentId: "content-reviewer",
+            useStructuredBinding: true,
+            channel: "feishu",
+            accountId: "tenant-a",
+            peer: "chat:oc_123",
+            team: "content",
+          },
+          channelsSnapshot: {
+            ts: 1,
+            channelOrder: ["telegram", "feishu"],
+            channelLabels: { telegram: "Telegram", feishu: "Feishu" },
+            channels: {
+              telegram: { configured: true, running: true },
+              feishu: {
+                configured: false,
+                running: false,
+                auth: {
+                  status: "scope_missing",
+                  missingAppScopes: ["im:message"],
+                  missingUserScopes: ["offline_access"],
+                },
+              },
+            },
+            channelAccounts: {
+              telegram: [{ accountId: "bot-a", configured: true, running: true }],
+              feishu: [],
+            },
+            channelDefaultAccountId: { telegram: "bot-a" },
+          },
+        }),
+      ),
+      container,
+    );
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Channel readiness board");
+    expect(text).toContain("1 ready · 1 needs repair");
+    expect(text).toContain("Telegram");
+    expect(text).toContain("Collect live Telegram DM, group, topic, and broadcast evidence.");
+    expect(text).toContain("Feishu");
+    expect(text).toContain("Configure an existing Feishu app/bot behind Gateway.");
+    expect(text).toContain("Grant app scopes: im:message.");
+    expect(text).toContain("Binding conflict preview");
+    expect(text).toContain("1 conflict");
+    expect(text).toContain("Route already targets another member");
+    expect(text).toContain("assigned to content-writer");
+    expect(text).toContain("Change the member, account, peer, thread, or team before applying this binding.");
+    expect(text).not.toContain("Create Feishu app/bot automatically");
+  });
+
   it("renders member detail and health summary without leaking secrets", () => {
     const container = document.createElement("div");
     render(

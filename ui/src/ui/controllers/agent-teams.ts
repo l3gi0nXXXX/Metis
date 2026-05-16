@@ -147,6 +147,39 @@ export type AgentTeamAcceptancePlan = {
   externalItems: AgentTeamAcceptanceItem[];
 };
 
+export type AgentTeamReadinessStatus = "ready" | "needs-repair";
+
+export type AgentTeamChannelReadiness = {
+  channel: "telegram" | "feishu";
+  label: string;
+  status: AgentTeamReadinessStatus;
+  routeStatus: string;
+  accountStatus: string;
+  runtimeStatus: string;
+  authStatus: string;
+  nextSteps: string[];
+};
+
+export type AgentTeamReadinessBoard = {
+  summary: string;
+  evidencePackHint: string;
+  channels: AgentTeamChannelReadiness[];
+};
+
+export type AgentTeamBindingConflictStatus = "clear" | "warning" | "conflict";
+
+export type AgentTeamBindingConflictItem = {
+  status: AgentTeamBindingConflictStatus;
+  title: string;
+  detail: string;
+  repair: string;
+};
+
+export type AgentTeamBindingConflictPreview = {
+  summary: string;
+  items: AgentTeamBindingConflictItem[];
+};
+
 export type AgentTeamFeishuAuthResult = Record<string, unknown>;
 export type AgentTeamFeishuAuthAction = "start" | "status" | "poll" | "complete" | "revoke";
 
@@ -509,6 +542,83 @@ export function buildAgentTeamAcceptancePlan(params: {
     summary: countAcceptanceStatuses([...evidenceItems, ...externalItems]),
     evidenceItems,
     externalItems,
+  };
+}
+
+export function buildAgentTeamReadinessBoard(params: {
+  draft: AgentTeamEditorDraft;
+  channelsSnapshot: ChannelsStatusSnapshot | null;
+}): AgentTeamReadinessBoard {
+  const bindings = parseDraftBindings(params.draft);
+  const channels: AgentTeamChannelReadiness[] = [
+    buildChannelReadiness("telegram", "Telegram", params.channelsSnapshot, bindings),
+    buildChannelReadiness("feishu", "Feishu", params.channelsSnapshot, bindings),
+  ];
+  const readyCount = channels.filter((channel) => channel.status === "ready").length;
+  const repairCount = channels.length - readyCount;
+  return {
+    summary: `${readyCount} ready · ${repairCount} needs repair`,
+    evidencePackHint: "Run scripts/agentteam-manual-acceptance-gate.sh after browser smoke and attach the redacted report.",
+    channels,
+  };
+}
+
+export function buildAgentTeamBindingConflictPreview(
+  draft: AgentTeamEditorDraft,
+  binding: AgentTeamBindingDraft,
+): AgentTeamBindingConflictPreview {
+  const preview = buildAgentTeamBindingPreview(binding);
+  const current = routeDescriptorFromBinding(preview.routeBinding);
+  if (!current) {
+    return {
+      summary: "No structured route preview",
+      items: [
+        {
+          status: "warning",
+          title: "Preview structured route first",
+          detail: "Conflict detection needs a JSON route binding preview with channel, account, peer, thread, or team fields.",
+          repair: "Switch Payload type to JSON route binding or fill channel route fields before applying.",
+        },
+      ],
+    };
+  }
+
+  const conflicts = parseDraftBindings(draft)
+    .map((entry) => routeDescriptorFromBinding(entry))
+    .filter((entry): entry is RouteDescriptor => Boolean(entry))
+    .filter((entry) => routeDescriptorsConflict(entry, current));
+  if (conflicts.length === 0) {
+    return {
+      summary: "No conflicts",
+      items: [
+        {
+          status: "clear",
+          title: "No matching route conflict",
+          detail: `${formatRouteDescriptor(current)} is not already assigned in this team draft.`,
+          repair: "Preview the apply payload, then apply through Gateway RPC when ready.",
+        },
+      ],
+    };
+  }
+
+  const items = conflicts.map((conflict) => {
+    const sameAgent = conflict.agentId === current.agentId;
+    return {
+      status: sameAgent ? "warning" : "conflict",
+      title: sameAgent ? "Route already exists for this member" : "Route already targets another member",
+      detail: `${formatRouteDescriptor(current)} is already assigned to ${conflict.agentId}.`,
+      repair: sameAgent
+        ? "Review whether this duplicate route should be removed from team bindings before applying."
+        : "Change the member, account, peer, thread, or team before applying this binding.",
+    } satisfies AgentTeamBindingConflictItem;
+  });
+  const hardConflicts = items.filter((item) => item.status === "conflict").length;
+  const warnings = items.length - hardConflicts;
+  return {
+    summary: hardConflicts > 0
+      ? `${hardConflicts} conflict${hardConflicts === 1 ? "" : "s"}`
+      : `${warnings} warning${warnings === 1 ? "" : "s"}`,
+    items,
   };
 }
 
@@ -1262,6 +1372,154 @@ function channelStatus(snapshot: ChannelsStatusSnapshot | null, channel: string)
     raw,
     accountCount: accounts.length,
   };
+}
+
+type RouteDescriptor = {
+  agentId: string;
+  channel: string;
+  accountId: string;
+  peer: string;
+  teamId: string;
+};
+
+function buildChannelReadiness(
+  channel: "telegram" | "feishu",
+  label: string,
+  snapshot: ChannelsStatusSnapshot | null,
+  bindings: Record<string, unknown>[],
+): AgentTeamChannelReadiness {
+  const status = objectValue(snapshot?.channels?.[channel]);
+  const accounts = snapshot?.channelAccounts?.[channel] ?? [];
+  const configured = status?.configured === true ||
+    status?.running === true ||
+    accounts.some((account) => account.configured === true || account.running === true || account.connected === true);
+  const routeCount = bindings.filter((binding) => routeBindingChannel(binding) === channel).length;
+  const nextSteps = channel === "telegram"
+    ? telegramReadinessSteps(configured, routeCount)
+    : feishuReadinessSteps(status, accounts.length, routeCount);
+  return {
+    channel,
+    label,
+    status: configured ? "ready" : "needs-repair",
+    routeStatus: routeCount === 0 ? "no route" : countText(routeCount, "route"),
+    accountStatus: countText(accounts.length, "account"),
+    runtimeStatus: status?.running === true ? "running" : status?.configured === true ? "configured" : "not configured",
+    authStatus: channel === "feishu"
+      ? statusLabel(objectValue(status?.auth) ?? objectValue(status?.oauth), "not visible")
+      : "managed by bot token behind Gateway",
+    nextSteps,
+  };
+}
+
+function telegramReadinessSteps(configured: boolean, routeCount: number): string[] {
+  const steps: string[] = [];
+  if (!configured) {
+    steps.push("Configure the test Telegram bot/proxy behind Gateway.");
+  }
+  if (routeCount === 0) {
+    steps.push("Preview and apply a Telegram route binding for the team.");
+  }
+  steps.push("Collect live Telegram DM, group, topic, and broadcast evidence.");
+  return steps;
+}
+
+function feishuReadinessSteps(
+  status: Record<string, unknown> | null,
+  accountCount: number,
+  routeCount: number,
+): string[] {
+  const auth = objectValue(status?.auth) ?? objectValue(status?.oauth);
+  const appScopes = scopeList(auth, ["missingAppScopes", "missing_app_scopes", "appScopeMissing"]);
+  const userScopes = scopeList(auth, ["missingUserScopes", "missing_user_scopes", "userScopeMissing"]);
+  const steps: string[] = [];
+  if (status?.configured !== true || accountCount === 0) {
+    steps.push("Configure an existing Feishu app/bot behind Gateway.");
+  }
+  if (routeCount === 0) {
+    steps.push("Preview and apply a Feishu route binding for the team.");
+  }
+  if (!isAuthorizedStatus(auth)) {
+    steps.push("Start or repair Feishu OAuth through Gateway RPC.");
+  }
+  if (appScopes.length > 0) {
+    steps.push(`Grant app scopes: ${appScopes.join(", ")}.`);
+  }
+  if (userScopes.length > 0) {
+    steps.push(`Grant user scopes through OAuth: ${userScopes.join(", ")}.`);
+  }
+  steps.push("Run /feishu doctor or refresh channels.status after repair.");
+  return steps;
+}
+
+function isAuthorizedStatus(auth: Record<string, unknown> | null): boolean {
+  const status = statusLabel(auth, "").toLowerCase();
+  return status === "authorized" || status === "ok" || status === "ready";
+}
+
+function parseDraftBindings(draft: AgentTeamEditorDraft): Record<string, unknown>[] {
+  try {
+    return parseJsonArray(draft.bindingsJson, "bindings")
+      .map((entry) => objectValue(entry))
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+  } catch (_err) {
+    return [];
+  }
+}
+
+function routeBindingChannel(binding: Record<string, unknown>): string {
+  return routeDescriptorFromBinding(binding)?.channel || "";
+}
+
+function routeDescriptorFromBinding(binding: Record<string, unknown> | null): RouteDescriptor | null {
+  if (!binding) {
+    return null;
+  }
+  const match = objectValue(binding.match);
+  const channel = stringValue(match?.channel ?? binding.channel).trim();
+  if (!channel) {
+    return null;
+  }
+  return {
+    agentId: stringValue(binding.agentId).trim(),
+    channel,
+    accountId: stringValue(match?.accountId ?? binding.accountId).trim(),
+    peer: routePeerKey(match?.peer),
+    teamId: stringValue(match?.teamId ?? binding.teamId).trim(),
+  };
+}
+
+function routePeerKey(peer: unknown): string {
+  if (typeof peer === "string") {
+    return peer.trim();
+  }
+  const obj = objectValue(peer);
+  if (!obj) {
+    return "";
+  }
+  const kind = stringValue(obj.kind).trim();
+  const id = stringValue(obj.id).trim();
+  if (!id) {
+    return "";
+  }
+  return kind ? `${kind}:${id}` : id;
+}
+
+function routeDescriptorsConflict(left: RouteDescriptor, right: RouteDescriptor): boolean {
+  return left.channel === right.channel &&
+    left.accountId === right.accountId &&
+    left.peer === right.peer &&
+    left.teamId === right.teamId;
+}
+
+function formatRouteDescriptor(route: RouteDescriptor): string {
+  return [
+    route.channel,
+    route.accountId,
+    route.peer,
+    route.teamId ? `team:${route.teamId}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function countAcceptanceStatuses(items: AgentTeamAcceptanceItem[]): AgentTeamAcceptancePlan["summary"] {

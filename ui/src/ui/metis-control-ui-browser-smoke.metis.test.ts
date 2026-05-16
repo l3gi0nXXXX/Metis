@@ -62,7 +62,9 @@ function startServer(): Promise<{ url: string; close: () => Promise<void> }> {
       return;
     }
     const rel =
-      requestUrl.pathname === "/" || requestUrl.pathname === "/chat"
+      requestUrl.pathname === "/" ||
+      requestUrl.pathname === "/chat" ||
+      requestUrl.pathname === "/agent-teams"
         ? "index.html"
         : requestUrl.pathname.replace(/^\/+/, "");
     const full = path.resolve(controlUiRoot, rel);
@@ -145,28 +147,39 @@ describe("Metis control-ui browser smoke", () => {
           failedJsCssRequests.push(`${res.status()} ${url}`);
         }
       });
-      await page.goto(`${server.url}/chat?session=agent%3Amain%3Aexplicit%3Acli%3Amain`, {
-        waitUntil: "domcontentloaded",
-      });
-      await page.waitForFunction(() => Boolean(customElements.get("metis-app")));
-      const appState = await page.evaluate(() => ({
-        defined: Boolean(customElements.get("metis-app")),
-        renderedText: document.querySelector("metis-app")?.textContent?.trim().slice(0, 64) ?? "",
-        visible:
-          document.querySelector("metis-app") instanceof HTMLElement &&
-          document.querySelector("metis-app")!.getBoundingClientRect().height > 0,
-        scopedSessionToken: sessionStorage.getItem("metis.control.token.v1:ws://127.0.0.1:18788/ws"),
-        legacyLocalToken: localStorage.getItem("metis.control.token.v1"),
-        scopedLocalToken: localStorage.getItem("metis.control.token.v1:ws://127.0.0.1:18788/ws"),
-      }));
+      const routes = [
+        "/chat?session=agent%3Amain%3Aexplicit%3Acli%3Amain",
+        "/agent-teams",
+      ];
+      const appStates = [];
+      for (const route of routes) {
+        await page.goto(`${server.url}${route}`, {
+          waitUntil: "domcontentloaded",
+        });
+        await page.waitForFunction(() => Boolean(customElements.get("metis-app")));
+        appStates.push(await page.evaluate(() => ({
+          defined: Boolean(customElements.get("metis-app")),
+          renderedText: document.querySelector("metis-app")?.textContent?.trim().slice(0, 4096) ?? "",
+          visible:
+            document.querySelector("metis-app") instanceof HTMLElement &&
+            document.querySelector("metis-app")!.getBoundingClientRect().height > 0,
+          pathname: window.location.pathname,
+          scopedSessionToken: sessionStorage.getItem("metis.control.token.v1:ws://127.0.0.1:18788/ws"),
+          legacyLocalToken: localStorage.getItem("metis.control.token.v1"),
+          scopedLocalToken: localStorage.getItem("metis.control.token.v1:ws://127.0.0.1:18788/ws"),
+        })));
+      }
       expect(errors).toEqual([]);
       expect(failedJsCssRequests).toEqual([]);
-      expect(appState.defined).toBe(true);
-      expect(appState.visible).toBe(true);
-      expect(appState.renderedText).toContain("Metis");
-      expect(appState.scopedSessionToken).toBe("smoke-token");
-      expect(appState.legacyLocalToken).toBeNull();
-      expect(appState.scopedLocalToken).toBeNull();
+      for (const appState of appStates) {
+        expect(appState.defined).toBe(true);
+        expect(appState.visible).toBe(true);
+        expect(appState.renderedText).toContain("Metis");
+        expect(appState.scopedSessionToken).toBe("smoke-token");
+        expect(appState.legacyLocalToken).toBeNull();
+        expect(appState.scopedLocalToken).toBeNull();
+      }
+      expect(appStates[1]?.pathname).toBe("/agent-teams");
     } finally {
       await browser.close();
       await server.close();
