@@ -274,6 +274,27 @@ describe("renderAgentTeamsPanel", () => {
     });
   });
 
+  it("renders manual evidence and external resource readiness panels", () => {
+    const container = document.createElement("div");
+    render(renderAgentTeamsPanel(createProps()), container);
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Manual acceptance / evidence pack");
+    expect(text).toContain("local-pass");
+    expect(text).toContain("operator-record-required");
+    expect(text).toContain("scripts/agentteam-manual-acceptance-gate.sh");
+    expect(text).toContain("External resource readiness");
+    expect(text).toContain("Telegram bot, DM, group, topic, and broadcast");
+    expect(text).toContain("Feishu existing app/bot and two accountIds");
+    expect(text).toContain("Feishu OAuth, OAPI scopes, and low-risk resources");
+    expect(text).toContain("Feishu CardKit and rich event live smoke");
+    expect(text).toContain("external-resource-required");
+    expect(text).toContain("Control UI provides guided setup and linking an existing Feishu bot");
+    expect(text).toContain("does not create a Feishu app or bot");
+    expect(text).toContain("Gateway RPC only");
+    expect(text).not.toContain("secret-feishu-access-token");
+  });
+
   it("renders member detail and health summary without leaking secrets", () => {
     const container = document.createElement("div");
     render(

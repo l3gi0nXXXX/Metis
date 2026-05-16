@@ -5,6 +5,7 @@ import {
   AGENT_TEAM_PROFILE_FILES,
   applyAgentTeamTemplate,
   applyAgentTeamBinding,
+  buildAgentTeamAcceptancePlan,
   buildAgentTeamCultivationSnapshot,
   buildAgentTeamBindingPreview,
   exportAgentTeamTemplate,
@@ -147,6 +148,60 @@ describe("team mutations", () => {
     expect(JSON.parse(imported.membersJson)).toEqual(JSON.parse(draft.membersJson));
     expect(JSON.parse(imported.aliasesJson)).toEqual(JSON.parse(draft.aliasesJson));
     expect(JSON.parse(imported.bindingsJson)).toEqual([]);
+  });
+
+  it("summarizes local evidence rows separately from Telegram and Feishu live resource requirements", () => {
+    const plan = buildAgentTeamAcceptancePlan({
+      teamCount: 1,
+      memberCount: 2,
+      bindingCount: 1,
+      hasModelState: true,
+      hasWorkspaceProfile: true,
+      channelsSnapshot: {
+        ts: 1,
+        channelOrder: ["telegram", "feishu"],
+        channelLabels: { telegram: "Telegram", feishu: "Feishu" },
+        channels: {
+          telegram: { configured: true, running: true },
+          feishu: {
+            configured: true,
+            running: true,
+            capabilities: ["oauth:device-flow", "oapi:docs", "doctor"],
+            auth: {
+              status: "scope_missing",
+              missingAppScopes: ["im:message"],
+              missingUserScopes: ["offline_access"],
+            },
+          },
+        },
+        channelAccounts: {
+          telegram: [{ accountId: "bot-a", configured: true, running: true }],
+          feishu: [{ accountId: "tenant-a", configured: true, running: true }],
+        },
+        channelDefaultAccountId: { telegram: "bot-a", feishu: "tenant-a" },
+      },
+    });
+
+    expect(plan.summary).toEqual({
+      localPass: 3,
+      externalResourceRequired: 4,
+      operatorRecordRequired: 1,
+    });
+    expect(plan.evidenceItems.map((item) => item.status)).toEqual([
+      "local-pass",
+      "local-pass",
+      "local-pass",
+      "operator-record-required",
+    ]);
+    expect(plan.externalItems.map((item) => item.title)).toEqual([
+      "Telegram bot, DM, group, topic, and broadcast",
+      "Feishu existing app/bot and two accountIds",
+      "Feishu OAuth, OAPI scopes, and low-risk resources",
+      "Feishu CardKit and rich event live smoke",
+    ]);
+    expect(plan.externalItems.every((item) => item.status === "external-resource-required")).toBe(true);
+    expect(plan.externalItems[1]?.detail).toContain("guided setup and linking an existing Feishu bot");
+    expect(plan.externalItems[1]?.detail).toContain("does not create a Feishu app or bot");
   });
 
   it("edits team members without requiring raw JSON textarea changes", () => {

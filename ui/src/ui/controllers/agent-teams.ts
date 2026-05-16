@@ -124,6 +124,29 @@ export type AgentTeamCultivationSnapshot = {
   };
 };
 
+export type AgentTeamAcceptanceStatus =
+  | "local-pass"
+  | "external-resource-required"
+  | "operator-record-required";
+
+export type AgentTeamAcceptanceItem = {
+  title: string;
+  status: AgentTeamAcceptanceStatus;
+  detail: string;
+  acceptance: string;
+};
+
+export type AgentTeamAcceptancePlan = {
+  evidenceCommand: string;
+  summary: {
+    localPass: number;
+    externalResourceRequired: number;
+    operatorRecordRequired: number;
+  };
+  evidenceItems: AgentTeamAcceptanceItem[];
+  externalItems: AgentTeamAcceptanceItem[];
+};
+
 export type AgentTeamFeishuAuthResult = Record<string, unknown>;
 export type AgentTeamFeishuAuthAction = "start" | "status" | "poll" | "complete" | "revoke";
 
@@ -390,6 +413,102 @@ export function buildAgentTeamCultivationSnapshot(params: {
       lastProbeAt: numberValue(doctor?.lastProbeAt),
       findings: extractDoctorFindings(doctor),
     },
+  };
+}
+
+export function buildAgentTeamAcceptancePlan(params: {
+  teamCount: number;
+  memberCount: number;
+  bindingCount: number;
+  hasModelState: boolean;
+  hasWorkspaceProfile: boolean;
+  channelsSnapshot: ChannelsStatusSnapshot | null;
+}): AgentTeamAcceptancePlan {
+  const telegramStatus = channelStatus(params.channelsSnapshot, "telegram");
+  const feishuStatus = channelStatus(params.channelsSnapshot, "feishu");
+  const feishuAuth = objectValue(feishuStatus.raw?.auth) ?? objectValue(feishuStatus.raw?.oauth);
+  const feishuCapabilities = stringArrayValue(feishuStatus.raw?.capabilities).map((capability) =>
+    capability.toLowerCase(),
+  );
+  const appScopeGaps = scopeList(feishuAuth, ["missingAppScopes", "missing_app_scopes", "appScopeMissing"]);
+  const userScopeGaps = scopeList(feishuAuth, ["missingUserScopes", "missing_user_scopes", "userScopeMissing"]);
+  const oapiVisible = feishuCapabilities.some(
+    (capability) => capability.includes("oapi") || capability.includes("openapi"),
+  );
+  const evidenceItems: AgentTeamAcceptanceItem[] = [
+    {
+      title: "Team CRUD, members, aliases, bindings, and broadcast",
+      status: "local-pass",
+      detail: [
+        countText(params.teamCount, "team"),
+        countText(params.memberCount, "member"),
+        `${countText(params.bindingCount, "binding")} visible from Gateway RPC`,
+      ].join(" · "),
+      acceptance: "Create, edit, delete, and refresh a team without using IM commands or local config files.",
+    },
+    {
+      title: "Profile, model, and binding editors",
+      status: "local-pass",
+      detail: [
+        params.hasWorkspaceProfile ? "workspace/profile loaded" : "workspace/profile editor available",
+        params.hasModelState ? "model state loaded" : "model editor available",
+        "route preview is browser-local until Apply",
+      ].join(" · "),
+      acceptance: "Profile and model changes go through agents.files and agents.models Gateway RPC.",
+    },
+    {
+      title: "Template import/export and route preview",
+      status: "local-pass",
+      detail: "metis.agentTeamTemplate.v1 excludes tokens, secrets, and local auth files.",
+      acceptance: "Export/import template JSON and preview Telegram or Feishu routes before applying.",
+    },
+    {
+      title: "Manual gate evidence pack",
+      status: "operator-record-required",
+      detail: "Run the manual acceptance gate from an operator shell and attach its redacted report.",
+      acceptance: "Report records local-pass, external-resource-required, skipped, and operator notes without real tokens.",
+    },
+  ];
+  const externalItems: AgentTeamAcceptanceItem[] = [
+    {
+      title: "Telegram bot, DM, group, topic, and broadcast",
+      status: "external-resource-required",
+      detail: telegramStatus.accountCount > 0
+        ? `Gateway status sees ${telegramStatus.accountCount} Telegram account(s); live acceptance still needs test bot, private chat, group, topic, and broadcast evidence.`
+        : "Requires a test Telegram bot, private chat, group, topic, and broadcast run; local UI can only prepare route bindings.",
+      acceptance: "Collect redacted inbound, route, broadcast fan-out, and reply evidence from real Telegram chats.",
+    },
+    {
+      title: "Feishu existing app/bot and two accountIds",
+      status: "external-resource-required",
+      detail: `${feishuStatus.accountCount} Feishu account(s) visible. ` +
+        "Control UI provides guided setup and linking an existing Feishu bot; " +
+        "it does not create a Feishu app or bot.",
+      acceptance: "Use real test apps/bots, two accountIds, a test tenant, test user, group, and thread.",
+    },
+    {
+      title: "Feishu OAuth, OAPI scopes, and low-risk resources",
+      status: "external-resource-required",
+      detail: [
+        `OAuth ${statusLabel(feishuAuth, "not visible")}`,
+        `OAPI ${oapiVisible ? "visible" : "not advertised"}`,
+        `app scopes ${scopeSummary(appScopeGaps)}`,
+        `user scopes ${scopeSummary(userScopeGaps)}`,
+      ].join(" · "),
+      acceptance: "Complete offline_access OAuth and low-risk doc/wiki/calendar/task/bitable/sheet/im smoke against test resources.",
+    },
+    {
+      title: "Feishu CardKit and rich event live smoke",
+      status: "external-resource-required",
+      detail: "Needs real card create/patch/finalize/abort plus image, file, audio, video, reaction, quote, and forward events.",
+      acceptance: "Collect redacted card fallback/success and rich-event resource evidence from a real Feishu test group.",
+    },
+  ];
+  return {
+    evidenceCommand: "scripts/agentteam-manual-acceptance-gate.sh",
+    summary: countAcceptanceStatuses([...evidenceItems, ...externalItems]),
+    evidenceItems,
+    externalItems,
   };
 }
 
@@ -1131,6 +1250,57 @@ function uniqueStrings(values: string[]): string[] {
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function channelStatus(snapshot: ChannelsStatusSnapshot | null, channel: string): {
+  raw: Record<string, unknown> | null;
+  accountCount: number;
+} {
+  const raw = objectValue(snapshot?.channels?.[channel]);
+  const accounts = snapshot?.channelAccounts?.[channel] ?? [];
+  return {
+    raw,
+    accountCount: accounts.length,
+  };
+}
+
+function countAcceptanceStatuses(items: AgentTeamAcceptanceItem[]): AgentTeamAcceptancePlan["summary"] {
+  return {
+    localPass: items.filter((item) => item.status === "local-pass").length,
+    externalResourceRequired: items.filter((item) => item.status === "external-resource-required").length,
+    operatorRecordRequired: items.filter((item) => item.status === "operator-record-required").length,
+  };
+}
+
+function scopeList(auth: Record<string, unknown> | null, keys: string[]): string[] {
+  if (!auth) {
+    return [];
+  }
+  for (const key of keys) {
+    const value = auth[key];
+    if (Array.isArray(value)) {
+      return value.map((item) => stringValue(item).trim()).filter(Boolean);
+    }
+    if (typeof value === "string" && value.trim()) {
+      return value.split(",").map((item) => item.trim()).filter(Boolean);
+    }
+  }
+  return [];
+}
+
+function statusLabel(value: Record<string, unknown> | null, fallback: string): string {
+  if (!value) {
+    return fallback;
+  }
+  return stringValue(value.status) || stringValue(value.tokenStatus) || fallback;
+}
+
+function scopeSummary(scopes: string[]): string {
+  return scopes.length > 0 ? scopes.join(", ") : "none reported";
+}
+
+function countText(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 function numberValue(value: unknown): number | undefined {

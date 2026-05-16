@@ -15,6 +15,7 @@ import {
   AGENT_TEAM_PROFILE_FILES,
   AGENT_TEAM_TEMPLATE_GROUPS,
   applyAgentTeamTemplate,
+  buildAgentTeamAcceptancePlan,
   buildAgentTeamCultivationSnapshot,
   buildAgentTeamBindingPreview,
   changeAgentTeamAlias,
@@ -26,6 +27,7 @@ import {
   setAgentTeamBroadcastEnabled,
   setAgentTeamBroadcastMember,
   setAgentTeamBroadcastMembers,
+  type AgentTeamAcceptanceItem,
   type AgentTeamAliasDraft,
   type AgentTeamBindingDraft,
   type AgentTeamBindingPreview,
@@ -101,6 +103,7 @@ export function renderAgentTeamsPanel(props: AgentTeamsPanelProps) {
     ${renderWorkflowStrip(props, activeMembers, activeBroadcast)}
     ${renderTeamWizardCard(props, activeMembers)}
     ${renderFeishuSetupRepairWizard(props)}
+    ${renderAcceptanceReadinessPanels(props, teams, activeMembers)}
 
     <section class="grid grid-cols-2">
       ${renderTeamsList(props, teams)}
@@ -136,6 +139,91 @@ export function renderAgentTeamsPanel(props: AgentTeamsPanelProps) {
     <section style="margin-top: 16px;">
       ${renderDoctorPanel(props, teams, activeMembers)}
     </section>
+  `;
+}
+
+function renderAcceptanceReadinessPanels(
+  props: AgentTeamsPanelProps,
+  teams: AgentTeam[],
+  members: AgentTeamMember[],
+) {
+  const plan = buildAgentTeamAcceptancePlan({
+    teamCount: teams.length,
+    memberCount: members.length,
+    bindingCount: safeJsonArrayLength(props.draft.bindingsJson),
+    hasModelState: Boolean(props.modelResult?.models),
+    hasWorkspaceProfile: Boolean(props.workspace.workspace || props.workspace.files.length > 0),
+    channelsSnapshot: props.channelsSnapshot,
+  });
+  return html`
+    <section class="grid grid-cols-2" style="margin-bottom: 16px;">
+      <section class="card">
+        <div class="row" style="justify-content: space-between; align-items: flex-start;">
+          <div>
+            <div class="card-title">Manual acceptance / evidence pack</div>
+            <div class="card-sub">
+              Local UI evidence can pass without real IM resources; live Telegram and Feishu rows stay explicit until operator evidence is attached.
+            </div>
+          </div>
+          <span class="badge">${plan.summary.localPass} local-pass</span>
+        </div>
+        <div class="agents-overview-grid" style="margin-top: 14px;">
+          <div class="agent-kv">
+            <div class="label">Local rows</div>
+            <div>${plan.summary.localPass} local-pass</div>
+          </div>
+          <div class="agent-kv">
+            <div class="label">External rows</div>
+            <div>${plan.summary.externalResourceRequired} external-resource-required</div>
+          </div>
+          <div class="agent-kv">
+            <div class="label">Operator rows</div>
+            <div>${plan.summary.operatorRecordRequired} operator-record-required</div>
+          </div>
+          <div class="agent-kv">
+            <div class="label">Write boundary</div>
+            <div>Gateway RPC only</div>
+          </div>
+        </div>
+        <div class="agent-kv" style="margin-top: 12px;">
+          <div class="label">Evidence command</div>
+          <pre class="mono" style="white-space: pre-wrap; margin: 0;">${plan.evidenceCommand}</pre>
+        </div>
+        <div class="list" style="margin-top: 12px;">
+          ${plan.evidenceItems.map((item) => renderAcceptanceItem(item))}
+        </div>
+      </section>
+      <section class="card">
+        <div class="row" style="justify-content: space-between; align-items: flex-start;">
+          <div>
+            <div class="card-title">External resource readiness</div>
+            <div class="card-sub">
+              Telegram and Feishu live acceptance needs real test resources; this panel separates setup signals from live proof.
+            </div>
+          </div>
+          <span class="badge">${plan.summary.externalResourceRequired} external-resource-required</span>
+        </div>
+        <div class="callout info" style="margin-top: 12px;">
+          Control UI provides guided setup and linking an existing Feishu bot; it does not create a Feishu app or bot. Secrets and real token files stay behind Gateway RPC or operator-managed backend configuration.
+        </div>
+        <div class="list" style="margin-top: 12px;">
+          ${plan.externalItems.map((item) => renderAcceptanceItem(item))}
+        </div>
+      </section>
+    </section>
+  `;
+}
+
+function renderAcceptanceItem(item: AgentTeamAcceptanceItem) {
+  return html`
+    <div class="list-item">
+      <div class="list-main">
+        <div class="list-title">${item.title}</div>
+        <div class="list-sub">${item.detail}</div>
+        <div class="list-sub" style="margin-top: 6px;">Acceptance: ${item.acceptance}</div>
+      </div>
+      <div class="list-meta"><span class="badge">${item.status}</span></div>
+    </div>
   `;
 }
 
