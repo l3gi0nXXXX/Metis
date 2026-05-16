@@ -85,6 +85,32 @@ private func gatewaySessionTurnWriteAgentRuntimeConfig(home: Path): Unit {
     CliSettingManager.invalidate()
 }
 
+private func gatewaySessionTurnImageMediaContext(
+    localPath: String,
+    status!: String = "",
+    error!: String = ""
+): JsonObject {
+    let media = JsonObject()
+    let records = JsonArray([])
+    let record = JsonObject()
+    record.put("mediaId", JsonString("tg-image-fallback"))
+    record.put("mediaKind", JsonString("photo"))
+    record.put("mimeType", JsonString("image/jpeg"))
+    record.put("localPath", JsonString(localPath))
+    record.put("downloaded", JsonBool(true))
+    record.put("channel", JsonString("telegram"))
+    if (!status.trimAscii().isEmpty()) {
+        record.put("mediaUnderstandingStatus", JsonString(status.trimAscii()))
+        record.put("mediaUnderstandingCapability", JsonString("image"))
+    }
+    if (!error.trimAscii().isEmpty()) {
+        record.put("mediaUnderstandingError", JsonString(error.trimAscii()))
+    }
+    records.add(record)
+    media.put("records", records)
+    media
+}
+
 @Test
 public class GatewaySessionTurnRunnerTest {
     @TestCase
@@ -271,6 +297,238 @@ public class GatewaySessionTurnRunnerTest {
             @Expect(result.deliveryStatus, "delivered-by-tool")
             @Expect(sentTexts.size, 0)
             @Expect(statuses[statuses.size - 1], "done")
+        } finally {
+            setGatewayAgentBridgeReplyRunnerForTest(None<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String>)
+        }
+    }
+
+    @TestCase
+    public func telegramImageProviderErrorFallbackSendsUserVisibleTextWhenAgentHasNoAnswer(): Unit {
+        let sentTexts = ArrayList<String>()
+        let mediaContext = gatewaySessionTurnImageMediaContext(
+            "/tmp/metis-no-real-provider-image.jpg",
+            status: "provider_error",
+            error: "Http status: 401 invalid_api_key api_key=test-secret"
+        )
+        setGatewayAgentBridgeReplyRunnerForTest(Some({
+            _conversationKey: String,
+            _prompt: String,
+            _channelName: String,
+            _agentId: String,
+            _streamingEnabled: Bool,
+            _streamChunkHook: Option<(String) -> Unit> => ""
+        }))
+        try {
+            let store = GatewaySessionStore(Path("."), enabled: false, agentId: "general")
+            let bridge = AgentBridge(sessionStore: store)
+            let context = GatewaySessionContext(
+                GatewayIngressSource.Channel("telegram"),
+                "telegram",
+                "telegram",
+                "telegram:chat:1",
+                "general",
+                deliveryTarget: Some(GatewayDeliveryTarget("telegram", "user:1", accountId: "default", replyToMessageId: "7"))
+            )
+            let result = gatewayExecuteSessionTurn(
+                bridge,
+                context,
+                "describe image",
+                deliver: true,
+                toolRuntimeContext: Some(GatewayToolRuntimeContext(
+                    "telegram",
+                    channelName: "telegram",
+                    sessionKey: "telegram:chat:1",
+                    mediaContext: mediaContext
+                )),
+                deliverHook: Some({
+                    _channelName: String,
+                    _accountId: String,
+                    _peerId: String,
+                    text: String,
+                    _replyToMessageId: Option<String>,
+                    _replyInThread: Bool =>
+                        sentTexts.add(text)
+                        "fallback-1"
+                })
+            )
+            @Expect(result.delivered, true)
+            @Expect(sentTexts.size, 1)
+            @Expect(sentTexts[0].contains("图片解析服务调用失败"), true)
+            @Expect(sentTexts[0].contains("401"), true)
+            @Expect(sentTexts[0].contains("invalid_api_key"), true)
+            @Expect(sentTexts[0].contains("test-secret"), false)
+            @Expect(sentTexts[0].contains("{"), false)
+            @Expect(sentTexts[0].contains("\"status\""), false)
+        } finally {
+            setGatewayAgentBridgeReplyRunnerForTest(None<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String>)
+        }
+    }
+
+    @TestCase
+    public func telegramImageNotConfiguredFallbackIsComputedFromMediaPrompt(): Unit {
+        let root = Path("/tmp/metis-image-not-configured-fallback-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root, recursive: true)
+        let image = root.join("image.jpg")
+        File.writeTo(image, "fake-image".toArray())
+        let sentTexts = ArrayList<String>()
+        setGatewayAgentBridgeReplyRunnerForTest(Some({
+            _conversationKey: String,
+            _prompt: String,
+            _channelName: String,
+            _agentId: String,
+            _streamingEnabled: Bool,
+            _streamChunkHook: Option<(String) -> Unit> => "<SILENT_REPLY>"
+        }))
+        try {
+            let store = GatewaySessionStore(Path("."), enabled: false, agentId: "general")
+            let bridge = AgentBridge(sessionStore: store)
+            let request = GatewaySessionRequest(
+                GatewayIngressSource.Channel("telegram"),
+                channelName: "telegram",
+                sessionHint: "telegram:chat:1",
+                agentId: "general",
+                text: "describe",
+                accountId: "default",
+                peerId: "user:1",
+                sourceMessageId: "7",
+                mediaContext: gatewaySessionTurnImageMediaContext(image.toString())
+            )
+            let result = gatewayExecuteSessionRequestTurn(
+                bridge,
+                request,
+                "describe",
+                deliver: true,
+                deliverHook: Some({
+                    _channelName: String,
+                    _accountId: String,
+                    _peerId: String,
+                    text: String,
+                    _replyToMessageId: Option<String>,
+                    _replyInThread: Bool =>
+                        sentTexts.add(text)
+                        "fallback-not-configured"
+                })
+            )
+            @Expect(result.execution.delivered, true)
+            @Expect(sentTexts.size, 1)
+            @Expect(sentTexts[0], "图片解析模型未配置。")
+        } finally {
+            setGatewayAgentBridgeReplyRunnerForTest(None<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String>)
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func telegramImageFallbackDoesNotDuplicateWhenAgentAnswersNormally(): Unit {
+        let sentTexts = ArrayList<String>()
+        let mediaContext = gatewaySessionTurnImageMediaContext(
+            "/tmp/metis-no-real-provider-image.jpg",
+            status: "provider_error",
+            error: "Http status: 401 invalid_api_key"
+        )
+        setGatewayAgentBridgeReplyRunnerForTest(Some({
+            _conversationKey: String,
+            _prompt: String,
+            _channelName: String,
+            _agentId: String,
+            _streamingEnabled: Bool,
+            _streamChunkHook: Option<(String) -> Unit> => "我会稍后再试图片解析。"
+        }))
+        try {
+            let store = GatewaySessionStore(Path("."), enabled: false, agentId: "general")
+            let bridge = AgentBridge(sessionStore: store)
+            let context = GatewaySessionContext(
+                GatewayIngressSource.Channel("telegram"),
+                "telegram",
+                "telegram",
+                "telegram:chat:1",
+                "general",
+                deliveryTarget: Some(GatewayDeliveryTarget("telegram", "user:1", accountId: "default", replyToMessageId: "7"))
+            )
+            let result = gatewayExecuteSessionTurn(
+                bridge,
+                context,
+                "describe image",
+                deliver: true,
+                toolRuntimeContext: Some(GatewayToolRuntimeContext(
+                    "telegram",
+                    channelName: "telegram",
+                    sessionKey: "telegram:chat:1",
+                    mediaContext: mediaContext
+                )),
+                deliverHook: Some({
+                    _channelName: String,
+                    _accountId: String,
+                    _peerId: String,
+                    text: String,
+                    _replyToMessageId: Option<String>,
+                    _replyInThread: Bool =>
+                        sentTexts.add(text)
+                        "normal-1"
+                })
+            )
+            @Expect(result.delivered, true)
+            @Expect(sentTexts.size, 1)
+            @Expect(sentTexts[0], "我会稍后再试图片解析。")
+        } finally {
+            setGatewayAgentBridgeReplyRunnerForTest(None<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String>)
+        }
+    }
+
+    @TestCase
+    public func telegramImageProviderErrorFallbackSendsWhenAgentTurnThrows(): Unit {
+        let sentTexts = ArrayList<String>()
+        let mediaContext = gatewaySessionTurnImageMediaContext(
+            "/tmp/metis-no-real-provider-image.jpg",
+            status: "provider_error",
+            error: "Http status: 401 invalid_api_key"
+        )
+        setGatewayAgentBridgeReplyRunnerForTest(Some({
+            _conversationKey: String,
+            _prompt: String,
+            _channelName: String,
+            _agentId: String,
+            _streamingEnabled: Bool,
+            _streamChunkHook: Option<(String) -> Unit> =>
+                throw Exception("agent failed before final text")
+        }))
+        try {
+            let store = GatewaySessionStore(Path("."), enabled: false, agentId: "general")
+            let bridge = AgentBridge(sessionStore: store)
+            let context = GatewaySessionContext(
+                GatewayIngressSource.Channel("telegram"),
+                "telegram",
+                "telegram",
+                "telegram:chat:1",
+                "general",
+                deliveryTarget: Some(GatewayDeliveryTarget("telegram", "user:1", accountId: "default", replyToMessageId: "7"))
+            )
+            let result = gatewayExecuteSessionTurn(
+                bridge,
+                context,
+                "describe image",
+                deliver: true,
+                toolRuntimeContext: Some(GatewayToolRuntimeContext(
+                    "telegram",
+                    channelName: "telegram",
+                    sessionKey: "telegram:chat:1",
+                    mediaContext: mediaContext
+                )),
+                deliverHook: Some({
+                    _channelName: String,
+                    _accountId: String,
+                    _peerId: String,
+                    text: String,
+                    _replyToMessageId: Option<String>,
+                    _replyInThread: Bool =>
+                        sentTexts.add(text)
+                        "fallback-throw"
+                })
+            )
+            @Expect(result.delivered, true)
+            @Expect(result.deliveryStatus, "delivered-fallback")
+            @Expect(sentTexts.size, 1)
+            @Expect(sentTexts[0].contains("图片解析服务调用失败"), true)
         } finally {
             setGatewayAgentBridgeReplyRunnerForTest(None<(String, String, String, String, Bool, Option<(String) -> Unit>) -> String>)
         }

@@ -105,6 +105,28 @@ private class GatewayTelegramNativeTestAdapter <: ChannelAdapter {
     }
 }
 
+private class GatewayTelegramFailingSendAdapter <: ChannelAdapter {
+    public prop name: String {
+        get() { "telegram" }
+    }
+
+    public func start(): Unit {}
+
+    public func stop(): Unit {}
+
+    public func pullInbound(): Array<InboundMessage> {
+        []
+    }
+
+    public func send(_message: OutboundMessage): SendResult {
+        SendResult.Failed("Authorization: Bearer test-secret-token")
+    }
+
+    public func sendWithMessageId(_message: OutboundMessage): String {
+        throw Exception("direct transport failed with api_key=test-secret-key")
+    }
+}
+
 private class GatewayTelegramSidecarMethodRecorder {
     private let methods = ArrayList<String>()
 
@@ -271,6 +293,113 @@ private func gatewayTelegramNativeCreateCustomSubagentFixture(id: String, backgr
         ).toArray()
     )
     CliConfig.invalidatePathCache()
+}
+
+@Test
+public class GatewayServiceTelegramSendDiagnosticsTest {
+    @TestCase
+    public func sendTextMatchesRegisteredTelegramDefaultAlias(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let policies = HashMap<String, ChannelPolicyConfig>()
+            policies["telegram"] = ChannelPolicyConfig(enableDirect: true, allowFrom: ["*"])
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = GatewayService(GatewayRouter(policies))
+            service.registerAdapter(adapter, channelId: "telegram", accountId: "telegram:default")
+
+            let sentId = service.sendTextToPeerDetailed(
+                "telegram",
+                "8734062810",
+                "hello",
+                accountId: "default"
+            )
+            @Expect(sentId, "test-message-1")
+            @Expect(adapter.sentCount(), 1)
+        }
+    }
+
+    @TestCase
+    public func sendTextDiagnosesAdapterNotRegistered(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let policies = HashMap<String, ChannelPolicyConfig>()
+            policies["telegram"] = ChannelPolicyConfig(enableDirect: true, allowFrom: ["*"])
+            let service = GatewayService(GatewayRouter(policies))
+
+            try {
+                let _ = service.sendTextToPeerDetailed("telegram", "8734062810", "hello", accountId: "default")
+                @Expect(true, false)
+            } catch (e: Exception) {
+                @Expect(e.message.contains("adapter not registered"), true)
+                @Expect(e.message.contains("reasonKind=adapter_not_registered"), true)
+                @Expect(e.message.contains("test-secret"), false)
+            }
+        }
+    }
+
+    @TestCase
+    public func sendTextDiagnosesAccountMismatchWithCanonicalAccountId(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let policies = HashMap<String, ChannelPolicyConfig>()
+            policies["telegram"] = ChannelPolicyConfig(enableDirect: true, allowFrom: ["*"])
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = GatewayService(GatewayRouter(policies))
+            service.registerAdapter(adapter, channelId: "telegram", accountId: "work")
+
+            try {
+                let _ = service.sendTextToPeerDetailed("telegram", "8734062810", "hello", accountId: "default")
+                @Expect(true, false)
+            } catch (e: Exception) {
+                @Expect(e.message.contains("accountId mismatch"), true)
+                @Expect(e.message.contains("rawAccountId='default'"), true)
+                @Expect(e.message.contains("canonicalAccountId='default'"), true)
+                @Expect(e.message.contains("registeredAccounts='work'"), true)
+                @Expect(adapter.sentCount(), 0)
+            }
+        }
+    }
+
+    @TestCase
+    public func sendTextPreservesSanitizedDirectAndFallbackSendFailures(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let policies = HashMap<String, ChannelPolicyConfig>()
+            policies["telegram"] = ChannelPolicyConfig(enableDirect: true, allowFrom: ["*"])
+            let service = GatewayService(GatewayRouter(policies))
+            service.registerAdapter(GatewayTelegramFailingSendAdapter(), channelId: "telegram", accountId: "telegram:default")
+
+            try {
+                let _ = service.sendTextToPeerDetailed("telegram", "8734062810", "hello", accountId: "default")
+                @Expect(true, false)
+            } catch (e: Exception) {
+                @Expect(e.message.contains("reasonKind=send_failed"), true)
+                @Expect(e.message.contains("adapter send failed"), true)
+                @Expect(e.message.contains("direct adapter send failed"), true)
+                @Expect(e.message.contains("[redacted sensitive error]"), true)
+                @Expect(e.message.contains("test-secret-token"), false)
+                @Expect(e.message.contains("test-secret-key"), false)
+                @Expect(e.message.contains("Authorization"), false)
+                @Expect(e.message.contains("api_key"), false)
+            }
+        }
+    }
 }
 
 @Test

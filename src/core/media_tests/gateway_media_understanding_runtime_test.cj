@@ -2,12 +2,12 @@ package metis.core.media_tests
 
 import metis.core.*
 
-import metis.core.config.GatewayUserSettings
+import metis.core.config.{CliConfig, GatewayUserSettings}
 import magic.core.message.Message
 import magic.core.model.{AsyncChatResponse, ChatModel, ChatRequest, ChatResponse}
 import magic.model.ModelManager
 
-import std.fs.{Directory, File, Path}
+import std.fs.{Directory, File, Path, remove}
 import std.time.*
 import std.unittest.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
@@ -82,6 +82,35 @@ private class GatewayImageRuntimeFakeModel <: ChatModel {
     }
 }
 
+private class GatewayImageRuntimeProviderErrorFakeModel <: ChatModel {
+    private var _maxTokens: Option<Int64> = None
+
+    public prop provider: String {
+        get() { "fake" }
+    }
+
+    public prop name: String {
+        get() { "image-runtime-error" }
+    }
+
+    public prop contextLength: Int64 {
+        get() { 8192 }
+    }
+
+    public mut prop maxTokens: Option<Int64> {
+        get() { this._maxTokens }
+        set(v) { this._maxTokens = v }
+    }
+
+    public func create(_request: ChatRequest): ChatResponse {
+        throw Exception("Http status: 401 invalid_api_key Authorization: Bearer sk-live-secret https://provider.example/v1/chat?api_key=query-secret&token=query-token DASHSCOPE_API_KEY=dash-secret")
+    }
+
+    public func asyncCreate(_request: ChatRequest): AsyncChatResponse {
+        throw Exception("async not used in gateway image runtime tests")
+    }
+}
+
 private func mediaAsrTestProvider(text: String): JsonObject {
     let provider = JsonObject()
     provider.put("kind", JsonString("command"))
@@ -95,6 +124,19 @@ private func mediaImageConfigForModel(modelRef: String): JsonObject {
     entry.put("provider", JsonString(parts[0]))
     entry.put("model", JsonString(parts[1]))
     entry.put("capabilities", JsonArray([JsonString("image")]))
+    let models = JsonArray([])
+    models.add(entry)
+    let image = JsonObject()
+    image.put("enabled", JsonBool(true))
+    image.put("models", models)
+    image
+}
+
+private func mediaImageConfigForModelWithoutCapabilities(modelRef: String): JsonObject {
+    let entry = JsonObject()
+    let parts = modelRef.split("/", 2)
+    entry.put("provider", JsonString(parts[0]))
+    entry.put("model", JsonString(parts[1]))
     let models = JsonArray([])
     models.add(entry)
     let image = JsonObject()
@@ -273,5 +315,139 @@ public class GatewayMediaUnderstandingRuntimeTest {
         let outputs = result.get("outputs").getOrThrow().asArray()
         @Expect(outputs[0].asObject().get("kind").getOrThrow().asString().getValue(), "image.description")
         @Expect(outputs[0].asObject().get("source").getOrThrow().asString().getValue(), "gateway_image_understanding_runtime")
+    }
+
+    @TestCase
+    public func configuredImageProviderExceptionPropagatesProviderErrorAndRedactsSecrets(): Unit {
+        let root = mediaAsrTestTempRoot("image-provider-error")
+        let image = root.join("image.jpg")
+        File.writeTo(image, "fake-image".toArray())
+        let modelRef = "fake:image-runtime-error"
+        ModelManager.registerChatModel(modelRef, { => GatewayImageRuntimeProviderErrorFakeModel() })
+        var user = GatewayUserSettings()
+        user.media.image = mediaImageConfigForModel(modelRef)
+
+        let oldModel = CliConfig.modelOrEmpty()
+        let oldFallbacks = CliConfig.fallbackModels
+        let oldImageModel = CliConfig.imageModelOrEmpty()
+        let oldImageFallbacks = CliConfig.imageFallbackModels
+        try {
+            CliConfig.clearPrimaryModelForTest()
+            CliConfig.fallbackModels = []
+            CliConfig.clearImageModelForTest()
+            CliConfig.imageFallbackModels = []
+
+            let result = gatewayMediaUnderstandingForRecordWithSettings(mediaImageTestRecord(image.toString()), user, capability: "image")
+
+            @Expect(mediaAsrString(result, "status"), "provider_error")
+            @Expect(mediaAsrString(result, "visionStatus"), "provider_error")
+            @Expect(mediaAsrString(result, "error").contains("401"), true)
+            @Expect(mediaAsrString(result, "error").contains("invalid_api_key"), true)
+            @Expect(result.toJsonString().contains("sk-live-secret"), false)
+            @Expect(result.toJsonString().contains("query-secret"), false)
+            @Expect(result.toJsonString().contains("query-token"), false)
+            @Expect(result.toJsonString().contains("dash-secret"), false)
+            let attempts = result.get("attempts").getOrThrow().asArray()
+            @Expect(attempts.size(), 1)
+            @Expect(attempts[0].asObject().get("status").getOrThrow().asString().getValue(), "provider_error")
+            @Expect(attempts[0].asObject().get("error").getOrThrow().asString().getValue().contains("401"), true)
+        } finally {
+            if (oldModel.isEmpty()) {
+                CliConfig.clearPrimaryModelForTest()
+            } else {
+                CliConfig.model = oldModel
+            }
+            CliConfig.fallbackModels = oldFallbacks
+            if (oldImageModel.isEmpty()) {
+                CliConfig.clearImageModelForTest()
+            } else {
+                CliConfig.imageModel = oldImageModel
+            }
+            CliConfig.imageFallbackModels = oldImageFallbacks
+            try { remove(root, recursive: true) } catch (_: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func configuredUnsupportedImageModelIsNotReportedAsNotConfigured(): Unit {
+        let root = mediaAsrTestTempRoot("image-unsupported")
+        let image = root.join("image.jpg")
+        File.writeTo(image, "fake-image".toArray())
+        var user = GatewayUserSettings()
+        user.media.image = mediaImageConfigForModelWithoutCapabilities("deepseek/deepseek-v4-pro")
+
+        let oldModel = CliConfig.modelOrEmpty()
+        let oldFallbacks = CliConfig.fallbackModels
+        let oldImageModel = CliConfig.imageModelOrEmpty()
+        let oldImageFallbacks = CliConfig.imageFallbackModels
+        try {
+            CliConfig.clearPrimaryModelForTest()
+            CliConfig.fallbackModels = []
+            CliConfig.clearImageModelForTest()
+            CliConfig.imageFallbackModels = []
+
+            let result = gatewayMediaUnderstandingForRecordWithSettings(mediaImageTestRecord(image.toString()), user, capability: "image")
+
+            @Expect(mediaAsrString(result, "status"), "unsupported")
+            @Expect(mediaAsrString(result, "visionStatus"), "unsupported")
+            @Expect(mediaAsrString(result, "error").contains("not configured"), false)
+            let attempts = result.get("attempts").getOrThrow().asArray()
+            @Expect(attempts.size(), 1)
+            let capability = attempts[0].asObject().get("capability").getOrThrow().asObject()
+            @Expect(capability.get("status").getOrThrow().asString().getValue(), "unsupported_model")
+        } finally {
+            if (oldModel.isEmpty()) {
+                CliConfig.clearPrimaryModelForTest()
+            } else {
+                CliConfig.model = oldModel
+            }
+            CliConfig.fallbackModels = oldFallbacks
+            if (oldImageModel.isEmpty()) {
+                CliConfig.clearImageModelForTest()
+            } else {
+                CliConfig.imageModel = oldImageModel
+            }
+            CliConfig.imageFallbackModels = oldImageFallbacks
+            try { remove(root, recursive: true) } catch (_: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func missingImageUnderstandingConfigReportsNotConfigured(): Unit {
+        let root = mediaAsrTestTempRoot("image-not-configured")
+        let image = root.join("image.jpg")
+        File.writeTo(image, "fake-image".toArray())
+        var user = GatewayUserSettings()
+
+        let oldModel = CliConfig.modelOrEmpty()
+        let oldFallbacks = CliConfig.fallbackModels
+        let oldImageModel = CliConfig.imageModelOrEmpty()
+        let oldImageFallbacks = CliConfig.imageFallbackModels
+        try {
+            CliConfig.clearPrimaryModelForTest()
+            CliConfig.fallbackModels = []
+            CliConfig.clearImageModelForTest()
+            CliConfig.imageFallbackModels = []
+
+            let result = gatewayMediaUnderstandingForRecordWithSettings(mediaImageTestRecord(image.toString()), user, capability: "image")
+
+            @Expect(mediaAsrString(result, "status"), "not_configured")
+            @Expect(mediaAsrString(result, "visionStatus"), "not_configured")
+            @Expect(result.get("attempts").isNone(), true)
+        } finally {
+            if (oldModel.isEmpty()) {
+                CliConfig.clearPrimaryModelForTest()
+            } else {
+                CliConfig.model = oldModel
+            }
+            CliConfig.fallbackModels = oldFallbacks
+            if (oldImageModel.isEmpty()) {
+                CliConfig.clearImageModelForTest()
+            } else {
+                CliConfig.imageModel = oldImageModel
+            }
+            CliConfig.imageFallbackModels = oldImageFallbacks
+            try { remove(root, recursive: true) } catch (_: Exception) { () }
+        }
     }
 }

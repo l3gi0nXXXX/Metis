@@ -5,7 +5,7 @@ import metis.core.config.{CliSettingManager, GatewayUserSettings}
 import metis.gateway.session.{GatewaySessionContext, GatewaySessionRequest}
 import std.collection.ArrayList
 import std.fs.{Path, exists}
-import stdx.encoding.json.{JsonArray, JsonObject}
+import stdx.encoding.json.{JsonArray, JsonObject, JsonString}
 
 private func gatewayJsonString(obj: JsonObject, key: String): String {
     match (obj.get(key)) {
@@ -132,6 +132,16 @@ public func gatewayBuildMediaContextPromptForUser(mediaContext: JsonObject, user
         }
         let understandingStatus = gatewayJsonString(understanding, "status")
         let understandingCapability = gatewayJsonString(understanding, "capability")
+        if (!understandingStatus.isEmpty()) {
+            record.put("mediaUnderstandingStatus", JsonString(understandingStatus))
+        }
+        if (!understandingCapability.isEmpty()) {
+            record.put("mediaUnderstandingCapability", JsonString(understandingCapability))
+        }
+        let understandingError = gatewayJsonString(understanding, "error")
+        if (!understandingError.isEmpty()) {
+            record.put("mediaUnderstandingError", JsonString(understandingError))
+        }
         let understandingText = gatewayMediaUnderstandingFirstText(understanding)
         let transcript = if (understandingCapability == "audio") { understandingText } else { "" }
         let imageDescription = if (understandingCapability == "image") { understandingText } else { "" }

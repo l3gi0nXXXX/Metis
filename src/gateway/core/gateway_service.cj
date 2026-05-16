@@ -3748,25 +3748,22 @@ public class GatewayService {
             replyInThread: effectiveReplyInThread,
             accountId: accountId
         )
-        match (this.channelManager.getAdapter(nm)) {
-            case Some(adapter) =>
-                let sentMessageId = adapter.sendWithMessageId(outbound)
-                if (!sentMessageId.trimAscii().isEmpty()) {
-                    let _ = gatewayOpenClawPluginSidecarApplyMessageSentHook(
-                        user,
-                        nm,
-                        accountId,
-                        peerId,
-                        effectiveText,
-                        sentMessageId,
-                        true,
-                        "",
-                        durationMs: this.startNowMs() - sendStartedAtMs
-                    )
-                    LogUtils.info("Gateway.sendTextToPeer: channel=${nm} peer=${peerId} ok")
-                    return sentMessageId
-                }
-            case None => ()
+        let canonicalAccountId = gatewayCanonicalChannelAccountId(nm, accountId)
+        let directSend = this.channelManager.sendWithMessageIdToAdapterName(nm, outbound)
+        if (directSend.delivered) {
+            let _ = gatewayOpenClawPluginSidecarApplyMessageSentHook(
+                user,
+                nm,
+                accountId,
+                peerId,
+                effectiveText,
+                directSend.messageId,
+                true,
+                "",
+                durationMs: this.startNowMs() - sendStartedAtMs
+            )
+            LogUtils.info("Gateway.sendTextToPeer: channel=${nm} peer=${peerId} rawAccountId=${accountId} canonicalAccountId=${canonicalAccountId} ok")
+            return directSend.messageId
         }
         let send = this.channelManager.sendToAdapterName(nm, outbound)
         if (send.delivered) {
@@ -3781,9 +3778,15 @@ public class GatewayService {
                 "",
                 durationMs: this.startNowMs() - sendStartedAtMs
             )
-            LogUtils.info("Gateway.sendTextToPeer: channel=${nm} peer=${peerId} ok")
+            LogUtils.info("Gateway.sendTextToPeer: channel=${nm} peer=${peerId} rawAccountId=${accountId} canonicalAccountId=${canonicalAccountId} ok")
             return send.messageId
         }
+        let directFailure = if (directSend.reasonKind.isEmpty() || directSend.reasonKind == "empty_message_id") {
+            ""
+        } else {
+            " directReason=${directSend.lastReason}"
+        }
+        let finalReason = "${send.lastReason}${directFailure}"
         let _ = gatewayOpenClawPluginSidecarApplyMessageSentHook(
             user,
             nm,
@@ -3792,10 +3795,12 @@ public class GatewayService {
             effectiveText,
             "",
             false,
-            send.lastReason,
+            finalReason,
             durationMs: this.startNowMs() - sendStartedAtMs
         )
-        LogUtils.error("Gateway.sendTextToPeer: no adapter for channel='${nm}' peer=${peerId} lastReason=${send.lastReason}")
-        throw Exception("no adapter for channel='${nm}' peer=${peerId} lastReason=${send.lastReason}")
+        LogUtils.error(
+            "Gateway.sendTextToPeer: channel=${nm} peer=${peerId} rawAccountId=${accountId} canonicalAccountId=${canonicalAccountId} adapterName=${nm} reasonKind=${send.reasonKind} lastReason=${finalReason}"
+        )
+        throw Exception("send failed for channel='${nm}' peer=${peerId} reasonKind=${send.reasonKind} lastReason=${finalReason}")
     }
 }

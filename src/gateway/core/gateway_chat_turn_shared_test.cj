@@ -51,6 +51,13 @@ private class GatewayTestChannelAdapter <: ChannelAdapter {
     public func sentCount(): Int64 {
         Int64(this.sent.size)
     }
+
+    public func sentAccountId(index: Int64): String {
+        match (this.sent.get(index)) {
+            case Some(v) => v.accountId
+            case None => ""
+        }
+    }
 }
 
 @Test
@@ -284,5 +291,78 @@ public class GatewayChatTurnSharedTest {
         @Expect(send.delivered, true)
         @Expect(adapterA.sentCount(), 0)
         @Expect(adapterB.sentCount(), 1)
+    }
+
+    @TestCase
+    public func channelManagerMatchesRegisteredTelegramDefaultAlias(): Unit {
+        let manager = GatewayChannelManager()
+        let adapter = GatewayTestChannelAdapter("telegram")
+        manager.registerAdapter(adapter, channelId: "telegram", accountId: "telegram:default")
+        let send = manager.sendToAdapterName(
+            "telegram",
+            OutboundMessage(ChannelType.Telegram, "8734062810", "hello", accountId: "default")
+        )
+        @Expect(send.delivered, true)
+        @Expect(send.canonicalAccountId, "default")
+        @Expect(adapter.sentCount(), 1)
+        @Expect(adapter.sentAccountId(0), "default")
+    }
+
+    @TestCase
+    public func channelManagerMatchesOutboundTelegramDefaultAlias(): Unit {
+        let manager = GatewayChannelManager()
+        let adapter = GatewayTestChannelAdapter("telegram")
+        manager.registerAdapter(adapter, channelId: "telegram", accountId: "default")
+        let send = manager.sendToAdapterName(
+            "telegram",
+            OutboundMessage(ChannelType.Telegram, "8734062810", "hello", accountId: "telegram:default")
+        )
+        @Expect(send.delivered, true)
+        @Expect(send.canonicalAccountId, "default")
+        @Expect(adapter.sentCount(), 1)
+    }
+
+    @TestCase
+    public func channelManagerMatchesNamedLegacyAliasOnlyOnSameChannel(): Unit {
+        let manager = GatewayChannelManager()
+        let adapter = GatewayTestChannelAdapter("telegram")
+        manager.registerAdapter(adapter, channelId: "telegram", accountId: "telegram:work")
+        let send = manager.sendToAdapterName(
+            "telegram",
+            OutboundMessage(ChannelType.Telegram, "8734062810", "hello", accountId: "work")
+        )
+        @Expect(send.delivered, true)
+        @Expect(send.canonicalAccountId, "work")
+        @Expect(adapter.sentCount(), 1)
+    }
+
+    @TestCase
+    public func channelManagerDoesNotCrossMatchOtherChannelDefaultAlias(): Unit {
+        let manager = GatewayChannelManager()
+        let adapter = GatewayTestChannelAdapter("telegram")
+        manager.registerAdapter(adapter, channelId: "telegram", accountId: "default")
+        let send = manager.sendToAdapterName(
+            "telegram",
+            OutboundMessage(ChannelType.Telegram, "8734062810", "hello", accountId: "feishu:default")
+        )
+        @Expect(send.delivered, false)
+        @Expect(send.reasonKind, "account_mismatch")
+        @Expect(send.canonicalAccountId, "feishu:default")
+        @Expect(adapter.sentCount(), 0)
+    }
+
+    @TestCase
+    public func channelManagerDoesNotMatchNamedAccountToDefault(): Unit {
+        let manager = GatewayChannelManager()
+        let adapter = GatewayTestChannelAdapter("telegram")
+        manager.registerAdapter(adapter, channelId: "telegram", accountId: "work")
+        let send = manager.sendToAdapterName(
+            "telegram",
+            OutboundMessage(ChannelType.Telegram, "8734062810", "hello", accountId: "default")
+        )
+        @Expect(send.delivered, false)
+        @Expect(send.reasonKind, "account_mismatch")
+        @Expect(send.canonicalAccountId, "default")
+        @Expect(adapter.sentCount(), 0)
     }
 }

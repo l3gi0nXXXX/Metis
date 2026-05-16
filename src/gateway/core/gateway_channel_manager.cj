@@ -10,6 +10,46 @@ import std.sync.Mutex
 import std.time.DateTime
 import stdx.encoding.json.{JsonArray, JsonObject}
 
+public func gatewayCanonicalChannelAccountId(channelId: String, rawAccountId: String): String {
+    let channel = channelId.trimAscii().toAsciiLower()
+    let raw = rawAccountId.trimAscii()
+    if (raw.isEmpty() || raw == "default") {
+        return "default"
+    }
+    let lower = raw.toAsciiLower()
+    let prefix = "${channel}:"
+    if (!channel.isEmpty() && lower.startsWith(prefix)) {
+        let suffix = raw[prefix.size..].trimAscii()
+        return if (suffix.isEmpty()) { "default" } else { suffix }
+    }
+    raw
+}
+
+public func gatewayChannelAccountIdsEquivalent(channelId: String, left: String, right: String): Bool {
+    gatewayCanonicalChannelAccountId(channelId, left) == gatewayCanonicalChannelAccountId(channelId, right)
+}
+
+public func gatewaySanitizeChannelDiagnostic(raw: String): String {
+    var detail = raw.trimAscii().replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    if (detail.size > 240) {
+        detail = detail[0..240] + "..."
+    }
+    let lower = detail.toAsciiLower()
+    if (
+        lower.contains("authorization") ||
+        lower.contains("bearer ") ||
+        lower.contains("api_key") ||
+        lower.contains("apikey") ||
+        lower.contains("api key") ||
+        lower.contains("access_token") ||
+        lower.contains("bot token") ||
+        lower.contains("password")
+    ) {
+        return "[redacted sensitive error]"
+    }
+    detail
+}
+
 private class GatewayChannelLiveAccountState {
     public let channelId: String
     public let accountId: String
@@ -34,6 +74,7 @@ public class GatewayRegisteredAdapter {
     public let adapter: ChannelAdapter
     public let channelId: String
     public let accountId: String
+    public let rawAccountId: String
     public let pluginId: String
     public let origin: String
     public let runtimeKind: String
@@ -60,7 +101,8 @@ public class GatewayRegisteredAdapter {
     ) {
         this.adapter = adapter
         this.channelId = if (channelId.trimAscii().isEmpty()) { adapter.name.trimAscii().toAsciiLower() } else { channelId.trimAscii().toAsciiLower() }
-        this.accountId = accountId.trimAscii()
+        this.rawAccountId = accountId.trimAscii()
+        this.accountId = gatewayCanonicalChannelAccountId(this.channelId, accountId)
         this.pluginId = pluginId.trimAscii().toAsciiLower()
         this.origin = origin.trimAscii()
         this.runtimeKind = runtimeKind.trimAscii()
@@ -77,11 +119,24 @@ public class GatewayChannelSendResult {
     public let delivered: Bool
     public let lastReason: String
     public let messageId: String
+    public let reasonKind: String
+    public let rawAccountId: String
+    public let canonicalAccountId: String
 
-    public init(delivered: Bool, lastReason!: String = "", messageId!: String = "") {
+    public init(
+        delivered: Bool,
+        lastReason!: String = "",
+        messageId!: String = "",
+        reasonKind!: String = "",
+        rawAccountId!: String = "",
+        canonicalAccountId!: String = ""
+    ) {
         this.delivered = delivered
         this.lastReason = lastReason.trimAscii()
         this.messageId = messageId.trimAscii()
+        this.reasonKind = reasonKind.trimAscii()
+        this.rawAccountId = rawAccountId.trimAscii()
+        this.canonicalAccountId = canonicalAccountId.trimAscii()
     }
 }
 
@@ -326,6 +381,48 @@ public class GatewayChannelManager {
         this.adapterByName.get(name)
     }
 
+    private func registeredAccountSummary(adapterName: String): String {
+        let normalized = adapterName.trimAscii()
+        let accounts = ArrayList<String>()
+        for (entry in this.adapters) {
+            if (entry.adapter.name == normalized) {
+                accounts.add(entry.accountId)
+            }
+        }
+        String.join(accounts.toArray(), delimiter: ",")
+    }
+
+    private func accountMismatchResult(adapterName: String, rawAccountId: String, canonicalAccountId: String): GatewayChannelSendResult {
+        let registered = this.registeredAccountSummary(adapterName)
+        GatewayChannelSendResult(
+            false,
+            lastReason: "adapter accountId mismatch for channel='${adapterName}' rawAccountId='${rawAccountId}' canonicalAccountId='${canonicalAccountId}' registeredAccounts='${registered}'",
+            reasonKind: "account_mismatch",
+            rawAccountId: rawAccountId,
+            canonicalAccountId: canonicalAccountId
+        )
+    }
+
+    private func notRegisteredResult(adapterName: String, rawAccountId: String, canonicalAccountId: String): GatewayChannelSendResult {
+        GatewayChannelSendResult(
+            false,
+            lastReason: "adapter not registered for channel='${adapterName}'",
+            reasonKind: "adapter_not_registered",
+            rawAccountId: rawAccountId,
+            canonicalAccountId: canonicalAccountId
+        )
+    }
+
+    private func emptyMessageIdResult(adapterName: String, rawAccountId: String, canonicalAccountId: String): GatewayChannelSendResult {
+        GatewayChannelSendResult(
+            false,
+            lastReason: "direct adapter returned empty message id for channel='${adapterName}' rawAccountId='${rawAccountId}' canonicalAccountId='${canonicalAccountId}'",
+            reasonKind: "empty_message_id",
+            rawAccountId: rawAccountId,
+            canonicalAccountId: canonicalAccountId
+        )
+    }
+
     public func startChannels(): Unit {
         if (this.started) {
             return
@@ -444,15 +541,20 @@ public class GatewayChannelManager {
 
     public func sendToAdapterName(adapterName: String, outbound: OutboundMessage): GatewayChannelSendResult {
         let normalized = adapterName.trimAscii()
-        let requiredAccountId = outbound.accountId.trimAscii()
+        let rawAccountId = outbound.accountId.trimAscii()
+        let requiredAccountId = gatewayCanonicalChannelAccountId(normalized, rawAccountId)
         var lastReason: String = ""
+        var foundAdapter = false
+        var matchedAccount = false
         for (entry in this.adapters) {
             if (entry.adapter.name != normalized) {
                 continue
             }
-            if (!requiredAccountId.isEmpty() && entry.accountId != requiredAccountId) {
+            foundAdapter = true
+            if (entry.accountId != requiredAccountId) {
                 continue
             }
+            matchedAccount = true
             let sendResult = entry.adapter.send(outbound)
             match (sendResult) {
                 case SendResult.Success =>
@@ -462,16 +564,79 @@ public class GatewayChannelManager {
                         state.lastError = ""
                     })
                     gatewayChannelRuntimeMarkSend(entry.channelId, accountId: entry.accountId, success: true)
-                    return GatewayChannelSendResult(true)
+                    return GatewayChannelSendResult(true, rawAccountId: rawAccountId, canonicalAccountId: requiredAccountId)
                 case SendResult.Failed(reason) =>
+                    let safeReason = gatewaySanitizeChannelDiagnostic(reason)
                     this.updateLiveAccount(entry.channelId, entry.accountId, { state =>
-                        state.lastError = reason.trimAscii()
+                        state.lastError = safeReason
                     })
-                    gatewayChannelRuntimeMarkSend(entry.channelId, accountId: entry.accountId, success: false, detail: reason)
-                    lastReason = reason
+                    gatewayChannelRuntimeMarkSend(entry.channelId, accountId: entry.accountId, success: false, detail: safeReason)
+                    lastReason = "adapter send failed for channel='${normalized}' rawAccountId='${rawAccountId}' canonicalAccountId='${requiredAccountId}': ${safeReason}"
             }
         }
-        let fallbackReason = if (requiredAccountId.isEmpty()) { "adapter not found" } else { "adapter not found for accountId=${requiredAccountId}" }
-        GatewayChannelSendResult(false, lastReason: if (lastReason.isEmpty()) { fallbackReason } else { lastReason })
+        if (!foundAdapter) {
+            return this.notRegisteredResult(normalized, rawAccountId, requiredAccountId)
+        }
+        if (!matchedAccount) {
+            return this.accountMismatchResult(normalized, rawAccountId, requiredAccountId)
+        }
+        GatewayChannelSendResult(
+            false,
+            lastReason: lastReason,
+            reasonKind: "send_failed",
+            rawAccountId: rawAccountId,
+            canonicalAccountId: requiredAccountId
+        )
+    }
+
+    public func sendWithMessageIdToAdapterName(adapterName: String, outbound: OutboundMessage): GatewayChannelSendResult {
+        let normalized = adapterName.trimAscii()
+        let rawAccountId = outbound.accountId.trimAscii()
+        let requiredAccountId = gatewayCanonicalChannelAccountId(normalized, rawAccountId)
+        var foundAdapter = false
+        for (entry in this.adapters) {
+            if (entry.adapter.name != normalized) {
+                continue
+            }
+            foundAdapter = true
+            if (entry.accountId != requiredAccountId) {
+                continue
+            }
+            try {
+                let sentMessageId = entry.adapter.sendWithMessageId(outbound)
+                if (!sentMessageId.trimAscii().isEmpty()) {
+                    this.updateLiveAccount(entry.channelId, entry.accountId, { state =>
+                        state.running = true
+                        state.connected = true
+                        state.lastError = ""
+                    })
+                    gatewayChannelRuntimeMarkSend(entry.channelId, accountId: entry.accountId, success: true)
+                    return GatewayChannelSendResult(
+                        true,
+                        messageId: sentMessageId,
+                        rawAccountId: rawAccountId,
+                        canonicalAccountId: requiredAccountId
+                    )
+                }
+                return this.emptyMessageIdResult(normalized, rawAccountId, requiredAccountId)
+            } catch (e: Exception) {
+                let safeReason = gatewaySanitizeChannelDiagnostic(e.message)
+                this.updateLiveAccount(entry.channelId, entry.accountId, { state =>
+                    state.lastError = safeReason
+                })
+                gatewayChannelRuntimeMarkSend(entry.channelId, accountId: entry.accountId, success: false, detail: safeReason)
+                return GatewayChannelSendResult(
+                    false,
+                    lastReason: "direct adapter send failed for channel='${normalized}' rawAccountId='${rawAccountId}' canonicalAccountId='${requiredAccountId}': ${safeReason}",
+                    reasonKind: "send_failed",
+                    rawAccountId: rawAccountId,
+                    canonicalAccountId: requiredAccountId
+                )
+            }
+        }
+        if (!foundAdapter) {
+            return this.notRegisteredResult(normalized, rawAccountId, requiredAccountId)
+        }
+        this.accountMismatchResult(normalized, rawAccountId, requiredAccountId)
     }
 }

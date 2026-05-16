@@ -10,6 +10,7 @@ import magic.prelude.*
 
 import std.convert.*
 import std.fs.{File, Path, exists}
+import std.regex.{Regex, RegexFlag}
 import stdx.encoding.base64.toBase64String
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString}
 
@@ -85,6 +86,37 @@ private func gatewayMediaDescribeImagePathForRuntime(path: String, mime: String,
     }
 }
 
+private func gatewayMediaRuntimeRegexReplace(text: String, pattern: String, replacement: String): String {
+    try {
+        Regex(pattern, [RegexFlag.IgnoreCase]).replaceAll(text, replacement)
+    } catch (_: Exception) {
+        text
+    }
+}
+
+private func gatewayMediaRuntimeRedactQueryParam(text: String, key: String): String {
+    var out = text
+    out = gatewayMediaRuntimeRegexReplace(out, "\\?${key}=[^\\s&#]+", "?${key}=[redacted]")
+    out = gatewayMediaRuntimeRegexReplace(out, "&${key}=[^\\s&#]+", "&${key}=[redacted]")
+    out
+}
+
+private func gatewayMediaRuntimeRedactProviderError(detail: String): String {
+    var out = detail.trimAscii()
+    out = gatewayMediaRuntimeRegexReplace(out, "Authorization\\s*[:=]\\s*Bearer\\s+[^\\s,;\\}\\]]+", "Authorization: Bearer [redacted]")
+    out = gatewayMediaRuntimeRegexReplace(out, "Authorization\\s*[:=]\\s*[^\\s,;\\}\\]]+", "Authorization: [redacted]")
+    out = gatewayMediaRuntimeRegexReplace(out, "Bearer\\s+[^\\s,;\\}\\]]+", "Bearer [redacted]")
+    out = gatewayMediaRuntimeRegexReplace(out, "DASHSCOPE_API_KEY\\s*[:=]\\s*[^\\s,;\\}\\]]+", "DASHSCOPE_API_KEY=[redacted]")
+    out = gatewayMediaRuntimeRegexReplace(out, "api[_-]?key\\s*[:=]\\s*[^\\s,;\\}\\]]+", "api_key=[redacted]")
+    for (key in ["api_key", "apikey", "key", "token", "access_token", "auth_token"]) {
+        out = gatewayMediaRuntimeRedactQueryParam(out, key)
+    }
+    if (out.size > 500) {
+        out = out[..500]
+    }
+    out
+}
+
 private func gatewayMediaConfiguredDescribeImagePathForRuntime(record: JsonObject, user: GatewayUserSettings, path: String, mime: String, kind: String, prompt: String, maxBytes: Int64): JsonObject {
     let out = JsonObject()
     let normalizedPath = path.trimAscii()
@@ -98,12 +130,19 @@ private func gatewayMediaConfiguredDescribeImagePathForRuntime(record: JsonObjec
     let rejected = JsonArray([])
     let candidates = gatewayImageUnderstandingBuildCandidates(user, channel: channel, rejected: Some(rejected))
     if (candidates.isEmpty()) {
-        out.put("status", JsonString("not_configured"))
-        out.put("error", JsonString("agents.defaults.imageModel.primary or gateway.media.image.models is not configured with a vision-capable model"))
+        if (rejected.size() > 0) {
+            out.put("status", JsonString("unsupported"))
+            out.put("error", JsonString("Configured image understanding model does not support image input."))
+        } else {
+            out.put("status", JsonString("not_configured"))
+            out.put("error", JsonString("agents.defaults.imageModel.primary or gateway.media.image.models is not configured with a vision-capable model"))
+        }
         out.put("attempts", rejected)
         return out
     }
     let attempts = rejected
+    var providerError = ""
+    var timeoutError = ""
     let safeMime = if (mime.trimAscii().startsWith("image/")) { mime.trimAscii() } else { "image/jpeg" }
     let dataUrl = "data:${safeMime};base64,${toBase64String(bytes)}"
     for (candidate in candidates) {
@@ -157,14 +196,29 @@ private func gatewayMediaConfiguredDescribeImagePathForRuntime(record: JsonObjec
             let err = JsonObject()
             err.put("model", JsonString(candidate.modelRef))
             err.put("source", JsonString(candidate.source))
-            err.put("status", JsonString("provider_error"))
-            err.put("error", JsonString(e.message))
+            let safeError = gatewayMediaRuntimeRedactProviderError(e.message)
+            let attemptStatus = if (safeError.toAsciiLower().contains("timeout") || safeError.toAsciiLower().contains("timed out")) { "timeout" } else { "provider_error" }
+            err.put("status", JsonString(attemptStatus))
+            err.put("error", JsonString(safeError))
             err.put("capability", modelCapabilityDecisionToJson(candidate.decision).toJsonValue())
             attempts.add(err)
+            if (attemptStatus == "timeout" && timeoutError.isEmpty()) {
+                timeoutError = safeError
+            } else if (attemptStatus == "provider_error" && providerError.isEmpty()) {
+                providerError = safeError
+            }
         }
     }
-    out.put("status", JsonString("unsupported"))
-    out.put("error", JsonString("no configured image understanding model could analyze this image"))
+    if (!providerError.isEmpty()) {
+        out.put("status", JsonString("provider_error"))
+        out.put("error", JsonString("Image understanding provider call failed (provider_error): ${providerError}"))
+    } else if (!timeoutError.isEmpty()) {
+        out.put("status", JsonString("timeout"))
+        out.put("error", JsonString("Image understanding provider call timed out: ${timeoutError}"))
+    } else {
+        out.put("status", JsonString("unsupported"))
+        out.put("error", JsonString("no configured image understanding model could analyze this image"))
+    }
     out.put("attempts", attempts)
     out
 }

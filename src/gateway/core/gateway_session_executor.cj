@@ -9,7 +9,7 @@ import magic.log.LogUtils
 import std.core.Duration
 import std.fs.{Directory, File, Path, exists}
 import std.time.DateTime
-import stdx.encoding.json.{JsonBool, JsonInt, JsonObject, JsonString, JsonValue}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString, JsonValue}
 
 public class GatewaySessionExecutionResult {
     public let answer: String
@@ -130,6 +130,108 @@ private func gatewaySessionJsonBool(obj: JsonObject, key: String, fallback: Bool
         case Some(v) => try { v.asBool().getValue() } catch (_: Exception) { fallback }
         case None => fallback
     }
+}
+
+private func gatewaySessionJsonString(obj: JsonObject, key: String): String {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asString().getValue().trimAscii() } catch (_: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func gatewaySessionMediaRecords(mediaContext: JsonObject): JsonArray {
+    match (mediaContext.get("records")) {
+        case Some(v) => try { v.asArray() } catch (_: Exception) { JsonArray([]) }
+        case None => JsonArray([])
+    }
+}
+
+private func gatewayMediaFallbackImageLike(record: JsonObject, capability: String): Bool {
+    let normalizedCapability = capability.trimAscii().toAsciiLower()
+    if (normalizedCapability == "image" || normalizedCapability == "sticker") {
+        return true
+    }
+    let kind = gatewaySessionJsonString(record, "mediaKind").toAsciiLower()
+    let mime = gatewaySessionJsonString(record, "mimeType").toAsciiLower()
+    kind == "photo" || kind == "image" || kind == "sticker" || mime.startsWith("image/")
+}
+
+private func gatewayMediaFallbackStatusMessage(status: String): String {
+    match (status.trimAscii().toAsciiLower()) {
+        case "not_configured" => "图片解析模型未配置。"
+        case "unsupported" => "当前图片解析模型不支持图片输入。"
+        case "provider_error" => "图片解析服务调用失败。"
+        case "too_large" => "图片过大，无法解析。"
+        case "timeout" => "图片解析服务超时。"
+        case _ => ""
+    }
+}
+
+private func gatewayMediaFallbackRedactAfterMarker(raw: String, marker: String): String {
+    let lower = raw.toAsciiLower()
+    match (lower.indexOf(marker)) {
+        case Some(start) =>
+            let keepEnd = start + marker.size
+            raw[..keepEnd] + "[redacted]"
+        case None => raw
+    }
+}
+
+private func gatewayMediaFallbackRedactDetail(raw: String): String {
+    var text = raw.trimAscii().replace("\r", " ").replace("\n", " ")
+    text = gatewayMediaFallbackRedactAfterMarker(text, "bearer ")
+    text = gatewayMediaFallbackRedactAfterMarker(text, "api_key=")
+    text = gatewayMediaFallbackRedactAfterMarker(text, "api key=")
+    text = gatewayMediaFallbackRedactAfterMarker(text, "token=")
+    text = gatewayMediaFallbackRedactAfterMarker(text, "key=")
+    text = text.replace("Authorization", "[redacted-header]").replace("authorization", "[redacted-header]")
+    text = text.replace("DASHSCOPE_API_KEY", "API key")
+    while (text.contains("  ")) {
+        text = text.replace("  ", " ")
+    }
+    if (text.size > 180) {
+        return text[..180].trimAscii()
+    }
+    text
+}
+
+private func gatewayMediaFailureFallbackText(toolRuntimeContext: Option<GatewayToolRuntimeContext>): String {
+    let mediaContext = match (toolRuntimeContext) {
+        case Some(ctx) => ctx.mediaContext
+        case None => return ""
+    }
+    for (item in gatewaySessionMediaRecords(mediaContext).getItems()) {
+        let record = try { item.asObject() } catch (_: Exception) { JsonObject() }
+        let status = gatewaySessionJsonString(record, "mediaUnderstandingStatus").toAsciiLower()
+        if (!(status == "provider_error" || status == "not_configured" || status == "unsupported" || status == "too_large" || status == "timeout")) {
+            continue
+        }
+        if (!gatewayMediaFallbackImageLike(record, gatewaySessionJsonString(record, "mediaUnderstandingCapability"))) {
+            continue
+        }
+        let base = gatewayMediaFallbackStatusMessage(status)
+        if (base.isEmpty()) {
+            continue
+        }
+        let detail = gatewayMediaFallbackRedactDetail(gatewaySessionJsonString(record, "mediaUnderstandingError"))
+        if (status == "provider_error" && !detail.isEmpty()) {
+            return "${base}诊断：${detail}"
+        }
+        return base
+    }
+    ""
+}
+
+private func gatewayShouldUseMediaFailureFallback(visibleText: String, toolRuntimeContext: Option<GatewayToolRuntimeContext>): Bool {
+    match (toolRuntimeContext) {
+        case Some(ctx) =>
+            if (ctx.hasVisibleReplyDelivered()) {
+                return false
+            }
+        case None => ()
+    }
+    let normalized = visibleText.trimAscii()
+    normalized.isEmpty() || gatewayIsSilentReplyText(normalized)
 }
 
 private func gatewayTelegramTtsDir(): Path {
@@ -518,6 +620,29 @@ public func gatewayExecuteSessionTurn(
             })
         )
     } catch (ex: Exception) {
+        let fallbackText = gatewayMediaFailureFallbackText(toolRuntimeContext)
+        if (deliver && !fallbackText.isEmpty()) {
+            match (context.deliveryTarget) {
+                case Some(target) =>
+                    match (deliverHook) {
+                        case Some(send) =>
+                            try {
+                                let sentMessageId = send(target.channelName, target.accountId, target.peerId, fallbackText, effectiveReplyToMessageId, effectiveReplyInThread)
+                                gatewayNotifySessionLifecycle(lifecycleHook, "done")
+                                return GatewaySessionExecutionResult(
+                                    fallbackText,
+                                    delivered: true,
+                                    deliveryStatus: "delivered-fallback",
+                                    deliveryMessageId: sentMessageId
+                                )
+                            } catch (_sendEx: Exception) {
+                                ()
+                            }
+                        case None => ()
+                    }
+                case None => ()
+            }
+        }
         gatewayNotifySessionLifecycle(lifecycleHook, "error")
         throw ex
     }
@@ -539,6 +664,12 @@ public func gatewayExecuteSessionTurn(
                             gatewayVisibleDeliveryText(context.channelName, answer),
                             toolRuntimeContext
                         )
+                        let fallbackText = gatewayMediaFailureFallbackText(toolRuntimeContext)
+                        let deliveryText = if (!fallbackText.isEmpty() && gatewayShouldUseMediaFailureFallback(visibleAnswer, toolRuntimeContext)) {
+                            fallbackText
+                        } else {
+                            visibleAnswer
+                        }
                         match (toolRuntimeContext) {
                             case Some(runtimeContext) =>
                                 if (runtimeContext.hasVisibleReplyDelivered() && gatewayIsSilentReplyText(visibleAnswer)) {
@@ -552,18 +683,18 @@ public func gatewayExecuteSessionTurn(
                             case None => ()
                         }
                         if (!streamingState.messageId.isEmpty() && !streamingState.failed) {
-                            if (visibleAnswer != streamingState.lastText) {
+                            if (deliveryText != streamingState.lastText) {
                                 let finalEditMessageId = send(
                                     target.channelName,
                                     target.accountId,
                                     target.peerId,
-                                    if (useEditMessages) { renderGatewayEditText(visibleAnswer) } else { visibleAnswer },
+                                    if (useEditMessages) { renderGatewayEditText(deliveryText) } else { deliveryText },
                                     Some(streamingState.messageId),
                                     false
                                 )
                                 if (finalEditMessageId.trimAscii().isEmpty()) {
                                     LogUtils.info("Gateway streaming final fallback: channel=${context.channelName}, session=${context.sessionKey}, messageId=${streamingState.messageId}")
-                                    let fallbackMessageId = send(target.channelName, target.accountId, target.peerId, visibleAnswer, effectiveReplyToMessageId, effectiveReplyInThread)
+                                    let fallbackMessageId = send(target.channelName, target.accountId, target.peerId, deliveryText, effectiveReplyToMessageId, effectiveReplyInThread)
                                     gatewayNotifySessionLifecycle(lifecycleHook, "done")
                                     return GatewaySessionExecutionResult(
                                         answer,
@@ -582,7 +713,7 @@ public func gatewayExecuteSessionTurn(
                                 deliveryMessageId: streamingState.messageId
                             )
                         }
-                        let sentMessageId = send(target.channelName, target.accountId, target.peerId, visibleAnswer, effectiveReplyToMessageId, effectiveReplyInThread)
+                        let sentMessageId = send(target.channelName, target.accountId, target.peerId, deliveryText, effectiveReplyToMessageId, effectiveReplyInThread)
                         gatewayNotifySessionLifecycle(lifecycleHook, "done")
                         return GatewaySessionExecutionResult(
                             answer,
