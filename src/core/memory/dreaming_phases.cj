@@ -244,6 +244,43 @@ public class DreamingPhaseRuntime {
         root.toJsonString()
     }
 
+    public static func buildStatusText(): String {
+        let config = readConfig()
+        let rows = phaseStatusRows(config)
+        let lines = ArrayList<String>()
+        lines.add("Memory dreaming")
+        lines.add("Config: ${configPath()}  present=${exists(configPath())}")
+        lines.add("Phases:")
+        for (i in 0..rows.size()) {
+            try {
+                let row = rows[i].asObject()
+                let name = dreamingGetJsonStringValue(row, "name", "-")
+                let enabled = dreamingGetJsonBoolValue(row, "enabled", true)
+                let cron = dreamingGetJsonStringValue(row, "cron", "")
+                let limit = dreamingGetJsonInt64Value(row, "limit", 6)
+                let lookbackDays = dreamingGetJsonInt64Value(row, "lookbackDays", 14)
+                let workspaceDir = dreamingGetJsonStringValue(row, "workspaceDir", CliConfig.cwd.toString())
+                lines.add("  - ${name}: enabled=${enabled} cron=${if (cron.isEmpty()) { "-" } else { cron }} limit=${limit} lookbackDays=${lookbackDays}")
+                lines.add("    workspace=${workspaceDir}")
+            } catch (_: Exception) {
+                ()
+            }
+        }
+        try {
+            let markdown = JsonValue.fromStr(DreamingMarkdownRuntime.buildStatusJson()).asObject()
+            lines.add("Markdown: status=${dreamingGetJsonStringValue(markdown, "status", "-")} path=${dreamingGetJsonStringValue(markdown, "path", "-")}")
+        } catch (_: Exception) {
+            lines.add("Markdown: status=unavailable")
+        }
+        try {
+            let daily = JsonValue.fromStr(DailyIngestionRuntime.buildStatusSummaryJson()).asObject()
+            lines.add("Daily ingestion: status=${dreamingGetJsonStringValue(daily, "status", "-")} path=${dreamingGetJsonStringValue(daily, "statePath", "-")}")
+        } catch (_: Exception) {
+            lines.add("Daily ingestion: status=unavailable")
+        }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
     public static func configuredWorkspaces(): Array<String> {
         let config = readConfig()
         let out = ArrayList<String>()

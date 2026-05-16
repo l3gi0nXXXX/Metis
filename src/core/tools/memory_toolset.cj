@@ -10,7 +10,7 @@ import metis.core.tools.fs_utils.catRange
 import std.collection.ArrayList
 import std.fs.{Path, File, exists, FileInfo}
 import std.sort.sort
-import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonFloat}
+import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonFloat, JsonValue}
 
 private class MemorySearchHit {
     public let path: String
@@ -346,6 +346,121 @@ private func runMemorySearchImpl(
     result.toJsonString()
 }
 
+private func memorySearchJsonString(obj: JsonObject, key: String, fallback!: String = ""): String {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asString().getValue().trimAscii() } catch (_: Exception) { fallback }
+        case None => fallback
+    }
+}
+
+private func memorySearchJsonFloatText(obj: JsonObject, key: String): String {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { return v.asFloat().getValue().toString() } catch (_: Exception) { () }
+            ""
+        case None => ""
+    }
+}
+
+private func memorySearchJsonIntText(obj: JsonObject, key: String): String {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { return v.asInt().getValue().toString() } catch (_: Exception) { () }
+            ""
+        case None => ""
+    }
+}
+
+private func indentMemorySnippet(text: String): String {
+    let rows = ArrayList<String>()
+    for (line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")) {
+        let trimmed = line.trimAscii()
+        if (!trimmed.isEmpty()) {
+            rows.add("      " + trimmed)
+        }
+    }
+    if (rows.isEmpty()) {
+        return "      (empty snippet)"
+    }
+    String.join(rows.toArray(), delimiter: "\n")
+}
+
+private func renderMemorySearchHuman(raw: String): String {
+    let root = try {
+        JsonValue.fromStr(raw).asObject()
+    } catch (_: Exception) {
+        return raw.trimAscii()
+    }
+    let status = memorySearchJsonString(root, "status", fallback: "unknown")
+    let error = memorySearchJsonString(root, "error")
+    if (status != "ok") {
+        if (!error.isEmpty()) {
+            return "Memory search unavailable\nReason: ${error}"
+        }
+        return "Memory search unavailable"
+    }
+    let query = memorySearchJsonString(root, "query")
+    let provider = memorySearchJsonString(root, "provider")
+    let backend = memorySearchJsonString(root, "backend")
+    let mode = memorySearchJsonString(root, "mode")
+    let citations = memorySearchJsonString(root, "citations")
+    let compatNote = memorySearchJsonString(root, "compatNote")
+    let results = match (root.get("results")) {
+        case Some(v) => try { v.asArray() } catch (_: Exception) { JsonArray([]) }
+        case None => JsonArray([])
+    }
+    let lines = ArrayList<String>()
+    lines.add("Memory search")
+    if (!query.isEmpty()) {
+        lines.add("Query: ${query}")
+    }
+    var backendLine = "Backend: ${if (provider.isEmpty()) { "-" } else { provider }}"
+    if (!backend.isEmpty()) { backendLine += " / ${backend}" }
+    if (!mode.isEmpty()) { backendLine += " (${mode})" }
+    lines.add(backendLine)
+    if (!citations.isEmpty()) {
+        lines.add("Citations: ${citations}")
+    }
+    lines.add("Results: ${results.size()}")
+    if (results.size() == 0) {
+        if (!compatNote.isEmpty()) {
+            lines.add("Note: ${compatNote}")
+        }
+        return String.join(lines.toArray(), delimiter: "\n")
+    }
+    let limit = if (results.size() > 8) { 8 } else { results.size() }
+    for (i in 0..limit) {
+        try {
+            let row = results[i].asObject()
+            let path = memorySearchJsonString(row, "path", fallback: "(unknown)")
+            let startLine = memorySearchJsonIntText(row, "startLine")
+            let endLine = memorySearchJsonIntText(row, "endLine")
+            let score = memorySearchJsonFloatText(row, "score")
+            var cite = path
+            if (!startLine.isEmpty() && !endLine.isEmpty()) {
+                cite += ":${startLine}-${endLine}"
+            }
+            if (!score.isEmpty()) {
+                cite += "  score=${score}"
+            }
+            lines.add("  ${i + 1}. ${cite}")
+            let text = memorySearchJsonString(row, "text")
+            if (!text.isEmpty()) {
+                lines.add(indentMemorySnippet(text))
+            }
+        } catch (_: Exception) {
+            ()
+        }
+    }
+    if (results.size() > limit) {
+        lines.add("  ... ${results.size() - limit} more. Use --json for the full machine-readable result.")
+    }
+    if (!compatNote.isEmpty()) {
+        lines.add("Note: ${compatNote}")
+    }
+    String.join(lines.toArray(), delimiter: "\n")
+}
+
 @toolset
 public class MemoryToolset {
     public static let _memorySearch = "memory_search"
@@ -356,9 +471,14 @@ public class MemoryToolset {
         maxResults!: Option<Int64> = None,
         minScore!: Option<Float64> = None,
         sessionKey!: Option<String> = None,
-        agentId!: Option<String> = None
+        agentId!: Option<String> = None,
+        json!: Bool = true
     ): String {
-        runMemorySearchImpl(query, maxResults, minScore, sessionKey: sessionKey, agentId: agentId)
+        let raw = runMemorySearchImpl(query, maxResults, minScore, sessionKey: sessionKey, agentId: agentId)
+        if (json) {
+            return raw
+        }
+        renderMemorySearchHuman(raw)
     }
 
     private func searchHits(query: String): Array<MemorySearchHit> {

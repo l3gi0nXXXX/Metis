@@ -111,4 +111,43 @@ public class CronCommandTest {
             @Expect(obj.get("entries").getOrThrow().asArray().size(), 1)
         })
     }
+
+    @TestCase
+    public func cronAddUpdateWakeAndErrorsDefaultToHumanText(): Unit {
+        withCronCommandTestHome({ =>
+            let (addText, addCode) = executeGatewayCronCommand([
+                "cron", "add", "--name", "human-add", "--every", "1h", "--session", "main", "--message", "hello cron"
+            ])
+            @Expect(addCode, 0)
+            @Expect(addText.startsWith("{"), false)
+            @Expect(addText.contains("Cron job created"), true)
+            @Expect(addText.contains("human-add"), true)
+
+            let (addJson, addJsonCode) = executeGatewayCronCommand([
+                "cron", "add", "--json", "--name", "json-add", "--every", "1h", "--session", "main", "--message", "hello cron"
+            ])
+            @Expect(addJsonCode, 0)
+            @Expect(JsonValue.fromStr(addJson).asObject().get("id").getOrThrow().asString().getValue(), "json-add")
+
+            let (updateText, updateCode) = executeGatewayCronCommand([
+                "cron", "update", "--job-id", "human-add", "--enabled", "false"
+            ])
+            @Expect(updateCode, 0)
+            @Expect(updateText.startsWith("{"), false)
+            @Expect(updateText.contains("Cron job updated"), true)
+            @Expect(updateText.contains("Enabled: false"), true)
+
+            let (wakeText, wakeCode) = executeGatewayCronCommand([
+                "cron", "wake", "--job-id", "json-add", "--text", "manual"
+            ])
+            @Expect(wakeCode, 0)
+            @Expect(wakeText.startsWith("{"), false)
+            @Expect(wakeText.contains("Cron wake updated"), true)
+
+            let (errText, errCode) = executeGatewayCronCommand(["cron", "unknown"])
+            @Expect(errCode, 1)
+            @Expect(errText.startsWith("{"), false)
+            @Expect(errText.contains("Cron command failed"), true)
+        })
+    }
 }

@@ -257,3 +257,15 @@ At minimum, verify that:
 
 Do not treat `npm run build`, Cangjie unit tests, or API endpoint checks alone as sufficient proof
 that Control UI still opens correctly.
+
+## User-facing command output contract
+
+This is a hard rule: user-facing CLI, IM native command, and Control UI command outputs must not
+print `toJsonString()` results directly by default. Raw JSON is allowed only for explicit
+machine-output modes such as `--json`, command names whose purpose is raw export, protocol
+responses, persisted files, logs, or internal tool/RPC payloads that are not displayed directly.
+
+Default human-facing command output must pass structured payloads through `gatewayFormatCommandOutput`
+/ `gatewayPrintCommandOutput` or an equivalent command-specific human renderer. New or changed
+commands must include tests that prove default output does not expose raw JSON object keys such as
+`"ok"`, `"result"`, `"image"`, `"schedule"`, or `"sessions"` to users.

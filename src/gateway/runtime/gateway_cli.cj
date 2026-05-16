@@ -174,7 +174,7 @@ private func printGatewayHelp(): Unit {
     PrintUtils.printLine("  gateway health                   Fetch the local gateway health summary")
     PrintUtils.printLine("  gateway probe                    Show local gateway reachability and status")
     PrintUtils.printLine("  gateway discover                 Discover gateway channels and plugins")
-    PrintUtils.printLine("  gateway call <method> [json]     Call one local gateway method with optional JSON params")
+    PrintUtils.printLine("  gateway call [--json] <method> [json] Call one local gateway method with optional JSON params")
     PrintUtils.printLine("  gateway usage-cost               Show the local usage-cost summary")
     PrintUtils.printLine("  gateway master on|off            Set the gateway.enabled master switch")
     PrintUtils.printLine("  gateway serve                    Alias for gateway run")
@@ -424,16 +424,45 @@ private func gatewayParseCallParams(raw: String): JsonObject {
     }
 }
 
-private func gatewayCallLocalMethod(methodRaw: String, paramsRaw!: String = ""): Int64 {
+private func gatewayCallLocalMethod(methodRaw: String, paramsRaw!: String = "", json!: Bool = false): Int64 {
     let method = methodRaw.trimAscii().toAsciiLower()
     if (method.isEmpty()) {
-        PrintUtils.printLine("Usage: gateway call <method> [json-params]")
+        PrintUtils.printLine("Usage: gateway call [--json] <method> [json-params]")
         return 1
     }
     let params = gatewayParseCallParams(paramsRaw)
     let res = gatewayCliClient().call(method, params: params)
-    gatewayPrintCommandOutput(res.toJson().toJsonString())
+    let raw = res.toJson().toJsonString()
+    if (json) {
+        PrintUtils.printLine(raw)
+    } else {
+        gatewayPrintCommandOutput(raw)
+    }
     if (res.ok) { 0 } else { 1 }
+}
+
+private func gatewayRunCallCli(sub: Array<String>): Int64 {
+    if (sub.size < 2) {
+        PrintUtils.printLine("Usage: gateway call [--json] <method> [json-params]")
+        return 1
+    }
+    var json = false
+    let parts = ArrayList<String>()
+    var i: Int64 = 1
+    while (i < sub.size) {
+        let t = sub[i].trimAscii()
+        if (t.toAsciiLower() == "--json") {
+            json = true
+        } else {
+            parts.add(sub[i])
+        }
+        i += 1
+    }
+    if (parts.size == 0) {
+        PrintUtils.printLine("Usage: gateway call [--json] <method> [json-params]")
+        return 1
+    }
+    gatewayCallLocalMethod(parts[0], paramsRaw: joinFrom(parts.toArray(), 1), json: json)
 }
 
 private func gatewayPrintUsageCost(): Unit {
@@ -1094,11 +1123,7 @@ public func runGatewayCli(sub: Array<String>): Int64 {
         return 0
     }
     if (cmd == "call") {
-        if (sub.size < 2) {
-            PrintUtils.printLine("Usage: gateway call <method> [json-params]")
-            return 1
-        }
-        return gatewayCallLocalMethod(sub[1], paramsRaw: joinFrom(sub, 2))
+        return gatewayRunCallCli(sub)
     }
     if (cmd == "usage-cost") {
         gatewayPrintUsageCost()

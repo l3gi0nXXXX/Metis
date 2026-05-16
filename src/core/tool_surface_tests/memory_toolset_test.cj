@@ -84,4 +84,35 @@ public class MemoryToolsetTest {
             }
         }
     }
+
+    @TestCase
+    public func cliSearchCanRenderHumanTextWithoutRawJson(): Unit {
+        MemoryRuntimeRegistry.activateBackend("local", startMaintenance: false)
+        let memoryDir = CliConfig.cwd.join("memory")
+        if (!exists(memoryDir)) {
+            Directory.create(memoryDir, recursive: true)
+        }
+        let file = memoryDir.join("phase-c-memory-toolset-human-test.md")
+        File.writeTo(
+            file,
+            "# Phase C\nremember phasechumanoutputtoken for human output coverage\n".toArray()
+        )
+        try {
+            let out = MemoryToolset.runCliSearch(
+                "phasechumanoutputtoken",
+                maxResults: Some(3),
+                agentId: Some("general"),
+                json: false
+            )
+            @Expect(out.contains("Memory search"), true)
+            @Expect(out.contains("Results:"), true)
+            @Expect(out.contains("phasechumanoutputtoken"), true)
+            @Expect(out.contains("\"results\""), false)
+            @Expect(out.startsWith("{"), false)
+        } finally {
+            if (exists(file)) {
+                remove(file)
+            }
+        }
+    }
 }

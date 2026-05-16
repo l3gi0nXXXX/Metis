@@ -183,7 +183,8 @@ protected func handleMemoryLine(raw: String): Unit {
                     maxResults: maxResults,
                     minScore: minScore,
                     sessionKey: sessionKey,
-                    agentId: agentId
+                    agentId: agentId,
+                    json: trimmed.contains("--json")
                 )
                 PrintUtils.printLine(out)
             }
@@ -296,7 +297,11 @@ protected func handleMemoryLine(raw: String): Unit {
         case "dreaming" =>
             let includePromoted = trimmed.contains("--include-promoted")
             if (parts.size >= 3 && parts[2].trimAscii().toAsciiLower() == "status") {
-                PrintUtils.printLine(DreamingPhaseRuntime.buildStatusJson())
+                if (trimmed.contains("--json")) {
+                    PrintUtils.printLine(DreamingPhaseRuntime.buildStatusJson())
+                } else {
+                    PrintUtils.printLine(DreamingPhaseRuntime.buildStatusText())
+                }
                 return
             }
             if (parts.size >= 3 && parts[2].trimAscii().toAsciiLower() == "reconcile") {
@@ -331,9 +336,9 @@ protected func handleMemoryLine(raw: String): Unit {
             } else if (parts.size >= 3 && parts[2].trimAscii().toAsciiLower() == "sweep") {
                 PrintUtils.printLine(DreamingPhaseRuntime.run(phase, includePromoted: includePromoted))
             } else {
-                PrintUtils.printLine("Usage: /memory dreaming status | reconcile | register [light|rem|deep|all] [--cron '0 4 * * *'] | /memory dreaming sweep [light|rem|deep|all] [--include-promoted]")
+                PrintUtils.printLine("Usage: /memory dreaming status [--json] | reconcile | register [light|rem|deep|all] [--cron '0 4 * * *'] | /memory dreaming sweep [light|rem|deep|all] [--include-promoted]")
             }
         case _ =>
-            PrintUtils.printLine("Usage: /memory [status [--json] [--fix] [--deep] [--index]|index [--force]|search <query> [--json] | search --query <text> [--max-results <n>] [--min-score <n>] [--session-key <key>] [--json]|promote [--apply|--json] [--limit <n>] [--min-score <n>] [--min-recall-count <n>] [--min-unique-queries <n>] [--include-promoted]|promote explain <selector> [--json] [--limit <n>] [--include-promoted]|promote-explain <selector> [--json] [--limit <n>] [--include-promoted]|rem-harness [--json|--apply] [--include-promoted]|dreaming status|dreaming reconcile|dreaming register [light|rem|deep|all] [--cron '0 4 * * *']|dreaming sweep [light|rem|deep|all] [--include-promoted]]")
+            PrintUtils.printLine("Usage: /memory [status [--json] [--fix] [--deep] [--index]|index [--force]|search <query> [--json] | search --query <text> [--max-results <n>] [--min-score <n>] [--session-key <key>] [--json]|promote [--apply|--json] [--limit <n>] [--min-score <n>] [--min-recall-count <n>] [--min-unique-queries <n>] [--include-promoted]|promote explain <selector> [--json] [--limit <n>] [--include-promoted]|promote-explain <selector> [--json] [--limit <n>] [--include-promoted]|rem-harness [--json|--apply] [--include-promoted]|dreaming status [--json]|dreaming reconcile|dreaming register [light|rem|deep|all] [--cron '0 4 * * *']|dreaming sweep [light|rem|deep|all] [--include-promoted]]")
     }
 }

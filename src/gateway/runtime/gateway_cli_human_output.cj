@@ -29,6 +29,17 @@ private func cliJsonInt(obj: JsonObject, key: String, defaultValue!: Int64 = 0):
     }
 }
 
+private func cliJsonValueText(obj: JsonObject, key: String, defaultValue!: String = ""): String {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { return v.asString().getValue().trimAscii() } catch (_: Exception) { () }
+            try { return if (v.asBool().getValue()) { "true" } else { "false" } } catch (_: Exception) { () }
+            try { return "${v.asInt().getValue()}" } catch (_: Exception) { () }
+            defaultValue
+        case None => defaultValue
+    }
+}
+
 private func cliJsonObject(obj: JsonObject, key: String): JsonObject {
     match (obj.get(key)) {
         case Some(v) => try { v.asObject() } catch (_: Exception) { JsonObject() }
@@ -349,7 +360,18 @@ private func cliRenderChannelsAudit(result: JsonObject): Option<String> {
         lines.add("Remaining:")
         let limit = if (remaining.size() > 8) { 8 } else { remaining.size() }
         for (i in 0..limit) {
-            lines.add("  - ${cliOneLine(remaining[i].toJsonString(), maxLen: 180)}")
+            try {
+                let row = remaining[i].asObject()
+                let code = cliJsonString(row, "code", defaultValue: cliJsonString(row, "id", defaultValue: cliJsonString(row, "capability")))
+                let status = cliJsonString(row, "status", defaultValue: cliJsonString(row, "severity"))
+                let message = cliJsonString(row, "message", defaultValue: cliJsonString(row, "reason"))
+                var text = if (code.isEmpty()) { "remaining item" } else { code }
+                if (!status.isEmpty()) { text += " [${status}]" }
+                if (!message.isEmpty()) { text += ": ${cliOneLine(message, maxLen: 140)}" }
+                lines.add("  - ${text}")
+            } catch (_: Exception) {
+                lines.add("  - remaining item")
+            }
         }
     } else {
         lines.add("Remaining: none")
@@ -386,6 +408,239 @@ private func cliRenderDashboardStatus(result: JsonObject): Option<String> {
     Some<String>(String.join(lines.toArray(), delimiter: "\n"))
 }
 
+private func cliJsonStringArrayText(arr: JsonArray): String {
+    if (arr.size() == 0) {
+        return "none"
+    }
+    let values = ArrayList<String>()
+    for (i in 0..arr.size()) {
+        try {
+            let text = arr[i].asString().getValue().trimAscii()
+            if (!text.isEmpty()) {
+                values.add(text)
+            }
+        } catch (_: Exception) {
+            ()
+        }
+    }
+    if (values.size == 0) {
+        return "none"
+    }
+    String.join(values.toArray(), delimiter: ", ")
+}
+
+private func cliImageCandidateModel(row: JsonObject): String {
+    let modelRef = cliJsonString(row, "modelRef", defaultValue: cliJsonString(row, "model"))
+    if (!modelRef.isEmpty()) {
+        return modelRef
+    }
+    let capability = cliJsonObject(row, "capability")
+    cliJsonString(capability, "modelRef", defaultValue: cliJsonString(capability, "canonicalRef"))
+}
+
+private func cliImageCandidateStatus(row: JsonObject): String {
+    let direct = cliJsonString(row, "status")
+    if (!direct.isEmpty()) {
+        return direct
+    }
+    let capability = cliJsonObject(row, "capability")
+    cliJsonString(capability, "status")
+}
+
+private func cliRenderImageCandidate(row: JsonObject): String {
+    let model = cliImageCandidateModel(row)
+    let source = cliJsonString(row, "source")
+    let status = cliImageCandidateStatus(row)
+    let capability = cliJsonObject(row, "capability")
+    let reason = cliJsonString(capability, "reason", defaultValue: cliJsonString(row, "reason"))
+    var line = "  - ${if (model.isEmpty()) { "unknown" } else { model }}"
+    if (!source.isEmpty()) { line += "  source=${source}" }
+    if (!status.isEmpty()) { line += "  status=${status}" }
+    if (!reason.isEmpty()) { line += "  reason=${cliOneLine(reason, maxLen: 120)}" }
+    line
+}
+
+private func cliRenderImageUnderstandingStatus(result: JsonObject): Option<String> {
+    let candidates = cliJsonArray(result, "candidates")
+    let rejected = cliJsonArray(result, "rejected")
+    let hasImageFields = result.get("imageModel").isSome() ||
+        result.get("imageFallbackModels").isSome() ||
+        result.get("candidateCount").isSome() ||
+        result.get("configChannel").isSome()
+    if (!hasImageFields || (result.get("configured").isNone() && candidates.size() == 0 && rejected.size() == 0)) {
+        return None<String>
+    }
+
+    let lines = ArrayList<String>()
+    let configChannel = cliJsonString(result, "configChannel")
+    let runtimeChannel = cliJsonString(result, "channel")
+    let channel = if (!configChannel.isEmpty()) {
+        configChannel
+    } else if (!runtimeChannel.isEmpty()) {
+        runtimeChannel
+    } else {
+        "shared"
+    }
+    lines.add("Image understanding")
+    lines.add("Channel: ${channel}  enabled=${cliJsonBool(result, "enabled", defaultValue: true)}  configured=${cliJsonBool(result, "configured")}")
+    let imageModel = cliJsonString(result, "imageModel")
+    lines.add("Image primary: ${if (imageModel.isEmpty()) { "not set" } else { imageModel }}")
+    lines.add("Image fallbacks: ${cliJsonStringArrayText(cliJsonArray(result, "imageFallbackModels"))}")
+
+    if (candidates.size() == 0) {
+        lines.add("Candidates: none")
+        lines.add("Next: configure agents.defaults.imageModel.primary or gateway.media.image.models with a vision-capable model.")
+    } else {
+        lines.add("Candidates:")
+        let limit = if (candidates.size() > 8) { 8 } else { candidates.size() }
+        for (i in 0..limit) {
+            try {
+                lines.add(cliRenderImageCandidate(candidates[i].asObject()))
+            } catch (_: Exception) {
+                ()
+            }
+        }
+        if (candidates.size() > limit) {
+            lines.add("  ... ${candidates.size() - limit} more")
+        }
+    }
+
+    if (rejected.size() > 0) {
+        lines.add("Skipped:")
+        let limit = if (rejected.size() > 8) { 8 } else { rejected.size() }
+        for (i in 0..limit) {
+            try {
+                lines.add(cliRenderImageCandidate(rejected[i].asObject()))
+            } catch (_: Exception) {
+                ()
+            }
+        }
+        if (rejected.size() > limit) {
+            lines.add("  ... ${rejected.size() - limit} more")
+        }
+    }
+    Some<String>(String.join(lines.toArray(), delimiter: "\n"))
+}
+
+private func cliRenderImageConfigMutation(result: JsonObject): Option<String> {
+    let action = cliJsonString(result, "action")
+    if (action != "set" && action != "add-model" && action != "remove-model") {
+        return None<String>
+    }
+    let image = cliJsonObject(result, "image")
+    if (image.toJsonString() == "{}") {
+        return None<String>
+    }
+    let lines = ArrayList<String>()
+    lines.add("Image understanding configuration updated")
+    lines.add("Channel: ${cliJsonString(result, "channel", defaultValue: "shared")}")
+    lines.add("Action: ${action}")
+    lines.add("Enabled: ${cliJsonBool(image, "enabled", defaultValue: true)}")
+    let provider = cliJsonString(image, "provider")
+    if (!provider.isEmpty()) {
+        lines.add("Active provider: ${provider}")
+    }
+    let models = cliJsonArray(image, "models")
+    if (models.size() == 0) {
+        lines.add("Models: none")
+    } else {
+        lines.add("Models:")
+        let limit = if (models.size() > 8) { 8 } else { models.size() }
+        for (idx in 0..limit) {
+            try {
+                let row = models[idx].asObject()
+                let p = cliJsonString(row, "provider")
+                let m = cliJsonString(row, "model")
+                if (!p.isEmpty() || !m.isEmpty()) {
+                    lines.add("  - ${if (p.isEmpty()) { "unknown" } else { p }}:${if (m.isEmpty()) { "unknown" } else { m }}")
+                }
+            } catch (_: Exception) {
+                ()
+            }
+        }
+        if (models.size() > limit) {
+            lines.add("  ... ${models.size() - limit} more")
+        }
+    }
+    lines.add("Next: metis gateway media image status --channel ${cliJsonString(result, "channel", defaultValue: "shared")}")
+    Some<String>(String.join(lines.toArray(), delimiter: "\n"))
+}
+
+private func cliRenderCronJobObject(obj: JsonObject): Option<String> {
+    let id = cliJsonString(obj, "id", defaultValue: cliJsonString(obj, "name"))
+    let schedule = cliJsonObject(obj, "schedule")
+    if (id.isEmpty() || schedule.toJsonString() == "{}") {
+        return None<String>
+    }
+    let kind = cliJsonString(schedule, "kind")
+    var scheduleText = kind
+    if (kind == "every") {
+        scheduleText = "every ${cliJsonValueText(schedule, "everyMs", defaultValue: "0")}ms"
+    } else if (kind == "at") {
+        scheduleText = "at ${cliJsonValueText(schedule, "atMs", defaultValue: "0")}"
+    } else if (kind == "cron") {
+        let tz = cliJsonString(schedule, "timeZone", defaultValue: "UTC")
+        scheduleText = "cron ${cliJsonString(schedule, "cronExpr")} (${tz})"
+    }
+    let state = cliJsonObject(obj, "state")
+    let lines = ArrayList<String>()
+    lines.add("Cron job")
+    lines.add("ID: ${id}")
+    lines.add("Enabled: ${cliJsonBool(obj, "enabled", defaultValue: true)}")
+    lines.add("Schedule: ${scheduleText}")
+    lines.add("Session: ${cliJsonString(obj, "sessionTarget", defaultValue: "main")}")
+    let agent = cliJsonString(obj, "agentId")
+    if (!agent.isEmpty()) { lines.add("Agent: ${agent}") }
+    let model = cliJsonString(obj, "modelOverride")
+    if (!model.isEmpty()) { lines.add("Model: ${model}") }
+    let nextRun = cliJsonValueText(state, "nextRunAtMs")
+    if (!nextRun.isEmpty() && nextRun != "0") { lines.add("Next run: ${nextRun}") }
+    let deliveryChannel = cliJsonString(obj, "deliveryChannel")
+    let deliveryTo = cliJsonString(obj, "deliveryTo")
+    if (!deliveryChannel.isEmpty() || !deliveryTo.isEmpty()) {
+        lines.add("Delivery: ${if (deliveryChannel.isEmpty()) { "default" } else { deliveryChannel }} -> ${if (deliveryTo.isEmpty()) { "(not set)" } else { deliveryTo }}")
+    }
+    let prompt = cliJsonString(obj, "prompt")
+    if (!prompt.isEmpty()) { lines.add("Prompt: ${cliOneLine(prompt, maxLen: 180)}") }
+    Some<String>(String.join(lines.toArray(), delimiter: "\n"))
+}
+
+private func cliRenderGenericOkErrorObject(obj: JsonObject): Option<String> {
+    if (obj.get("ok").isNone()) {
+        return None<String>
+    }
+    let ok = cliJsonBool(obj, "ok", defaultValue: false)
+    if (!ok) {
+        let lines = ArrayList<String>()
+        lines.add("Command failed")
+        let err = cliJsonString(obj, "error", defaultValue: cliJsonString(obj, "message"))
+        if (!err.isEmpty()) {
+            lines.add("Error: ${cliOneLine(err, maxLen: 220)}")
+        }
+        return Some<String>(String.join(lines.toArray(), delimiter: "\n"))
+    }
+    if (obj.get("ran").isSome() || obj.get("jobId").isSome() || obj.get("reason").isSome()) {
+        let lines = ArrayList<String>()
+        lines.add("Cron run")
+        let jobId = cliJsonString(obj, "jobId")
+        if (!jobId.isEmpty()) { lines.add("Job: ${jobId}") }
+        lines.add("Ran: ${cliJsonBool(obj, "ran", defaultValue: false)}")
+        let reason = cliJsonString(obj, "reason")
+        if (!reason.isEmpty()) { lines.add("Reason: ${reason}") }
+        return Some<String>(String.join(lines.toArray(), delimiter: "\n"))
+    }
+    if (obj.getFields().size <= 3) {
+        let lines = ArrayList<String>()
+        lines.add("Command succeeded")
+        let status = cliJsonString(obj, "status")
+        if (!status.isEmpty()) { lines.add("Status: ${status}") }
+        let message = cliJsonString(obj, "message")
+        if (!message.isEmpty()) { lines.add("Message: ${cliOneLine(message, maxLen: 220)}") }
+        return Some<String>(String.join(lines.toArray(), delimiter: "\n"))
+    }
+    None<String>
+}
+
 private func cliRenderGenericRpc(obj: JsonObject): Option<String> {
     let method = cliJsonString(obj, "method")
     let result = cliJsonObject(obj, "result")
@@ -403,6 +658,20 @@ private func cliRenderGenericRpc(obj: JsonObject): Option<String> {
         if (!code.isEmpty()) { lines.add("Code: ${code}") }
         return Some<String>(String.join(lines.toArray(), delimiter: "\n"))
     }
+    if (!method.isEmpty()) {
+        let lines = ArrayList<String>()
+        lines.add("Gateway call: ${method}")
+        lines.add("Status: ok")
+        if (result.getFields().size > 0) {
+            let fields = ArrayList<String>()
+            for ((key, _) in result.getFields()) {
+                fields.add(key)
+            }
+            lines.add("Result fields: ${String.join(fields.toArray(), delimiter: ", ")}")
+            lines.add("Details: use the dedicated command for this method, or `gateway call --json ${method}` for machine output.")
+        }
+        return Some<String>(String.join(lines.toArray(), delimiter: "\n"))
+    }
     None<String>
 }
 
@@ -417,7 +686,23 @@ public func gatewayFormatCommandOutput(raw: String): String {
             case Some(v) => return v
             case None => ()
         }
+        match (cliRenderImageUnderstandingStatus(obj)) {
+            case Some(v) => return v
+            case None => ()
+        }
+        match (cliRenderImageConfigMutation(obj)) {
+            case Some(v) => return v
+            case None => ()
+        }
+        match (cliRenderCronJobObject(obj)) {
+            case Some(v) => return v
+            case None => ()
+        }
         match (cliRenderGenericRpc(obj)) {
+            case Some(v) => return v
+            case None => ()
+        }
+        match (cliRenderGenericOkErrorObject(obj)) {
             case Some(v) => return v
             case None => ()
         }

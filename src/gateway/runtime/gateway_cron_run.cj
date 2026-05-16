@@ -3,6 +3,7 @@ package metis.gateway.runtime
 import metis.core.config.{CliConfig, CliSettingManager}
 import metis.cron.cronStorePath
 
+import std.collection.ArrayList
 import stdx.encoding.json.{JsonBool, JsonObject, JsonString, JsonValue}
 
 private func gatewayParseCronRunJobIdAndDue(sub: Array<String>): (Option<String>, Bool) {
@@ -27,6 +28,17 @@ private func gatewayParseCronRunJobIdAndDue(sub: Array<String>): (Option<String>
         i += 1
     }
     (jobIdOpt, dueOnly)
+}
+
+private func gatewayCronRunWantsJson(sub: Array<String>): Bool {
+    var i: Int64 = 2
+    while (i < sub.size) {
+        if (sub[i].trimAscii().toAsciiLower() == "--json") {
+            return true
+        }
+        i += 1
+    }
+    false
 }
 
 private func gatewayParseJobIdFlag(sub: Array<String>, start: Int64): Option<String> {
@@ -69,6 +81,38 @@ private func cronRunResultExitCode(obj: JsonObject): Int64 {
         return 0
     }
     1
+}
+
+private func gatewayCronRunJsonString(obj: JsonObject, key: String): String {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func gatewayCronRunJsonBool(obj: JsonObject, key: String, defaultValue!: Bool = false): Bool {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asBool().getValue() } catch (_e: Exception) { defaultValue }
+        case None => defaultValue
+    }
+}
+
+private func gatewayCronRunResultForHuman(jobId: String, jo: JsonObject): String {
+    let ok = gatewayCronRunJsonBool(jo, "ok")
+    let lines = ArrayList<String>()
+    lines.add(if (ok) { "Cron run" } else { "Cron run failed" })
+    lines.add("Job: ${jobId}")
+    if (ok) {
+        lines.add("Ran: ${gatewayCronRunJsonBool(jo, "ran")}")
+        let reason = gatewayCronRunJsonString(jo, "reason")
+        if (!reason.isEmpty()) { lines.add("Reason: ${reason}") }
+    } else {
+        let err = gatewayCronRunJsonString(jo, "error")
+        if (!err.isEmpty()) { lines.add("Error: ${err}") }
+    }
+    String.join(lines.toArray(), delimiter: "\n")
 }
 
 /**
@@ -133,7 +177,7 @@ public func gatewayCronRunOnceOutcome(jobId: String, force: Bool): (Bool, String
     if (!reason.isEmpty()) {
         return (false, reason)
     }
-    (false, jo.toJsonString())
+    (false, gatewayCronRunResultForHuman(jobId, jo))
 }
 
 /**
@@ -141,14 +185,21 @@ public func gatewayCronRunOnceOutcome(jobId: String, force: Bool): (Bool, String
  */
 public func gatewayCronRunUnified(sub: Array<String>): (String, Int64) {
     let (jobIdOpt, dueOnly) = gatewayParseCronRunJobIdAndDue(sub)
+    let json = gatewayCronRunWantsJson(sub)
     match (jobIdOpt) {
         case None =>
             let err = JsonObject()
             err.put("ok", JsonBool(false))
             err.put("error", JsonString("missing id (cron run <id> or --job-id <id>)"))
-            (err.toJsonString(), 1)
+            if (json) {
+                return (err.toJsonString(), 1)
+            }
+            ("Cron run failed\nError: missing id (cron run <id> or --job-id <id>)", 1)
         case Some(jobId) =>
             let jo = gatewayCronExecuteJobOnce(jobId, !dueOnly)
-            (jo.toJsonString(), cronRunResultExitCode(jo))
+            if (json) {
+                return (jo.toJsonString(), cronRunResultExitCode(jo))
+            }
+            (gatewayCronRunResultForHuman(jobId, jo), cronRunResultExitCode(jo))
     }
 }

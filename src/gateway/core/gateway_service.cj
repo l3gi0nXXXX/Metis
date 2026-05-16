@@ -1010,7 +1010,7 @@ public class GatewayService {
                     this.sendTextToPeerDetailed(
                         "telegram",
                         message.peerId,
-                        reply,
+                        this.renderTelegramNativeHumanReply(reply),
                         replyToMessageId: message.replyTargetMessageId,
                         replyInThread: message.replyInThread,
                         accountId: accountId
@@ -1568,6 +1568,52 @@ public class GatewayService {
         String.join(lines.toArray(), delimiter: "\n")
     }
 
+    private func telegramJsonValueSummary(value: JsonValue): String {
+        try {
+            return value.asString().getValue()
+        } catch (_e: Exception) {
+            ()
+        }
+        try {
+            return if (value.asBool().getValue()) { "true" } else { "false" }
+        } catch (_e: Exception) {
+            ()
+        }
+        try {
+            return "${value.asInt().getValue()}"
+        } catch (_e: Exception) {
+            ()
+        }
+        try {
+            let arr = value.asArray()
+            if (arr.size() == 0) {
+                return "(none)"
+            }
+            let values = ArrayList<String>()
+            var allStrings = true
+            for (idx in 0..arr.size()) {
+                try {
+                    values.add(arr[idx].asString().getValue())
+                } catch (_e: Exception) {
+                    allStrings = false
+                }
+            }
+            if (allStrings) {
+                return String.join(values.toArray(), delimiter: ", ")
+            }
+            return "${arr.size()} item(s)"
+        } catch (_e: Exception) {
+            ()
+        }
+        try {
+            let obj = value.asObject()
+            return "${obj.getFields().size} field(s)"
+        } catch (_e: Exception) {
+            ()
+        }
+        "structured value"
+    }
+
     private func renderTelegramAllowlistText(root: JsonObject): String {
         let lines = ArrayList<String>()
         lines.add("Telegram allowlist")
@@ -1575,15 +1621,15 @@ public class GatewayService {
         this.appendTelegramJsonTextField(lines, root, "Requested", "requested")
         this.appendTelegramJsonTextField(lines, root, "Scope", "scope")
         match (root.get("allowFrom")) {
-            case Some(v) => lines.add("DM allowFrom: ${v.toJsonString()}")
+            case Some(v) => lines.add("DM allowFrom: ${this.telegramJsonValueSummary(v)}")
             case None => ()
         }
         match (root.get("pairingApproved")) {
-            case Some(v) => lines.add("Pairing approved: ${v.toJsonString()}")
+            case Some(v) => lines.add("Pairing approved: ${this.telegramJsonValueSummary(v)}")
             case None => ()
         }
         match (root.get("groupAllowFrom")) {
-            case Some(v) => lines.add("Group allowFrom: ${v.toJsonString()}")
+            case Some(v) => lines.add("Group allowFrom: ${this.telegramJsonValueSummary(v)}")
             case None => ()
         }
         let pendingCount = this.telegramJsonInt(root, "pairingPendingCount", -1)
@@ -1631,7 +1677,7 @@ public class GatewayService {
         lines.add("Telegram MCP")
         lines.add("Requested: ${this.telegramJsonString(root, "requested", "show")}")
         match (root.get("mcpServers")) {
-            case Some(v) => lines.add("Configured servers: ${v.toJsonString()}")
+            case Some(v) => lines.add("Configured servers: ${this.telegramJsonValueSummary(v)}")
             case None => this.appendTelegramJsonTextField(lines, root, "Message", "message")
         }
         String.join(lines.toArray(), delimiter: "\n")
@@ -1695,7 +1741,26 @@ public class GatewayService {
         this.appendTelegramJsonTextField(lines, root, "Alias", "alias")
         this.appendTelegramJsonTextField(lines, root, "Message", "message")
         match (root.get("bindings")) {
-            case Some(v) => lines.add("Bindings: ${v.toJsonString()}")
+            case Some(v) =>
+                try {
+                    let rows = v.asArray()
+                    lines.add("Bindings: ${rows.size()} item(s)")
+                    let limit = if (rows.size() > 8) { 8 } else { rows.size() }
+                    for (idx in 0..limit) {
+                        let row = rows[idx].asObject()
+                        let session = this.telegramJsonString(row, "sessionKey", "")
+                        let conversation = this.telegramJsonString(row, "conversationId", "")
+                        let account = this.telegramJsonString(row, "accountId", "")
+                        if (!session.isEmpty()) {
+                            lines.add("  - ${session}${if (conversation.isEmpty()) { "" } else { " @ ${conversation}" }}${if (account.isEmpty()) { "" } else { " account=${account}" }}")
+                        }
+                    }
+                    if (rows.size() > limit) {
+                        lines.add("  ... ${rows.size() - limit} more")
+                    }
+                } catch (_e: Exception) {
+                    lines.add("Bindings: ${this.telegramJsonValueSummary(v)}")
+                }
             case None => ()
         }
         String.join(lines.toArray(), delimiter: "\n")
@@ -2471,7 +2536,7 @@ public class GatewayService {
             match (current.get(key)) {
                 case Some(v) =>
                     if (idx + 1 == parts.size) {
-                        return v.toJsonString()
+                        return this.telegramJsonValueSummary(v)
                     }
                     try {
                         current = v.asObject()

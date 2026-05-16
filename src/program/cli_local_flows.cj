@@ -49,6 +49,11 @@ private func printJsonObject(obj: JsonObject): Int64 {
     CLI_EXIT_OK
 }
 
+private func printJsonValue(value: JsonValue): Int64 {
+    PrintUtils.printLine(value.toJsonString())
+    CLI_EXIT_OK
+}
+
 private func localArgsWantJson(args: Array<String>): Bool {
     for (arg in args) {
         let low = arg.trimAscii().toAsciiLower()
@@ -475,7 +480,7 @@ private func gatewayAgentsTeamValueSummary(value: JsonValue): String {
     let obj = try {
         value.asObject()
     } catch (_e: Exception) {
-        return value.toJsonString()
+        return "structured value"
     }
     let alias = gatewayAgentsJsonString(obj, "alias", "")
     let agentId = gatewayAgentsJsonString(obj, "agentId", "")
@@ -490,7 +495,7 @@ private func gatewayAgentsTeamValueSummary(value: JsonValue): String {
     if (!text.isEmpty()) {
         return text
     }
-    value.toJsonString()
+    "structured object"
 }
 
 private func gatewayAgentsTeamArraySummary(arr: JsonArray): String {
@@ -837,6 +842,95 @@ private func cliWarnSecretCliFlag(flag: String): Unit {
     PrintUtils.printLine("Warning: ${flag} can be exposed via process listings. Prefer ${flag}-file.")
 }
 
+private func cliMcpShowNameArg(args: Array<String>): String {
+    var i: Int64 = 1
+    while (i < args.size) {
+        let t = args[i].trimAscii()
+        let low = t.toAsciiLower()
+        if (low != "--json" && low != "json") {
+            return t
+        }
+        i += 1
+    }
+    ""
+}
+
+private func cliMcpJsonString(obj: JsonObject, key: String): String {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func cliMcpArrayCount(obj: JsonObject, key: String): Int64 {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { Int64(v.asArray().size()) } catch (_e: Exception) { 0 }
+        case None => 0
+    }
+}
+
+private func cliMcpServerSummary(value: JsonValue): String {
+    let obj = try {
+        value.asObject()
+    } catch (_e: Exception) {
+        return "structured value (use --json for machine output)"
+    }
+    let command = cliMcpJsonString(obj, "command")
+    let url = cliMcpJsonString(obj, "url")
+    let transport = cliMcpJsonString(obj, "transport")
+    let argsCount = cliMcpArrayCount(obj, "args")
+    let envCount = match (obj.get("env")) {
+        case Some(v) =>
+            try { Int64(v.asObject().getFields().size) } catch (_e: Exception) { 0 }
+        case None => 0
+    }
+    let parts = ArrayList<String>()
+    if (!transport.isEmpty()) { parts.add("transport=${transport}") }
+    if (!command.isEmpty()) { parts.add("command=${command}") }
+    if (!url.isEmpty()) { parts.add("url=${url}") }
+    if (argsCount > 0) { parts.add("args=${argsCount}") }
+    if (envCount > 0) { parts.add("env=${envCount}") }
+    if (parts.size == 0) {
+        return "configured (use --json for machine output)"
+    }
+    String.join(parts.toArray(), delimiter: "  ")
+}
+
+func cliMcpRenderServersForHuman(obj: JsonObject): String {
+    let fields = obj.getFields()
+    let lines = ArrayList<String>()
+    lines.add("MCP servers (${mcpConfiguredServersPath()}):")
+    if (fields.isEmpty()) {
+        lines.add("  (none)")
+        lines.add("Next: metis mcp set <name> '<json>'")
+        return String.join(lines.toArray(), delimiter: "\n")
+    }
+    let names = ArrayList<String>()
+    for ((name, _) in fields) {
+        names.add(name)
+    }
+    sort(names)
+    for (name in names) {
+        match (obj.get(name)) {
+            case Some(value) => lines.add("  - ${name}: ${cliMcpServerSummary(value)}")
+            case None => ()
+        }
+    }
+    lines.add("Machine output: rerun with --json.")
+    String.join(lines.toArray(), delimiter: "\n")
+}
+
+func cliMcpRenderServerForHuman(name: String, value: JsonValue): String {
+    let lines = ArrayList<String>()
+    lines.add("MCP server: ${name}")
+    lines.add("  ${cliMcpServerSummary(value)}")
+    lines.add("Config path: ${mcpConfiguredServersPath()}")
+    lines.add("Machine output: rerun with --json.")
+    String.join(lines.toArray(), delimiter: "\n")
+}
+
 public func cliRunMcpFlow(args: Array<String>): Int64 {
     let sub = firstArg(args)
     if (sub.isEmpty() || sub == "help") {
@@ -872,13 +966,24 @@ public func cliRunMcpFlow(args: Array<String>): Int64 {
         return CLI_EXIT_OK
     }
     if (sub == "show") {
-        let name = argAt(args, 1)
+        let name = cliMcpShowNameArg(args)
         if (name.isEmpty()) {
-            return printJsonObject(mcpConfiguredServersJson())
+            if (localArgsWantJson(args)) {
+                return printJsonObject(mcpConfiguredServersJson())
+            }
+            for (line in cliMcpRenderServersForHuman(mcpConfiguredServersJson()).split("\n")) {
+                PrintUtils.printLine(line)
+            }
+            return CLI_EXIT_OK
         }
         match (mcpConfiguredServerJson(name)) {
             case Some(value) =>
-                PrintUtils.printLine(value.toJsonString())
+                if (localArgsWantJson(args)) {
+                    return printJsonValue(value)
+                }
+                for (line in cliMcpRenderServerForHuman(name, value).split("\n")) {
+                    PrintUtils.printLine(line)
+                }
                 return CLI_EXIT_OK
             case None =>
                 PrintUtils.printLine("No MCP server named \"${name}\" in ${mcpConfiguredServersPath()}.")

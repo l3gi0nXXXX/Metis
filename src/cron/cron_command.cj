@@ -119,10 +119,7 @@ public func executeGatewayCronCommand(sub: Array<String>): (String, Int64) {
 }
 
 private func cronErr(message: String): (String, Int64) {
-    let o = JsonObject()
-    o.put("ok", JsonBool(false))
-    o.put("error", JsonString(message))
-    (o.toJsonString(), 1)
+    ("Cron command failed\nError: ${message}", 1)
 }
 
 private func cronHelpText(): String {
@@ -577,6 +574,38 @@ private func formatScheduleSummary(j: CronJob): String {
     k
 }
 
+private func formatCronJobMutationForHuman(action: String, j: CronJob, path: Path): String {
+    let lines = ArrayList<String>()
+    lines.add("Cron job ${action}")
+    lines.add("ID: ${j.id}")
+    lines.add("Enabled: ${if (j.enabled) { "true" } else { "false" }}")
+    lines.add("Schedule: ${formatScheduleSummary(j)}")
+    lines.add("Session: ${j.sessionTarget}")
+    if (!j.agentId.trimAscii().isEmpty()) {
+        lines.add("Agent: ${j.agentId}")
+    }
+    if (!j.modelOverride.trimAscii().isEmpty()) {
+        lines.add("Model: ${j.modelOverride}")
+    }
+    if (!j.deliveryChannel.trimAscii().isEmpty() || !j.deliveryTo.trimAscii().isEmpty()) {
+        lines.add("Delivery: ${if (j.deliveryChannel.trimAscii().isEmpty()) { "default" } else { j.deliveryChannel }} -> ${if (j.deliveryTo.trimAscii().isEmpty()) { "(not set)" } else { j.deliveryTo }}")
+    }
+    if (j.state.nextRunAtMs > 0) {
+        lines.add("Next run: ${j.state.nextRunAtMs}")
+    }
+    lines.add("Store: ${path.toString()}")
+    lines.add("Prompt: ${ellipsis(j.prompt, 180)}")
+    lines.add("Machine output: rerun with --json.")
+    String.join(lines.toArray(), delimiter: "\n")
+}
+
+private func cronJobCommandOutput(action: String, j: CronJob, path: Path, json: Bool): (String, Int64) {
+    if (json) {
+        return (cronJobToJson(j).toJsonString(), 0)
+    }
+    (formatCronJobMutationForHuman(action, j, path), 0)
+}
+
 private func formatRelativeFuture(ms: Int64, nowMs: Int64): String {
     if (ms <= 0) { return "-" }
     let d = ms - nowMs
@@ -866,6 +895,7 @@ private func cronCmdAdd(path: Path, sub: Array<String>): (String, Int64) {
 
 /** 参考实现风格：`add --name X --every ... --session ... --message ...` */
 private func cronCmdAddNamed(path: Path, sub: Array<String>): (String, Int64) {
+    let json = cronArgvHasJsonFlag(sub, 2)
     var name = ""
     var everyOpt: Option<Int64> = None<Int64>
     var atOpt: Option<Int64> = None<Int64>
@@ -905,6 +935,10 @@ private func cronCmdAddNamed(path: Path, sub: Array<String>): (String, Int64) {
     while (i < sub.size) {
         let key = sub[i].trimAscii()
         let k = key.toAsciiLower()
+        if (k == "--json") {
+            i += 1
+            continue
+        }
         if (k == "--message" || k == "-m") {
             message = joinFrom(sub, i + 1)
             break
@@ -1309,7 +1343,7 @@ private func cronCmdAddNamed(path: Path, sub: Array<String>): (String, Int64) {
             failureAlertCooldownMs: failureAlertCooldownMs
         )
         upsertJob(path, jobEvery)
-        return (cronJobToJson(jobEvery).toJsonString(), 0)
+        return cronJobCommandOutput("created", jobEvery, path, json)
     }
     if (let Some(atv) <- atOpt) {
         let scheduleAt = CronSchedule("at", 0, 0, atv, "", "", 0)
@@ -1349,7 +1383,7 @@ private func cronCmdAddNamed(path: Path, sub: Array<String>): (String, Int64) {
             failureAlertCooldownMs: failureAlertCooldownMs
         )
         upsertJob(path, jobAt)
-        return (cronJobToJson(jobAt).toJsonString(), 0)
+        return cronJobCommandOutput("created", jobAt, path, json)
     }
     if (let Some(cronEx) <- cronExprOpt) {
         let scheduleCron = CronSchedule("cron", 0, 0, 0, cronEx.trimAscii(), tzStr.trimAscii(), staggerFinal)
@@ -1389,7 +1423,7 @@ private func cronCmdAddNamed(path: Path, sub: Array<String>): (String, Int64) {
             failureAlertCooldownMs: failureAlertCooldownMs
         )
         upsertJob(path, jobCron)
-        return (cronJobToJson(jobCron).toJsonString(), 0)
+        return cronJobCommandOutput("created", jobCron, path, json)
     }
     return cronErr("cron.add failed")
 }
@@ -1555,6 +1589,7 @@ private func cronCmdUpdate(path: Path, sub: Array<String>): (String, Int64) {
     }
     match (parseJobIdFlag(sub, 2)) {
         case Some(jobId) =>
+            let json = cronArgvHasJsonFlag(sub, 2)
             var enabledOpt: Option<Bool> = None<Bool>
             var messageOpt: Option<String> = None<String>
             var sessionOpt: Option<String> = None<String>
@@ -1593,6 +1628,10 @@ private func cronCmdUpdate(path: Path, sub: Array<String>): (String, Int64) {
             var touched = false
             while (i < sub.size) {
                 let k = sub[i].trimAscii().toAsciiLower()
+                if (k == "--json") {
+                    i += 1
+                    continue
+                }
                 if (k == "--job-id" || k == "--id") {
                     i += 2
                     continue
@@ -2042,14 +2081,9 @@ private func cronCmdUpdate(path: Path, sub: Array<String>): (String, Int64) {
             }
             cronSave(path, list.toArray())
             match (updatedJob) {
-                case Some(j) => (cronJobToJson(j).toJsonString(), 0)
+                case Some(j) => cronJobCommandOutput("updated", j, path, json)
                 case None =>
-                    (
-                        cronJobToJson(
-                            CronJob(jobId, "", CronSchedule.every(60000), createdAtMs: 0)
-                        ).toJsonString(),
-                        0
-                    )
+                    cronJobCommandOutput("updated", CronJob(jobId, "", CronSchedule.every(60000), createdAtMs: 0), path, json)
             }
         case None => cronErr("invalid cron.update params: missing id")
     }
@@ -2221,11 +2255,16 @@ private func cronCmdWake(path: Path, sub: Array<String>): (String, Int64) {
         case Some(v) => v
         case None => ""
     }
+    let json = cronArgvHasJsonFlag(sub, 2)
     var mode = "now"
     var textHint = ""
     var i: Int64 = 2
     while (i < sub.size) {
         let k = sub[i].trimAscii().toAsciiLower()
+        if (k == "--json") {
+            i += 1
+            continue
+        }
         if (k == "--mode" && i + 1 < sub.size) {
             let v = sub[i + 1].trimAscii().toAsciiLower()
             if (!v.isEmpty()) {
@@ -2241,7 +2280,10 @@ private func cronCmdWake(path: Path, sub: Array<String>): (String, Int64) {
         }
         i += 1
     }
-    if (textHint.isEmpty()) { return ("{\"ok\":false}", 0) }
+    if (textHint.isEmpty()) {
+        if (json) { return ("{\"ok\":false,\"error\":\"missing --text\"}", 1) }
+        return ("Cron wake skipped\nReason: --text is required.", 1)
+    }
     let list = ArrayList<CronJob>()
     var count: Int64 = 0
     let nowMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
@@ -2265,8 +2307,20 @@ private func cronCmdWake(path: Path, sub: Array<String>): (String, Int64) {
         return cronErr("wake failed: no enabled jobs matched")
     }
     cronSave(path, list.toArray())
+    if (!json) {
+        let lines = ArrayList<String>()
+        lines.add("Cron wake updated")
+        lines.add("Matched enabled jobs: ${count}")
+        lines.add("Mode: ${mode}")
+        lines.add("Wake at: ${wakeAt}")
+        if (!targetId.isEmpty()) { lines.add("Job: ${targetId}") }
+        return (String.join(lines.toArray(), delimiter: "\n"), 0)
+    }
     let out = JsonObject()
     out.put("ok", JsonBool(!textHint.isEmpty()))
+    out.put("matched", JsonInt(count))
+    out.put("mode", JsonString(mode))
+    out.put("wakeAtMs", JsonInt(wakeAt))
     (out.toJsonString(), 0)
 }
 
