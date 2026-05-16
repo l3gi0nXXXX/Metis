@@ -54,6 +54,22 @@ class FeishuQueueProbe {
 
 @Test
 public class FeishuAdapterTest {
+    private func jsonObjectField(obj: JsonObject, key: String): JsonObject {
+        try {
+            obj.get(key).getOrThrow().asObject()
+        } catch (_: Exception) {
+            JsonObject()
+        }
+    }
+
+    private func jsonStringField(obj: JsonObject, key: String): String {
+        try {
+            obj.get(key).getOrThrow().asString().getValue()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
     private func webhookPayload(
         messageId: String,
         chatId: String,
@@ -1036,6 +1052,40 @@ public class FeishuAdapterTest {
         @Expect(root.get("accountId").getOrThrow().asString().getValue(), "tenant-a")
         let requests = root.get("requests").getOrThrow().asArray()
         @Expect(requests.size(), 7)
+        let createReq = requests[0].asObject()
+        let createBody = this.jsonObjectField(createReq, "body")
+        @Expect(this.jsonStringField(createBody, "type"), "card_json")
+        @Expect(this.jsonStringField(createBody, "data").contains("\"initial answer\""), true)
+        let sendReq = requests[1].asObject()
+        let sendBody = this.jsonObjectField(sendReq, "body")
+        let sendParams = this.jsonObjectField(sendReq, "params")
+        let sendContent = this.jsonStringField(sendBody, "content")
+        @Expect(this.jsonStringField(sendParams, "receive_id_type"), "chat_id")
+        @Expect(sendContent.contains("\"type\":\"card\""), true)
+        @Expect(sendContent.contains("\"card_id\":\"card_live_1\""), true)
+        let patchReq = requests[2].asObject()
+        let patchBody = this.jsonObjectField(patchReq, "body")
+        @Expect(this.jsonStringField(patchReq, "stage"), "stream_patch")
+        @Expect(patchBody.get("sequence").getOrThrow().asInt().getValue(), 2)
+        let settingsReq = requests[3].asObject()
+        let settingsBody = this.jsonObjectField(settingsReq, "body")
+        @Expect(this.jsonStringField(settingsReq, "stage"), "settings_close")
+        @Expect(this.jsonStringField(settingsReq, "api"), "cardkit.v1.card.settings")
+        @Expect(this.jsonStringField(settingsBody, "settings"), "{\"streaming_mode\":false}")
+        @Expect(settingsBody.get("sequence").getOrThrow().asInt().getValue(), 3)
+        let finalReq = requests[4].asObject()
+        let finalBody = this.jsonObjectField(finalReq, "body")
+        let finalCard = this.jsonObjectField(finalBody, "card")
+        @Expect(this.jsonStringField(finalReq, "stage"), "final_update")
+        @Expect(this.jsonStringField(finalCard, "type"), "card_json")
+        @Expect(this.jsonStringField(finalCard, "data").contains("\"final answer\""), true)
+        @Expect(finalBody.get("sequence").getOrThrow().asInt().getValue(), 4)
+        let abortReq = requests[5].asObject()
+        let abortBody = this.jsonObjectField(abortReq, "body")
+        let abortCard = this.jsonObjectField(abortBody, "card")
+        @Expect(this.jsonStringField(abortReq, "stage"), "abort_update")
+        @Expect(this.jsonStringField(abortCard, "type"), "card_json")
+        @Expect(this.jsonStringField(abortCard, "data").contains("operator stopped"), true)
         @Expect(raw.contains("cardkit.v1.card.create"), true)
         @Expect(raw.contains("im.message.create(interactive.cardkit)"), true)
         @Expect(raw.contains("cardkit.v1.cardElement.content"), true)

@@ -34,6 +34,42 @@ private func feishuCardJsonStringArray(values: Array<String>): JsonArray {
     arr
 }
 
+private func feishuCardCompactJson(raw: String): String {
+    let out = StringBuilder()
+    var inString = false
+    var escaped = false
+    for (i in 0..raw.size) {
+        let b = raw[i]
+        if (inString) {
+            out.append(raw[i..i + 1])
+            if (escaped) {
+                escaped = false
+            } else if (b == UInt8(92)) {
+                escaped = true
+            } else if (b == UInt8(34)) {
+                inString = false
+            }
+        } else if (b == UInt8(34)) {
+            inString = true
+            out.append(raw[i..i + 1])
+        } else if (!(b == UInt8(32) || b == UInt8(10) || b == UInt8(13) || b == UInt8(9))) {
+            out.append(raw[i..i + 1])
+        }
+    }
+    out.toString()
+}
+
+private func feishuCardJsonString(obj: JsonObject): String {
+    feishuCardCompactJson(obj.toJsonString())
+}
+
+private func feishuCardKitCardJsonEnvelope(card: FeishuInteractiveCard): JsonObject {
+    let envelope = JsonObject()
+    envelope.put("type", JsonString("card_json"))
+    envelope.put("data", JsonString(feishuCardJsonString(card.toJson())))
+    envelope
+}
+
 public class FeishuInteractiveCard {
     public let title: String
     public let text: String
@@ -240,6 +276,7 @@ public class FeishuCardKitRequestPlan {
     private let path: String
     private let tokenMode: String
     private let sequence: Int64
+    private let params: JsonObject
     private let body: JsonObject
     private let requiredScopes: Array<String>
     private let networkAttempted: Bool
@@ -251,6 +288,7 @@ public class FeishuCardKitRequestPlan {
         path: String,
         tokenMode!: String = "sdk_default",
         sequence!: Int64 = 0,
+        params!: JsonObject = JsonObject(),
         body!: JsonObject = JsonObject(),
         requiredScopes!: Array<String> = [],
         networkAttempted!: Bool = false
@@ -261,6 +299,7 @@ public class FeishuCardKitRequestPlan {
         this.path = path.trimAscii()
         this.tokenMode = tokenMode.trimAscii()
         this.sequence = sequence
+        this.params = params
         this.body = body
         this.requiredScopes = requiredScopes
         this.networkAttempted = networkAttempted
@@ -274,6 +313,7 @@ public class FeishuCardKitRequestPlan {
         out.put("path", JsonString(this.path))
         out.put("tokenMode", JsonString(this.tokenMode))
         out.put("sequence", JsonInt(this.sequence))
+        out.put("params", this.params)
         out.put("body", this.body)
         out.put("requiredScopes", feishuCardJsonStringArray(this.requiredScopes))
         out.put("networkAttempted", JsonBool(this.networkAttempted))
@@ -328,7 +368,7 @@ public class FeishuCardKitStreamingPlan {
 
         let createBody = JsonObject()
         createBody.put("type", JsonString("card_json"))
-        createBody.put("data", card.toJson())
+        createBody.put("data", JsonString(feishuCardJsonString(card.toJson())))
         requests.add(FeishuCardKitRequestPlan(
             "create_entity",
             "cardkit.v1.card.create",
@@ -338,21 +378,23 @@ public class FeishuCardKitStreamingPlan {
             requiredScopes: ["cardkit:card:create"]
         ))
 
+        let sendParams = JsonObject()
+        sendParams.put("receive_id_type", JsonString(receiveIdType.trimAscii()))
         let sendBody = JsonObject()
         sendBody.put("receive_id", JsonString(receiveId.trimAscii()))
-        sendBody.put("receive_id_type", JsonString(receiveIdType.trimAscii()))
         sendBody.put("msg_type", JsonString("interactive"))
         let content = JsonObject()
         content.put("type", JsonString("card"))
         let data = JsonObject()
         data.put("card_id", JsonString(cleanCardId))
         content.put("data", data)
-        sendBody.put("content", content)
+        sendBody.put("content", JsonString(feishuCardJsonString(content)))
         requests.add(FeishuCardKitRequestPlan(
             "send_card_message",
             "im.message.create(interactive.cardkit)",
             "POST",
             "/open-apis/im/v1/messages",
+            params: sendParams,
             body: sendBody,
             requiredScopes: ["im:message:send_as_bot"]
         ))
@@ -370,44 +412,46 @@ public class FeishuCardKitStreamingPlan {
             requiredScopes: ["cardkit:card:update"]
         ))
 
-        let finalBody = JsonObject()
-        finalBody.put("card", finalCard.toJson())
-        finalBody.put("sequence", JsonInt(3))
-        requests.add(FeishuCardKitRequestPlan(
-            "final_update",
-            "cardkit.v1.card.update",
-            "PATCH",
-            "sdk://cardkit.v1.card.update/${cleanCardId}",
-            sequence: 3,
-            body: finalBody,
-            requiredScopes: ["cardkit:card:update"]
-        ))
-
+        let settings = JsonObject()
+        settings.put("streaming_mode", JsonBool(false))
         let settingsBody = JsonObject()
-        settingsBody.put("streaming_mode", JsonBool(false))
-        settingsBody.put("sequence", JsonInt(4))
+        settingsBody.put("settings", JsonString(feishuCardJsonString(settings)))
+        settingsBody.put("sequence", JsonInt(3))
         requests.add(FeishuCardKitRequestPlan(
             "settings_close",
             "cardkit.v1.card.settings",
             "PATCH",
             "sdk://cardkit.v1.card.settings/${cleanCardId}",
-            sequence: 4,
+            sequence: 3,
             body: settingsBody,
             requiredScopes: ["cardkit:card:update"]
         ))
 
+        let finalBody = JsonObject()
+        finalBody.put("card", feishuCardKitCardJsonEnvelope(finalCard))
+        finalBody.put("sequence", JsonInt(4))
+        requests.add(FeishuCardKitRequestPlan(
+            "final_update",
+            "cardkit.v1.card.update",
+            "PATCH",
+            "sdk://cardkit.v1.card.update/${cleanCardId}",
+            sequence: 4,
+            body: finalBody,
+            requiredScopes: ["cardkit:card:update"]
+        ))
+
         let abortBody = JsonObject()
-        abortBody.put("card", FeishuInteractiveCard(
+        abortBody.put("card", feishuCardKitCardJsonEnvelope(FeishuInteractiveCard(
             title: "Metis",
             text: "Aborted: ${if (abortReason.trimAscii().isEmpty()) { "aborted" } else { abortReason.trimAscii() }}"
-        ).toJson())
-        abortBody.put("sequence", JsonInt(5))
+        )))
+        abortBody.put("sequence", JsonInt(4))
         requests.add(FeishuCardKitRequestPlan(
             "abort_update",
             "cardkit.v1.card.update",
             "PATCH",
             "sdk://cardkit.v1.card.update/${cleanCardId}",
-            sequence: 5,
+            sequence: 4,
             body: abortBody,
             requiredScopes: ["cardkit:card:update"]
         ))
