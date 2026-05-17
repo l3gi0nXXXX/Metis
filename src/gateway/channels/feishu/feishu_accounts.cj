@@ -33,7 +33,15 @@ public class FeishuResolvedAccount {
 
 public func gatewayFeishuNormalizeAccountId(raw: String): String {
     let trimmed = raw.trimAscii()
-    if (trimmed.isEmpty()) { "default" } else { trimmed }
+    if (trimmed.isEmpty()) {
+        return "default"
+    }
+    let lower = trimmed.toAsciiLower()
+    if (lower.startsWith("feishu:")) {
+        let suffix = trimmed["feishu:".size..].trimAscii()
+        return if (suffix.isEmpty()) { "default" } else { suffix }
+    }
+    trimmed
 }
 
 public func gatewayFeishuDefaultAccountId(config: FeishuConfig): String {
@@ -376,7 +384,12 @@ public func gatewayFeishuRedactedValue(value: String): String {
 private func gatewayFeishuAccountOverride(config: FeishuConfig, accountId: String): Option<JsonObject> {
     match (config.accounts) {
         case Some(accounts) =>
-            match (accounts.get(gatewayFeishuNormalizeAccountId(accountId))) {
+            let normalized = gatewayFeishuNormalizeAccountId(accountId)
+            let raw = match (accounts.get(normalized)) {
+                case Some(v) => Some(v)
+                case None => accounts.get("feishu:${normalized}")
+            }
+            match (raw) {
                 case Some(v) => try { Some(v.asObject()) } catch (_: Exception) { None<JsonObject> }
                 case None => None<JsonObject>
             }

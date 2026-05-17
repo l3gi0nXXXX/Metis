@@ -1,6 +1,9 @@
 package metis.gateway.config
 
 import metis.core.config.GatewayUserSettings
+import metis.gateway.channels.feishu.{gatewayFeishuListAccountIds, gatewayFeishuResolveAccount}
+import metis.gateway.channels.qq.{gatewayQqListAccountIds, gatewayQqResolveAccount}
+import metis.gateway.channels.telegram.{gatewayTelegramListAccountIds, gatewayTelegramResolveAccount}
 
 import std.collection.ArrayList
 
@@ -49,51 +52,61 @@ public func gatewayBuiltinAdapterRegistrationProfiles(
     healthMonitorEnabled: Bool
 ): Array<GatewayAdapterRegistrationProfile> {
     let rows = ArrayList<GatewayAdapterRegistrationProfile>()
+    let (feishuConfig, qqConfig, telegramConfig) = mergeGatewayUserSettings(user)
 
     let feishuCatalog = getGatewayChannelCatalogEntry("feishu")
-    rows.add(GatewayAdapterRegistrationProfile(
-        "feishu",
-        "feishu:default",
-        "feishu",
-        "builtin",
-        "builtin-adapter",
-        "native-cangjie",
-        match (feishuCatalog) { case Some(v) => v.label case None => "Feishu" },
-        match (feishuCatalog) { case Some(v) => v.detailLabel case None => "Built-in Feishu adapter" },
-        user.feishu.enabled,
-        !user.feishu.appId.trimAscii().isEmpty(),
-        healthMonitorEnabled
-    ))
+    for (accountId in gatewayFeishuListAccountIds(feishuConfig)) {
+        let resolved = gatewayFeishuResolveAccount(feishuConfig, accountId)
+        rows.add(GatewayAdapterRegistrationProfile(
+            "feishu",
+            resolved.accountId,
+            "feishu",
+            "builtin",
+            "builtin-adapter",
+            "native-cangjie",
+            match (feishuCatalog) { case Some(v) => v.label case None => "Feishu" },
+            match (feishuCatalog) { case Some(v) => v.detailLabel case None => "Built-in Feishu adapter" },
+            resolved.config.enabled,
+            !resolved.config.appId.trimAscii().isEmpty() && !resolved.config.appSecret.trimAscii().isEmpty(),
+            healthMonitorEnabled
+        ))
+    }
 
     let qqCatalog = getGatewayChannelCatalogEntry("qq")
-    rows.add(GatewayAdapterRegistrationProfile(
-        "qq",
-        "qq:default",
-        "qq",
-        "builtin",
-        "builtin-adapter",
-        "native-cangjie",
-        match (qqCatalog) { case Some(v) => v.label case None => "QQ" },
-        match (qqCatalog) { case Some(v) => v.detailLabel case None => "Built-in QQ adapter" },
-        user.qq.enabled,
-        !(user.qq.appId.trimAscii().isEmpty() || user.qq.appSecret.trimAscii().isEmpty()),
-        healthMonitorEnabled
-    ))
+    for (accountId in gatewayQqListAccountIds(qqConfig)) {
+        let resolved = gatewayQqResolveAccount(qqConfig, accountId)
+        rows.add(GatewayAdapterRegistrationProfile(
+            "qq",
+            resolved.accountId,
+            "qq",
+            "builtin",
+            "builtin-adapter",
+            "native-cangjie",
+            match (qqCatalog) { case Some(v) => v.label case None => "QQ" },
+            match (qqCatalog) { case Some(v) => v.detailLabel case None => "Built-in QQ adapter" },
+            resolved.config.enabled,
+            !resolved.config.appId.trimAscii().isEmpty() && !resolved.config.appSecret.trimAscii().isEmpty(),
+            healthMonitorEnabled
+        ))
+    }
 
     let telegramCatalog = getGatewayChannelCatalogEntry("telegram")
-    rows.add(GatewayAdapterRegistrationProfile(
-        "telegram",
-        "telegram:default",
-        "telegram",
-        "builtin",
-        "builtin-adapter",
-        "native-cangjie",
-        match (telegramCatalog) { case Some(v) => v.label case None => "Telegram" },
-        match (telegramCatalog) { case Some(v) => v.detailLabel case None => "Built-in Telegram adapter" },
-        user.telegram.enabled,
-        !(user.telegram.botToken.trimAscii().isEmpty() && user.telegram.tokenFile.trimAscii().isEmpty() && user.telegram.webhookUrl.trimAscii().isEmpty()),
-        healthMonitorEnabled
-    ))
+    for (accountId in gatewayTelegramListAccountIds(telegramConfig)) {
+        let resolved = gatewayTelegramResolveAccount(telegramConfig, accountId)
+        rows.add(GatewayAdapterRegistrationProfile(
+            "telegram",
+            resolved.accountId,
+            "telegram",
+            "builtin",
+            "builtin-adapter",
+            "native-cangjie",
+            match (telegramCatalog) { case Some(v) => v.label case None => "Telegram" },
+            match (telegramCatalog) { case Some(v) => v.detailLabel case None => "Built-in Telegram adapter" },
+            resolved.config.enabled,
+            resolved.configured,
+            healthMonitorEnabled
+        ))
+    }
 
     for ((channelId, fallbackLabel) in [("slack", "Slack"), ("discord", "Discord")]) {
         let builtinCfg = gatewayBuiltinExtraConfig(user, channelId)
@@ -102,7 +115,7 @@ public func gatewayBuiltinAdapterRegistrationProfiles(
         let builtinCatalog = getGatewayChannelCatalogEntry(channelId)
         rows.add(GatewayAdapterRegistrationProfile(
             channelId,
-            "${channelId}:default",
+            "default",
             channelId,
             "builtin",
             "builtin-adapter",

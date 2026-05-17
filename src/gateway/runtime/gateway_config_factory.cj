@@ -22,6 +22,7 @@ import metis.core.config.{
 }
 import metis.gateway.channels.feishu.FeishuAdapter
 import metis.gateway.channels.qq.QQAdapter
+import metis.gateway.channels.telegram.gatewayTelegramConfigForAccount
 import metis.gateway.channels.telegram.TelegramAdapter
 import metis.gateway.channels.builtin.GenericBuiltinChannelAdapter
 import metis.gateway.{gatewayRuntimeEffectiveAuthPasswordString, gatewayRuntimeEffectiveAuthTokenString}
@@ -132,12 +133,19 @@ public func buildGatewayServiceFromUserSettings(user: GatewayUserSettings): (Gat
     )
     gatewayConfigFactoryTimingLog("gateway-service-created", startMs)
 
-    let feishu = FeishuAdapter(config: cfg.feishu)
-    let qq = QQAdapter(config: cfg.qq)
+    let feishu = FeishuAdapter(config: cfg.feishu, accountId: cfg.feishu.accountId)
     for (profile in gatewayBuiltinAdapterRegistrationProfiles(user, cfg.channelHealthCheckMinutes > 0)) {
         if (profile.channelId == "feishu") {
+            if (!profile.enabled || !profile.configured) {
+                continue
+            }
+            let adapter = if (profile.accountId == cfg.feishu.accountId) {
+                feishu
+            } else {
+                FeishuAdapter(config: cfg.feishu, accountId: profile.accountId)
+            }
             gateway.registerAdapter(
-                feishu,
+                adapter,
                 channelId: profile.channelId,
                 accountId: profile.accountId,
                 pluginId: profile.pluginId,
@@ -151,8 +159,11 @@ public func buildGatewayServiceFromUserSettings(user: GatewayUserSettings): (Gat
                 healthMonitorEnabled: profile.healthMonitorEnabled
             )
         } else if (profile.channelId == "qq") {
+            if (!profile.enabled || !profile.configured) {
+                continue
+            }
             gateway.registerAdapter(
-                qq,
+                QQAdapter(config: cfg.qq, accountId: profile.accountId),
                 channelId: profile.channelId,
                 accountId: profile.accountId,
                 pluginId: profile.pluginId,
@@ -166,8 +177,11 @@ public func buildGatewayServiceFromUserSettings(user: GatewayUserSettings): (Gat
                 healthMonitorEnabled: profile.healthMonitorEnabled
             )
         } else if (profile.channelId == "telegram") {
+            if (!profile.enabled || !profile.configured) {
+                continue
+            }
             gateway.registerAdapter(
-                TelegramAdapter(config: cfg.telegram, registerNativeCommandsOnStart: true),
+                TelegramAdapter(config: gatewayTelegramConfigForAccount(cfg.telegram, profile.accountId), registerNativeCommandsOnStart: true),
                 channelId: profile.channelId,
                 accountId: profile.accountId,
                 pluginId: profile.pluginId,

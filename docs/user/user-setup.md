@@ -194,6 +194,8 @@ Telegram 内置 channel 的配置、DM/群聊策略、图片/文件/语音收发
 
 - **[Telegram 配置与使用说明](./telegram.md)**
 
+多账号 IM 配置需要同时闭合 config、route binding 和 Gateway runtime 三段链路；如果配置与 binding 已存在但对应 account runtime 未启动，消息不会进入该账号的会话。排查和 OpenClaw 对齐依据见 `develop_steps/metis-im-multi-account-runtime-autostart-openclaw-source-backed-landing-plan-2026-05-17.md`。
+
 通过 **command-adapter** 可接入钉钉等第三方 IM（默认钉钉使用 **Stream 模式**，无需公网回调 URL）。安装步骤、凭证配置、`metis.json` 与 `plugin-config.json` 优先级、日志排错等见独立文档：
 
 - **[网关即时通讯（IM）插件说明](./gateway-im-plugins.md)**

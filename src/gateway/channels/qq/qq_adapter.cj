@@ -42,10 +42,15 @@ public class QQAdapter <: ChannelAdapter {
     private var officialSessionId: String = ""
     private var officialConnectionSerial: Int64 = 0
 
-    public init(config!: QQConfig = QQConfig()) {
-        let resolved = gatewayQqResolveAccount(config, config.accountId)
+    public init(config!: QQConfig = QQConfig(), accountId!: String = "") {
+        let requestedAccountId = if (accountId.trimAscii().isEmpty()) { config.accountId } else { accountId.trimAscii() }
+        let resolved = gatewayQqResolveAccount(config, requestedAccountId)
         this.config = resolved.config
         this.resolvedAccount = resolved
+    }
+
+    public func debugAccountIdForTest(): String {
+        this.config.accountId
     }
 
     private func logInfo(message: String): Unit {

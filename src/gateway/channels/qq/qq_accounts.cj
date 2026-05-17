@@ -39,7 +39,15 @@ public class QqResolvedAccount {
 
 public func gatewayQqNormalizeAccountId(raw: String): String {
     let trimmed = raw.trimAscii()
-    if (trimmed.isEmpty()) { "default" } else { trimmed }
+    if (trimmed.isEmpty()) {
+        return "default"
+    }
+    let lower = trimmed.toAsciiLower()
+    if (lower.startsWith("qq:")) {
+        let suffix = trimmed["qq:".size..].trimAscii()
+        return if (suffix.isEmpty()) { "default" } else { suffix }
+    }
+    trimmed
 }
 
 public func gatewayQqDefaultAccountId(config: QQConfig): String {
@@ -320,7 +328,12 @@ private func gatewayQqRuntimeBool(obj: JsonObject, key: String, fallback: Bool):
 private func gatewayQqAccountOverride(config: QQConfig, accountId: String): Option<JsonObject> {
     match (config.accounts) {
         case Some(accounts) =>
-            match (accounts.get(gatewayQqNormalizeAccountId(accountId))) {
+            let normalized = gatewayQqNormalizeAccountId(accountId)
+            let raw = match (accounts.get(normalized)) {
+                case Some(v) => Some(v)
+                case None => accounts.get("qq:${normalized}")
+            }
+            match (raw) {
                 case Some(v) => try { Some(v.asObject()) } catch (_: Exception) { None<JsonObject> }
                 case None => None<JsonObject>
             }

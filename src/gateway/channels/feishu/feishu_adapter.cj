@@ -367,6 +367,10 @@ public class FeishuAdapter <: ChannelAdapter {
         get() { "feishu" }
     }
 
+    public func debugAccountIdForTest(): String {
+        this.accountId
+    }
+
     public func start(): Unit {
         if (this.running) {
             return
