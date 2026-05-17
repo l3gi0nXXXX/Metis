@@ -1353,6 +1353,11 @@ private func gatewayAgentApplyFeishuCredential(root: JsonObject, agentId: String
         let next = if (existsAccount) { gatewayAgentCloneObject(existing) } else { JsonObject() }
         next.put("appId", JsonString(appId))
         next.put("appSecret", JsonString(appSecret))
+        next.put("dmPolicy", JsonString("pairing"))
+        next.put("allowFrom", JsonArray([]))
+        next.put("groupPolicy", JsonString("disabled"))
+        next.put("groupAllowFrom", JsonArray([]))
+        next.put("groups", JsonObject())
         accounts.put(accountId, next)
     }
     summaries.add(gatewayAgentCredentialSummary("feishu", accountId, action, appId: appId))

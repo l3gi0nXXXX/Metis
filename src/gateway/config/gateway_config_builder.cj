@@ -277,6 +277,12 @@ private func mergeFeishu(fs: FeishuUserSettings): FeishuConfig {
         case "disabled" => "disabled"
         case _ => "allowlist"
     }
+    let dmPolicy = match (fs.dmPolicy.trimAscii().toAsciiLower()) {
+        case "open" => "open"
+        case "disabled" => "disabled"
+        case "allowlist" => "allowlist"
+        case _ => "pairing"
+    }
     FeishuConfig(
         accountId: defaultAccount,
         defaultAccount: defaultAccount,
@@ -296,6 +302,8 @@ private func mergeFeishu(fs: FeishuUserSettings): FeishuConfig {
         encryptKey: fs.encryptKey,
         groupSessionScope: groupSessionScope,
         threadSession: fs.threadSession,
+        dmPolicy: dmPolicy,
+        allowFrom: fs.allowFrom,
         groups: fs.groups,
         groupPolicy: groupPolicy,
         groupAllowFrom: fs.groupAllowFrom,
@@ -311,9 +319,9 @@ private func mergeFeishu(fs: FeishuUserSettings): FeishuConfig {
             downloadRoot: fs.media.downloadRoot
         ),
         policy: ChannelPolicyConfig(
-            allowFrom: [],
+            allowFrom: fs.allowFrom,
             requireMentionInGroup: fs.requireMention,
-            enableDirect: true,
+            enableDirect: dmPolicy != "disabled",
             enableGroup: groupPolicy != "disabled"
         )
     )

@@ -962,6 +962,8 @@ public class FeishuConfig {
     public let encryptKey: String
     public let groupSessionScope: String
     public let threadSession: Bool
+    public let dmPolicy: String
+    public let allowFrom: Array<String>
     public let groups: Option<JsonObject>
     public let groupPolicy: String
     public let groupAllowFrom: Array<String>
@@ -992,6 +994,8 @@ public class FeishuConfig {
         encryptKey!: String = "",
         groupSessionScope!: String = "group",
         threadSession!: Bool = false,
+        dmPolicy!: String = "pairing",
+        allowFrom!: Array<String> = [],
         groups!: Option<JsonObject> = None,
         groupPolicy!: String = "allowlist",
         groupAllowFrom!: Array<String> = [],
@@ -1021,6 +1025,8 @@ public class FeishuConfig {
         this.encryptKey = encryptKey
         this.groupSessionScope = groupSessionScope
         this.threadSession = threadSession
+        this.dmPolicy = dmPolicy
+        this.allowFrom = allowFrom
         this.groups = groups
         this.groupPolicy = groupPolicy
         this.groupAllowFrom = groupAllowFrom

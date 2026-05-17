@@ -367,7 +367,6 @@ public class FeishuAdapterTest {
         @Expect(raw.contains("unsupportedFields"), true)
         @Expect(raw.contains("ignoredFields"), true)
         @Expect(raw.contains("accounts.tenant-a.connectionMode"), true)
-        @Expect(raw.contains("accounts.tenant-a.dmPolicy"), true)
         @Expect(raw.contains("accounts.tenant-a.historyLimit"), true)
         @Expect(raw.contains("accounts.tenant-a.replyMode"), true)
         @Expect(raw.contains("accounts.tenant-a.footer"), true)
@@ -1365,6 +1364,118 @@ public class FeishuAdapterTest {
         @Expect(inbound.size, 1)
         @Expect(inbound[0].messageId, "om_right_app")
         @Expect(inbound[0].accountId, "tenant-a")
+    }
+
+    @TestCase
+    public func accountResolverMarksExplicitEmptyGroupAllowFromAndGroupsAsLocalSecurity(): Unit {
+        let topGroups = JsonObject()
+        let oldGroup = JsonObject()
+        oldGroup.put("enabled", JsonBool(true))
+        topGroups.put("oc_old", oldGroup)
+        let writer = JsonObject()
+        writer.put("groupAllowFrom", JsonArray([]))
+        writer.put("groups", JsonObject())
+        let accounts = JsonObject()
+        accounts.put("feishuWriter", writer)
+
+        let resolved = gatewayFeishuResolveAccount(
+            FeishuConfig(
+                enabled: true,
+                groupPolicy: "allowlist",
+                groupAllowFrom: ["oc_old"],
+                groups: Some(topGroups),
+                accounts: Some(accounts)
+            ),
+            "feishuWriter"
+        )
+
+        @Expect(resolved.config.groupAllowFrom.size, 0)
+        @Expect(resolved.config.groups.getOrThrow().size(), 0)
+        @Expect(resolved.securitySources.get("groupAllowFrom").getOrThrow().asString().getValue(), "explicit-empty")
+        @Expect(resolved.securitySources.get("groups").getOrThrow().asString().getValue(), "explicit-empty")
+        @Expect(resolved.securityEffective.get("groupAllowFrom").getOrThrow().asArray().size(), 0)
+        @Expect(resolved.securityEffective.get("groups").getOrThrow().asObject().size(), 0)
+    }
+
+    @TestCase
+    public func dmGateUsesAccountLocalExplicitEmptyAllowFromInsteadOfTopLevel(): Unit {
+        let writer = JsonObject()
+        writer.put("allowFrom", JsonArray([]))
+        let accounts = JsonObject()
+        accounts.put("feishuWriter", writer)
+        let adapter = FeishuAdapter(
+            config: FeishuConfig(enabled: true, dmPolicy: "pairing", allowFrom: ["ou_old"], accounts: Some(accounts)),
+            accountId: "feishuWriter"
+        )
+        adapter.start()
+
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload(
+            "om_dm_block",
+            "ou_old",
+            "ou_old",
+            "{\\\"text\\\":\\\"hello\\\"}",
+            chatType: "p2p",
+            headerAccountId: "feishuWriter"
+        )).contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 1)
+        let gate = inbound[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("feishuGate").getOrThrow().asObject()
+        @Expect(gate.get("triggerAgent").getOrThrow().asBool().getValue(), false)
+        @Expect(gate.get("reason").getOrThrow().asString().getValue(), "dm_pairing_required")
+        @Expect(gate.get("allowFrom").getOrThrow().asArray().size(), 0)
+    }
+
+    @TestCase
+    public func groupGateUsesAccountLocalAllowlistInsteadOfTopLevel(): Unit {
+        let writer = JsonObject()
+        writer.put("groupPolicy", JsonString("allowlist"))
+        writer.put("groupAllowFrom", JsonArray([]))
+        writer.put("requireMention", JsonBool(false))
+        let accounts = JsonObject()
+        accounts.put("feishuWriter", writer)
+        let adapter = FeishuAdapter(
+            config: FeishuConfig(enabled: true, groupPolicy: "allowlist", groupAllowFrom: ["oc_old"], accounts: Some(accounts)),
+            accountId: "feishuWriter"
+        )
+        adapter.start()
+
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload(
+            "om_group_block",
+            "oc_old",
+            "ou_1",
+            "{\\\"text\\\":\\\"hello\\\"}",
+            headerAccountId: "feishuWriter"
+        )).contains("\"ok\":true"), true)
+        let blocked = adapter.pullInbound()
+        @Expect(blocked.size, 1)
+        let blockedGate = blocked[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("feishuGate").getOrThrow().asObject()
+        @Expect(blockedGate.get("triggerAgent").getOrThrow().asBool().getValue(), false)
+        @Expect(blockedGate.get("reason").getOrThrow().asString().getValue(), "group_not_allowed")
+
+        let allowed = JsonArray([])
+        allowed.add(JsonString("oc_writer"))
+        writer.put("groupAllowFrom", allowed)
+        let allowedAdapter = FeishuAdapter(
+            config: FeishuConfig(enabled: true, groupPolicy: "allowlist", groupAllowFrom: ["oc_old"], accounts: Some(accounts)),
+            accountId: "feishuWriter"
+        )
+        allowedAdapter.start()
+        @Expect(allowedAdapter.ingestWebhookPayload(this.webhookPayload(
+            "om_group_allow",
+            "oc_writer",
+            "ou_1",
+            "{\\\"text\\\":\\\"hello\\\"}",
+            headerAccountId: "feishuWriter"
+        )).contains("\"ok\":true"), true)
+        let passed = allowedAdapter.pullInbound()
+        @Expect(passed.size, 1)
+        let passedGate = passed[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("feishuGate").getOrThrow().asObject()
+        @Expect(passedGate.get("triggerAgent").getOrThrow().asBool().getValue(), true)
+        @Expect(passedGate.get("reason").getOrThrow().asString().getValue(), "accepted")
     }
 
     @TestCase

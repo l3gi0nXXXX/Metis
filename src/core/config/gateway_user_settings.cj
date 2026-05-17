@@ -467,6 +467,8 @@ public struct FeishuUserSettings {
     public var encryptKey: String = ""
     public var groupSessionScope: String = "group"
     public var threadSession: Bool = false
+    public var dmPolicy: String = "pairing"
+    public var allowFrom: Array<String> = []
     public var groups: Option<JsonObject> = None
     public var groupPolicy: String = "allowlist"
     public var groupAllowFrom: Array<String> = []

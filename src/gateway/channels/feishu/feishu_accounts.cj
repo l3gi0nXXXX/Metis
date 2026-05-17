@@ -4,7 +4,7 @@ import metis.gateway.model.{ChannelPolicyConfig, FeishuConfig, FeishuMediaConfig
 
 import std.collection.{ArrayList, HashSet}
 import std.convert.Parsable
-import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString, JsonValue}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonNull, JsonObject, JsonString, JsonValue}
 
 public class FeishuResolvedAccount {
     public let accountId: String
@@ -13,6 +13,9 @@ public class FeishuResolvedAccount {
     public let credentialSource: String
     public let appIdCredentialSource: String
     public let appSecretCredentialSource: String
+    public let securityLocal: JsonObject
+    public let securityEffective: JsonObject
+    public let securitySources: JsonObject
 
     public init(
         accountId: String,
@@ -20,7 +23,10 @@ public class FeishuResolvedAccount {
         explicitAccount!: Bool = false,
         credentialSource!: String = "top-level",
         appIdCredentialSource!: String = "top-level",
-        appSecretCredentialSource!: String = "top-level"
+        appSecretCredentialSource!: String = "top-level",
+        securityLocal!: JsonObject = JsonObject(),
+        securityEffective!: JsonObject = JsonObject(),
+        securitySources!: JsonObject = JsonObject()
     ) {
         this.accountId = gatewayFeishuNormalizeAccountId(accountId)
         this.config = config
@@ -28,6 +34,9 @@ public class FeishuResolvedAccount {
         this.credentialSource = credentialSource.trimAscii()
         this.appIdCredentialSource = appIdCredentialSource.trimAscii()
         this.appSecretCredentialSource = appSecretCredentialSource.trimAscii()
+        this.securityLocal = securityLocal
+        this.securityEffective = securityEffective
+        this.securitySources = securitySources
     }
 }
 
@@ -87,8 +96,11 @@ public func gatewayFeishuResolveAccount(config: FeishuConfig, accountId: String)
     )
     let credentialSource = gatewayFeishuCredentialSourceSummary(appIdSource, appSecretSource)
     let threadSession = gatewayFeishuBoolKeys(overrideObj, ["threadSession", "thread_session"], config.threadSession)
+    let dmPolicy = gatewayFeishuDmPolicy(gatewayFeishuString(overrideObj, ["dmPolicy", "dm_policy"], config.dmPolicy))
+    let allowFrom = gatewayFeishuStringArray(overrideObj, ["allowFrom", "allow_from"], config.allowFrom)
     let groupPolicy = gatewayFeishuGroupPolicy(gatewayFeishuString(overrideObj, ["groupPolicy", "group_policy"], config.groupPolicy))
     let groupAllowFrom = gatewayFeishuStringArray(overrideObj, ["groupAllowFrom", "group_allow_from"], config.groupAllowFrom)
+    let groups = gatewayFeishuMergedObjectOption(overrideObj, "groups", config.groups)
     let requireMention = gatewayFeishuBoolKeys(overrideObj, ["requireMention", "require_mention"], config.requireMention)
     let allowBots = gatewayFeishuBoolKeys(overrideObj, ["allowBots", "allow_bots"], config.allowBots)
     let merged = FeishuConfig(
@@ -110,7 +122,9 @@ public func gatewayFeishuResolveAccount(config: FeishuConfig, accountId: String)
         encryptKey: gatewayFeishuString(overrideObj, ["encryptKey", "encrypt_key"], config.encryptKey),
         groupSessionScope: gatewayFeishuGroupSessionScope(gatewayFeishuString(overrideObj, ["groupSessionScope", "group_session_scope"], config.groupSessionScope)),
         threadSession: threadSession,
-        groups: gatewayFeishuMergedObjectOption(overrideObj, "groups", config.groups),
+        dmPolicy: dmPolicy,
+        allowFrom: allowFrom,
+        groups: groups,
         groupPolicy: groupPolicy,
         groupAllowFrom: groupAllowFrom,
         requireMention: requireMention,
@@ -120,19 +134,25 @@ public func gatewayFeishuResolveAccount(config: FeishuConfig, accountId: String)
         requestMaxSkewSeconds: gatewayFeishuInt(overrideObj, ["requestMaxSkewSeconds", "request_max_skew_seconds"], config.requestMaxSkewSeconds),
         media: gatewayFeishuMedia(overrideObj, config.media),
         policy: ChannelPolicyConfig(
-            allowFrom: [],
+            allowFrom: allowFrom,
             requireMentionInGroup: requireMention,
-            enableDirect: true,
+            enableDirect: dmPolicy != "disabled",
             enableGroup: groupPolicy != "disabled"
         )
     )
+    let securityLocal = gatewayFeishuSecurityLocal(overrideObj)
+    let securityEffective = gatewayFeishuSecurityEffective(merged)
+    let securitySources = gatewayFeishuSecuritySources(config, overrideObj, normalized, gatewayFeishuDefaultAccountId(config))
     FeishuResolvedAccount(
         normalized,
         merged,
         explicitAccount: explicitAccount,
         credentialSource: credentialSource,
         appIdCredentialSource: appIdSource,
-        appSecretCredentialSource: appSecretSource
+        appSecretCredentialSource: appSecretSource,
+        securityLocal: securityLocal,
+        securityEffective: securityEffective,
+        securitySources: securitySources
     )
 }
 
@@ -178,7 +198,13 @@ public func gatewayFeishuDescribeAccounts(config: FeishuConfig, runtime!: JsonOb
         row.put("hasAppId", JsonBool(!resolved.config.appId.trimAscii().isEmpty()))
         row.put("hasAppSecret", JsonBool(!resolved.config.appSecret.trimAscii().isEmpty()))
         row.put("threadSession", JsonBool(resolved.config.threadSession))
+        row.put("dmPolicy", JsonString(resolved.config.dmPolicy))
+        row.put("allowFrom", gatewayFeishuStringArrayJson(resolved.config.allowFrom))
         row.put("groupPolicy", JsonString(resolved.config.groupPolicy))
+        row.put("groupAllowFrom", gatewayFeishuStringArrayJson(resolved.config.groupAllowFrom))
+        row.put("securityLocal", gatewayFeishuCloneObject(resolved.securityLocal))
+        row.put("securityEffective", gatewayFeishuCloneObject(resolved.securityEffective))
+        row.put("securitySources", gatewayFeishuCloneObject(resolved.securitySources))
         row.put("requireMention", JsonBool(resolved.config.requireMention))
         row.put("mediaDownloadEnabled", JsonBool(resolved.config.media.downloadEnabled))
         row.put("routeDiagnostic", gatewayFeishuAccountRouteDiagnostic(resolved, defaultAccount, configured))
@@ -433,6 +459,10 @@ private func gatewayFeishuSupportedAccountOverrideField(raw: String): Bool {
         "groupSessionScope",
         "group_session_scope",
         "threadSession",
+        "dmPolicy",
+        "dm_policy",
+        "allowFrom",
+        "allow_from",
         "groups",
         "groupPolicy",
         "group_policy",
@@ -624,6 +654,99 @@ private func gatewayFeishuCloneObject(obj: JsonObject): JsonObject {
     }
 }
 
+private func gatewayFeishuStringArrayJson(values: Array<String>): JsonArray {
+    let out = JsonArray([])
+    for (value in values) {
+        out.add(JsonString(value))
+    }
+    out
+}
+
+private func gatewayFeishuFirstValue(obj: JsonObject, keys: Array<String>): Option<JsonValue> {
+    for (key in keys) {
+        match (obj.get(key)) {
+            case Some(v) => return Some(v)
+            case None => ()
+        }
+    }
+    None<JsonValue>
+}
+
+private func gatewayFeishuLocalValue(obj: JsonObject, keys: Array<String>): JsonValue {
+    match (gatewayFeishuFirstValue(obj, keys)) {
+        case Some(v) => gatewayFeishuCloneValue(v)
+        case None => JsonNull()
+    }
+}
+
+private func gatewayFeishuSecuritySourceForField(
+    overrideObj: JsonObject,
+    keys: Array<String>,
+    accountId: String,
+    defaultAccount: String
+): String {
+    match (gatewayFeishuFirstValue(overrideObj, keys)) {
+        case Some(v) =>
+            try {
+                if (v.asArray().size() == 0) {
+                    return "explicit-empty"
+                }
+            } catch (_: Exception) {
+                ()
+            }
+            try {
+                if (v.asObject().size() == 0) {
+                    return "explicit-empty"
+                }
+            } catch (_: Exception) {
+                ()
+            }
+            if (gatewayFeishuNormalizeAccountId(accountId) == gatewayFeishuNormalizeAccountId(defaultAccount)) {
+                return "default-account"
+            }
+            "account-local"
+        case None => "top-level-inherited"
+    }
+}
+
+private func gatewayFeishuSecurityLocal(overrideObj: JsonObject): JsonObject {
+    let out = JsonObject()
+    out.put("dmPolicy", gatewayFeishuLocalValue(overrideObj, ["dmPolicy", "dm_policy"]))
+    out.put("allowFrom", gatewayFeishuLocalValue(overrideObj, ["allowFrom", "allow_from"]))
+    out.put("groupPolicy", gatewayFeishuLocalValue(overrideObj, ["groupPolicy", "group_policy"]))
+    out.put("groupAllowFrom", gatewayFeishuLocalValue(overrideObj, ["groupAllowFrom", "group_allow_from"]))
+    out.put("groups", gatewayFeishuLocalValue(overrideObj, ["groups"]))
+    out
+}
+
+private func gatewayFeishuSecurityEffective(config: FeishuConfig): JsonObject {
+    let out = JsonObject()
+    out.put("dmPolicy", JsonString(config.dmPolicy))
+    out.put("allowFrom", gatewayFeishuStringArrayJson(config.allowFrom))
+    out.put("groupPolicy", JsonString(config.groupPolicy))
+    out.put("groupAllowFrom", gatewayFeishuStringArrayJson(config.groupAllowFrom))
+    match (config.groups) {
+        case Some(groups) => out.put("groups", gatewayFeishuCloneObject(groups))
+        case None => out.put("groups", JsonObject())
+    }
+    out
+}
+
+private func gatewayFeishuSecuritySources(
+    _config: FeishuConfig,
+    overrideObj: JsonObject,
+    accountId: String,
+    defaultAccount: String
+): JsonObject {
+    let out = JsonObject()
+    out.put("dmPolicy", JsonString(gatewayFeishuSecuritySourceForField(overrideObj, ["dmPolicy", "dm_policy"], accountId, defaultAccount)))
+    out.put("allowFrom", JsonString(gatewayFeishuSecuritySourceForField(overrideObj, ["allowFrom", "allow_from"], accountId, defaultAccount)))
+    out.put("groupPolicy", JsonString(gatewayFeishuSecuritySourceForField(overrideObj, ["groupPolicy", "group_policy"], accountId, defaultAccount)))
+    out.put("groupAllowFrom", JsonString(gatewayFeishuSecuritySourceForField(overrideObj, ["groupAllowFrom", "group_allow_from"], accountId, defaultAccount)))
+    out.put("groups", JsonString(gatewayFeishuSecuritySourceForField(overrideObj, ["groups"], accountId, defaultAccount)))
+    out
+}
+
 private func gatewayFeishuDeepMergeObject(base: JsonObject, overrideObj: JsonObject): JsonObject {
     let out = gatewayFeishuCloneObject(base)
     for (key in overrideObj.getFields().keys()) {
@@ -652,6 +775,9 @@ private func gatewayFeishuMergedObjectOption(obj: JsonObject, key: String, fallb
         case Some(v) =>
             try {
                 let overrideObj = v.asObject()
+                if (overrideObj.size() == 0) {
+                    return Some(JsonObject())
+                }
                 match (fallback) {
                     case Some(base) => Some(gatewayFeishuDeepMergeObject(base, overrideObj))
                     case None => Some(gatewayFeishuCloneObject(overrideObj))
@@ -720,6 +846,15 @@ private func gatewayFeishuGroupPolicy(raw: String): String {
         case "open" => "open"
         case "disabled" => "disabled"
         case _ => "allowlist"
+    }
+}
+
+private func gatewayFeishuDmPolicy(raw: String): String {
+    match (raw.trimAscii().toAsciiLower()) {
+        case "open" => "open"
+        case "disabled" => "disabled"
+        case "allowlist" => "allowlist"
+        case _ => "pairing"
     }
 }
 

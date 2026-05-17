@@ -1655,7 +1655,22 @@ public class FeishuAdapter <: ChannelAdapter {
         var accepted = true
         var reason = "accepted"
         match (chatType) {
-            case ChatType.Direct => ()
+            case ChatType.Direct =>
+                let dmPolicy = cfg.dmPolicy.trimAscii().toAsciiLower()
+                if (dmPolicy == "disabled") {
+                    accepted = false
+                    reason = "dm_disabled"
+                } else if (dmPolicy == "open") {
+                    ()
+                } else if (this.feishuSenderAllowedByList(cfg.allowFrom, senderId)) {
+                    ()
+                } else if (dmPolicy == "allowlist") {
+                    accepted = false
+                    reason = "dm_sender_not_allowed"
+                } else {
+                    accepted = false
+                    reason = "dm_pairing_required"
+                }
             case ChatType.Group =>
                 let groupConfig = this.feishuGroupConfig(cfg, chatId)
                 let groupEnabled = this.feishuGroupBool(groupConfig, "enabled", true)
@@ -1682,7 +1697,10 @@ public class FeishuAdapter <: ChannelAdapter {
         gate.put("triggerAgent", JsonBool(accepted))
         gate.put("mentioned", JsonBool(mentioned))
         gate.put("requireMentionInGroup", JsonBool(this.feishuGroupBool(this.feishuGroupConfig(cfg, chatId), "requireMention", cfg.policy.requireMentionInGroup)))
+        gate.put("dmPolicy", JsonString(cfg.dmPolicy))
+        gate.put("allowFrom", this.feishuStringArrayJson(cfg.allowFrom))
         gate.put("groupPolicy", JsonString(cfg.groupPolicy))
+        gate.put("groupAllowFrom", this.feishuStringArrayJson(cfg.groupAllowFrom))
         gate.put("allowBots", JsonBool(cfg.allowBots))
         gate.put("reason", JsonString(reason))
         context.put("feishuGate", gate)
@@ -1781,6 +1799,10 @@ public class FeishuAdapter <: ChannelAdapter {
         if (allowFrom.isEmpty()) {
             return true
         }
+        this.feishuSenderAllowedByList(allowFrom, senderId)
+    }
+
+    private func feishuSenderAllowedByList(allowFrom: Array<String>, senderId: String): Bool {
         let normalized = senderId.trimAscii()
         for (candidateRaw in allowFrom) {
             let candidate = candidateRaw.trimAscii()
@@ -1789,6 +1811,14 @@ public class FeishuAdapter <: ChannelAdapter {
             }
         }
         false
+    }
+
+    private func feishuStringArrayJson(values: Array<String>): JsonArray {
+        let out = JsonArray([])
+        for (value in values) {
+            out.add(JsonString(value))
+        }
+        out
     }
 
     private func feishuSenderLooksBot(senderId: String): Bool {
