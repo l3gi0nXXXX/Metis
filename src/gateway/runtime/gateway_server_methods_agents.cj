@@ -1170,6 +1170,348 @@ private func gatewayAgentEmptyBindingApplyJson(root: JsonObject): JsonObject {
     out
 }
 
+private func gatewayAgentChannelOverwrite(request: GatewayRpcRequest): Bool {
+    match (request.params.get("channelOverwrite")) {
+        case Some(v) => try { v.asBool().getValue() } catch (_e: Exception) { false }
+        case None => false
+    }
+}
+
+private func gatewayAgentCredentialObject(request: GatewayRpcRequest): (JsonObject, String) {
+    match (request.params.get("channelCredentials")) {
+        case Some(v) =>
+            try { (v.asObject(), "") } catch (_e: Exception) { (JsonObject(), "channelCredentials must be an object.") }
+        case None => (JsonObject(), "")
+    }
+}
+
+private func gatewayAgentCredentialString(obj: JsonObject, keys: Array<String>, defaultValue: String): String {
+    for (key in keys) {
+        match (obj.get(key)) {
+            case Some(v) =>
+                try {
+                    let value = v.asString().getValue().trimAscii()
+                    if (!value.isEmpty()) {
+                        return value
+                    }
+                } catch (_e: Exception) {
+                    ()
+                }
+            case None => ()
+        }
+    }
+    defaultValue
+}
+
+private func gatewayAgentCredentialNormalizeAccountId(agentId: String, raw: String): String {
+    let trimmed = raw.trimAscii()
+    if (trimmed.isEmpty()) {
+        return agentId
+    }
+    gatewaySanitizeAgentId(trimmed)
+}
+
+private func gatewayAgentEnsureObject(parent: JsonObject, key: String): JsonObject {
+    match (parent.get(key)) {
+        case Some(v) =>
+            try { return v.asObject() } catch (_e: Exception) { () }
+        case None => ()
+    }
+    let obj = JsonObject()
+    parent.put(key, obj)
+    obj
+}
+
+private func gatewayAgentChannelConfig(root: JsonObject, channel: String): JsonObject {
+    let gateway = gatewayAgentEnsureObject(root, "gateway")
+    gatewayAgentEnsureObject(gateway, channel)
+}
+
+private func gatewayAgentChannelAccounts(channelConfig: JsonObject): JsonObject {
+    gatewayAgentEnsureObject(channelConfig, "accounts")
+}
+
+private func gatewayAgentAccountObject(accounts: JsonObject, accountId: String): (Bool, JsonObject) {
+    match (accounts.get(accountId)) {
+        case Some(v) =>
+            try { return (true, v.asObject()) } catch (_e: Exception) { return (true, JsonObject()) }
+        case None => (false, JsonObject())
+    }
+}
+
+private func gatewayAgentRedactedSecret(): String {
+    "[redacted]"
+}
+
+private func gatewayAgentAppIdSummary(appId: String): String {
+    let trimmed = appId.trimAscii()
+    if (trimmed.isEmpty()) {
+        return ""
+    }
+    if (trimmed.size < 4) {
+        return "[set]"
+    }
+    "${trimmed[0..4]}..."
+}
+
+private func gatewayAgentCredentialSummary(channel: String, accountId: String, action: String, appId!: String = "", tokenKey!: String = ""): JsonObject {
+    let row = JsonObject()
+    row.put("channel", JsonString(channel))
+    row.put("accountId", JsonString(accountId))
+    row.put("action", JsonString(action))
+    if (!tokenKey.trimAscii().isEmpty()) {
+        row.put(tokenKey, JsonString(gatewayAgentRedactedSecret()))
+    }
+    if (!appId.trimAscii().isEmpty()) {
+        row.put("appId", JsonString(gatewayAgentAppIdSummary(appId)))
+        row.put("appSecret", JsonString(gatewayAgentRedactedSecret()))
+    }
+    row
+}
+
+private func gatewayAgentCredentialSame(existing: JsonObject, desired: JsonObject, keys: Array<String>): Bool {
+    for (key in keys) {
+        if (gatewayAgentJsonString(existing, key, "") != gatewayAgentJsonString(desired, key, "")) {
+            return false
+        }
+    }
+    true
+}
+
+private func gatewayAgentApplyTelegramCredential(root: JsonObject, agentId: String, obj: JsonObject, overwrite: Bool, summaries: JsonArray, autoBindings: JsonArray): String {
+    let accountId = gatewayAgentCredentialNormalizeAccountId(agentId, gatewayAgentCredentialString(obj, ["accountId", "account"], ""))
+    let botToken = gatewayAgentCredentialString(obj, ["botToken", "token"], "")
+    let tokenFile = gatewayAgentCredentialString(obj, ["tokenFile"], "")
+    if (botToken.isEmpty() && tokenFile.isEmpty()) {
+        return "telegram credential for account \"${accountId}\" requires botToken or tokenFile."
+    }
+
+    let channel = gatewayAgentChannelConfig(root, "telegram")
+    channel.put("enabled", true.toJsonValue())
+    let accounts = gatewayAgentChannelAccounts(channel)
+    let desired = JsonObject()
+    if (!botToken.isEmpty()) {
+        desired.put("botToken", JsonString(botToken))
+    }
+    if (!tokenFile.isEmpty()) {
+        desired.put("tokenFile", JsonString(tokenFile))
+    }
+    let (existsAccount, existing) = gatewayAgentAccountObject(accounts, accountId)
+    var action = "created"
+    if (existsAccount) {
+        if (gatewayAgentCredentialSame(existing, desired, ["botToken", "tokenFile"])) {
+            action = "reused"
+        } else if (!overwrite) {
+            return "telegram account \"${accountId}\" already exists with different credentials; pass --channel-overwrite to replace it."
+        } else {
+            action = "updated"
+        }
+    }
+    if (action != "reused") {
+        let next = if (existsAccount) { gatewayAgentCloneObject(existing) } else { JsonObject() }
+        match (desired.get("botToken")) {
+            case Some(v) => next.put("botToken", v)
+            case None => ()
+        }
+        match (desired.get("tokenFile")) {
+            case Some(v) => next.put("tokenFile", v)
+            case None => ()
+        }
+        accounts.put(accountId, next)
+    }
+    summaries.add(gatewayAgentCredentialSummary("telegram", accountId, action, tokenKey: "token"))
+    autoBindings.add(JsonString("telegram:${accountId}"))
+    ""
+}
+
+private func gatewayAgentApplyFeishuCredential(root: JsonObject, agentId: String, obj: JsonObject, overwrite: Bool, summaries: JsonArray, autoBindings: JsonArray): String {
+    let accountId = gatewayAgentCredentialNormalizeAccountId(agentId, gatewayAgentCredentialString(obj, ["accountId", "account"], ""))
+    let appId = gatewayAgentCredentialString(obj, ["appId", "app_id"], "")
+    let appSecret = gatewayAgentCredentialString(obj, ["appSecret", "app_secret"], "")
+    if (appId.isEmpty() || appSecret.isEmpty()) {
+        return "feishu credential for account \"${accountId}\" requires appId and appSecret."
+    }
+
+    let channel = gatewayAgentChannelConfig(root, "feishu")
+    channel.put("enabled", true.toJsonValue())
+    let accounts = gatewayAgentChannelAccounts(channel)
+    let desired = JsonObject()
+    desired.put("appId", JsonString(appId))
+    desired.put("appSecret", JsonString(appSecret))
+    let (existsAccount, existing) = gatewayAgentAccountObject(accounts, accountId)
+    var action = "created"
+    if (existsAccount) {
+        if (gatewayAgentCredentialSame(existing, desired, ["appId", "appSecret"])) {
+            action = "reused"
+        } else if (!overwrite) {
+            return "feishu account \"${accountId}\" already exists with different credentials; pass --channel-overwrite to replace it."
+        } else {
+            action = "updated"
+        }
+    }
+    if (action != "reused") {
+        let next = if (existsAccount) { gatewayAgentCloneObject(existing) } else { JsonObject() }
+        next.put("appId", JsonString(appId))
+        next.put("appSecret", JsonString(appSecret))
+        accounts.put(accountId, next)
+    }
+    summaries.add(gatewayAgentCredentialSummary("feishu", accountId, action, appId: appId))
+    autoBindings.add(JsonString("feishu:${accountId}"))
+    ""
+}
+
+private func gatewayAgentApplyQqCredential(root: JsonObject, agentId: String, obj: JsonObject, overwrite: Bool, summaries: JsonArray, autoBindings: JsonArray): String {
+    let accountId = gatewayAgentCredentialNormalizeAccountId(agentId, gatewayAgentCredentialString(obj, ["accountId", "account"], ""))
+    let appId = gatewayAgentCredentialString(obj, ["appId", "app_id"], "")
+    let appSecret = gatewayAgentCredentialString(obj, ["appSecret", "app_secret"], "")
+    if (appId.isEmpty() || appSecret.isEmpty()) {
+        return "qq credential for account \"${accountId}\" requires appId and appSecret."
+    }
+
+    let channel = gatewayAgentChannelConfig(root, "qq")
+    channel.put("enabled", true.toJsonValue())
+    let accounts = gatewayAgentChannelAccounts(channel)
+    let desired = JsonObject()
+    desired.put("appId", JsonString(appId))
+    desired.put("appSecret", JsonString(appSecret))
+    let (existsAccount, existing) = gatewayAgentAccountObject(accounts, accountId)
+    var action = "created"
+    if (existsAccount) {
+        if (gatewayAgentCredentialSame(existing, desired, ["appId", "appSecret"])) {
+            action = "reused"
+        } else if (!overwrite) {
+            return "qq account \"${accountId}\" already exists with different credentials; pass --channel-overwrite to replace it."
+        } else {
+            action = "updated"
+        }
+    }
+    if (action != "reused") {
+        let next = if (existsAccount) { gatewayAgentCloneObject(existing) } else { JsonObject() }
+        next.put("appId", JsonString(appId))
+        next.put("appSecret", JsonString(appSecret))
+        accounts.put(accountId, next)
+    }
+    summaries.add(gatewayAgentCredentialSummary("qq", accountId, action, appId: appId))
+    autoBindings.add(JsonString("qq:${accountId}"))
+    ""
+}
+
+private func gatewayAgentApplyChannelCredentials(root: JsonObject, agentId: String, request: GatewayRpcRequest): (Bool, String, JsonArray, JsonArray) {
+    let summaries = JsonArray([])
+    let autoBindings = JsonArray([])
+    let (credentials, objectError) = gatewayAgentCredentialObject(request)
+    if (!objectError.isEmpty()) {
+        return (false, objectError, summaries, autoBindings)
+    }
+    if (credentials.size() == 0) {
+        return (true, "", summaries, autoBindings)
+    }
+
+    let overwrite = gatewayAgentChannelOverwrite(request)
+    match (credentials.get("telegram")) {
+        case Some(v) =>
+            var obj = JsonObject()
+            try {
+                obj = v.asObject()
+            } catch (_e: Exception) {
+                return (false, "telegram credential must be an object.", summaries, autoBindings)
+            }
+            let err = gatewayAgentApplyTelegramCredential(root, agentId, obj, overwrite, summaries, autoBindings)
+            if (!err.isEmpty()) {
+                return (false, err, summaries, autoBindings)
+            }
+        case None => ()
+    }
+    match (credentials.get("feishu")) {
+        case Some(v) =>
+            var obj = JsonObject()
+            try {
+                obj = v.asObject()
+            } catch (_e: Exception) {
+                return (false, "feishu credential must be an object.", summaries, autoBindings)
+            }
+            let err = gatewayAgentApplyFeishuCredential(root, agentId, obj, overwrite, summaries, autoBindings)
+            if (!err.isEmpty()) {
+                return (false, err, summaries, autoBindings)
+            }
+        case None => ()
+    }
+    match (credentials.get("qq")) {
+        case Some(v) =>
+            var obj = JsonObject()
+            try {
+                obj = v.asObject()
+            } catch (_e: Exception) {
+                return (false, "qq credential must be an object.", summaries, autoBindings)
+            }
+            let err = gatewayAgentApplyQqCredential(root, agentId, obj, overwrite, summaries, autoBindings)
+            if (!err.isEmpty()) {
+                return (false, err, summaries, autoBindings)
+            }
+        case None => ()
+    }
+    (true, "", summaries, autoBindings)
+}
+
+private func gatewayAgentParseAutoBindingSpecs(agentId: String, autoBindings: JsonArray): (JsonArray, JsonArray) {
+    if (autoBindings.size() == 0) {
+        return (JsonArray([]), JsonArray([]))
+    }
+    let params = JsonObject()
+    params.put("bind", autoBindings)
+    gatewayAgentParseBindingSpecs(agentId, GatewayRpcRequest("agents.add", params: params))
+}
+
+private func gatewayAgentMergeRouteBindings(explicitBindings: JsonArray, autoBindings: JsonArray): JsonArray {
+    let out = JsonArray([])
+    let seen = HashMap<String, Bool>()
+    for (i in 0..explicitBindings.size()) {
+        let binding = try { explicitBindings[i].asObject() } catch (_e: Exception) { JsonObject() }
+        let key = gatewayAgentBindingDescribe(binding)
+        if (!key.isEmpty() && !seen.contains(key)) {
+            seen[key] = true
+            out.add(binding)
+        }
+    }
+    for (i in 0..autoBindings.size()) {
+        let binding = try { autoBindings[i].asObject() } catch (_e: Exception) { JsonObject() }
+        let key = gatewayAgentBindingDescribe(binding)
+        if (!key.isEmpty() && !seen.contains(key)) {
+            seen[key] = true
+            out.add(binding)
+        }
+    }
+    out
+}
+
+private func gatewayAgentBindingDescriptionArray(values: Array<JsonObject>): JsonArray {
+    let out = JsonArray([])
+    for (value in values) {
+        out.add(JsonString(gatewayAgentBindingDescribe(value)))
+    }
+    out
+}
+
+private func gatewayAgentBindingConflictSummaryArray(values: Array<GatewayAgentBindingConflict>): JsonArray {
+    let out = JsonArray([])
+    for (value in values) {
+        let row = JsonObject()
+        row.put("binding", JsonString(gatewayAgentBindingDescribe(value.binding)))
+        row.put("existingAgentId", JsonString(value.existingAgentId))
+        out.add(row)
+    }
+    out
+}
+
+private func gatewayAgentBindingApplySummaryJson(result: GatewayAgentBindingApplyResult): JsonObject {
+    let out = JsonObject()
+    out.put("added", gatewayAgentBindingDescriptionArray(result.added))
+    out.put("updated", gatewayAgentBindingDescriptionArray(result.updated))
+    out.put("skipped", gatewayAgentBindingDescriptionArray(result.skipped))
+    out.put("conflicts", gatewayAgentBindingConflictSummaryArray(result.conflicts))
+    out
+}
+
 private func gatewayAgentBindingRemoveJson(result: GatewayAgentBindingRemoveResult): JsonObject {
     let out = JsonObject()
     out.put("removed", gatewayAgentObjectArrayJson(result.removed))
@@ -1272,7 +1614,7 @@ private func gatewayAgentBindingsRemoveJson(request: GatewayRpcRequest): Gateway
 }
 
 private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse {
-    let root = gatewayAgentConfigRootClone()
+    var root = gatewayAgentConfigRootClone()
     let requestedId = gatewayAgentRpcStringParam(request, ["id", "agent", "agentId"], "")
     if (requestedId.trimAscii().isEmpty()) {
         return GatewayRpcResponse(false, "agents.add", error: "Agent id is required.")
@@ -1313,6 +1655,33 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
         case Some(response) => return response
         case None => ()
     }
+    let (credentialsOk, credentialsError, channelAccounts, autoBindingSpecs) = gatewayAgentApplyChannelCredentials(root, agentId, request)
+    if (!credentialsOk) {
+        return GatewayRpcResponse(false, "agents.add", error: credentialsError)
+    }
+    let (explicitBindings, explicitBindingErrors) = gatewayAgentParseBindingSpecs(agentId, request)
+    if (explicitBindingErrors.size() > 0) {
+        return GatewayRpcResponse(false, "agents.add", error: explicitBindingErrors.toJsonString())
+    }
+    let (parsedAutoBindings, autoBindingErrors) = gatewayAgentParseAutoBindingSpecs(agentId, autoBindingSpecs)
+    if (autoBindingErrors.size() > 0) {
+        return GatewayRpcResponse(false, "agents.add", error: autoBindingErrors.toJsonString())
+    }
+    let mergedBindings = gatewayAgentMergeRouteBindings(explicitBindings, parsedAutoBindings)
+    let bindingApply = if (mergedBindings.size() > 0) {
+        gatewayApplyAgentRouteBindings(root, mergedBindings)
+    } else {
+        GatewayAgentBindingApplyResult(root, [], [], [], [])
+    }
+    if (bindingApply.conflicts.size > 0) {
+        return GatewayRpcResponse(
+            false,
+            "agents.add",
+            error: gatewayAgentBindingConflictError(bindingApply.conflicts),
+            result: gatewayAgentBindingApplySummaryJson(bindingApply)
+        )
+    }
+    root = bindingApply.config
     if (!exists(agentDirPath)) {
         Directory.create(agentDirPath, recursive: true)
     }
@@ -1339,8 +1708,12 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
         entry.put("model", JsonString(model.trimAscii()))
     }
     let nextEntries = JsonArray([])
-    for (i in 0..entries.size()) {
-        nextEntries.add(entries[i])
+    let configuredEntries = gatewayAgentConfigEntries(root)
+    for (i in 0..configuredEntries.size()) {
+        let current = try { configuredEntries[i].asObject() } catch (_e: Exception) { JsonObject() }
+        if (gatewayAgentJsonString(current, "id", "") != agentId) {
+            nextEntries.add(configuredEntries[i])
+        }
     }
     nextEntries.add(entry)
     gatewayAgentConfigWriteEntries(root, nextEntries)
@@ -1362,6 +1735,8 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
     bootstrapJson.put("authProfilesPath", JsonString(agentDirPath.join("auth-profiles.json").toString()))
     bootstrapJson.put("modelsJsonPath", JsonString(agentDirPath.join("models.json").toString()))
     result.put("bootstrap", bootstrapJson)
+    result.put("channelAccounts", channelAccounts)
+    result.put("bindings", gatewayAgentBindingApplySummaryJson(bindingApply))
     GatewayRpcResponse(true, "agents.add", result: result)
 }
 

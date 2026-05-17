@@ -37,6 +37,14 @@ private func agentsTestObject(obj: JsonObject, key: String): JsonObject {
     }
 }
 
+private func agentsTestArray(obj: JsonObject, key: String): JsonArray {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { v.asArray() } catch (_: Exception) { JsonArray([]) }
+        case None => JsonArray([])
+    }
+}
+
 private func agentsTestBool(obj: JsonObject, key: String): Bool {
     match (obj.get(key)) {
         case Some(v) =>
@@ -83,6 +91,23 @@ private func agentsTestConfiguredAgent(root: JsonObject, id: String): JsonObject
         case None => JsonArray([])
     }
     agentsTestFindObjectById(list, id)
+}
+
+private func agentsTestGatewayAccount(root: JsonObject, channel: String, accountId: String): JsonObject {
+    let gateway = agentsTestObject(root, "gateway")
+    let channelConfig = agentsTestObject(gateway, channel)
+    let accounts = agentsTestObject(channelConfig, "accounts")
+    agentsTestObject(accounts, accountId)
+}
+
+private func agentsTestFindChannelAccountSummary(rows: JsonArray, channel: String, accountId: String): JsonObject {
+    for (i in 0..rows.size()) {
+        let row = try { rows[i].asObject() } catch (_: Exception) { JsonObject() }
+        if (agentsTestString(row, "channel") == channel && agentsTestString(row, "accountId") == accountId) {
+            return row
+        }
+    }
+    JsonObject()
 }
 
 private func agentsTestTeamMember(agentId: String, role!: String = "", name!: String = ""): JsonObject {
@@ -725,6 +750,250 @@ public class GatewayServerMethodsAgentsTest {
             @Expect(agentsTestConfiguredAgent(MetisConfigManager.rawConfig().getOrThrow(), "qa").size(), 0)
             @Expect(exists(home.join("workspaces").join("qa")), false)
             @Expect(exists(home.join("agents").join("qa")), false)
+        })
+    }
+
+    @TestCase
+    public func agentsAddWritesTelegramFeishuQqAccountsAndAutoBindingsRedacted(): Unit {
+        withAgentsTempHome("metis-agents-add-channel-credentials-home", { _home: Path =>
+            let seed = JsonObject()
+            let gateway = JsonObject()
+            let telegramCfg = JsonObject()
+            telegramCfg.put("defaultAccount", JsonString("primary-tg"))
+            gateway.put("telegram", telegramCfg)
+            let feishuCfg = JsonObject()
+            feishuCfg.put("defaultAccount", JsonString("primary-fs"))
+            gateway.put("feishu", feishuCfg)
+            seed.put("gateway", gateway)
+            MetisConfigManager.writeRoot(seed)
+
+            let params = JsonObject()
+            params.put("id", JsonString("writer"))
+            params.put("model", JsonString("dashscope:qwen-test"))
+            let credentials = JsonObject()
+            let telegram = JsonObject()
+            telegram.put("accountId", JsonString("bot-a"))
+            telegram.put("botToken", JsonString("123456:test-telegram-token-never-visible"))
+            credentials.put("telegram", telegram)
+            let feishu = JsonObject()
+            feishu.put("accountId", JsonString("fs-a"))
+            feishu.put("appId", JsonString("cli_test_app"))
+            feishu.put("appSecret", JsonString("test-feishu-secret-never-visible"))
+            credentials.put("feishu", feishu)
+            let qq = JsonObject()
+            qq.put("accountId", JsonString("qq-a"))
+            qq.put("appId", JsonString("102012345"))
+            qq.put("appSecret", JsonString("test-qq-secret-never-visible"))
+            credentials.put("qq", qq)
+            params.put("channelCredentials", credentials)
+            let explicit = JsonArray([])
+            explicit.add(JsonString("telegram:bot-a"))
+            params.put("bind", explicit)
+
+            let response = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: params))).getOrThrow()
+            @Expect(response.ok, true)
+            let resultText = response.result.toJsonString()
+            @Expect(resultText.contains("test-telegram-token-never-visible"), false)
+            @Expect(resultText.contains("test-feishu-secret-never-visible"), false)
+            @Expect(resultText.contains("test-qq-secret-never-visible"), false)
+            @Expect(resultText.contains("configPreview"), false)
+
+            let result = response.result.asObject()
+            let summaries = agentsTestArray(result, "channelAccounts")
+            let tgSummary = agentsTestFindChannelAccountSummary(summaries, "telegram", "bot-a")
+            let fsSummary = agentsTestFindChannelAccountSummary(summaries, "feishu", "fs-a")
+            let qqSummary = agentsTestFindChannelAccountSummary(summaries, "qq", "qq-a")
+            @Expect(agentsTestString(tgSummary, "action"), "created")
+            @Expect(agentsTestString(tgSummary, "token"), "[redacted]")
+            @Expect(agentsTestString(fsSummary, "action"), "created")
+            @Expect(agentsTestString(fsSummary, "appId"), "cli_...")
+            @Expect(agentsTestString(fsSummary, "appSecret"), "[redacted]")
+            @Expect(agentsTestString(qqSummary, "action"), "created")
+            @Expect(agentsTestString(qqSummary, "appId"), "1020...")
+            @Expect(agentsTestString(qqSummary, "appSecret"), "[redacted]")
+
+            let bindings = agentsTestObject(result, "bindings")
+            @Expect(agentsTestArrayContains(agentsTestArray(bindings, "added"), "telegram:bot-a"), true)
+            @Expect(agentsTestArrayContains(agentsTestArray(bindings, "added"), "feishu:fs-a"), true)
+            @Expect(agentsTestArrayContains(agentsTestArray(bindings, "added"), "qq:qq-a"), true)
+            @Expect(agentsTestArray(bindings, "skipped").size(), 0)
+
+            let root = MetisConfigManager.rawConfig().getOrThrow()
+            let tgAccount = agentsTestGatewayAccount(root, "telegram", "bot-a")
+            let fsAccount = agentsTestGatewayAccount(root, "feishu", "fs-a")
+            let qqAccount = agentsTestGatewayAccount(root, "qq", "qq-a")
+            @Expect(agentsTestString(tgAccount, "botToken"), "123456:test-telegram-token-never-visible")
+            @Expect(agentsTestString(fsAccount, "appId"), "cli_test_app")
+            @Expect(agentsTestString(fsAccount, "appSecret"), "test-feishu-secret-never-visible")
+            @Expect(agentsTestString(qqAccount, "appId"), "102012345")
+            @Expect(agentsTestString(qqAccount, "appSecret"), "test-qq-secret-never-visible")
+            @Expect(agentsTestString(agentsTestObject(agentsTestObject(root, "gateway"), "telegram"), "defaultAccount"), "primary-tg")
+            @Expect(agentsTestString(agentsTestObject(agentsTestObject(root, "gateway"), "feishu"), "defaultAccount"), "primary-fs")
+            let agentEntry = agentsTestConfiguredAgent(root, "writer")
+            @Expect(agentEntry.get("telegram").isSome(), false)
+            @Expect(agentEntry.get("feishu").isSome(), false)
+            @Expect(agentEntry.get("qq").isSome(), false)
+            @Expect(root.toJsonString().contains("agentAccounts"), false)
+        })
+    }
+
+    @TestCase
+    public func agentsAddRejectsDifferentExistingChannelAccountWithoutPartialWrite(): Unit {
+        withAgentsTempHome("metis-agents-add-channel-conflict-home", { home: Path =>
+            let seed = JsonObject()
+            let gateway = JsonObject()
+            let feishuCfg = JsonObject()
+            let accounts = JsonObject()
+            let existing = JsonObject()
+            existing.put("appId", JsonString("cli_test_app"))
+            existing.put("appSecret", JsonString("existing-feishu-secret"))
+            accounts.put("shared", existing)
+            feishuCfg.put("accounts", accounts)
+            gateway.put("feishu", feishuCfg)
+            seed.put("gateway", gateway)
+            MetisConfigManager.writeRoot(seed)
+            let before = MetisConfigManager.rawConfig().getOrThrow().toJsonString()
+
+            let params = JsonObject()
+            params.put("id", JsonString("writer"))
+            let credentials = JsonObject()
+            let feishu = JsonObject()
+            feishu.put("accountId", JsonString("shared"))
+            feishu.put("appId", JsonString("cli_test_app"))
+            feishu.put("appSecret", JsonString("test-feishu-secret-never-visible"))
+            credentials.put("feishu", feishu)
+            params.put("channelCredentials", credentials)
+
+            let response = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: params))).getOrThrow()
+            @Expect(response.ok, false)
+            @Expect(response.error.contains("feishu account \"shared\""), true)
+            @Expect(response.error.contains("test-feishu-secret-never-visible"), false)
+            @Expect(MetisConfigManager.rawConfig().getOrThrow().toJsonString(), before)
+            @Expect(agentsTestConfiguredAgent(MetisConfigManager.rawConfig().getOrThrow(), "writer").size(), 0)
+            @Expect(exists(home.join("agents").join("writer")), false)
+            @Expect(exists(home.join("workspaces").join("writer")), false)
+        })
+    }
+
+    @TestCase
+    public func agentsAddOverwritesExistingChannelAccountWhenRequested(): Unit {
+        withAgentsTempHome("metis-agents-add-channel-overwrite-home", { _home: Path =>
+            let seed = JsonObject()
+            let gateway = JsonObject()
+            let telegramCfg = JsonObject()
+            let accounts = JsonObject()
+            let existing = JsonObject()
+            existing.put("botToken", JsonString("123456:old-token"))
+            accounts.put("shared", existing)
+            telegramCfg.put("accounts", accounts)
+            gateway.put("telegram", telegramCfg)
+            seed.put("gateway", gateway)
+            MetisConfigManager.writeRoot(seed)
+
+            let params = JsonObject()
+            params.put("id", JsonString("writer"))
+            params.put("channelOverwrite", JsonBool(true))
+            let credentials = JsonObject()
+            let telegram = JsonObject()
+            telegram.put("accountId", JsonString("shared"))
+            telegram.put("botToken", JsonString("123456:test-telegram-token-never-visible"))
+            credentials.put("telegram", telegram)
+            params.put("channelCredentials", credentials)
+
+            let response = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: params))).getOrThrow()
+            @Expect(response.ok, true)
+            @Expect(response.result.toJsonString().contains("test-telegram-token-never-visible"), false)
+            let summaries = agentsTestArray(response.result.asObject(), "channelAccounts")
+            let tgSummary = agentsTestFindChannelAccountSummary(summaries, "telegram", "shared")
+            @Expect(agentsTestString(tgSummary, "action"), "updated")
+            let root = MetisConfigManager.rawConfig().getOrThrow()
+            @Expect(agentsTestString(agentsTestGatewayAccount(root, "telegram", "shared"), "botToken"), "123456:test-telegram-token-never-visible")
+        })
+    }
+
+    @TestCase
+    public func agentsAddBindingConflictDoesNotPersistAgentOrCredential(): Unit {
+        withAgentsTempHome("metis-agents-add-channel-binding-conflict-home", { home: Path =>
+            @Expect(agentsTestAddAgent("owner").ok, true)
+            let bindParams = JsonObject()
+            bindParams.put("agentId", JsonString("owner"))
+            bindParams.put("bind", JsonString("telegram:shared"))
+            let bindResponse = handleGatewayAgentsFamily("agents.bind", request: Some(GatewayRpcRequest("agents.bind", params: bindParams))).getOrThrow()
+            @Expect(bindResponse.ok, true)
+            let before = MetisConfigManager.rawConfig().getOrThrow().toJsonString()
+
+            let params = JsonObject()
+            params.put("id", JsonString("writer"))
+            let credentials = JsonObject()
+            let telegram = JsonObject()
+            telegram.put("accountId", JsonString("shared"))
+            telegram.put("botToken", JsonString("123456:test-telegram-token-never-visible"))
+            credentials.put("telegram", telegram)
+            params.put("channelCredentials", credentials)
+
+            let response = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: params))).getOrThrow()
+            @Expect(response.ok, false)
+            @Expect(response.error.contains("telegram:shared"), true)
+            @Expect(response.error.contains("test-telegram-token-never-visible"), false)
+            @Expect(response.result.toJsonString().contains("configPreview"), false)
+            @Expect(MetisConfigManager.rawConfig().getOrThrow().toJsonString(), before)
+            @Expect(agentsTestConfiguredAgent(MetisConfigManager.rawConfig().getOrThrow(), "writer").size(), 0)
+            @Expect(agentsTestGatewayAccount(MetisConfigManager.rawConfig().getOrThrow(), "telegram", "shared").size(), 0)
+            @Expect(exists(home.join("agents").join("writer")), false)
+        })
+    }
+
+    @TestCase
+    public func agentsAddReusesSameExistingChannelAccountAndWritesQqCredential(): Unit {
+        withAgentsTempHome("metis-agents-add-channel-reuse-qq-home", { _home: Path =>
+            let seed = JsonObject()
+            let gateway = JsonObject()
+            let feishuCfg = JsonObject()
+            let accounts = JsonObject()
+            let existing = JsonObject()
+            existing.put("appId", JsonString("cli_test_app"))
+            existing.put("appSecret", JsonString("test-feishu-secret-never-visible"))
+            accounts.put("shared", existing)
+            feishuCfg.put("accounts", accounts)
+            gateway.put("feishu", feishuCfg)
+            seed.put("gateway", gateway)
+            MetisConfigManager.writeRoot(seed)
+
+            let params = JsonObject()
+            params.put("id", JsonString("writer"))
+            let credentials = JsonObject()
+            let feishu = JsonObject()
+            feishu.put("accountId", JsonString("shared"))
+            feishu.put("appId", JsonString("cli_test_app"))
+            feishu.put("appSecret", JsonString("test-feishu-secret-never-visible"))
+            credentials.put("feishu", feishu)
+            params.put("channelCredentials", credentials)
+
+            let response = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: params))).getOrThrow()
+            @Expect(response.ok, true)
+            @Expect(response.result.toJsonString().contains("test-feishu-secret-never-visible"), false)
+            let fsSummary = agentsTestFindChannelAccountSummary(agentsTestArray(response.result.asObject(), "channelAccounts"), "feishu", "shared")
+            @Expect(agentsTestString(fsSummary, "action"), "reused")
+
+            let qqParams = JsonObject()
+            qqParams.put("id", JsonString("qq-writer"))
+            let qqCredentials = JsonObject()
+            let qq = JsonObject()
+            qq.put("accountId", JsonString("qq-a"))
+            qq.put("appId", JsonString("1020"))
+            qq.put("appSecret", JsonString("test-qq-secret-never-visible"))
+            qqCredentials.put("qq", qq)
+            qqParams.put("channelCredentials", qqCredentials)
+            let qqResponse = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: qqParams))).getOrThrow()
+            @Expect(qqResponse.ok, true)
+            @Expect(qqResponse.result.toJsonString().contains("test-qq-secret-never-visible"), false)
+            let qqSummary = agentsTestFindChannelAccountSummary(agentsTestArray(qqResponse.result.asObject(), "channelAccounts"), "qq", "qq-a")
+            @Expect(agentsTestString(qqSummary, "action"), "created")
+            let root = MetisConfigManager.rawConfig().getOrThrow()
+            @Expect(agentsTestString(agentsTestGatewayAccount(root, "qq", "qq-a"), "appId"), "1020")
+            @Expect(agentsTestString(agentsTestGatewayAccount(root, "qq", "qq-a"), "appSecret"), "test-qq-secret-never-visible")
+            let bindings = agentsTestObject(qqResponse.result.asObject(), "bindings")
+            @Expect(agentsTestArrayContains(agentsTestArray(bindings, "added"), "qq:qq-a"), true)
         })
     }
 

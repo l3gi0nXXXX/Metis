@@ -320,7 +320,10 @@ private func mergeFeishu(fs: FeishuUserSettings): FeishuConfig {
 }
 
 private func mergeQQ(qs: QQUserSettings): QQConfig {
+    let defaultAccount = if (qs.defaultAccount.trimAscii().isEmpty()) { "default" } else { qs.defaultAccount.trimAscii() }
     QQConfig(
+        accountId: defaultAccount,
+        defaultAccount: defaultAccount,
         enabled: qs.enabled,
         streaming: qs.streaming.trimAscii(),
         blockStreaming: qs.blockStreaming,
@@ -336,6 +339,7 @@ private func mergeQQ(qs: QQUserSettings): QQConfig {
         dedupWindowSize: qs.dedupWindowSize,
         appId: qs.appId,
         appSecret: qs.appSecret,
+        accounts: qs.accounts,
         officialBotToken: "",
         officialTokenUrl: if (!qs.officialTokenUrl.trimAscii().isEmpty()) { qs.officialTokenUrl.trimAscii() } else { "https://bots.qq.com/app/getAppAccessToken" },
         officialGatewayUrl: if (!qs.officialGatewayUrl.trimAscii().isEmpty()) { qs.officialGatewayUrl.trimAscii() } else { "https://api.sgroup.qq.com/gateway" },

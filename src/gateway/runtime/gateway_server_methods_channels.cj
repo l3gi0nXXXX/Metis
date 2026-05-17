@@ -5,6 +5,7 @@ import magic.jsonable.*
 import metis.core.gatewayVideoGenerationResolveConfig
 import metis.core.config.{CliConfig, CliSettingManager, GatewayPluginUserSettings, GatewayUserSettings}
 import metis.gateway.channels.feishu.{gatewayFeishuDescribeAccounts, feishuGatewayNativeAuthLiveSmoke}
+import metis.gateway.channels.qq.{gatewayQqDefaultAccountId, gatewayQqDescribeAccounts}
 import metis.gateway.channels.telegram.{TelegramAdapter, telegramPairingAccountStore}
 import metis.gateway.model.{ChannelType, OutboundMessage}
 import metis.gateway.core.{
@@ -682,6 +683,60 @@ private func gatewayFeishuChannelDiagnosticsJson(user: GatewayUserSettings): Jso
     return out
 }
 
+private func gatewayQqAccountInspectJson(user: GatewayUserSettings): JsonObject {
+    gatewayQqDescribeAccounts(buildGatewayConfigFromUserSettings(user).qq)
+}
+
+private func gatewayQqAnyConfigured(inspect: JsonObject): Bool {
+    let rows = match (inspect.get("accounts")) {
+        case Some(v) => try { v.asArray() } catch (_: Exception) { JsonArray([]) }
+        case None => JsonArray([])
+    }
+    for (i in 0..rows.size()) {
+        let row = try { rows[i].asObject() } catch (_: Exception) { JsonObject() }
+        if (gatewayBindingBool(row, "configured")) {
+            return true
+        }
+    }
+    false
+}
+
+private func gatewayQqDirectoryJson(user: GatewayUserSettings): JsonObject {
+    let out = JsonObject()
+    out.put("accounts", gatewayTelegramObjectKeysJson(user.qq.accounts))
+    out.put("groups", JsonArray([]))
+    out.put("targets", JsonArray([]))
+    out.put("rows", JsonArray([]))
+    out.put("aggregationSources", JsonArray([JsonString("config")]))
+    return out
+}
+
+private func gatewayQqAccountOpsJson(): JsonObject {
+    let out = JsonObject()
+    out.put("list", true.toJsonValue())
+    out.put("describe", true.toJsonValue())
+    out.put("enable", true.toJsonValue())
+    out.put("disable", true.toJsonValue())
+    out.put("validate", true.toJsonValue())
+    out.put("mutationRequiresGatewayRpc", true.toJsonValue())
+    return out
+}
+
+private func gatewayQqChannelDiagnosticsJson(user: GatewayUserSettings): JsonObject {
+    let account = gatewayQqAccountInspectJson(user)
+    let out = JsonObject()
+    out.put("channel", JsonString("qq"))
+    out.put("redacted", true.toJsonValue())
+    out.put("checkedInputs", JsonArray([
+        JsonString("account"),
+        JsonString("mode"),
+        JsonString("officialGateway")
+    ]))
+    out.put("account", account)
+    out.put("mode", JsonString(user.qq.mode))
+    return out
+}
+
 public func gatewayChannelGetJson(user: GatewayUserSettings, channelId: String): JsonObject {
     let normalized = normalizeGatewayChannelId(channelId)
     let result = JsonObject()
@@ -714,11 +769,18 @@ public func gatewayChannelGetJson(user: GatewayUserSettings, channelId: String):
         return result
     }
     if (normalized == "qq") {
+        let qqConfig = buildGatewayConfigFromUserSettings(user).qq
+        let inspect = gatewayQqDescribeAccounts(qqConfig)
         result.put("kind", JsonString("builtin"))
         result.put("enabled", user.qq.enabled.toJsonValue())
         result.put("mode", JsonString(user.qq.mode))
         result.put("webhookPath", JsonString(user.qq.webhookPath))
-        result.put("configured", (!(user.qq.appId.trimAscii().isEmpty() || user.qq.appSecret.trimAscii().isEmpty())).toJsonValue())
+        result.put("defaultAccountId", JsonString(gatewayQqDefaultAccountId(qqConfig)))
+        result.put("configured", gatewayQqAnyConfigured(inspect).toJsonValue())
+        result.put("diagnostics", gatewayQqChannelDiagnosticsJson(user))
+        result.put("directory", gatewayQqDirectoryJson(user))
+        result.put("accountInspect", inspect)
+        result.put("accountOps", gatewayQqAccountOpsJson())
         result.put("supports", gatewayChannelSupportsJson(user, normalized))
         return result
     }

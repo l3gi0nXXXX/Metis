@@ -489,6 +489,8 @@ public struct FeishuUserSettings {
 @jsonable
 public struct QQUserSettings {
     public var enabled: Bool = false
+    public var defaultAccount: String = "default"
+    public var accounts: Option<JsonObject> = None
     public var streaming: String = "partial"
     public var blockStreaming: Bool = false
     /** 目前仅支持 official_ws。 */

@@ -32,6 +32,7 @@ public class QQAdapter <: ChannelAdapter {
     private let inboundQueue = ArrayList<InboundMessage>()
     private let outboundLog = ArrayList<OutboundMessage>()
     private let config: QQConfig
+    private let resolvedAccount: QqResolvedAccount
     private var webhookServer: Option<Server> = None
     private var lastSendError: String = ""
     private let recentMessageIds = ArrayList<String>()
@@ -42,7 +43,9 @@ public class QQAdapter <: ChannelAdapter {
     private var officialConnectionSerial: Int64 = 0
 
     public init(config!: QQConfig = QQConfig()) {
-        this.config = config
+        let resolved = gatewayQqResolveAccount(config, config.accountId)
+        this.config = resolved.config
+        this.resolvedAccount = resolved
     }
 
     private func logInfo(message: String): Unit {
@@ -68,8 +71,13 @@ public class QQAdapter <: ChannelAdapter {
             this.logError("QQ adapter start failed: ${this.lastSendError}")
             return
         }
+        if (this.resolvedAccount.missingAccount) {
+            this.lastSendError = this.resolvedAccount.missingDiagnostic
+            this.logError("QQ adapter start failed: ${this.lastSendError}")
+            return
+        }
         if (this.config.appId.isEmpty() || this.config.appSecret.isEmpty()) {
-            this.lastSendError = "QQ official mode requires appId and appSecret"
+            this.lastSendError = "QQ official mode requires appId and appSecret for account ${this.config.accountId}"
             this.logError("QQ adapter start failed: ${this.lastSendError}")
             return
         }

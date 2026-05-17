@@ -880,6 +880,43 @@ public class GatewayServerMethodsChannelsTest {
     }
 
     @TestCase
+    public func qqChannelGetAndStatusExposeAccountsWithRedactedSecrets(): Unit {
+        var user = GatewayUserSettings()
+        user.qq.enabled = true
+        user.qq.defaultAccount = "work"
+        user.qq.appId = "102012345"
+        user.qq.appSecret = "top-qq-secret-never-visible"
+        let accounts = JsonObject()
+        let work = JsonObject()
+        work.put("appId", JsonString("998877665"))
+        work.put("appSecret", JsonString("account-qq-secret-never-visible"))
+        accounts.put("work", work)
+        accounts.put("backup", JsonObject())
+        user.qq.accounts = Some(accounts)
+
+        let channel = gatewayChannelGetJson(user, "qq")
+        @Expect(channelsTestString(channel, "defaultAccountId"), "work")
+        @Expect(channelsTestBool(channel, "configured"), true)
+        let directory = channel.get("directory").getOrThrow().asObject()
+        @Expect(directory.get("accounts").getOrThrow().asArray().toJsonString().contains("work"), true)
+        let inspect = channel.get("accountInspect").getOrThrow().asObject()
+        @Expect(channelsTestString(inspect, "defaultAccountId"), "work")
+        @Expect(inspect.get("accounts").getOrThrow().asArray().toJsonString().contains("backup"), true)
+        let rawInspect = inspect.toJsonString()
+        @Expect(rawInspect.contains("account-qq-secret-never-visible"), false)
+        @Expect(rawInspect.contains("top-qq-secret-never-visible"), false)
+        @Expect(rawInspect.contains("998877665"), false)
+        @Expect(rawInspect.contains("998***665"), true)
+
+        let status = handleGatewayChannelsFamily("channels.status", user).getOrThrow().result.asObject()
+        let rawStatus = status.toJsonString()
+        @Expect(rawStatus.contains("account-qq-secret-never-visible"), false)
+        @Expect(rawStatus.contains("top-qq-secret-never-visible"), false)
+        @Expect(rawStatus.contains("998877665"), false)
+        @Expect(rawStatus.contains("998***665"), true)
+    }
+
+    @TestCase
     public func telegramChannelsRuntimeExposesNativeRuntimeView(): Unit {
         var user = GatewayUserSettings()
         user.telegram.enabled = true

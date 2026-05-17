@@ -127,6 +127,29 @@ public class GatewayConfigBuilderTest {
     }
 
     @TestCase
+    public func qqPerAccountConfigMapsIntoRuntimeConfigWithoutDroppingTopLevelCompatibility(): Unit {
+        var user = GatewayUserSettings()
+        user.qq.enabled = true
+        user.qq.defaultAccount = "work"
+        user.qq.appId = "legacy-qq-app"
+        user.qq.appSecret = "legacy-qq-secret"
+        let accounts = JsonObject()
+        let work = JsonObject()
+        work.put("appId", JsonString("work-qq-app"))
+        work.put("appSecret", JsonString("work-qq-secret"))
+        accounts.put("work", work)
+        user.qq.accounts = Some(accounts)
+
+        let (_, qq, _) = mergeGatewayUserSettings(user)
+
+        @Expect(qq.accountId, "work")
+        @Expect(qq.defaultAccount, "work")
+        @Expect(qq.appId, "legacy-qq-app")
+        @Expect(qq.appSecret, "legacy-qq-secret")
+        @Expect(qq.accounts.isSome(), true)
+    }
+
+    @TestCase
     public func pluginConfigPresenceUsesSharedGatewayConfigHelper(): Unit {
         var user = GatewayUserSettings()
         let root = JsonObject(HashMap<String, JsonValue>())

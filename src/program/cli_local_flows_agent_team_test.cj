@@ -1,9 +1,158 @@
 package metis.program
 
 import std.unittest.testmacro.*
+import stdx.encoding.json.{JsonArray, JsonObject, JsonString}
 
 @Test
 public class CliLocalFlowsAgentTeamTest {
+    @TestCase
+    public func buildsAgentAddRpcParamsWithoutShortcutFieldsWhenUnset(): Unit {
+        let spec = cliBuildAgentsAddRpcSpec([
+            "add",
+            "--agent",
+            "demo",
+            "--name",
+            "Demo",
+            "--workspace",
+            "/tmp/metis-demo",
+            "--model",
+            "dashscope:qwen-plus"
+        ]).getOrThrow()
+
+        @Expect(spec.method, "agents.add")
+        @Expect(spec.json, false)
+        @Expect(spec.params.get("agentId").getOrThrow().asString().getValue(), "demo")
+        @Expect(spec.params.get("name").getOrThrow().asString().getValue(), "Demo")
+        @Expect(spec.params.get("workspace").getOrThrow().asString().getValue(), "/tmp/metis-demo")
+        @Expect(spec.params.get("model").getOrThrow().asString().getValue(), "dashscope:qwen-plus")
+        @Expect(spec.params.get("bind").isNone(), true)
+        @Expect(spec.params.get("channelCredentials").isNone(), true)
+        @Expect(spec.params.get("channelOverwrite").isNone(), true)
+    }
+
+    @TestCase
+    public func buildsAgentAddShortcutCredentialParamsAndBindings(): Unit {
+        let spec = cliBuildAgentsAddRpcSpec([
+            "add",
+            "--agent",
+            "demo",
+            "--bind",
+            "telegram:manual",
+            "--bind",
+            "feishu:tenant-b",
+            "--feishu-account",
+            "tenant-a",
+            "--feishu",
+            "cli:id:secret",
+            "--qqbot",
+            "1020:secret:tail",
+            "--telegram-bot-token",
+            "123:ABC",
+            "--channel-overwrite",
+            "--json"
+        ]).getOrThrow()
+
+        @Expect(spec.method, "agents.add")
+        @Expect(spec.json, true)
+        let binds = spec.params.get("bind").getOrThrow().asArray()
+        @Expect(binds.size(), 5)
+        @Expect(binds[0].asString().getValue(), "telegram:manual")
+        @Expect(binds[1].asString().getValue(), "feishu:tenant-b")
+        @Expect(binds[2].asString().getValue(), "feishu:tenant-a")
+        @Expect(binds[3].asString().getValue(), "qq:demo")
+        @Expect(binds[4].asString().getValue(), "telegram:demo")
+
+        let credentials = spec.params.get("channelCredentials").getOrThrow().asObject()
+        let feishu = credentials.get("feishu").getOrThrow().asObject()
+        @Expect(feishu.get("accountId").getOrThrow().asString().getValue(), "tenant-a")
+        @Expect(feishu.get("appId").getOrThrow().asString().getValue(), "cli")
+        @Expect(feishu.get("appSecret").getOrThrow().asString().getValue(), "id:secret")
+        let qq = credentials.get("qq").getOrThrow().asObject()
+        @Expect(qq.get("accountId").getOrThrow().asString().getValue(), "demo")
+        @Expect(qq.get("appId").getOrThrow().asString().getValue(), "1020")
+        @Expect(qq.get("appSecret").getOrThrow().asString().getValue(), "secret:tail")
+        let telegram = credentials.get("telegram").getOrThrow().asObject()
+        @Expect(telegram.get("accountId").getOrThrow().asString().getValue(), "demo")
+        @Expect(telegram.get("botToken").getOrThrow().asString().getValue(), "123:ABC")
+        @Expect(spec.params.get("channelOverwrite").getOrThrow().asBool().getValue(), true)
+    }
+
+    @TestCase
+    public func rejectsConflictingTelegramShortcutTokens(): Unit {
+        let spec = cliBuildAgentsAddRpcSpec([
+            "add",
+            "--agent",
+            "demo",
+            "--telegram",
+            "123:A",
+            "--telegram-bot-token",
+            "123:B"
+        ])
+
+        @Expect(spec.isNone(), true)
+    }
+
+    @TestCase
+    public func rendersAgentAddOutputWithRedactedCredentialSummary(): Unit {
+        let result = JsonObject()
+        result.put("agentId", JsonString("demo"))
+        result.put("name", JsonString("Demo"))
+        result.put("model", JsonString("dashscope:qwen-plus"))
+        result.put("workspace", JsonString("/tmp/metis-demo"))
+        result.put("agentDir", JsonString("/tmp/metis-demo/.metis/agents/demo"))
+        let accounts = JsonArray([])
+        let telegram = JsonObject()
+        telegram.put("channel", JsonString("telegram"))
+        telegram.put("accountId", JsonString("demo"))
+        telegram.put("action", JsonString("created"))
+        telegram.put("token", JsonString("123:RAW_TOKEN"))
+        accounts.add(telegram)
+        let feishu = JsonObject()
+        feishu.put("channel", JsonString("feishu"))
+        feishu.put("accountId", JsonString("tenant-a"))
+        feishu.put("action", JsonString("created"))
+        feishu.put("appId", JsonString("cli_raw_app"))
+        feishu.put("appSecret", JsonString("RAW_FEISHU_SECRET"))
+        accounts.add(feishu)
+        result.put("channelAccounts", accounts)
+        let bindings = JsonObject()
+        let added = JsonArray([])
+        added.add(JsonString("telegram:demo"))
+        added.add(JsonString("feishu:tenant-a"))
+        bindings.put("added", added)
+        result.put("bindings", bindings)
+
+        let text = cliRenderGatewayAgentAddResult(result, "demo")
+        @Expect(text.contains("Added agent: demo"), true)
+        @Expect(text.contains("model: dashscope:qwen-plus"), true)
+        @Expect(text.contains("Configured channel accounts:"), true)
+        @Expect(text.contains("token=[redacted]"), true)
+        @Expect(text.contains("appId=cli_..."), true)
+        @Expect(text.contains("appSecret=[redacted]"), true)
+        @Expect(text.contains("Added bindings:"), true)
+        @Expect(text.contains("{\""), false)
+        @Expect(text.contains("RAW_TOKEN"), false)
+        @Expect(text.contains("RAW_FEISHU_SECRET"), false)
+    }
+
+    @TestCase
+    public func redactsAgentAddJsonAndGatewayErrorText(): Unit {
+        let obj = JsonObject()
+        obj.put("botToken", JsonString("123:RAW_TOKEN"))
+        obj.put("appSecret", JsonString("RAW_SECRET"))
+        obj.put("appId", JsonString("10201234"))
+        let json = cliRedactJsonObjectForOutput(obj).toJsonString()
+        @Expect(json.contains("RAW_TOKEN"), false)
+        @Expect(json.contains("RAW_SECRET"), false)
+        @Expect(json.contains("[redacted]"), true)
+        @Expect(json.contains("1020..."), true)
+
+        let err = cliRedactTextForOutput("telegram failed token=123:RAW_TOKEN appSecret:RAW_SECRET")
+        @Expect(err.contains("RAW_TOKEN"), false)
+        @Expect(err.contains("RAW_SECRET"), false)
+        @Expect(err.contains("[redacted]"), true)
+    }
+
     @TestCase
     public func buildsCreateTeamRpcParamsFromCliFlags(): Unit {
         let spec = cliBuildAgentsTeamRpcSpec([

@@ -191,7 +191,7 @@ private func localPrintMutationResult(args: Array<String>, obj: JsonObject, warn
 }
 
 private func printGatewayRpcFailure(scope: String, method: String, error: String): Int64 {
-    PrintUtils.printLine("Gateway ${scope} failed: ${error}")
+    PrintUtils.printLine("Gateway ${scope} failed: ${cliRedactTextForOutput(error)}")
     PrintUtils.printLine("Start the unified Gateway main runtime with `metis gateway run`, then retry `${method}`.")
     CLI_EXIT_USAGE_ERROR
 }
@@ -232,6 +232,101 @@ private func gatewayAgentsJsonString(obj: JsonObject, key: String, defaultValue:
     }
 }
 
+private func cliIsSecretOutputField(key: String): Bool {
+    let low = key.trimAscii().toAsciiLower()
+    low == "appsecret" ||
+    low == "bottoken" ||
+    low == "token" ||
+    low == "apikey" ||
+    low == "authorization" ||
+    low.contains("secret") ||
+    low.contains("token")
+}
+
+private func cliIsAppIdOutputField(key: String): Bool {
+    key.trimAscii().toAsciiLower() == "appid"
+}
+
+public func cliRedactCredentialFieldForOutput(key: String, value: String): String {
+    let clean = value.trimAscii()
+    if (clean.isEmpty()) {
+        return ""
+    }
+    if (cliIsSecretOutputField(key)) {
+        return "[redacted]"
+    }
+    if (cliIsAppIdOutputField(key)) {
+        return if (clean.size >= 4) { "${clean[..4]}..." } else { "[set]" }
+    }
+    clean
+}
+
+private func cliRedactJsonValueForOutput(value: JsonValue, key!: String = ""): JsonValue {
+    if (cliIsSecretOutputField(key) || cliIsAppIdOutputField(key)) {
+        let text = try { value.asString().getValue() } catch (_e: Exception) { value.toJsonString() }
+        return JsonString(cliRedactCredentialFieldForOutput(key, text))
+    }
+    try {
+        let obj = value.asObject()
+        let out = JsonObject()
+        for ((field, nested) in obj.getFields()) {
+            out.put(field, cliRedactJsonValueForOutput(nested, key: field))
+        }
+        return out
+    } catch (_e: Exception) {
+        ()
+    }
+    try {
+        let arr = value.asArray()
+        let out = ArrayList<JsonValue>()
+        for (idx in 0..arr.size()) {
+            out.add(cliRedactJsonValueForOutput(arr[idx]))
+        }
+        return JsonArray(out)
+    } catch (_e: Exception) {
+        ()
+    }
+    value
+}
+
+public func cliRedactJsonObjectForOutput(obj: JsonObject): JsonObject {
+    let out = JsonObject()
+    for ((field, nested) in obj.getFields()) {
+        out.put(field, cliRedactJsonValueForOutput(nested, key: field))
+    }
+    out
+}
+
+private func cliRedactTextAfterPattern(text: String, pattern: String): String {
+    let idx = match (text.indexOf(pattern)) {
+        case Some(v) => v
+        case None => return text
+    }
+    let start = idx + pattern.size
+    let rest = text[start..]
+    var end = rest.size
+    for (separator in [" ", "\n", "\t", ",", ";", ")"]) {
+        match (rest.indexOf(separator)) {
+            case Some(v) =>
+                if (v < end) { end = v }
+            case None => ()
+        }
+    }
+    text[..start] + "[redacted]" + rest[end..]
+}
+
+public func cliRedactTextForOutput(text: String): String {
+    var out = text
+    for (pattern in ["appSecret=", "appSecret:", "botToken=", "botToken:", "token=", "token:", "secret=", "secret:", "Authorization:"]) {
+        var next = cliRedactTextAfterPattern(out, pattern)
+        while (next != out) {
+            out = next
+            next = cliRedactTextAfterPattern(out, pattern)
+        }
+    }
+    out
+}
+
 public class CliAgentsTeamRpcSpec {
     public let method: String
     public let params: JsonObject
@@ -258,6 +353,246 @@ public class CliAgentsMigrationRpcSpec {
         this.json = json
         this.action = action
     }
+}
+
+public class CliAgentsAddRpcSpec {
+    public let method: String
+    public let params: JsonObject
+    public let json: Bool
+
+    public init(method: String, params: JsonObject, json: Bool) {
+        this.method = method
+        this.params = params
+        this.json = json
+    }
+}
+
+private class CliAgentsAddParseResult {
+    public let spec: Option<CliAgentsAddRpcSpec>
+    public let missing: String
+    public let invalid: String
+
+    public init(spec: Option<CliAgentsAddRpcSpec>, missing: String, invalid: String) {
+        this.spec = spec
+        this.missing = missing
+        this.invalid = invalid
+    }
+}
+
+private class CliAgentsCredentialPair {
+    public let appId: String
+    public let appSecret: String
+
+    public init(appId: String, appSecret: String) {
+        this.appId = appId
+        this.appSecret = appSecret
+    }
+}
+
+private func cliAgentsParseCredentialPair(raw: String): Option<CliAgentsCredentialPair> {
+    let value = raw.trimAscii()
+    if (value.isEmpty()) {
+        return None<CliAgentsCredentialPair>
+    }
+    let pivot = match (value.indexOf(":")) {
+        case Some(v) => v
+        case None => return None<CliAgentsCredentialPair>
+    }
+    if (pivot <= 0 || pivot >= value.size - 1) {
+        return None<CliAgentsCredentialPair>
+    }
+    let appId = value[..pivot].trimAscii()
+    let appSecret = value[pivot + 1..].trimAscii()
+    if (appId.isEmpty() || appSecret.isEmpty()) {
+        return None<CliAgentsCredentialPair>
+    }
+    Some(CliAgentsCredentialPair(appId, appSecret))
+}
+
+private func cliAgentsAddCredentialObject(accountId: String, pair: CliAgentsCredentialPair): JsonObject {
+    let obj = JsonObject()
+    obj.put("accountId", JsonString(accountId))
+    obj.put("appId", JsonString(pair.appId))
+    obj.put("appSecret", JsonString(pair.appSecret))
+    obj
+}
+
+private func cliAgentsAddTelegramCredentialObject(accountId: String, botToken: String): JsonObject {
+    let obj = JsonObject()
+    obj.put("accountId", JsonString(accountId))
+    obj.put("botToken", JsonString(botToken))
+    obj
+}
+
+private func cliAgentsAddPushBinding(out: ArrayList<JsonValue>, seen: ArrayList<String>, raw: String): Unit {
+    let value = raw.trimAscii()
+    if (value.isEmpty() || seen.contains(value)) {
+        return
+    }
+    seen.add(value)
+    out.add(JsonString(value))
+}
+
+private func cliParseAgentsAddRpcSpec(args: Array<String>): CliAgentsAddParseResult {
+    if (args.size < 1 || args[0].trimAscii().toAsciiLower() != "add") {
+        return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "", "add")
+    }
+    var json = false
+    var agentId = ""
+    var name = ""
+    var workspace = ""
+    var model = ""
+    let explicitBinds = ArrayList<String>()
+    var feishuRaw = ""
+    var feishuAccount = ""
+    var qqRaw = ""
+    var qqAccount = ""
+    var telegramToken = ""
+    var telegramAccount = ""
+    var channelOverwrite = false
+    var i: Int64 = 1
+    while (i < args.size) {
+        let token = args[i].trimAscii()
+        let low = token.toAsciiLower()
+        if (low == "--json") {
+            json = true
+            i += 1
+            continue
+        }
+        if (low == "--channel-overwrite") {
+            channelOverwrite = true
+            i += 1
+            continue
+        }
+        if (low == "--agent") {
+            if (i + 1 >= args.size) { return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "--agent <id>", "") }
+            agentId = args[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        if (low == "--name") {
+            if (i + 1 >= args.size) { return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "--name <text>", "") }
+            name = args[i + 1]
+            i += 2
+            continue
+        }
+        if (low == "--workspace") {
+            if (i + 1 >= args.size) { return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "--workspace <path>", "") }
+            workspace = args[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        if (low == "--model") {
+            if (i + 1 >= args.size) { return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "--model <ref>", "") }
+            model = args[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        if (low == "--bind") {
+            if (i + 1 >= args.size) { return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "--bind <channel[:account]>", "") }
+            explicitBinds.add(args[i + 1].trimAscii())
+            i += 2
+            continue
+        }
+        if (low == "--feishu") {
+            if (i + 1 >= args.size) { return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "--feishu <appId:appSecret>", "") }
+            feishuRaw = args[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        if (low == "--feishu-account") {
+            if (i + 1 >= args.size) { return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "--feishu-account <id>", "") }
+            feishuAccount = args[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        if (low == "--qqbot") {
+            if (i + 1 >= args.size) { return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "--qqbot <appId:appSecret>", "") }
+            qqRaw = args[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        if (low == "--qqbot-account") {
+            if (i + 1 >= args.size) { return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "--qqbot-account <id>", "") }
+            qqAccount = args[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        if (low == "--telegram" || low == "--telegram-bot-token") {
+            if (i + 1 >= args.size) { return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "${low} <token>", "") }
+            let nextToken = args[i + 1].trimAscii()
+            if (!telegramToken.isEmpty() && telegramToken != nextToken) {
+                return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "", "telegram token flags must agree")
+            }
+            telegramToken = nextToken
+            i += 2
+            continue
+        }
+        if (low == "--telegram-account") {
+            if (i + 1 >= args.size) { return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "--telegram-account <id>", "") }
+            telegramAccount = args[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "", token)
+    }
+    if (agentId.isEmpty()) {
+        return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "--agent <id>", "")
+    }
+    let params = JsonObject()
+    params.put("agentId", JsonString(agentId))
+    if (!name.trimAscii().isEmpty()) { params.put("name", JsonString(name.trimAscii())) }
+    if (!workspace.trimAscii().isEmpty()) { params.put("workspace", JsonString(workspace)) }
+    if (!model.trimAscii().isEmpty()) { params.put("model", JsonString(model.trimAscii())) }
+
+    let binds = ArrayList<JsonValue>()
+    let seenBinds = ArrayList<String>()
+    for (item in explicitBinds) {
+        cliAgentsAddPushBinding(binds, seenBinds, item)
+    }
+
+    let credentials = JsonObject()
+    var hasCredential = false
+    if (!feishuRaw.isEmpty()) {
+        let pair = match (cliAgentsParseCredentialPair(feishuRaw)) {
+            case Some(v) => v
+            case None => return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "", "--feishu expects appId:appSecret")
+        }
+        let account = if (feishuAccount.isEmpty()) { agentId } else { feishuAccount }
+        credentials.put("feishu", cliAgentsAddCredentialObject(account, pair))
+        cliAgentsAddPushBinding(binds, seenBinds, "feishu:${account}")
+        hasCredential = true
+    }
+    if (!qqRaw.isEmpty()) {
+        let pair = match (cliAgentsParseCredentialPair(qqRaw)) {
+            case Some(v) => v
+            case None => return CliAgentsAddParseResult(None<CliAgentsAddRpcSpec>, "", "--qqbot expects appId:appSecret")
+        }
+        let account = if (qqAccount.isEmpty()) { agentId } else { qqAccount }
+        credentials.put("qq", cliAgentsAddCredentialObject(account, pair))
+        cliAgentsAddPushBinding(binds, seenBinds, "qq:${account}")
+        hasCredential = true
+    }
+    if (!telegramToken.isEmpty()) {
+        let account = if (telegramAccount.isEmpty()) { agentId } else { telegramAccount }
+        credentials.put("telegram", cliAgentsAddTelegramCredentialObject(account, telegramToken))
+        cliAgentsAddPushBinding(binds, seenBinds, "telegram:${account}")
+        hasCredential = true
+    }
+    if (binds.size > 0) {
+        params.put("bind", JsonArray(binds))
+    }
+    if (hasCredential) {
+        params.put("channelCredentials", credentials)
+        params.put("channelOverwrite", JsonBool(channelOverwrite))
+    } else if (channelOverwrite) {
+        params.put("channelOverwrite", JsonBool(true))
+    }
+    CliAgentsAddParseResult(Some(CliAgentsAddRpcSpec("agents.add", params, json)), "", "")
+}
+
+public func cliBuildAgentsAddRpcSpec(args: Array<String>): Option<CliAgentsAddRpcSpec> {
+    cliParseAgentsAddRpcSpec(args).spec
 }
 
 private func cliAgentsJsonObjectFromText(raw: String): Option<JsonObject> {
@@ -557,6 +892,106 @@ func cliAgentsTeamHasAnyUpdateField(params: JsonObject): Bool {
 
 public func cliAgentsTeamProductSemanticsHelpText(): String {
     "Team CRUD is handled by CLI/UI/Gateway RPC. CRUD methods: list|get|create|update|delete. JSON responses include semantics.crudSurface=cli-ui-gateway-rpc and semantics.imSurface=runtime-route-alias-native-command. Telegram/Feishu IM are runtime entry points for route bindings, aliases, and native commands (runtime route/native command only); they do not create/update/delete teams. Team route means one deterministic agent, broadcast means explicit fan-out, delete preserves member agents/workspaces, and manager is a normal member/defaultAgent, not an autonomous manager runtime."
+}
+
+private func cliAgentAddBindingArray(result: JsonObject, key: String): JsonArray {
+    let bindings = match (result.get("bindings")) {
+        case Some(v) =>
+            try { v.asObject() } catch (_: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    let nested = gatewayAgentsJsonArray(bindings, key)
+    if (nested.size() > 0) {
+        return nested
+    }
+    gatewayAgentsJsonArray(result, key)
+}
+
+private func cliAppendAgentAddBindingLines(lines: ArrayList<String>, title: String, rows: JsonArray): Unit {
+    if (rows.size() == 0) {
+        return
+    }
+    lines.add(title)
+    for (idx in 0..rows.size()) {
+        try {
+            lines.add("  - ${rows[idx].asString().getValue()}")
+        } catch (_e: Exception) {
+            let row = try { rows[idx].asObject() } catch (_: Exception) { JsonObject() }
+            let binding = gatewayAgentsJsonString(row, "binding", "")
+            let existing = gatewayAgentsJsonString(row, "existingAgentId", "")
+            if (!binding.isEmpty() && !existing.isEmpty()) {
+                lines.add("  - ${binding} (agent=${existing})")
+            } else if (!binding.isEmpty()) {
+                lines.add("  - ${binding}")
+            }
+        }
+    }
+}
+
+public func cliRenderGatewayAgentAddResult(result: JsonObject, fallbackAgentId: String): String {
+    let safe = cliRedactJsonObjectForOutput(result)
+    let lines = ArrayList<String>()
+    lines.add("Added agent: ${gatewayAgentsJsonString(safe, "agentId", fallbackAgentId)}")
+    let name = gatewayAgentsJsonString(safe, "name", "")
+    if (!name.isEmpty()) { lines.add("  name: ${name}") }
+    let model = gatewayAgentsJsonString(safe, "model", "")
+    if (!model.isEmpty()) { lines.add("  model: ${model}") }
+    let workspace = gatewayAgentsJsonString(safe, "workspace", "")
+    if (!workspace.isEmpty()) { lines.add("  workspace: ${workspace}") }
+    let agentDir = gatewayAgentsJsonString(safe, "agentDir", "")
+    if (!agentDir.isEmpty()) { lines.add("  agentDir: ${agentDir}") }
+    let accounts = gatewayAgentsJsonArray(safe, "channelAccounts")
+    if (accounts.size() > 0) {
+        lines.add("Configured channel accounts:")
+        for (idx in 0..accounts.size()) {
+            let row = try { accounts[idx].asObject() } catch (_: Exception) { JsonObject() }
+            let channel = gatewayAgentsJsonString(row, "channel", "")
+            let accountId = gatewayAgentsJsonString(row, "accountId", "")
+            let action = gatewayAgentsJsonString(row, "action", "")
+            var line = "  - ${channel}:${accountId}"
+            if (channel == "telegram") {
+                let token = gatewayAgentsJsonString(row, "token", gatewayAgentsJsonString(row, "botToken", ""))
+                if (!token.isEmpty()) { line += " token=${token}" }
+            } else {
+                let appId = gatewayAgentsJsonString(row, "appId", "")
+                let appSecret = gatewayAgentsJsonString(row, "appSecret", "")
+                if (!appId.isEmpty()) { line += " appId=${appId}" }
+                if (!appSecret.isEmpty()) { line += " appSecret=${appSecret}" }
+            }
+            if (!action.isEmpty()) { line += " ${action}" }
+            lines.add(line)
+        }
+    }
+    cliAppendAgentAddBindingLines(lines, "Added bindings:", cliAgentAddBindingArray(safe, "added"))
+    cliAppendAgentAddBindingLines(lines, "Skipped bindings:", cliAgentAddBindingArray(safe, "skipped"))
+    cliAppendAgentAddBindingLines(lines, "Conflicts:", cliAgentAddBindingArray(safe, "conflicts"))
+    String.join(lines.toArray(), delimiter: "\n")
+}
+
+private func cliRunAgentsAddFlow(args: Array<String>): Int64 {
+    let parsed = cliParseAgentsAddRpcSpec(args)
+    match (parsed.spec) {
+        case Some(spec) =>
+            let res = gatewayCliClient().call(spec.method, params: spec.params)
+            if (!res.ok) {
+                return printGatewayRpcFailure("agents", "metis agents add", res.error)
+            }
+            if (spec.json) {
+                return printJsonObject(cliRedactJsonObjectForOutput(res.toJson()))
+            }
+            let result = try {
+                res.result.asObject()
+            } catch (_e: Exception) {
+                JsonObject()
+            }
+            PrintUtils.printLine(cliRenderGatewayAgentAddResult(result, gatewayAgentsJsonString(spec.params, "agentId", "")))
+            CLI_EXIT_OK
+        case None =>
+            if (!parsed.missing.isEmpty()) {
+                return cliReturnMissingArgument("agents", "add", parsed.missing)
+            }
+            cliReturnInvalidArgument("agents", "add", parsed.invalid, "--json | --agent <id> | --name <text> | --workspace <path> | --model <ref> | --bind <channel[:account]> | --feishu <appId:appSecret> | --feishu-account <id> | --qqbot <appId:appSecret> | --qqbot-account <id> | --telegram-bot-token <token> | --telegram-account <id> | --channel-overwrite")
+    }
 }
 
 private func cliRunAgentsTeamFlow(args: Array<String>): Int64 {
@@ -1773,12 +2208,16 @@ public func cliRunAgentsFlow(args: Array<String>): Int64 {
                 "metis agents team list --json",
                 "metis agents migrate --dry-run --json",
                 "metis agents add --agent reviewer --name Reviewer",
+                "metis agents add --agent demo --name Demo --model dashscope:qwen-plus --feishu cli_test:secret_test --qqbot 1020:test_secret --telegram-bot-token test-token",
                 "metis agents set-identity --agent reviewer --name Reviewer --emoji 🔎",
                 "metis agents delete --agent reviewer",
                 "metis agents list --json"
             ],
-            "list [--json] | summary [--json] | health [--json] | capabilities [--json] | bindings [--agent <id>] [--json] | bind --agent <id> --bind <channel[:account]> [--bind ...] [--json] | unbind --agent <id> (--bind <channel[:account]> [--bind ...] | --all) [--json] | team list|get|create|update|delete [--team <id>] [--json] | migrate --dry-run [--json] | add --agent <id> [--name <text>] [--workspace <path>] [--model <ref>] [--json] | set-identity --agent <id> [--name <text>] [--emoji <text>] [--theme <text>] [--avatar <path>] [--json] | delete --agent <id> [--json] | help\n${cliAgentsTeamProductSemanticsHelpText()}"
+            "list [--json] | summary [--json] | health [--json] | capabilities [--json] | bindings [--agent <id>] [--json] | bind --agent <id> --bind <channel[:account]> [--bind ...] [--json] | unbind --agent <id> (--bind <channel[:account]> [--bind ...] | --all) [--json] | team list|get|create|update|delete [--team <id>] [--json] | migrate --dry-run [--json] | add --agent <id> [--name <text>] [--workspace <path>] [--model <ref>] [--bind <channel[:account]> ...] [--feishu <appId:appSecret>] [--feishu-account <id>] [--qqbot <appId:appSecret>] [--qqbot-account <id>] [--telegram-bot-token <token>] [--telegram-account <id>] [--channel-overwrite] [--json] | set-identity --agent <id> [--name <text>] [--emoji <text>] [--theme <text>] [--avatar <path>] [--json] | delete --agent <id> [--json] | help\n${cliAgentsTeamProductSemanticsHelpText()}"
         )
+    }
+    if (sub == "add") {
+        return cliRunAgentsAddFlow(args)
     }
     if (sub == "team") {
         return cliRunAgentsTeamFlow(args)
@@ -2153,32 +2592,6 @@ public func cliRunAgentsFlow(args: Array<String>): Int64 {
         }
         return CLI_EXIT_OK
     }
-    if (sub == "add") {
-        if (agentId.isEmpty()) {
-            return cliReturnMissingArgument("agents", "add", "--agent <id>")
-        }
-        let params = JsonObject()
-        params.put("agentId", JsonString(agentId))
-        if (!name.trimAscii().isEmpty()) { params.put("name", JsonString(name.trimAscii())) }
-        if (!workspace.trimAscii().isEmpty()) { params.put("workspace", JsonString(workspace)) }
-        if (!model.trimAscii().isEmpty()) { params.put("model", JsonString(model.trimAscii())) }
-        let res = gatewayCliClient().call("agents.add", params: params)
-        if (!res.ok) {
-            return printGatewayRpcFailure("agents", "metis agents add", res.error)
-        }
-        if (json) {
-            return printJsonObject(res.toJson())
-        }
-        let result = try {
-            res.result.asObject()
-        } catch (_e: Exception) {
-            JsonObject()
-        }
-        PrintUtils.printLine("Added agent: ${gatewayAgentsJsonString(result, "agentId", agentId)}")
-        PrintUtils.printLine("  workspace: ${gatewayAgentsJsonString(result, "workspace", "")}")
-        PrintUtils.printLine("  agentDir: ${gatewayAgentsJsonString(result, "agentDir", "")}")
-        return CLI_EXIT_OK
-    }
     if (sub == "set-identity") {
         if (agentId.isEmpty()) {
             return cliReturnMissingArgument("agents", "set-identity", "--agent <id>")
@@ -2228,7 +2641,7 @@ public func cliRunAgentsFlow(args: Array<String>): Int64 {
         PrintUtils.printLine("Deleted agent: ${gatewayAgentsJsonString(result, "agentId", agentId)}")
         return CLI_EXIT_OK
     }
-    printUnknownLocalSubcommand("agents", sub, "list [--json] | summary [--json] | health [--json] | capabilities [--json] | bindings [--agent <id>] [--json] | bind --agent <id> --bind <channel[:account]> [--bind ...] [--json] | unbind --agent <id> (--bind <channel[:account]> [--bind ...] | --all) [--json] | team list|get|create|update|delete [--team <id>] [--json] | migrate --dry-run [--json] | add --agent <id> [--name <text>] [--workspace <path>] [--model <ref>] [--json] | set-identity --agent <id> [--name <text>] [--emoji <text>] [--theme <text>] [--avatar <path>] [--json] | delete --agent <id> [--json] | help")
+    printUnknownLocalSubcommand("agents", sub, "list [--json] | summary [--json] | health [--json] | capabilities [--json] | bindings [--agent <id>] [--json] | bind --agent <id> --bind <channel[:account]> [--bind ...] [--json] | unbind --agent <id> (--bind <channel[:account]> [--bind ...] | --all) [--json] | team list|get|create|update|delete [--team <id>] [--json] | migrate --dry-run [--json] | add --agent <id> [--name <text>] [--workspace <path>] [--model <ref>] [--bind <channel[:account]> ...] [--feishu <appId:appSecret>] [--qqbot <appId:appSecret>] [--telegram-bot-token <token>] [--channel-overwrite] [--json] | set-identity --agent <id> [--name <text>] [--emoji <text>] [--theme <text>] [--avatar <path>] [--json] | delete --agent <id> [--json] | help")
 }
 
 public func cliRunTasksFlow(args: Array<String>): Int64 {

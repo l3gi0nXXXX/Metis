@@ -96,6 +96,103 @@ Update identity fields stored on the agent entry:
 metis agents set-identity --agent content-writer --name "Content Writer" --theme "concise writing partner"
 ```
 
+### Create One Agent With Channel Credentials
+
+This shortcut creates one managed agent. It does not create an agent team. Use `metis agents team create` only when you want a team template or a managed group of multiple agents. This capability also does not add a new subcommand; it extends the existing `metis agents add` command with optional channel credential parameters.
+
+Metis does not create Telegram bots, Feishu apps, or QQ bots for you. Create those in the provider consoles first, then pass their test credentials to `metis agents add`. The credentials are stored in the existing Gateway channel account configuration, and the routing connection is stored in existing route bindings. They are not written into agent markdown files and are not stored under the agent entry itself.
+
+Do not use production secrets while testing this flow. The examples below use obvious fake values. Bare command-line credentials may be saved by your shell history and are written to the local Metis configuration. CLI output, Gateway JSON responses, channel account inspection, logs, and errors must redact bot tokens and app secrets.
+
+Create one agent and configure Telegram:
+
+```bash
+metis agents add \
+  --agent tg-writer \
+  --name "Telegram Writer" \
+  --model dashscope:qwen3.6-plus \
+  --telegram-bot-token "123456789:fake-telegram-token"
+```
+
+Create one agent and configure Feishu:
+
+```bash
+metis agents add \
+  --agent feishu-writer \
+  --name "Feishu Writer" \
+  --model dashscope:qwen3.6-plus \
+  --feishu "cli_fake_app_id:fake-feishu-secret"
+```
+
+Create one agent and configure QQ Bot:
+
+```bash
+metis agents add \
+  --agent qq-writer \
+  --name "QQ Writer" \
+  --model dashscope:qwen3.6-plus \
+  --qqbot "1020000000:fake-qq-secret"
+```
+
+Create one agent and configure all three IM channels:
+
+```bash
+metis agents add \
+  --agent zhihu-strategist \
+  --name "Zhihu Strategist" \
+  --model dashscope:qwen3.6-plus \
+  --feishu "cli_fake_app_id:fake-feishu-secret" \
+  --qqbot "1020000000:fake-qq-secret" \
+  --telegram-bot-token "123456789:fake-telegram-token"
+```
+
+When a channel credential is provided, Metis also creates the corresponding route binding for that agent. By default, the channel account id is the agent id. Use explicit account ids when the provider account name should differ:
+
+```bash
+metis agents add \
+  --agent support-router \
+  --name "Support Router" \
+  --model dashscope:qwen3.6-plus \
+  --telegram-account support-test-bot \
+  --telegram-bot-token "123456789:fake-telegram-token" \
+  --feishu-account support-test-feishu \
+  --feishu "cli_fake_app_id:fake-feishu-secret" \
+  --qqbot-account support-test-qq \
+  --qqbot "1020000000:fake-qq-secret"
+```
+
+Check the created agent, bindings, and channel accounts:
+
+```bash
+metis agents get --agent support-router
+metis agents bindings --agent support-router
+metis gateway channel telegram accounts
+metis gateway channel feishu accounts
+metis gateway channel qq accounts
+```
+
+Expected output:
+
+- Default command output is human-readable, not a raw JSON object dump.
+- `--json` output is still redacted.
+- Telegram token fields display as `[redacted]`.
+- Feishu and QQ app secret fields display as `[redacted]`.
+- Fake raw values such as `fake-telegram-token`, `fake-feishu-secret`, and `fake-qq-secret` do not appear in stdout, stderr, logs, or Gateway RPC results.
+- Bindings show routes such as `telegram:support-test-bot -> support-router`.
+
+If a target channel account already exists with the same credential, Metis may reuse it. If it exists with a different credential, the command fails by default and must not create a partial agent, account, or binding. To intentionally replace that channel account, pass `--channel-overwrite`:
+
+```bash
+metis agents add \
+  --agent support-router-replacement \
+  --name "Support Router Replacement" \
+  --feishu-account support-test-feishu \
+  --feishu "cli_fake_app_id:fake-replacement-feishu-secret" \
+  --channel-overwrite
+```
+
+If route binding ownership conflicts with another agent, the command must fail clearly and must not leave a half-created configuration. Confirm with `metis agents get --agent <id>`, `metis agents bindings --agent <id>`, and the channel account inspection commands above.
+
 ## Create A Team
 
 Create a PM/writer/reviewer team from the built-in template:

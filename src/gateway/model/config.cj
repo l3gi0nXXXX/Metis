@@ -1043,6 +1043,8 @@ public class FeishuConfig {
  * - AppId/AppSecret
  */
 public class QQConfig {
+    public let accountId: String
+    public let defaultAccount: String
     public let enabled: Bool
     public let streaming: String
     public let blockStreaming: Bool
@@ -1059,6 +1061,7 @@ public class QQConfig {
     public let dedupWindowSize: Int64
     public let appId: String
     public let appSecret: String
+    public let accounts: Option<JsonObject>
     public let officialBotToken: String
     public let officialTokenUrl: String
     public let officialGatewayUrl: String
@@ -1070,6 +1073,8 @@ public class QQConfig {
     public let policy: ChannelPolicyConfig
 
     public init(
+        accountId!: String = "default",
+        defaultAccount!: String = "default",
         enabled!: Bool = false,
         streaming!: String = "partial",
         blockStreaming!: Bool = false,
@@ -1085,6 +1090,7 @@ public class QQConfig {
         dedupWindowSize!: Int64 = 2000,
         appId!: String = "",
         appSecret!: String = "",
+        accounts!: Option<JsonObject> = None,
         officialBotToken!: String = "",
         officialTokenUrl!: String = "https://bots.qq.com/app/getAppAccessToken",
         officialGatewayUrl!: String = "https://api.sgroup.qq.com/gateway",
@@ -1095,6 +1101,8 @@ public class QQConfig {
         officialSendGroupUrlTemplate!: String = "https://api.sgroup.qq.com/v2/groups/{peer_id}/messages",
         policy!: ChannelPolicyConfig = ChannelPolicyConfig()
     ) {
+        this.accountId = accountId
+        this.defaultAccount = defaultAccount
         this.enabled = enabled
         this.streaming = streaming
         this.blockStreaming = blockStreaming
@@ -1110,6 +1118,7 @@ public class QQConfig {
         this.dedupWindowSize = dedupWindowSize
         this.appId = appId
         this.appSecret = appSecret
+        this.accounts = accounts
         this.officialBotToken = officialBotToken
         this.officialTokenUrl = officialTokenUrl
         this.officialGatewayUrl = officialGatewayUrl
