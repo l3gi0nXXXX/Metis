@@ -14,6 +14,7 @@ import metis.gateway.core.{
     gatewayChannelRuntimeMarkSend,
     gatewayChannelRuntimeMarkStarting,
     gatewayChannelRuntimeMarkStopped,
+    gatewayCanonicalChannelAccountId,
     gatewayChannelRuntimeAccountsJson,
     gatewayChannelRuntimeBootstrapSummary,
     gatewayChannelRuntimeDefaultAccountId,
@@ -1465,6 +1466,10 @@ private func gatewayChannelActionByPlugin(
     action: String
 ): JsonObject {
     let channelId = gatewayRpcStringParam(request, ["id", "channel", "channelId"], "")
+    match (gatewayChannelActionByNativeRuntime(request, channelId, action)) {
+        case Some(nativeResult) => return nativeResult
+        case None => ()
+    }
     if (action == "send") {
         match (gatewayChannelActionByNativeAdapter(user, request, channelId)) {
             case Some(nativeResult) => return nativeResult
@@ -1501,6 +1506,65 @@ private func gatewayChannelActionByPlugin(
     result.put("action", JsonString(action))
     result.put("result", actionResult)
     result
+}
+
+private func gatewayNativeRuntimeChannelSupported(channelId: String): Bool {
+    let normalized = normalizeGatewayChannelId(channelId)
+    normalized == "telegram" || normalized == "feishu" || normalized == "qq"
+}
+
+private func gatewayChannelActionByNativeRuntime(
+    request: GatewayRpcRequest,
+    channelId: String,
+    action: String
+): Option<JsonObject> {
+    let normalized = normalizeGatewayChannelId(channelId)
+    if (!gatewayNativeRuntimeChannelSupported(normalized)) {
+        return None<JsonObject>
+    }
+    if (action != "start" && action != "stop" && action != "restart") {
+        return None<JsonObject>
+    }
+    let accountId = gatewayRpcStringParam(request, ["accountId", "account"], "")
+    match (gatewayActiveService()) {
+        case Some(service) =>
+            let result = if (action == "start") {
+                service.startChannel(normalized, accountId: accountId)
+            } else if (action == "stop") {
+                service.stopChannel(normalized, accountId: accountId, reason: "manual-stop", manualStop: true)
+            } else {
+                service.restartChannel(normalized, accountId: accountId, reason: "restart")
+            }
+            result.put("native", true.toJsonValue())
+            return Some(result)
+        case None =>
+            let result = JsonObject()
+            let canonicalAccount = if (accountId.trimAscii().isEmpty()) {
+                ""
+            } else {
+                gatewayCanonicalChannelAccountId(normalized, accountId)
+            }
+            let negativeResult = if (action == "start") {
+                "not-started"
+            } else if (action == "stop") {
+                "not-stopped"
+            } else {
+                "not-restarted"
+            }
+            result.put("ok", false.toJsonValue())
+            result.put("supported", true.toJsonValue())
+            result.put("native", true.toJsonValue())
+            result.put("action", JsonString(action))
+            result.put("channelId", JsonString(normalized))
+            result.put("channel", JsonString(normalized))
+            result.put("accountId", JsonString(canonicalAccount))
+            result.put("runtimeKind", JsonString("native-cangjie"))
+            result.put("compatibilityMode", JsonString("native-cangjie"))
+            result.put("reason", JsonString("gateway-runtime-not-active"))
+            result.put("result", JsonString(negativeResult))
+            result.put("manager", gatewayChannelManagerSummary(normalized))
+            return Some(result)
+    }
 }
 
 private func gatewayChannelActionByNativeAdapter(
@@ -2525,6 +2589,14 @@ public func handleGatewayChannelsFamily(method: String, user: GatewayUserSetting
             case None => GatewayRpcRequest(method)
         }
         return Some(GatewayRpcResponse(true, method, result: gatewayChannelActionByPlugin(user, requestValue, "stop")))
+    }
+    if (method == "channels.restart") {
+        gatewayEnsureChannelBootstrap(user)
+        let requestValue = match (request) {
+            case Some(v) => v
+            case None => GatewayRpcRequest(method)
+        }
+        return Some(GatewayRpcResponse(true, method, result: gatewayChannelActionByPlugin(user, requestValue, "restart")))
     }
     if (method == "channels.send") {
         gatewayEnsureChannelBootstrap(user)

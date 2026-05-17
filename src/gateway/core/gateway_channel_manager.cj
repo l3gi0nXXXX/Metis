@@ -8,7 +8,7 @@ import std.collection.{ArrayList, HashMap}
 import std.convert.Parsable
 import std.sync.Mutex
 import std.time.DateTime
-import stdx.encoding.json.{JsonArray, JsonObject}
+import stdx.encoding.json.{JsonArray, JsonObject, JsonString}
 
 public func gatewayCanonicalChannelAccountId(channelId: String, rawAccountId: String): String {
     let channel = channelId.trimAscii().toAsciiLower()
@@ -176,6 +176,167 @@ public class GatewayChannelManager {
 
     private func liveNowMs(): Int64 {
         DateTime.now().toUnixTimeStamp().toMilliseconds()
+    }
+
+    private func channelLifecycleBase(action: String, channelId: String, accountId: String): JsonObject {
+        let normalizedChannel = channelId.trimAscii().toAsciiLower()
+        let canonicalAccount = if (accountId.trimAscii().isEmpty()) {
+            ""
+        } else {
+            gatewayCanonicalChannelAccountId(normalizedChannel, accountId)
+        }
+        let result = JsonObject()
+        result.put("ok", false.toJsonValue())
+        result.put("supported", true.toJsonValue())
+        result.put("action", JsonString(action))
+        result.put("channelId", JsonString(normalizedChannel))
+        result.put("channel", JsonString(normalizedChannel))
+        result.put("accountId", JsonString(canonicalAccount))
+        result.put("runtimeKind", JsonString("native-cangjie"))
+        result.put("compatibilityMode", JsonString("native-cangjie"))
+        result.put("accounts", JsonArray([]))
+        result
+    }
+
+    private func channelLifecycleAccounts(result: JsonObject): JsonArray {
+        match (result.get("accounts")) {
+            case Some(v) => try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
+            case None => JsonArray([])
+        }
+    }
+
+    private func matchingEntries(channelId: String, accountId: String): Array<GatewayRegisteredAdapter> {
+        let normalizedChannel = channelId.trimAscii().toAsciiLower()
+        let canonicalAccount = if (accountId.trimAscii().isEmpty()) {
+            ""
+        } else {
+            gatewayCanonicalChannelAccountId(normalizedChannel, accountId)
+        }
+        let matches = ArrayList<GatewayRegisteredAdapter>()
+        for (entry in this.adapters) {
+            if (entry.channelId != normalizedChannel) {
+                continue
+            }
+            if (!canonicalAccount.isEmpty() && entry.accountId != canonicalAccount) {
+                continue
+            }
+            matches.add(entry)
+        }
+        matches.toArray()
+    }
+
+    private func liveAccountRunning(channelId: String, accountId: String): Bool {
+        synchronized(this.liveStateLock) {
+            let key = this.liveKey(channelId, accountId)
+            match (this.liveAccounts.get(key)) {
+                case Some(state) => state.running
+                case None => false
+            }
+        }
+    }
+
+    private func lifecycleAccountRow(entry: GatewayRegisteredAdapter, ok: Bool, result: String, reason: String, runtime: JsonObject): JsonObject {
+        let row = JsonObject()
+        row.put("channelId", JsonString(entry.channelId))
+        row.put("accountId", JsonString(entry.accountId))
+        row.put("ok", ok.toJsonValue())
+        row.put("result", JsonString(result))
+        row.put("reason", JsonString(reason))
+        row.put("runtimeKind", JsonString(entry.runtimeKind))
+        row.put("compatibilityMode", JsonString(entry.compatibilityMode))
+        row.put("runtime", runtime)
+        row
+    }
+
+    private func lifecycleMissingResult(action: String, channelId: String, accountId: String): JsonObject {
+        let result = this.channelLifecycleBase(action, channelId, accountId)
+        result.put("reason", JsonString(if (accountId.trimAscii().isEmpty()) { "channel-not-registered" } else { "account-not-registered" }))
+        result.put("result", JsonString("not-started"))
+        result.put("manager", gatewayChannelManagerSummary(channelId))
+        result
+    }
+
+    private func startRegisteredEntry(entry: GatewayRegisteredAdapter, respectRuntimeGuard: Bool): JsonObject {
+        if (!entry.enabled) {
+            this.updateLiveAccount(entry.channelId, entry.accountId, { state =>
+                state.configured = entry.configured
+                state.running = false
+                state.connected = false
+                state.lastError = "disabled"
+            })
+            let runtime = gatewayChannelRuntimeMarkStopped(entry.channelId, accountId: entry.accountId, reason: "disabled", manualStop: false)
+            return this.lifecycleAccountRow(entry, false, "skipped", "disabled", runtime)
+        }
+        if (!entry.configured) {
+            this.updateLiveAccount(entry.channelId, entry.accountId, { state =>
+                state.configured = false
+                state.running = false
+                state.connected = false
+                state.lastError = "account-not-configured"
+            })
+            let runtime = gatewayChannelRuntimeMarkFailure(entry.channelId, accountId: entry.accountId, lifecycleState: "failed", error: "account-not-configured")
+            return this.lifecycleAccountRow(entry, false, "not-started", "account-not-configured", runtime)
+        }
+        if (this.liveAccountRunning(entry.channelId, entry.accountId)) {
+            let runtime = gatewayChannelRuntimeMarkRunning(entry.channelId, accountId: entry.accountId)
+            return this.lifecycleAccountRow(entry, true, "already-running", "", runtime)
+        }
+        if (respectRuntimeGuard && !gatewayChannelRuntimeCanStart(entry.channelId, accountId: entry.accountId)) {
+            let runtime = gatewayChannelRuntimeAccountsJson(entry.channelId)
+            let row = JsonObject()
+            row.put("accounts", runtime)
+            return this.lifecycleAccountRow(entry, false, "skipped", "runtime-start-suppressed", row)
+        }
+        gatewayChannelRuntimeMarkStarting(entry.channelId, accountId: entry.accountId)
+        try {
+            entry.adapter.start()
+            this.updateLiveAccount(entry.channelId, entry.accountId, { state =>
+                state.configured = entry.configured
+                state.running = true
+                state.connected = true
+                state.lastError = ""
+            })
+            let runtime = gatewayChannelRuntimeMarkRunning(entry.channelId, accountId: entry.accountId)
+            return this.lifecycleAccountRow(entry, true, "started", "", runtime)
+        } catch (e: Exception) {
+            let reason = gatewaySanitizeChannelDiagnostic(e.message)
+            this.updateLiveAccount(entry.channelId, entry.accountId, { state =>
+                state.configured = entry.configured
+                state.running = false
+                state.connected = false
+                state.lastError = reason
+            })
+            let runtime = gatewayChannelRuntimeMarkFailure(entry.channelId, accountId: entry.accountId, lifecycleState: "failed", error: reason)
+            LogUtils.error("Gateway.channel.start failed: channel=${entry.channelId} account=${entry.accountId} err=${reason}")
+            return this.lifecycleAccountRow(entry, false, "not-started", reason, runtime)
+        }
+    }
+
+    private func stopRegisteredEntry(entry: GatewayRegisteredAdapter, reason: String, manualStop: Bool): JsonObject {
+        if (!this.liveAccountRunning(entry.channelId, entry.accountId)) {
+            let runtime = gatewayChannelRuntimeMarkStopped(entry.channelId, accountId: entry.accountId, reason: "already-stopped", manualStop: manualStop)
+            return this.lifecycleAccountRow(entry, true, "already-stopped", "", runtime)
+        }
+        try {
+            entry.adapter.stop()
+            this.updateLiveAccount(entry.channelId, entry.accountId, { state =>
+                state.running = false
+                state.connected = false
+                state.lastError = if (manualStop) { "" } else { reason.trimAscii() }
+            })
+            let runtime = gatewayChannelRuntimeMarkStopped(entry.channelId, accountId: entry.accountId, reason: reason, manualStop: manualStop)
+            return this.lifecycleAccountRow(entry, true, "stopped", "", runtime)
+        } catch (e: Exception) {
+            let safeReason = gatewaySanitizeChannelDiagnostic(e.message)
+            this.updateLiveAccount(entry.channelId, entry.accountId, { state =>
+                state.running = false
+                state.connected = false
+                state.lastError = safeReason
+            })
+            let runtime = gatewayChannelRuntimeMarkFailure(entry.channelId, accountId: entry.accountId, lifecycleState: "failed", error: safeReason)
+            LogUtils.error("Gateway.channel.stop failed: channel=${entry.channelId} account=${entry.accountId} err=${safeReason}")
+            return this.lifecycleAccountRow(entry, false, "not-stopped", safeReason, runtime)
+        }
     }
 
     private func ensureLiveAccount(entry: GatewayRegisteredAdapter): Unit {
@@ -468,6 +629,33 @@ public class GatewayChannelManager {
         this.timingLog("startChannels-total", startMs)
     }
 
+    public func startChannel(channelId: String, accountId!: String = ""): JsonObject {
+        let entries = this.matchingEntries(channelId, accountId)
+        if (entries.size == 0) {
+            return this.lifecycleMissingResult("start", channelId, accountId)
+        }
+        let result = this.channelLifecycleBase("start", channelId, accountId)
+        let accounts = this.channelLifecycleAccounts(result)
+        var ok = true
+        var startedCount: Int64 = 0
+        for (entry in entries) {
+            let row = this.startRegisteredEntry(entry, false)
+            accounts.add(row)
+            let rowOk = try { row.get("ok").getOrThrow().asBool().getValue() } catch (_e: Exception) { false }
+            let rowResult = try { row.get("result").getOrThrow().asString().getValue() } catch (_e: Exception) { "" }
+            ok = ok && rowOk
+            if (rowResult == "started" || rowResult == "already-running") {
+                startedCount += 1
+            }
+        }
+        result.put("ok", ok.toJsonValue())
+        result.put("started", (startedCount > 0).toJsonValue())
+        result.put("result", JsonString(if (startedCount > 0) { "started" } else { "not-started" }))
+        result.put("accounts", accounts)
+        result.put("manager", gatewayChannelManagerSummary(channelId))
+        result
+    }
+
     public func stopChannels(reason!: String = "manual-stop", manualStop!: Bool = true): Unit {
         if (!this.started) {
             return
@@ -492,6 +680,56 @@ public class GatewayChannelManager {
             }
         }
         this.started = false
+    }
+
+    public func stopChannel(channelId: String, accountId!: String = "", reason!: String = "manual-stop", manualStop!: Bool = true): JsonObject {
+        let entries = this.matchingEntries(channelId, accountId)
+        if (entries.size == 0) {
+            let result = this.lifecycleMissingResult("stop", channelId, accountId)
+            result.put("result", JsonString("not-stopped"))
+            return result
+        }
+        let result = this.channelLifecycleBase("stop", channelId, accountId)
+        let accounts = this.channelLifecycleAccounts(result)
+        var ok = true
+        var stoppedCount: Int64 = 0
+        for (entry in entries) {
+            let row = this.stopRegisteredEntry(entry, reason, manualStop)
+            accounts.add(row)
+            let rowOk = try { row.get("ok").getOrThrow().asBool().getValue() } catch (_e: Exception) { false }
+            let rowResult = try { row.get("result").getOrThrow().asString().getValue() } catch (_e: Exception) { "" }
+            ok = ok && rowOk
+            if (rowResult == "stopped" || rowResult == "already-stopped") {
+                stoppedCount += 1
+            }
+        }
+        result.put("ok", ok.toJsonValue())
+        result.put("stopped", (stoppedCount > 0).toJsonValue())
+        result.put("result", JsonString(if (stoppedCount > 0) { "stopped" } else { "not-stopped" }))
+        result.put("accounts", accounts)
+        result.put("manager", gatewayChannelManagerSummary(channelId))
+        result
+    }
+
+    public func restartChannel(channelId: String, accountId!: String = "", reason!: String = "restart"): JsonObject {
+        let entries = this.matchingEntries(channelId, accountId)
+        if (entries.size == 0) {
+            let result = this.lifecycleMissingResult("restart", channelId, accountId)
+            result.put("result", JsonString("not-restarted"))
+            return result
+        }
+        let stopped = this.stopChannel(channelId, accountId: accountId, reason: reason, manualStop: false)
+        let started = this.startChannel(channelId, accountId: accountId)
+        let result = this.channelLifecycleBase("restart", channelId, accountId)
+        let ok = (try { stopped.get("ok").getOrThrow().asBool().getValue() } catch (_e: Exception) { false }) &&
+            (try { started.get("ok").getOrThrow().asBool().getValue() } catch (_e: Exception) { false })
+        result.put("ok", ok.toJsonValue())
+        result.put("restarted", ok.toJsonValue())
+        result.put("result", JsonString(if (ok) { "restarted" } else { "not-restarted" }))
+        result.put("stop", stopped)
+        result.put("start", started)
+        result.put("manager", gatewayChannelManagerSummary(channelId))
+        result
     }
 
     public func processOnce(handleInbound: (InboundMessage, String) -> Unit): Unit {

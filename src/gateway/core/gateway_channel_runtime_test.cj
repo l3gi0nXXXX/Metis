@@ -8,6 +8,7 @@ import std.env.{getVariable, setVariable}
 import std.fs.{Directory, File, Path, exists, remove}
 import std.time.DateTime
 import std.unittest.testmacro.*
+import stdx.encoding.json.JsonObject
 
 private func gatewayChannelRuntimeTestReadState(): String {
     let path = Path(gatewayChannelRuntimeStatePath())
@@ -85,6 +86,60 @@ private class GatewayChannelRuntimeFailingInboundAdapter <: ChannelAdapter {
     }
 }
 
+private class GatewayChannelLifecycleFakeAdapter <: ChannelAdapter {
+    private let adapterName: String
+    private let accountId: String
+    private let events: ArrayList<String>
+    public var startCount: Int64 = 0
+    public var stopCount: Int64 = 0
+
+    public init(adapterName: String, accountId: String, events!: ArrayList<String> = ArrayList<String>()) {
+        this.adapterName = adapterName
+        this.accountId = accountId
+        this.events = events
+    }
+
+    public prop name: String {
+        get() { this.adapterName }
+    }
+
+    public func start(): Unit {
+        this.startCount += 1
+        this.events.add("start:${this.accountId}")
+    }
+
+    public func stop(): Unit {
+        this.stopCount += 1
+        this.events.add("stop:${this.accountId}")
+    }
+
+    public func pullInbound(): Array<InboundMessage> {
+        []
+    }
+
+    public func send(_message: OutboundMessage): SendResult {
+        SendResult.Success
+    }
+
+    public func sendWithMessageId(_message: OutboundMessage): String {
+        "fake-message"
+    }
+}
+
+private func gatewayRuntimeTestString(obj: JsonObject, key: String): String {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func gatewayRuntimeTestBool(obj: JsonObject, key: String): Bool {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asBool().getValue() } catch (_e: Exception) { false }
+        case None => false
+    }
+}
+
 @Test
 public class GatewayChannelRuntimeTest {
     @TestCase
@@ -151,6 +206,137 @@ public class GatewayChannelRuntimeTest {
             @Expect(rendered.contains("app-secret"), false)
             @Expect(rendered.contains("refresh-secret"), false)
             @Expect(rendered.contains("[redacted]"), true)
+        }
+    }
+
+    @TestCase
+    public func startChannelWithAccountStartsOnlyTargetAccount(): Unit {
+        withGatewayChannelRuntimeTestHome {
+            let manager = GatewayChannelManager()
+            let telegramDefault = GatewayChannelLifecycleFakeAdapter("telegram", "default")
+            let telegramWriter = GatewayChannelLifecycleFakeAdapter("telegram", "tg-writer")
+            let feishuDefault = GatewayChannelLifecycleFakeAdapter("feishu", "default")
+            manager.registerAdapter(telegramDefault, channelId: "telegram", accountId: "default")
+            manager.registerAdapter(telegramWriter, channelId: "telegram", accountId: "tg-writer")
+            manager.registerAdapter(feishuDefault, channelId: "feishu", accountId: "default")
+
+            let result = manager.startChannel("telegram", accountId: "tg-writer")
+
+            @Expect(gatewayRuntimeTestBool(result, "started"), true)
+            @Expect(gatewayRuntimeTestString(result, "accountId"), "tg-writer")
+            @Expect(telegramDefault.startCount, 0)
+            @Expect(telegramWriter.startCount, 1)
+            @Expect(feishuDefault.startCount, 0)
+        }
+    }
+
+    @TestCase
+    public func startChannelWithoutAccountStartsOnlyThatChannel(): Unit {
+        withGatewayChannelRuntimeTestHome {
+            let manager = GatewayChannelManager()
+            let telegramDefault = GatewayChannelLifecycleFakeAdapter("telegram", "default")
+            let telegramWriter = GatewayChannelLifecycleFakeAdapter("telegram", "tg-writer")
+            let feishuDefault = GatewayChannelLifecycleFakeAdapter("feishu", "default")
+            manager.registerAdapter(telegramDefault, channelId: "telegram", accountId: "default")
+            manager.registerAdapter(telegramWriter, channelId: "telegram", accountId: "tg-writer")
+            manager.registerAdapter(feishuDefault, channelId: "feishu", accountId: "default")
+
+            let result = manager.startChannel("telegram")
+
+            @Expect(gatewayRuntimeTestBool(result, "started"), true)
+            @Expect(telegramDefault.startCount, 1)
+            @Expect(telegramWriter.startCount, 1)
+            @Expect(feishuDefault.startCount, 0)
+        }
+    }
+
+    @TestCase
+    public func startChannelCanStartAccountRegisteredAfterGlobalStart(): Unit {
+        withGatewayChannelRuntimeTestHome {
+            let manager = GatewayChannelManager()
+            let telegramDefault = GatewayChannelLifecycleFakeAdapter("telegram", "default")
+            let telegramLive = GatewayChannelLifecycleFakeAdapter("telegram", "tg-live")
+            manager.registerAdapter(telegramDefault, channelId: "telegram", accountId: "default")
+            manager.startChannels()
+            manager.registerAdapter(telegramLive, channelId: "telegram", accountId: "tg-live")
+
+            let result = manager.startChannel("telegram", accountId: "tg-live")
+
+            @Expect(gatewayRuntimeTestBool(result, "started"), true)
+            @Expect(telegramDefault.startCount, 1)
+            @Expect(telegramLive.startCount, 1)
+        }
+    }
+
+    @TestCase
+    public func startChannelCanonicalizesChannelPrefixedAccountId(): Unit {
+        withGatewayChannelRuntimeTestHome {
+            let manager = GatewayChannelManager()
+            let telegramWriter = GatewayChannelLifecycleFakeAdapter("telegram", "tg-writer")
+            manager.registerAdapter(telegramWriter, channelId: "telegram", accountId: "tg-writer")
+
+            let result = manager.startChannel("telegram", accountId: "telegram:tg-writer")
+            let accounts = gatewayChannelRuntimeAccountsJson("telegram")
+            let row = accounts[0].asObject()
+
+            @Expect(gatewayRuntimeTestBool(result, "started"), true)
+            @Expect(gatewayRuntimeTestString(result, "accountId"), "tg-writer")
+            @Expect(gatewayRuntimeTestString(row, "accountId"), "tg-writer")
+        }
+    }
+
+    @TestCase
+    public func stopChannelWithAccountDoesNotStopSiblingAccounts(): Unit {
+        withGatewayChannelRuntimeTestHome {
+            let manager = GatewayChannelManager()
+            let telegramDefault = GatewayChannelLifecycleFakeAdapter("telegram", "default")
+            let telegramWriter = GatewayChannelLifecycleFakeAdapter("telegram", "tg-writer")
+            manager.registerAdapter(telegramDefault, channelId: "telegram", accountId: "default")
+            manager.registerAdapter(telegramWriter, channelId: "telegram", accountId: "tg-writer")
+            manager.startChannel("telegram")
+
+            let result = manager.stopChannel("telegram", accountId: "tg-writer")
+
+            @Expect(gatewayRuntimeTestBool(result, "stopped"), true)
+            @Expect(telegramDefault.stopCount, 0)
+            @Expect(telegramWriter.stopCount, 1)
+            @Expect(telegramDefault.startCount, 1)
+        }
+    }
+
+    @TestCase
+    public func restartChannelWithAccountStopsThenStartsSameAccount(): Unit {
+        withGatewayChannelRuntimeTestHome {
+            let events = ArrayList<String>()
+            let manager = GatewayChannelManager()
+            let telegramWriter = GatewayChannelLifecycleFakeAdapter("telegram", "tg-writer", events: events)
+            manager.registerAdapter(telegramWriter, channelId: "telegram", accountId: "tg-writer")
+            manager.startChannel("telegram", accountId: "tg-writer")
+            events.clear()
+
+            let result = manager.restartChannel("telegram", accountId: "tg-writer")
+
+            @Expect(gatewayRuntimeTestBool(result, "restarted"), true)
+            @Expect(events.size, 2)
+            @Expect(events[0], "stop:tg-writer")
+            @Expect(events[1], "start:tg-writer")
+        }
+    }
+
+    @TestCase
+    public func stopChannelMissingAccountReturnsDiagnosticWithoutTouchingSiblings(): Unit {
+        withGatewayChannelRuntimeTestHome {
+            let manager = GatewayChannelManager()
+            let telegramDefault = GatewayChannelLifecycleFakeAdapter("telegram", "default")
+            manager.registerAdapter(telegramDefault, channelId: "telegram", accountId: "default")
+            manager.startChannel("telegram")
+
+            let result = manager.stopChannel("telegram", accountId: "missing")
+
+            @Expect(gatewayRuntimeTestBool(result, "ok"), false)
+            @Expect(gatewayRuntimeTestString(result, "reason"), "account-not-registered")
+            @Expect(telegramDefault.stopCount, 0)
+            @Expect(telegramDefault.startCount, 1)
         }
     }
 }

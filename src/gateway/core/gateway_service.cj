@@ -90,6 +90,26 @@ public class GatewayService {
         this.channelManager.liveSnapshotJson()
     }
 
+    /** Start registered adapters for one native channel, optionally scoped to one account. */
+    public func startChannel(channelId: String, accountId!: String = ""): JsonObject {
+        this.channelManager.startChannel(channelId, accountId: accountId)
+    }
+
+    /** Stop registered adapters for one native channel, optionally scoped to one account. */
+    public func stopChannel(
+        channelId: String,
+        accountId!: String = "",
+        reason!: String = "manual-stop",
+        manualStop!: Bool = true
+    ): JsonObject {
+        this.channelManager.stopChannel(channelId, accountId: accountId, reason: reason, manualStop: manualStop)
+    }
+
+    /** Restart registered adapters for one native channel, optionally scoped to one account. */
+    public func restartChannel(channelId: String, accountId!: String = "", reason!: String = "restart"): JsonObject {
+        this.channelManager.restartChannel(channelId, accountId: accountId, reason: reason)
+    }
+
     /**
      * 启动所有已注册渠道。
      */

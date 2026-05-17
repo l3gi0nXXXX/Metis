@@ -14,6 +14,9 @@ import metis.gateway.channels.feishu.{
     feishuGatewayNativeAuthStatusWithStores
 }
 import metis.gateway.core.{
+    ChannelAdapter,
+    GatewayRouter,
+    GatewayService,
     gatewayChannelManagerSummary,
     gatewayChannelRuntimeMarkFailure,
     gatewayChannelRuntimeMarkMonitorEnabled,
@@ -31,6 +34,7 @@ import metis.gateway.core.{
     setGatewayFeishuNativeAuthStatusRunnerForTest,
     setGatewayOpenClawPluginSidecarRunnerForTest
 }
+import metis.gateway.model.{ChannelPolicyConfig, InboundMessage, OutboundMessage, SendResult}
 
 import std.convert.Parsable
 import std.collection.{ArrayList, HashMap}
@@ -61,6 +65,40 @@ private func channelsTestInt(obj: JsonObject, key: String): Int64 {
         case Some(v) =>
             try { Int64.parse(v.toJsonString()) } catch (_: Exception) { 0 }
         case None => 0
+    }
+}
+
+private class GatewayChannelsLifecycleFakeAdapter <: ChannelAdapter {
+    private let adapterName: String
+    public var startCount: Int64 = 0
+    public var stopCount: Int64 = 0
+
+    public init(adapterName: String) {
+        this.adapterName = adapterName
+    }
+
+    public prop name: String {
+        get() { this.adapterName }
+    }
+
+    public func start(): Unit {
+        this.startCount += 1
+    }
+
+    public func stop(): Unit {
+        this.stopCount += 1
+    }
+
+    public func pullInbound(): Array<InboundMessage> {
+        []
+    }
+
+    public func send(_message: OutboundMessage): SendResult {
+        SendResult.Success
+    }
+
+    public func sendWithMessageId(_message: OutboundMessage): String {
+        "fake-message"
     }
 }
 
@@ -195,6 +233,37 @@ private func withGatewayChannelsTestHome<T>(block: () -> T): T {
 
 @Test
 public class GatewayServerMethodsChannelsTest {
+    @TestCase
+    public func channelsStartUsesActiveNativeGatewayServiceForTelegramAccount(): Unit {
+        withGatewayChannelsTestHome {
+            let adapter = GatewayChannelsLifecycleFakeAdapter("telegram")
+            let service = GatewayService(GatewayRouter(HashMap<String, ChannelPolicyConfig>()))
+            service.registerAdapter(adapter, channelId: "telegram", accountId: "tg-writer")
+            gatewayRegisterActiveService(service)
+            try {
+                let params = JsonObject()
+                params.put("channelId", JsonString("telegram"))
+                params.put("accountId", JsonString("telegram:tg-writer"))
+
+                let response = handleGatewayChannelsFamily(
+                    "channels.start",
+                    GatewayUserSettings(),
+                    request: Some(GatewayRpcRequest("channels.start", params: params))
+                ).getOrThrow()
+                let result = response.result.asObject()
+
+                @Expect(response.ok, true)
+                @Expect(channelsTestString(result, "runtimeKind"), "native-cangjie")
+                @Expect(channelsTestString(result, "reason") != "channel-not-legacy-compatible", true)
+                @Expect(channelsTestString(result, "accountId"), "tg-writer")
+                @Expect(channelsTestBool(result, "started"), true)
+                @Expect(adapter.startCount, 1)
+            } finally {
+                gatewayClearActiveService()
+            }
+        }
+    }
+
     @TestCase
     public func builtinSupportsCaptureFeishuAndQqDifferences(): Unit {
         var user = GatewayUserSettings()

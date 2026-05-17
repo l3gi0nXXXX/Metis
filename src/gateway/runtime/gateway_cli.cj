@@ -478,6 +478,81 @@ private func gatewayChannelRpcParams(channelId: String): JsonObject {
     params
 }
 
+private func gatewayChannelLifecycleParams(channelId: String, accountId: String): JsonObject {
+    let params = gatewayChannelRpcParams(channelId)
+    if (!accountId.trimAscii().isEmpty()) {
+        params.put("accountId", JsonString(accountId.trimAscii()))
+    }
+    params
+}
+
+private func gatewayChannelLifecycleResultString(result: JsonObject, key: String, defaultValue!: String = ""): String {
+    match (result.get(key)) {
+        case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { defaultValue }
+        case None => defaultValue
+    }
+}
+
+private func gatewayPrintChannelLifecycleResponse(res: GatewayRpcResponse, action: String): Unit {
+    let result = try { res.result.asObject() } catch (_e: Exception) { JsonObject() }
+    let channelId = gatewayChannelLifecycleResultString(result, "channelId", defaultValue: gatewayChannelLifecycleResultString(result, "channel"))
+    let accountId = gatewayChannelLifecycleResultString(result, "accountId")
+    let actionResult = gatewayChannelLifecycleResultString(result, "result", defaultValue: if (res.ok) { "ok" } else { "failed" })
+    let reason = gatewayChannelLifecycleResultString(result, "reason")
+    PrintUtils.printLine("Channel: ${channelId}")
+    PrintUtils.printLine("Account: ${if (accountId.isEmpty()) { "all" } else { accountId }}")
+    PrintUtils.printLine("Action: ${action}")
+    PrintUtils.printLine("Result: ${actionResult}")
+    if (!reason.isEmpty()) {
+        PrintUtils.printLine("Reason: ${reason}")
+    }
+}
+
+private func gatewayRunChannelLifecycleCli(sub: Array<String>, action: String): Int64 {
+    var json = false
+    var channelId = ""
+    var accountId = ""
+    var i: Int64 = 2
+    while (i < sub.size) {
+        let token = sub[i].trimAscii()
+        let low = token.toAsciiLower()
+        if (low == "--json") {
+            json = true
+            i += 1
+            continue
+        }
+        if (low == "--account") {
+            if (i + 1 >= sub.size) {
+                PrintUtils.printLine("Usage: gateway channel ${action} <id> [--account <accountId>] [--json]")
+                return 1
+            }
+            accountId = sub[i + 1].trimAscii()
+            i += 2
+            continue
+        }
+        if (channelId.isEmpty()) {
+            channelId = token
+            i += 1
+            continue
+        }
+        PrintUtils.printLine("Unknown gateway channel ${action} option: ${token}")
+        PrintUtils.printLine("Usage: gateway channel ${action} <id> [--account <accountId>] [--json]")
+        return 1
+    }
+    if (channelId.trimAscii().isEmpty()) {
+        PrintUtils.printLine("Usage: gateway channel ${action} <id> [--account <accountId>] [--json]")
+        return 1
+    }
+    let method = "channels.${action}"
+    let res = gatewayCliClient().call(method, params: gatewayChannelLifecycleParams(channelId, accountId))
+    if (json) {
+        PrintUtils.printLine(res.toJson().toJsonString())
+    } else {
+        gatewayPrintChannelLifecycleResponse(res, action)
+    }
+    if (res.ok) { 0 } else { 1 }
+}
+
 private func gatewayPrintChannelHelp(): Unit {
     PrintUtils.printLine("Metis gateway channel")
     PrintUtils.printLine("Inspect and update gateway channels.")
@@ -488,6 +563,9 @@ private func gatewayPrintChannelHelp(): Unit {
     PrintUtils.printLine("  gateway channel runtime [id]")
     PrintUtils.printLine("  gateway channel get <id>")
     PrintUtils.printLine("  gateway channel audit [id]")
+    PrintUtils.printLine("  gateway channel start <id> [--account <accountId>] [--json]")
+    PrintUtils.printLine("  gateway channel stop <id> [--account <accountId>] [--json]")
+    PrintUtils.printLine("  gateway channel restart <id> [--account <accountId>] [--json]")
     PrintUtils.printLine("  gateway channel enable <id>")
     PrintUtils.printLine("  gateway channel disable <id>")
     PrintUtils.printLine("  gateway channel set <feishu|qq> <key> <value...>")
@@ -506,6 +584,9 @@ public func gatewayRunChannelCli(sub: Array<String>): Int64 {
     if (subcmd == "list") {
         gatewayActionsPrintChannelsHelp()
         return 0
+    }
+    if (subcmd == "start" || subcmd == "stop" || subcmd == "restart") {
+        return gatewayRunChannelLifecycleCli(sub, subcmd)
     }
     if (subcmd == "health" || subcmd == "runtime" || subcmd == "audit" || subcmd == "get") {
         let channelId = if (sub.size >= 3) { sub[2].trimAscii() } else { "" }
