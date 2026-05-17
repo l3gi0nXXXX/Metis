@@ -1,7 +1,7 @@
 package metis.gateway.runtime
 
 import metis.core.{gatewayClearSubagentNoticeDeliveryHook, gatewayClearSubagentNoticeEventHook, gatewayRegisterSubagentNoticeDeliveryHook}
-import metis.core.config.CliSettingManager
+import metis.core.config.{CliSettingManager, MetisConfigManager, MetisConfigWriteNotification}
 import metis.gateway.config.buildGatewayConfigFromUserSettings
 import metis.gateway.gatewayPrepareStartupAuth
 import metis.gateway.core.gatewayLogProcessMemory
@@ -10,6 +10,7 @@ import metis.io.PrintUtils
 import metis.gateway.model.ChatType
 import magic.log.LogUtils
 import std.time.*
+import stdx.encoding.json.JsonObject
 
 private func gatewayServeNowMs(): Int64 {
     DateTime.now().toUnixTimeStamp().toNanoseconds() / 1000000
@@ -193,6 +194,12 @@ public func runGatewayService(): Unit {
         gateway.start()
         gatewayRuntimeMarkRunning()
         gatewayServeTimingLog("gateway-start-done", startMs)
+        let reloadSnapshot = readGatewayConfigSnapshot()
+        let reloadRoot = if (reloadSnapshot.valid) { reloadSnapshot.root } else { JsonObject() }
+        let configReloader = GatewayConfigReloader(
+            reloadRoot,
+            GatewayServiceConfigReloadCallbacks(GatewayServiceReloadChannelRuntime(gateway))
+        )
         let memoryArm = MemoryRuntime.armSearchBackend(purpose: "gateway-startup")
         match (memoryArm.manager) {
             case Some(manager) =>
@@ -215,6 +222,7 @@ public func runGatewayService(): Unit {
         var heartbeatTick: Int64 = 0
         while (true) {
             gateway.processOnce()
+            configReloader.pollOnce()
             cronRunner.tick()
             heartbeatTick += 1
             if (heartbeatTick % 50 == 0) {
@@ -227,6 +235,7 @@ public func runGatewayService(): Unit {
             sleep(Duration.millisecond * 200)
         }
     } finally {
+        MetisConfigManager.setWriteRootNotificationHook(None<(MetisConfigWriteNotification) -> Unit>)
         try {
             gateway.stop()
         } catch (_: Exception) {

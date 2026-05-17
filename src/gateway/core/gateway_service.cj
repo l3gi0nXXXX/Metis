@@ -110,6 +110,10 @@ public class GatewayService {
         this.channelManager.restartChannel(channelId, accountId: accountId, reason: reason)
     }
 
+    public func clearChannelRegistrations(channelId: String): Unit {
+        this.channelManager.clearChannelRegistrations(channelId)
+    }
+
     /**
      * 启动所有已注册渠道。
      */

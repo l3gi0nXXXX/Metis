@@ -7,7 +7,33 @@ import magic.log.LogUtils
 import std.fs.{File, exists, Path}
 import std.collection.{filter, collectArray, ArrayList}
 import std.convert.Parsable
+import std.time.DateTime
 import stdx.encoding.json.{JsonArray, JsonBool, JsonFloat, JsonInt, JsonValue, JsonObject, JsonString}
+
+public class MetisConfigWriteNotification {
+    public let configPath: String
+    public let runtimeRoot: JsonObject
+    public let persistedHash: String
+    public let writtenAtMs: Int64
+
+    public init(configPath: String, runtimeRoot: JsonObject, persistedHash: String, writtenAtMs: Int64) {
+        this.configPath = configPath.trimAscii()
+        this.runtimeRoot = runtimeRoot
+        this.persistedHash = persistedHash.trimAscii()
+        this.writtenAtMs = writtenAtMs
+    }
+}
+
+private func metisConfigStableHash(text: String): String {
+    var hash: Int64 = 5381
+    for (b in text.toArray()) {
+        hash = ((hash << 5) + hash) + Int64(b)
+    }
+    if (hash < 0) {
+        hash = -hash
+    }
+    hash.toString()
+}
 
 private func loadJsonFileWithoutComments(path: Path): String {
     String.join(
@@ -664,9 +690,15 @@ public class MetisConfigManager {
     private static var _rawLoadAttempted: Bool = false
     private static var _rawExists: Bool = false
     private static var _rawParseError: String = ""
+    private static var _writeRootNotificationHook: Option<(MetisConfigWriteNotification) -> Unit> =
+        None<(MetisConfigWriteNotification) -> Unit>
 
     public static func configPath(): Path {
         MetisPaths.configPath()
+    }
+
+    public static func setWriteRootNotificationHook(listener: Option<(MetisConfigWriteNotification) -> Unit>): Unit {
+        _writeRootNotificationHook = listener
     }
 
     public static func rawConfig(): Option<JsonObject> {
@@ -2012,9 +2044,24 @@ public class MetisConfigManager {
 
     public static func writeRoot(root: JsonObject): Unit {
         let path = configPath()
-        File.writeTo(path, root.toJsonString().toArray())
+        let persisted = root.toJsonString()
+        File.writeTo(path, persisted.toArray())
         _raw = root
         CliSettingManager.invalidate()
         CliModelRuntimeStateManager.writeMaterializedRuntimeState()
+        match (_writeRootNotificationHook) {
+            case Some(listener) =>
+                try {
+                    listener(MetisConfigWriteNotification(
+                        path.toString(),
+                        root,
+                        metisConfigStableHash(persisted),
+                        DateTime.now().toUnixTimeStamp().toMilliseconds()
+                    ))
+                } catch (e: Exception) {
+                    LogUtils.error("MetisConfigManager.writeRoot notification failed: ${e.message}")
+                }
+            case None => ()
+        }
     }
 }
