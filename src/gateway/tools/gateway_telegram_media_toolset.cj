@@ -17,6 +17,7 @@ import std.collection.{ArrayList, HashSet}
 import std.env.getVariable
 import std.fs.{Directory, File, Path, copy, exists}
 import std.process.executeWithOutput
+import std.regex.{Regex, RegexFlag}
 import std.time.DateTime
 import stdx.encoding.base64.toBase64String
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString, JsonValue}
@@ -578,6 +579,105 @@ private func telegramMediaToolDataUrlMime(record: JsonObject): String {
     "image/jpeg"
 }
 
+private func telegramMediaToolRegexReplace(text: String, pattern: String, replacement: String): String {
+    try {
+        Regex(pattern, [RegexFlag.IgnoreCase]).replaceAll(text, replacement)
+    } catch (_: Exception) {
+        text
+    }
+}
+
+private func telegramMediaToolRedactQueryParam(text: String, key: String): String {
+    var out = text
+    out = telegramMediaToolRegexReplace(out, "\\?${key}=[^\\s&#]+", "?${key}=[redacted]")
+    out = telegramMediaToolRegexReplace(out, "&${key}=[^\\s&#]+", "&${key}=[redacted]")
+    out
+}
+
+private func telegramMediaToolRedactProviderError(detail: String): String {
+    var out = detail.trimAscii()
+    out = telegramMediaToolRegexReplace(out, "Authorization\\s*[:=]\\s*Bearer\\s+[^\\s,;\\}\\]]+", "Authorization: Bearer [redacted]")
+    out = telegramMediaToolRegexReplace(out, "Authorization\\s*[:=]\\s*[^\\s,;\\}\\]]+", "Authorization: [redacted]")
+    out = telegramMediaToolRegexReplace(out, "Bearer\\s+[^\\s,;\\}\\]]+", "Bearer [redacted]")
+    out = telegramMediaToolRegexReplace(out, "DASHSCOPE_API_KEY\\s*[:=]\\s*[^\\s,;\\}\\]]+", "DASHSCOPE_API_KEY=[redacted]")
+    out = telegramMediaToolRegexReplace(out, "api[_-]?key\\s*[:=]\\s*[^\\s,;\\}\\]]+", "api_key=[redacted]")
+    for (key in ["api_key", "apikey", "key", "token", "access_token", "auth_token"]) {
+        out = telegramMediaToolRedactQueryParam(out, key)
+    }
+    if (out.size > 500) {
+        out = out[..500]
+    }
+    out
+}
+
+private func telegramMediaToolImageFailureFromAttempts(attempts: JsonArray, candidatesWereEmpty: Bool): JsonObject {
+    let out = JsonObject()
+    if (candidatesWereEmpty) {
+        out.put("status", JsonString("not_configured"))
+        out.put("error", JsonString("agents.defaults.imageModel.primary or gateway.media.image.models is not configured with a vision-capable model"))
+        return out
+    }
+    var providerError = ""
+    var timeoutError = ""
+    var hasProviderError = false
+    var hasTimeout = false
+    var hasEmptyResponse = false
+    for (item in attempts.getItems()) {
+        let attempt = try { item.asObject() } catch (_e: Exception) { JsonObject() }
+        match (telegramMediaToolString(attempt, "status")) {
+            case "provider_error" =>
+                hasProviderError = true
+                if (providerError.isEmpty()) {
+                    providerError = telegramMediaToolString(attempt, "error")
+                }
+            case "timeout" =>
+                hasTimeout = true
+                if (timeoutError.isEmpty()) {
+                    timeoutError = telegramMediaToolString(attempt, "error")
+                }
+            case "empty_response" => hasEmptyResponse = true
+            case _ => ()
+        }
+    }
+    if (hasProviderError) {
+        out.put("status", JsonString("provider_error"))
+        let message = if (providerError.isEmpty()) {
+            "Image understanding provider call failed."
+        } else {
+            "Image understanding provider call failed (provider_error): ${providerError}"
+        }
+        out.put("error", JsonString(message))
+    } else if (hasTimeout) {
+        out.put("status", JsonString("timeout"))
+        let message = if (timeoutError.isEmpty()) {
+            "Image understanding provider call timed out."
+        } else {
+            "Image understanding provider call timed out: ${timeoutError}"
+        }
+        out.put("error", JsonString(message))
+    } else if (hasEmptyResponse) {
+        out.put("status", JsonString("provider_error"))
+        out.put("error", JsonString("configured image model returned empty response"))
+    } else {
+        out.put("status", JsonString("unsupported"))
+        out.put("error", JsonString("no configured vision-capable model could analyze this Telegram image"))
+    }
+    out
+}
+
+private func telegramMediaToolImageAnalyzeFallback(status: String, error: String): String {
+    let detail = telegramMediaToolRedactProviderError(error)
+    match (status) {
+        case "not_configured" => "Configure agents.defaults.imageModel.primary or gateway.media.image.models with a vision-capable image understanding model."
+        case "unsupported" => "The configured Telegram image model candidates do not support image input. Configure agents.defaults.imageModel.primary or gateway.media.image.models with a vision-capable image understanding model."
+        case "provider_error" => if (detail.isEmpty()) { "The configured image understanding provider failed." } else { detail }
+        case "timeout" => if (detail.isEmpty()) { "The configured image understanding provider timed out before returning an analysis." } else { detail }
+        case "empty_response" => if (detail.isEmpty()) { "The configured image understanding provider returned an empty response." } else { detail }
+        case "too_large" => "The selected image is too large for the configured Telegram media limit."
+        case _ => if (detail.isEmpty()) { "Telegram image understanding did not return an analysis." } else { detail }
+    }
+}
+
 private func telegramMediaToolDescribeImageWithModel(record: JsonObject, userPrompt: String): JsonObject {
     let out = JsonObject()
     out.put("mediaId", JsonString(telegramMediaToolString(record, "mediaId")))
@@ -601,8 +701,9 @@ private func telegramMediaToolDescribeImageWithModel(record: JsonObject, userPro
     let candidates = telegramMediaToolVisionCandidates()
     if (candidates.isEmpty()) {
         out.put("ok", JsonBool(false))
-        out.put("status", JsonString("unsupported"))
-        out.put("error", JsonString("no model is configured for Telegram image understanding"))
+        let failure = telegramMediaToolImageFailureFromAttempts(JsonArray([]), true)
+        out.put("status", failure.get("status").getOrThrow())
+        out.put("error", failure.get("error").getOrThrow())
         return out
     }
     let errors = JsonArray([])
@@ -640,14 +741,17 @@ private func telegramMediaToolDescribeImageWithModel(record: JsonObject, userPro
         } catch (e: Exception) {
             let err = JsonObject()
             err.put("model", JsonString(modelRef))
-            err.put("status", JsonString("provider_error"))
-            err.put("error", JsonString(e.message))
+            let safeError = telegramMediaToolRedactProviderError(e.message)
+            let attemptStatus = if (safeError.toAsciiLower().contains("timeout") || safeError.toAsciiLower().contains("timed out")) { "timeout" } else { "provider_error" }
+            err.put("status", JsonString(attemptStatus))
+            err.put("error", JsonString(safeError))
             errors.add(err)
         }
     }
     out.put("ok", JsonBool(false))
-    out.put("status", JsonString("unsupported"))
-    out.put("error", JsonString("no configured vision-capable model could analyze this Telegram image"))
+    let failure = telegramMediaToolImageFailureFromAttempts(errors, false)
+    out.put("status", failure.get("status").getOrThrow())
+    out.put("error", failure.get("error").getOrThrow())
     out.put("attempts", errors)
     out
 }
@@ -1059,7 +1163,7 @@ public class GatewayTelegramMediaToolset {
                 }
             }
             if (!(try { runtime.get("ok").getOrThrow().asBool().getValue() } catch (_e: Exception) { false })) {
-                out.put("fallback", JsonString("Configure agents.defaults.imageModel.primary or gateway.media.image.models with a vision-capable image understanding model."))
+                out.put("fallback", JsonString(telegramMediaToolImageAnalyzeFallback(telegramMediaToolString(runtime, "status"), telegramMediaToolString(runtime, "error"))))
             } else if (kind == "sticker") {
                 telegramStickerCacheUpsertAnalysis(record, telegramMediaToolString(runtime, "analysis"))
             }

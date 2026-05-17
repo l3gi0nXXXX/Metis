@@ -48,6 +48,64 @@ private class TelegramMediaToolsetVisionFakeModel <: ChatModel {
     }
 }
 
+private class TelegramMediaToolsetVisionProviderErrorFakeModel <: ChatModel {
+    private var _maxTokens: Option<Int64> = None
+
+    public prop provider: String {
+        get() { "fake" }
+    }
+
+    public prop name: String {
+        get() { "telegram-vision-provider-error" }
+    }
+
+    public prop contextLength: Int64 {
+        get() { 8192 }
+    }
+
+    public mut prop maxTokens: Option<Int64> {
+        get() { this._maxTokens }
+        set(v) { this._maxTokens = v }
+    }
+
+    public func create(_request: ChatRequest): ChatResponse {
+        throw Exception("Http status: 401 invalid_api_key Authorization: Bearer sk-live-secret https://provider.example/v1/chat?api_key=query-secret&token=query-token DASHSCOPE_API_KEY=dash-secret")
+    }
+
+    public func asyncCreate(_request: ChatRequest): AsyncChatResponse {
+        throw Exception("async not used in telegram media toolset tests")
+    }
+}
+
+private class TelegramMediaToolsetVisionEmptyResponseFakeModel <: ChatModel {
+    private var _maxTokens: Option<Int64> = None
+
+    public prop provider: String {
+        get() { "fake" }
+    }
+
+    public prop name: String {
+        get() { "telegram-vision-empty-response" }
+    }
+
+    public prop contextLength: Int64 {
+        get() { 8192 }
+    }
+
+    public mut prop maxTokens: Option<Int64> {
+        get() { this._maxTokens }
+        set(v) { this._maxTokens = v }
+    }
+
+    public func create(_request: ChatRequest): ChatResponse {
+        ChatResponse(this.fullName, Message.assistant(""))
+    }
+
+    public func asyncCreate(_request: ChatRequest): AsyncChatResponse {
+        throw Exception("async not used in telegram media toolset tests")
+    }
+}
+
 @Test
 public class GatewayTelegramMediaToolsetTest {
     private func withTelegramMediaToolsetConfigHome<T>(block: () -> T): T {
@@ -520,6 +578,102 @@ public class GatewayTelegramMediaToolsetTest {
         } finally {
             setGatewayTelegramMediaVisionCandidatesForTest(None<Array<String>>)
             try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func telegramImageAnalyzeProviderErrorBeatsUnsupportedModelAndRedactsSecrets(): Unit {
+        this.withTelegramMediaToolsetConfigHome {
+            let root = Path("/tmp/metis-telegram-image-provider-error-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+            Directory.create(root, recursive: true)
+            let source = root.join("image.jpg")
+            File.writeTo(source, "fake".toArray())
+            let modelName = "fake:telegram-vision-provider-error-${DateTime.now().toUnixTimeStamp().toMilliseconds()}"
+            ModelManager.registerChatModel(modelName, { => TelegramMediaToolsetVisionProviderErrorFakeModel() })
+            setGatewayTelegramMediaVisionCandidatesForTest(Some([modelName, "deepseek/deepseek-v4-pro"]))
+            try {
+                let toolset = GatewayTelegramMediaToolset()
+                let out = gatewayWithToolRuntimeContext(
+                    GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:1", mediaContext: this.mediaContext(source.toString())),
+                    { => toolset.debugTelegramImageAnalyzeForTest(None<String>, None<Int64>, Some("describe this image")) }
+                )
+                let json = JsonValue.fromStr(out).asObject()
+                @Expect(json.get("ok").getOrThrow().asBool().getValue(), false)
+                @Expect(json.get("status").getOrThrow().asString().getValue(), "provider_error")
+                @Expect(json.get("error").getOrThrow().asString().getValue().contains("401"), true)
+                @Expect(json.get("error").getOrThrow().asString().getValue().contains("invalid_api_key"), true)
+                let attempts = json.get("attempts").getOrThrow().asArray()
+                @Expect(attempts.size(), 2)
+                @Expect(attempts[0].asObject().get("status").getOrThrow().asString().getValue(), "provider_error")
+                @Expect(attempts[0].asObject().get("error").getOrThrow().asString().getValue().contains("401"), true)
+                @Expect(attempts[1].asObject().get("status").getOrThrow().asString().getValue(), "unsupported_model")
+                @Expect(out.contains("401"), true)
+                @Expect(out.contains("invalid_api_key"), true)
+                @Expect(out.contains("sk-live-secret"), false)
+                @Expect(out.contains("query-secret"), false)
+                @Expect(out.contains("query-token"), false)
+                @Expect(out.contains("dash-secret"), false)
+                @Expect(out.contains("Authorization: Bearer"), false)
+            } finally {
+                setGatewayTelegramMediaVisionCandidatesForTest(None<Array<String>>)
+                try { remove(root, recursive: true) } catch (_e: Exception) { () }
+            }
+        }
+    }
+
+    @TestCase
+    public func telegramImageAnalyzeEmptyVisionCandidatesReportsNotConfigured(): Unit {
+        this.withTelegramMediaToolsetConfigHome {
+            let root = Path("/tmp/metis-telegram-image-empty-candidates-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+            Directory.create(root, recursive: true)
+            let source = root.join("image.jpg")
+            File.writeTo(source, "fake".toArray())
+            setGatewayTelegramMediaVisionCandidatesForTest(Some(Array<String>()))
+            try {
+                let toolset = GatewayTelegramMediaToolset()
+                let out = gatewayWithToolRuntimeContext(
+                    GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:1", mediaContext: this.mediaContext(source.toString())),
+                    { => toolset.debugTelegramImageAnalyzeForTest(None<String>, None<Int64>, Some("describe this image")) }
+                )
+                let json = JsonValue.fromStr(out).asObject()
+                @Expect(json.get("ok").getOrThrow().asBool().getValue(), false)
+                @Expect(json.get("status").getOrThrow().asString().getValue(), "not_configured")
+                @Expect(json.get("error").getOrThrow().asString().getValue().contains("imageModel"), true)
+                @Expect(try { json.get("attempts").getOrThrow().asArray().size() } catch (_e: Exception) { 0 }, 0)
+                @Expect(out.contains(".metis"), false)
+            } finally {
+                setGatewayTelegramMediaVisionCandidatesForTest(None<Array<String>>)
+                try { remove(root, recursive: true) } catch (_e: Exception) { () }
+            }
+        }
+    }
+
+    @TestCase
+    public func telegramImageAnalyzeEmptyResponseIsNotTopLevelUnsupported(): Unit {
+        this.withTelegramMediaToolsetConfigHome {
+            let root = Path("/tmp/metis-telegram-image-empty-response-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+            Directory.create(root, recursive: true)
+            let source = root.join("image.jpg")
+            File.writeTo(source, "fake".toArray())
+            let modelName = "fake:telegram-vision-empty-response-${DateTime.now().toUnixTimeStamp().toMilliseconds()}"
+            ModelManager.registerChatModel(modelName, { => TelegramMediaToolsetVisionEmptyResponseFakeModel() })
+            setGatewayTelegramMediaVisionCandidatesForTest(Some([modelName]))
+            try {
+                let toolset = GatewayTelegramMediaToolset()
+                let out = gatewayWithToolRuntimeContext(
+                    GatewayToolRuntimeContext("telegram", channelName: "telegram", sessionKey: "telegram:chat:1", mediaContext: this.mediaContext(source.toString())),
+                    { => toolset.debugTelegramImageAnalyzeForTest(None<String>, None<Int64>, Some("describe this image")) }
+                )
+                let json = JsonValue.fromStr(out).asObject()
+                @Expect(json.get("ok").getOrThrow().asBool().getValue(), false)
+                @Expect(json.get("status").getOrThrow().asString().getValue(), "provider_error")
+                let attempts = json.get("attempts").getOrThrow().asArray()
+                @Expect(attempts.size(), 1)
+                @Expect(attempts[0].asObject().get("status").getOrThrow().asString().getValue(), "empty_response")
+            } finally {
+                setGatewayTelegramMediaVisionCandidatesForTest(None<Array<String>>)
+                try { remove(root, recursive: true) } catch (_e: Exception) { () }
+            }
         }
     }
 
