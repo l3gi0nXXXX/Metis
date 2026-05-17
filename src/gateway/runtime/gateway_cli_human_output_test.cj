@@ -2,6 +2,136 @@ package metis.gateway.runtime
 
 import std.unittest.testmacro.*
 
+private func gatewayHumanTelegramAccountInspectJson(): String {
+    return "\"accountInspect\":{" +
+        "\"defaultAccountId\":\"writer\"," +
+        "\"tokenRedacted\":true," +
+        "\"count\":2," +
+        "\"accounts\":[" +
+            "{" +
+                "\"accountId\":\"writer\"," +
+                "\"defaultAccount\":true," +
+                "\"configured\":true," +
+                "\"tokenSource\":\"account-botToken\"," +
+                "\"hasBotToken\":true," +
+                "\"hasTokenFile\":false," +
+                "\"allowFromCount\":1," +
+                "\"groupAllowFromCount\":2," +
+                "\"approvedSenderCount\":3," +
+                "\"hasMediaOverride\":true," +
+                "\"hasNetworkOverride\":false," +
+                "\"hasGroupsOverride\":false," +
+                "\"hasDirectOverride\":true," +
+                "\"hasDmsOverride\":false," +
+                "\"botToken\":\"111111111:fake-writer-token\"" +
+            "}," +
+            "{" +
+                "\"accountId\":\"reviewer\"," +
+                "\"defaultAccount\":false," +
+                "\"configured\":true," +
+                "\"tokenSource\":\"account-botToken\"," +
+                "\"hasBotToken\":true," +
+                "\"hasTokenFile\":false," +
+                "\"allowFromCount\":0," +
+                "\"groupAllowFromCount\":0," +
+                "\"approvedSenderCount\":0," +
+                "\"hasMediaOverride\":false," +
+                "\"hasNetworkOverride\":true," +
+                "\"hasGroupsOverride\":false," +
+                "\"hasDirectOverride\":false," +
+                "\"hasDmsOverride\":false," +
+                "\"token\":\"222222222:fake-reviewer-token\"" +
+            "}" +
+        "]" +
+    "}"
+}
+
+private func gatewayHumanTelegramChannelGetRaw(): String {
+    return "{\"ok\":true,\"method\":\"channels.get\",\"result\":{\"channel\":{" +
+        "\"id\":\"telegram\"," +
+        "\"enabled\":true," +
+        "\"configured\":true," +
+        "\"mode\":\"polling\"," +
+        "\"network\":{\"apiRoot\":\"https://api.telegram.org\",\"proxyConfigured\":true,\"envProxyEnabled\":false}," +
+        "\"media\":{\"downloadEnabled\":true,\"mediaMaxBytes\":20971520,\"outboundAllowLocalPath\":true,\"outboundAllowUrl\":false}," +
+        "\"directory\":{\"rowCount\":1}," +
+        "\"actions\":{\"sendMessage\":true,\"photo\":true,\"document\":true,\"audio\":true,\"voice\":true,\"video\":true,\"reactions\":true}," +
+        gatewayHumanTelegramAccountInspectJson() +
+    "}}}"
+}
+
+private func gatewayHumanFeishuChannelGetRaw(): String {
+    return "{\"ok\":true,\"method\":\"channels.get\",\"result\":{\"channel\":{" +
+        "\"id\":\"feishu\"," +
+        "\"enabled\":true," +
+        "\"configured\":true," +
+        "\"mode\":\"event\"," +
+        "\"accountInspect\":{" +
+            "\"defaultAccountId\":\"tenant-a\"," +
+            "\"tokenRedacted\":true," +
+            "\"count\":2," +
+            "\"accounts\":[" +
+                "{" +
+                    "\"accountId\":\"tenant-a\"," +
+                    "\"defaultAccount\":true," +
+                    "\"enabled\":true," +
+                    "\"configured\":true," +
+                    "\"credentialSource\":\"account\"," +
+                    "\"hasAppId\":true," +
+                    "\"hasAppSecret\":true," +
+                    "\"appId\":\"cli***123\"," +
+                    "\"appSecret\":\"fake-feishu-secret-never-output\"," +
+                    "\"token\":\"fake-feishu-token-never-output\"" +
+                "}," +
+                "{" +
+                    "\"accountId\":\"tenant-b\"," +
+                    "\"defaultAccount\":false," +
+                    "\"enabled\":true," +
+                    "\"configured\":false," +
+                    "\"credentialSource\":\"missing\"," +
+                    "\"hasAppId\":false," +
+                    "\"hasAppSecret\":false" +
+                "}" +
+            "]" +
+        "}" +
+    "}}}"
+}
+
+private func gatewayHumanQqChannelGetRaw(): String {
+    return "{\"ok\":true,\"method\":\"channels.get\",\"result\":{\"channel\":{" +
+        "\"id\":\"qq\"," +
+        "\"enabled\":true," +
+        "\"configured\":true," +
+        "\"mode\":\"official\"," +
+        "\"accountInspect\":{" +
+            "\"defaultAccountId\":\"work\"," +
+            "\"redacted\":true," +
+            "\"count\":2," +
+            "\"accounts\":[" +
+                "{" +
+                    "\"accountId\":\"work\"," +
+                    "\"defaultAccount\":true," +
+                    "\"enabled\":true," +
+                    "\"configured\":true," +
+                    "\"credentialSource\":\"account\"," +
+                    "\"appId\":\"998***665\"," +
+                    "\"appSecret\":\"fake-qq-secret-never-output\"," +
+                    "\"token\":\"fake-qq-token-never-output\"" +
+                "}," +
+                "{" +
+                    "\"accountId\":\"backup\"," +
+                    "\"defaultAccount\":false," +
+                    "\"enabled\":true," +
+                    "\"configured\":false," +
+                    "\"credentialSource\":\"missing\"," +
+                    "\"appId\":\"\"," +
+                    "\"appSecret\":\"\"" +
+                "}" +
+            "]" +
+        "}" +
+    "}}}"
+}
+
 @Test
 public class GatewayCliHumanOutputTest {
     @TestCase
@@ -22,6 +152,101 @@ public class GatewayCliHumanOutputTest {
         @Expect(out.contains("telegram"), true)
         @Expect(out.contains("download=true"), true)
         @Expect(out.contains("\"channels\""), false)
+    }
+
+    @TestCase
+    public func formatsTelegramChannelGetWithMultipleAccounts(): Unit {
+        let out = gatewayFormatCommandOutput(gatewayHumanTelegramChannelGetRaw())
+        @Expect(out.contains("Channel: telegram"), true)
+        @Expect(out.contains("Accounts: 2"), true)
+        @Expect(out.contains("default=writer"), true)
+        @Expect(out.contains("telegram/writer [default]"), true)
+        @Expect(out.contains("telegram/reviewer"), true)
+        @Expect(out.contains("token=account-botToken"), true)
+        @Expect(out.contains("binding=telegram:writer"), true)
+        @Expect(out.contains("binding=telegram:reviewer"), true)
+        @Expect(out.contains("111111111:fake-writer-token"), false)
+        @Expect(out.contains("222222222:fake-reviewer-token"), false)
+        @Expect(out.contains("\"accountInspect\""), false)
+        @Expect(out.contains("\"accounts\""), false)
+        @Expect(out.contains("{"), false)
+    }
+
+    @TestCase
+    public func formatsFeishuChannelGetAccountsWithoutSecrets(): Unit {
+        let out = gatewayFormatCommandOutput(gatewayHumanFeishuChannelGetRaw())
+        @Expect(out.contains("Channel: feishu"), true)
+        @Expect(out.contains("Accounts: 2"), true)
+        @Expect(out.contains("default=tenant-a"), true)
+        @Expect(out.contains("feishu/tenant-a [default]"), true)
+        @Expect(out.contains("feishu/tenant-b"), true)
+        @Expect(out.contains("credential=account"), true)
+        @Expect(out.contains("binding=feishu:tenant-a"), true)
+        @Expect(out.contains("binding=feishu:tenant-b"), true)
+        @Expect(out.contains("fake-feishu-secret-never-output"), false)
+        @Expect(out.contains("fake-feishu-token-never-output"), false)
+        @Expect(out.contains("\"appSecret\""), false)
+        @Expect(out.contains("\"token\""), false)
+        @Expect(out.contains("{"), false)
+    }
+
+    @TestCase
+    public func formatsQqChannelGetAccountsWithoutSecrets(): Unit {
+        let out = gatewayFormatCommandOutput(gatewayHumanQqChannelGetRaw())
+        @Expect(out.contains("Channel: qq"), true)
+        @Expect(out.contains("Accounts: 2"), true)
+        @Expect(out.contains("default=work"), true)
+        @Expect(out.contains("qq/work [default]"), true)
+        @Expect(out.contains("qq/backup"), true)
+        @Expect(out.contains("credential=account"), true)
+        @Expect(out.contains("appId=998***665"), true)
+        @Expect(out.contains("binding=qq:work"), true)
+        @Expect(out.contains("binding=qq:backup"), true)
+        @Expect(out.contains("fake-qq-secret-never-output"), false)
+        @Expect(out.contains("fake-qq-token-never-output"), false)
+        @Expect(out.contains("\"appSecret\""), false)
+        @Expect(out.contains("\"token\""), false)
+        @Expect(out.contains("{"), false)
+    }
+
+    @TestCase
+    public func keepsChannelGetWithoutAccountInspectStable(): Unit {
+        let raw = "{\"ok\":true,\"method\":\"channels.get\",\"result\":{\"channel\":{\"id\":\"webhook-demo\",\"enabled\":true,\"configured\":false,\"mode\":\"webhook\",\"network\":{\"apiRoot\":\"https://example.test\",\"proxyConfigured\":false,\"envProxyEnabled\":false},\"media\":{\"downloadEnabled\":false,\"mediaMaxBytes\":0,\"outboundAllowLocalPath\":false,\"outboundAllowUrl\":false}}}}"
+        let out = gatewayFormatCommandOutput(raw)
+        @Expect(out.contains("Channel: webhook-demo"), true)
+        @Expect(out.contains("Enabled: true  configured=false  mode=webhook"), true)
+        @Expect(out.contains("Network: apiRoot=https://example.test"), true)
+        @Expect(out.contains("Media: download=false"), true)
+        @Expect(out.contains("Accounts:"), false)
+        @Expect(out.contains("\"accountInspect\""), false)
+        @Expect(out.contains("{"), false)
+    }
+
+    @TestCase
+    public func formatsChannelRuntimeWithConfiguredAccountsSeparately(): Unit {
+        let raw = "{\"ok\":true,\"method\":\"channels.runtime\",\"result\":{" +
+            "\"channelId\":\"telegram\"," +
+            "\"defaultAccountId\":\"writer\"," +
+            "\"accounts\":[{\"channelId\":\"telegram\",\"accountId\":\"writer\",\"running\":true,\"phase\":\"running\",\"pullCount\":12,\"inboundCount\":3,\"sendSuccessCount\":3,\"sendFailureCount\":0}]," +
+            "\"telegram\":{" + gatewayHumanTelegramAccountInspectJson() + "}" +
+        "}}"
+        let out = gatewayFormatCommandOutput(raw)
+        @Expect(out.contains("Channel runtime: telegram"), true)
+        @Expect(out.contains("Configured default account: writer"), true)
+        @Expect(out.contains("Runtime accounts:"), true)
+        @Expect(out.contains("telegram/writer: running=true"), true)
+        @Expect(out.contains("Configured accounts: 2"), true)
+        @Expect(out.contains("default=writer"), true)
+        @Expect(out.contains("telegram/writer [default]"), true)
+        @Expect(out.contains("telegram/reviewer"), true)
+        @Expect(out.contains("binding=telegram:writer"), true)
+        @Expect(out.contains("binding=telegram:reviewer"), true)
+        @Expect(out.contains("telegram/reviewer: running=true"), false)
+        @Expect(out.contains("111111111:fake-writer-token"), false)
+        @Expect(out.contains("222222222:fake-reviewer-token"), false)
+        @Expect(out.contains("\"accountInspect\""), false)
+        @Expect(out.contains("\"accounts\""), false)
+        @Expect(out.contains("{"), false)
     }
 
     @TestCase

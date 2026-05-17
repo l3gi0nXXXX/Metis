@@ -54,6 +54,13 @@ private func cliJsonArray(obj: JsonObject, key: String): JsonArray {
     }
 }
 
+private func cliJsonHasField(obj: JsonObject, key: String): Bool {
+    match (obj.get(key)) {
+        case Some(_) => true
+        case None => false
+    }
+}
+
 private func cliJsonNestedObject(root: JsonObject, keys: Array<String>): JsonObject {
     var current = root
     for (key in keys) {
@@ -239,31 +246,183 @@ private func cliRenderDiscoverResult(result: JsonObject): Option<String> {
     Some<String>(String.join(lines.toArray(), delimiter: "\n"))
 }
 
+private func cliSafeRedactedValue(value: String): String {
+    let trimmed = value.trimAscii()
+    if (trimmed.isEmpty()) {
+        return ""
+    }
+    let low = trimmed.toAsciiLower()
+    if (trimmed.contains("*") || low.contains("redacted")) {
+        return trimmed
+    }
+    "[redacted]"
+}
+
+private func cliAddAccountSourceBit(bits: ArrayList<String>, label: String, row: JsonObject, key: String): Unit {
+    let source = cliJsonString(row, key)
+    if (!source.isEmpty() && source != "none") {
+        bits.add("${label}=${source}")
+    }
+}
+
+private func cliStringListContains(values: ArrayList<String>, target: String): Bool {
+    for (value in values) {
+        if (value == target) {
+            return true
+        }
+    }
+    false
+}
+
+private func cliAddOverrideName(overrides: ArrayList<String>, name: String): Unit {
+    let normalized = name.trimAscii().toAsciiLower()
+    if (!normalized.isEmpty() && !cliStringListContains(overrides, normalized)) {
+        overrides.add(normalized)
+    }
+}
+
+private func cliAccountOverrideSummary(row: JsonObject): String {
+    let overrides = ArrayList<String>()
+    if (cliJsonBool(row, "hasGroupsOverride")) { cliAddOverrideName(overrides, "groups") }
+    if (cliJsonBool(row, "hasDirectOverride")) { cliAddOverrideName(overrides, "direct") }
+    if (cliJsonBool(row, "hasDmsOverride")) { cliAddOverrideName(overrides, "dms") }
+    if (cliJsonBool(row, "hasMediaOverride")) { cliAddOverrideName(overrides, "media") }
+    if (cliJsonBool(row, "hasNetworkOverride")) { cliAddOverrideName(overrides, "network") }
+    for ((key, _) in row.getFields()) {
+        if (key.startsWith("has") && key.endsWith("Override") && cliJsonBool(row, key)) {
+            cliAddOverrideName(overrides, key.replace("has", "").replace("Override", ""))
+        }
+    }
+    if (overrides.size == 0) {
+        "none"
+    } else {
+        String.join(overrides.toArray(), delimiter: ",")
+    }
+}
+
+private func cliRenderChannelAccountRow(channelId: String, row: JsonObject, defaultAccountId!: String = ""): String {
+    let accountId = cliJsonString(row, "accountId", defaultValue: "default")
+    var line = "  - ${channelId}/${accountId}"
+    if (cliJsonBool(row, "defaultAccount") || (!defaultAccountId.isEmpty() && accountId == defaultAccountId)) {
+        line += " [default]"
+    }
+    let bits = ArrayList<String>()
+    bits.add("configured=${cliJsonBool(row, "configured")}")
+    bits.add("enabled=${cliJsonBool(row, "enabled", defaultValue: true)}")
+    cliAddAccountSourceBit(bits, "credential", row, "credentialSource")
+    cliAddAccountSourceBit(bits, "token", row, "tokenSource")
+    cliAddAccountSourceBit(bits, "bot", row, "botTokenSource")
+    cliAddAccountSourceBit(bits, "appToken", row, "appTokenSource")
+    cliAddAccountSourceBit(bits, "app", row, "appSource")
+    cliAddAccountSourceBit(bits, "bot", row, "botSource")
+    cliAddAccountSourceBit(bits, "signing", row, "signingSecretSource")
+    let credentialSources = cliJsonObject(row, "credentialSources")
+    if (!cliJsonHasField(row, "credentialSource")) {
+        cliAddAccountSourceBit(bits, "credential", credentialSources, "summary")
+    }
+    cliAddAccountSourceBit(bits, "appIdSource", credentialSources, "appId")
+    cliAddAccountSourceBit(bits, "secretSource", credentialSources, "appSecret")
+    let appId = cliSafeRedactedValue(cliJsonString(row, "appId"))
+    if (!appId.isEmpty()) {
+        bits.add("appId=${appId}")
+    }
+    if (cliJsonHasField(row, "allowFromCount")) {
+        bits.add("allow=${cliJsonInt(row, "allowFromCount")}")
+    }
+    if (cliJsonHasField(row, "groupAllowFromCount")) {
+        bits.add("groupAllow=${cliJsonInt(row, "groupAllowFromCount")}")
+    }
+    if (cliJsonHasField(row, "approvedSenderCount")) {
+        bits.add("approvedSenders=${cliJsonInt(row, "approvedSenderCount")}")
+    }
+    bits.add("overrides=${cliAccountOverrideSummary(row)}")
+    bits.add("binding=${channelId}:${accountId}")
+    if (bits.size > 0) {
+        line += ": ${String.join(bits.toArray(), delimiter: " ")}"
+    }
+    line
+}
+
+private func cliRenderChannelAccountInspectLines(channelId: String, inspect: JsonObject, heading!: String = "Accounts"): ArrayList<String> {
+    let lines = ArrayList<String>()
+    let accounts = cliJsonArray(inspect, "accounts")
+    if (accounts.size() == 0) {
+        return lines
+    }
+    let defaultAccountId = cliJsonString(inspect, "defaultAccountId", defaultValue: "default")
+    let redacted = cliJsonBool(inspect, "tokenRedacted") || cliJsonBool(inspect, "redacted")
+    let count = cliJsonInt(inspect, "count", defaultValue: accounts.size())
+    var header = "${heading}: ${count} default=${defaultAccountId}"
+    if (redacted) {
+        header += " credentials=redacted"
+    }
+    lines.add(header)
+    for (i in 0..accounts.size()) {
+        try {
+            lines.add(cliRenderChannelAccountRow(channelId, accounts[i].asObject(), defaultAccountId: defaultAccountId))
+        } catch (_: Exception) {
+            ()
+        }
+    }
+    lines
+}
+
+private func cliRuntimeConfiguredAccountInspect(result: JsonObject, channelId: String): JsonObject {
+    if (!channelId.isEmpty() && channelId != "all") {
+        let nested = cliJsonObject(cliJsonObject(result, channelId), "accountInspect")
+        if (nested.toJsonString() != "{}") {
+            return nested
+        }
+    }
+    cliJsonObject(result, "accountInspect")
+}
+
 private func cliRenderChannelsRuntime(result: JsonObject): Option<String> {
     let accounts = cliJsonArray(result, "accounts")
+    let channelId = cliJsonString(result, "channelId", defaultValue: "all")
+    let configuredInspect = cliRuntimeConfiguredAccountInspect(result, channelId)
+    let configuredAccounts = cliJsonArray(configuredInspect, "accounts")
     if (accounts.size() == 0) {
         let runtime = cliJsonObject(result, "runtime")
         let nested = cliJsonArray(runtime, "accounts")
-        if (nested.size() == 0) {
+        if (nested.size() == 0 && configuredAccounts.size() == 0) {
             return None<String>
         }
     }
     let rows = if (accounts.size() > 0) { accounts } else { cliJsonArray(cliJsonObject(result, "runtime"), "accounts") }
     let lines = ArrayList<String>()
-    let channelId = cliJsonString(result, "channelId", defaultValue: "all")
     lines.add("Channel runtime: ${channelId}")
-    lines.add("Meaning: running=live adapter process/task, phase=lifecycle phase, failures=send/poll/start failures.")
-    for (i in 0..rows.size()) {
-        try {
-            let row = rows[i].asObject()
-            lines.add(
-                "  - ${cliJsonString(row, "channelId")}/${cliJsonString(row, "accountId")}: running=${cliJsonBool(row, "running")} phase=${cliJsonString(row, "phase")} pull=${cliJsonInt(row, "pullCount")} inbound=${cliJsonInt(row, "inboundCount")} sendOk=${cliJsonInt(row, "sendSuccessCount")} sendFail=${cliJsonInt(row, "sendFailureCount")}"
-            )
-            let err = cliJsonString(row, "lastError")
-            if (!err.isEmpty()) { lines.add("    lastError: ${cliOneLine(err)}") }
-        } catch (_: Exception) {
-            ()
+    lines.add("Meaning: runtime rows are live adapter state; configured accounts are listed separately when available.")
+    lines.add("Metrics: running=live adapter process/task, phase=lifecycle phase, failures=send/poll/start failures.")
+    let configuredDefaultAccountId = cliJsonString(configuredInspect, "defaultAccountId")
+    let runtimeDefaultAccountId = cliJsonString(result, "defaultAccountId")
+    if (!configuredDefaultAccountId.isEmpty()) {
+        lines.add("Configured default account: ${configuredDefaultAccountId}")
+    }
+    if (!runtimeDefaultAccountId.isEmpty() && runtimeDefaultAccountId != configuredDefaultAccountId) {
+        lines.add("Runtime default alias: ${runtimeDefaultAccountId}")
+    } else if (configuredDefaultAccountId.isEmpty() && !runtimeDefaultAccountId.isEmpty()) {
+        lines.add("Runtime default account: ${runtimeDefaultAccountId}")
+    }
+    lines.add("Runtime accounts:")
+    if (rows.size() == 0) {
+        lines.add("  - none registered")
+    } else {
+        for (i in 0..rows.size()) {
+            try {
+                let row = rows[i].asObject()
+                lines.add(
+                    "  - ${cliJsonString(row, "channelId")}/${cliJsonString(row, "accountId")}: running=${cliJsonBool(row, "running")} phase=${cliJsonString(row, "phase")} pull=${cliJsonInt(row, "pullCount")} inbound=${cliJsonInt(row, "inboundCount")} sendOk=${cliJsonInt(row, "sendSuccessCount")} sendFail=${cliJsonInt(row, "sendFailureCount")}"
+                )
+                let err = cliJsonString(row, "lastError")
+                if (!err.isEmpty()) { lines.add("    lastError: ${cliOneLine(err)}") }
+            } catch (_: Exception) {
+                ()
+            }
         }
+    }
+    for (line in cliRenderChannelAccountInspectLines(channelId, configuredInspect, heading: "Configured accounts")) {
+        lines.add(line)
     }
     Some<String>(String.join(lines.toArray(), delimiter: "\n"))
 }
@@ -302,8 +461,9 @@ private func cliRenderChannelGet(result: JsonObject): Option<String> {
     if (id.isEmpty() && cliJsonString(channel, "mode") == "polling") {
         id = "telegram"
     }
+    let displayId = if (id.isEmpty()) { "unknown" } else { id }
     let lines = ArrayList<String>()
-    lines.add("Channel: ${if (id.isEmpty()) { "unknown" } else { id }}")
+    lines.add("Channel: ${displayId}")
     lines.add("Enabled: ${cliJsonBool(channel, "enabled")}  configured=${cliJsonBool(channel, "configured")}  mode=${cliJsonString(channel, "mode", defaultValue: "-")}")
     let network = cliJsonObject(channel, "network")
     if (network.toJsonString() != "{}") {
@@ -326,6 +486,13 @@ private func cliRenderChannelGet(result: JsonObject): Option<String> {
             }
         }
         lines.add("Enabled actions: ${if (enabled.size == 0) { "none" } else { String.join(enabled.toArray(), delimiter: ", ") }}")
+    }
+    let accountLines = cliRenderChannelAccountInspectLines(displayId, cliJsonObject(channel, "accountInspect"))
+    for (line in accountLines) {
+        lines.add(line)
+    }
+    if (accountLines.size > 0) {
+        lines.add("Meaning: this command shows configured channel accounts; use `metis gateway channel runtime ${displayId}` for live adapter state.")
     }
     Some<String>(String.join(lines.toArray(), delimiter: "\n"))
 }

@@ -161,21 +161,24 @@ metis agents add \
   --qqbot "1020000000:fake-qq-secret"
 ```
 
-Check the created agent, bindings, and channel accounts:
+Check the created agent, route bindings, and configured channel account summaries:
 
 ```bash
-metis agents get --agent support-router
+metis agents list
 metis agents bindings --agent support-router
-metis gateway channel telegram accounts
-metis gateway channel feishu accounts
-metis gateway channel qq accounts
+metis gateway channel get telegram
+metis gateway channel get feishu
+metis gateway channel get qq
 ```
 
 Expected output:
 
 - Default command output is human-readable, not a raw JSON object dump.
 - `--json` output is still redacted.
-- Telegram token fields display as `[redacted]`.
+- The `metis agents add` output includes a `Configured channel accounts` section for the requested test accounts, with secrets redacted.
+- `metis agents bindings --agent support-router` shows route bindings for `telegram:support-test-bot`, `feishu:support-test-feishu`, and `qq:support-test-qq`.
+- `metis gateway channel get <id>` is the configured channel account summary. It must show an `Accounts` section with the expected `<channel>/<accountId>` row, default account marker, `binding=<channel>:<accountId>`, and redacted credentials. A channel-level `configured=true` line alone is not enough to prove a specific bot/account is configured correctly.
+- `metis gateway channel runtime <id>` is live adapter runtime state, not the full configured account list. Use it to check whether the adapter is registered/running, and use `gateway channel get <id>` for configured account summaries.
 - Feishu and QQ app secret fields display as `[redacted]`.
 - Fake raw values such as `fake-telegram-token`, `fake-feishu-secret`, and `fake-qq-secret` do not appear in stdout, stderr, logs, or Gateway RPC results.
 - Bindings show routes such as `telegram:support-test-bot -> support-router`.
@@ -191,7 +194,7 @@ metis agents add \
   --channel-overwrite
 ```
 
-If route binding ownership conflicts with another agent, the command must fail clearly and must not leave a half-created configuration. Confirm with `metis agents get --agent <id>`, `metis agents bindings --agent <id>`, and the channel account inspection commands above.
+If route binding ownership conflicts with another agent, the command must fail clearly and must not leave a half-created configuration. Confirm with `metis agents list`, `metis agents bindings --agent <id>`, and the channel account inspection commands above.
 
 ## Create A Team
 
@@ -333,7 +336,7 @@ The RPC path rejects absolute paths, `~`, URI schemes, and `..` traversal. Keep 
 For a simple default model on the agent entry, use `metis agents add --model` when creating the agent:
 
 ```bash
-metis agents add --agent reviewer --name Reviewer --model qwen:qwen-plus
+metis agents add --agent custom-reviewer --name Reviewer --model qwen:qwen-plus
 ```
 
 For runtime model state in the agent's `models.json`, use `agents.models.*` RPC:
@@ -566,7 +569,7 @@ After editing `~/.metis/metis.json`, restart Gateway so the running process load
 
 ## Manual Acceptance Gate
 
-Use an isolated test home for manual AgentTeam checks. Do not point live Telegram or Feishu tests at production bots, tenants, groups, or the real `~/.metis` unless that is an explicit release decision:
+Use an isolated test home for manual AgentTeam checks. Copy these commands into the current terminal before running the manual checks. `export METIS_HOME=...` means this terminal and the processes it starts will use `/tmp/metis-agentteam-manual-acceptance` as the Metis home; it is not a permanent setting and must be repeated in a new terminal. Do not point live Telegram or Feishu tests at production bots, tenants, groups, or the real `~/.metis` unless that is an explicit release decision:
 
 ```bash
 source /Users/l3gi0n/cangjie100/envsetup.sh
@@ -574,20 +577,38 @@ export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
 export METIS_HOME="/tmp/metis-agentteam-manual-acceptance"
 ```
 
-Run the helper before recording manual acceptance:
+`source /Users/l3gi0n/cangjie100/envsetup.sh` is expected because it loads the Cangjie SDK into the current shell. Do not source the acceptance gate itself; run that gate with `bash`.
+
+Run the helper before recording manual acceptance. Run it as a separate process; do not use `source` or `.`, because the helper exits with a process status and sourcing it can close your current shell.
 
 ```bash
-scripts/agentteam-manual-acceptance-gate.sh
+bash scripts/agentteam-manual-acceptance-gate.sh
 ```
 
-The helper rejects the default real home, checks this doc for stale Feishu/AgentTeam claims, verifies the series23 source-backed matrix, verifies the series14 OAPI parity baseline, runs `git diff --check`, and runs the browser smoke only when `METIS_AGENTTEAM_CONTROL_UI_URL` is set. For example, after building the UI and starting Gateway or a static preview:
+The helper disables interactive pagers for its own process (`GIT_PAGER=cat`, `PAGER=cat`, `LESS=-F -X`), so it must not open `less` and must not require pressing `q` to return to your shell. A successful run ends with these lines:
+
+```text
+[agentteam-gate] manual acceptance gate completed
+[agentteam-gate] report JSON: /tmp/metis-agentteam-manual-acceptance/agentteam-manual-acceptance-report/report.json
+[agentteam-gate] manual template: /tmp/metis-agentteam-manual-acceptance/agentteam-manual-acceptance-report/manual-acceptance-template.md
+```
+
+The helper rejects the default real home, checks this doc for stale Feishu/AgentTeam claims, verifies the series23 source-backed matrix, verifies the series14 OAPI parity baseline, runs non-interactive `git --no-pager diff --check`, and runs the browser smoke only when `METIS_AGENTTEAM_CONTROL_UI_URL` is set. For example, after building the UI and starting Gateway or a static preview:
 
 ```bash
 export METIS_AGENTTEAM_CONTROL_UI_URL="http://127.0.0.1:3000/"
-scripts/agentteam-manual-acceptance-gate.sh
+bash scripts/agentteam-manual-acceptance-gate.sh
 ```
 
-The helper also writes a redacted series23 evidence pack. By default it is placed under the isolated `METIS_HOME` at `agentteam-manual-acceptance-report/`; set `METIS_AGENTTEAM_REPORT_DIR` to choose another isolated output directory. The pack contains `report.json` and `manual-acceptance-template.md`, records skipped live Telegram/Feishu/OAuth/OAPI/CardKit/rich-event gates when the opt-in variables are absent, records `external-resource-required` when an opted-in gate is missing test resources, and scans the pack for secret-like token/header patterns before passing.
+The helper also writes a redacted series23 evidence pack. With the commands above, the directory is `/tmp/metis-agentteam-manual-acceptance/agentteam-manual-acceptance-report` unless you explicitly set `METIS_AGENTTEAM_REPORT_DIR`. To use a shorter fixed directory, run `export METIS_AGENTTEAM_REPORT_DIR="/tmp/metis-agentteam-manual-acceptance-report"` before the helper. After the helper finishes, check the files with:
+
+```bash
+REPORT_DIR="${METIS_AGENTTEAM_REPORT_DIR:-$METIS_HOME/agentteam-manual-acceptance-report}"
+echo "REPORT_DIR=$REPORT_DIR"
+ls -l "$REPORT_DIR/report.json" "$REPORT_DIR/manual-acceptance-template.md"
+```
+
+`report.json` is the machine-readable status report. `manual-acceptance-template.md` is the human record template where the operator records pass/fail notes and redacted evidence. The pack records skipped live Telegram/Feishu/OAuth/OAPI/CardKit/rich-event gates when the opt-in variables are absent, records `external-resource-required` when an opted-in gate is missing test resources, and scans the pack for secret-like token/header patterns before passing.
 
 The browser smoke verifies `customElements.get("metis-app")`, visible Metis UI content, no page errors, and no failed JavaScript/CSS requests. Live Telegram and Feishu steps are opt-in manual checks; set `METIS_AGENTTEAM_LIVE_TELEGRAM=1` or `METIS_AGENTTEAM_LIVE_FEISHU=1` only with test credentials and record account, tenant, date, scopes, pass/fail, and skipped items. When Telegram live smoke is opted in, also set `METIS_AGENTTEAM_TELEGRAM_ACCOUNT_ID` and `METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID`; the gate still does not read bot tokens or access real Telegram by itself. For series23 Phase 9, `report.json` includes a `releaseVerification` section covering the Cangjie clean/build/test command, UI build, browser smoke URL state, the manual gate itself, and live-gate opt-in status. If default `cjpm test` concurrency flakes, record that result and a `cjpm test -j 1` run under G26 rather than treating it as an AgentTeam feature failure.
 
@@ -607,7 +628,7 @@ cjpm build -i
 cjpm test
 npm --prefix ui test
 npm --prefix ui run build
-scripts/agentteam-manual-acceptance-gate.sh
+bash scripts/agentteam-manual-acceptance-gate.sh
 ```
 
 Source-backed series23 acceptance details live in `develop_steps/metis-agent-team-series-23-source-backed-gap-quantification-manual-acceptance-2026-05-16.md`. The series14 OAPI parity report remains the detailed Feishu action-count reference. Record redacted live evidence in the generated `manual-acceptance-template.md` and the matching release evidence document.
