@@ -9,8 +9,10 @@ import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString,
 public class QqResolvedAccount {
     public let accountId: String
     public let config: QQConfig
+    public let configured: Bool
     public let explicitAccount: Bool
     public let missingAccount: Bool
+    public let missingCredential: Bool
     public let missingDiagnostic: String
     public let credentialSource: String
     public let appIdCredentialSource: String
@@ -19,17 +21,21 @@ public class QqResolvedAccount {
     public init(
         accountId: String,
         config: QQConfig,
+        configured!: Bool = false,
         explicitAccount!: Bool = false,
         missingAccount!: Bool = false,
+        missingCredential!: Bool = false,
         missingDiagnostic!: String = "",
-        credentialSource!: String = "top-level",
-        appIdCredentialSource!: String = "top-level",
-        appSecretCredentialSource!: String = "top-level"
+        credentialSource!: String = "top-level-inherited",
+        appIdCredentialSource!: String = "top-level-inherited",
+        appSecretCredentialSource!: String = "top-level-inherited"
     ) {
         this.accountId = gatewayQqNormalizeAccountId(accountId)
         this.config = config
+        this.configured = configured
         this.explicitAccount = explicitAccount
         this.missingAccount = missingAccount
+        this.missingCredential = missingCredential
         this.missingDiagnostic = missingDiagnostic.trimAscii()
         this.credentialSource = credentialSource.trimAscii()
         this.appIdCredentialSource = appIdCredentialSource.trimAscii()
@@ -85,19 +91,26 @@ public func gatewayQqResolveAccount(config: QQConfig, accountId: String): QqReso
     let explicitAccount = accountConfig.isSome()
     let missingAccount = !explicitAccount && normalized != defaultAccount && gatewayQqHasAccounts(config)
     let overrideObj = accountConfig ?? JsonObject()
+    let accountHasAppId = gatewayQqHasString(overrideObj, ["appId", "app_id"])
+    let accountHasAppSecret = gatewayQqHasString(overrideObj, ["appSecret", "app_secret"])
+    let requireAccountLocalCredentials = explicitAccount && normalized != defaultAccount && gatewayQqHasAccounts(config)
     let appIdSource = if (missingAccount) {
         "missing-account"
+    } else if (requireAccountLocalCredentials) {
+        if (accountHasAppId) { "account-local" } else { "missing-account-credential" }
     } else {
         gatewayQqCredentialFieldSource(
-            gatewayQqHasString(overrideObj, ["appId", "app_id"]),
+            accountHasAppId,
             !config.appId.trimAscii().isEmpty()
         )
     }
     let appSecretSource = if (missingAccount) {
         "missing-account"
+    } else if (requireAccountLocalCredentials) {
+        if (accountHasAppSecret) { "account-local" } else { "missing-account-credential" }
     } else {
         gatewayQqCredentialFieldSource(
-            gatewayQqHasString(overrideObj, ["appSecret", "app_secret"]),
+            accountHasAppSecret,
             !config.appSecret.trimAscii().isEmpty()
         )
     }
@@ -105,6 +118,29 @@ public func gatewayQqResolveAccount(config: QQConfig, accountId: String): QqReso
         "missing-account"
     } else {
         gatewayQqCredentialSourceSummary(appIdSource, appSecretSource)
+    }
+    let resolvedAppId = if (missingAccount) {
+        ""
+    } else if (requireAccountLocalCredentials) {
+        gatewayQqString(overrideObj, ["appId", "app_id"], "")
+    } else {
+        gatewayQqString(overrideObj, ["appId", "app_id"], config.appId)
+    }
+    let resolvedAppSecret = if (missingAccount) {
+        ""
+    } else if (requireAccountLocalCredentials) {
+        gatewayQqString(overrideObj, ["appSecret", "app_secret"], "")
+    } else {
+        gatewayQqString(overrideObj, ["appSecret", "app_secret"], config.appSecret)
+    }
+    let configured = !resolvedAppId.trimAscii().isEmpty() && !resolvedAppSecret.trimAscii().isEmpty()
+    let missingCredential = !missingAccount && requireAccountLocalCredentials && !configured
+    let missingDiagnostic = if (missingAccount) {
+        "unknown QQ accountId \"${normalized}\""
+    } else if (missingCredential) {
+        gatewayQqMissingCredentialDiagnostic(normalized, resolvedAppId, resolvedAppSecret)
+    } else {
+        ""
     }
     let merged = QQConfig(
         accountId: normalized,
@@ -122,8 +158,8 @@ public func gatewayQqResolveAccount(config: QQConfig, accountId: String): QqReso
         sendApiMode: gatewayQqString(overrideObj, ["sendApiMode", "send_api_mode"], config.sendApiMode),
         botQQ: gatewayQqString(overrideObj, ["botQQ", "bot_qq"], config.botQQ),
         dedupWindowSize: gatewayQqInt(overrideObj, ["dedupWindowSize", "dedup_window_size"], config.dedupWindowSize),
-        appId: if (missingAccount) { "" } else { gatewayQqString(overrideObj, ["appId", "app_id"], config.appId) },
-        appSecret: if (missingAccount) { "" } else { gatewayQqString(overrideObj, ["appSecret", "app_secret"], config.appSecret) },
+        appId: resolvedAppId,
+        appSecret: resolvedAppSecret,
         accounts: config.accounts,
         officialBotToken: gatewayQqString(overrideObj, ["officialBotToken", "official_bot_token"], config.officialBotToken),
         officialTokenUrl: gatewayQqString(overrideObj, ["officialTokenUrl", "official_token_url"], config.officialTokenUrl),
@@ -138,9 +174,11 @@ public func gatewayQqResolveAccount(config: QQConfig, accountId: String): QqReso
     QqResolvedAccount(
         normalized,
         merged,
+        configured: configured,
         explicitAccount: explicitAccount,
         missingAccount: missingAccount,
-        missingDiagnostic: if (missingAccount) { "unknown QQ accountId \"${normalized}\"" } else { "" },
+        missingCredential: missingCredential,
+        missingDiagnostic: missingDiagnostic,
         credentialSource: credentialSource,
         appIdCredentialSource: appIdSource,
         appSecretCredentialSource: appSecretSource
@@ -159,7 +197,7 @@ public func gatewayQqDescribeAccounts(config: QQConfig, runtime!: JsonObject = J
     for (accountId in accountIds) {
         let resolved = gatewayQqResolveAccount(config, accountId)
         let runtimeRow = gatewayQqRuntimeAccount(runtime, resolved.accountId)
-        let configured = !resolved.config.appId.trimAscii().isEmpty() && !resolved.config.appSecret.trimAscii().isEmpty()
+        let configured = resolved.configured
         let running = gatewayQqRuntimeBool(runtimeRow, "running", false)
         let lastError = gatewayQqRedactSecretText(gatewayQqRuntimeString(runtimeRow, "lastError", resolved.missingDiagnostic))
         let row = JsonObject()
@@ -178,6 +216,7 @@ public func gatewayQqDescribeAccounts(config: QQConfig, runtime!: JsonObject = J
         row.put("credentialSources", credentialSources)
         row.put("explicitAccount", JsonBool(resolved.explicitAccount))
         row.put("missingAccount", JsonBool(resolved.missingAccount))
+        row.put("missingCredential", JsonBool(resolved.missingCredential))
         row.put("mode", JsonString(resolved.config.mode))
         row.put("appId", JsonString(gatewayQqRedactedValue(resolved.config.appId)))
         row.put("appSecret", JsonString(if (resolved.config.appSecret.trimAscii().isEmpty()) { "" } else { "[redacted]" }))
@@ -352,22 +391,35 @@ private func gatewayQqHasString(obj: JsonObject, keys: Array<String>): Bool {
     !gatewayQqString(obj, keys, "").isEmpty()
 }
 
+private func gatewayQqMissingCredentialDiagnostic(accountId: String, appId: String, appSecret: String): String {
+    let missingAppId = appId.trimAscii().isEmpty()
+    let missingAppSecret = appSecret.trimAscii().isEmpty()
+    let missing = if (missingAppId && missingAppSecret) {
+        "appId, appSecret"
+    } else if (missingAppId) {
+        "appId"
+    } else {
+        "appSecret"
+    }
+    "QQ account \"${accountId}\" is missing account-local credential: ${missing}"
+}
+
 private func gatewayQqCredentialFieldSource(accountHasValue: Bool, topLevelHasValue: Bool): String {
     if (accountHasValue) {
-        return "account"
+        return "account-local"
     }
     if (topLevelHasValue) {
-        return "top-level"
+        return "top-level-inherited"
     }
-    "missing"
+    "missing-account-credential"
 }
 
 private func gatewayQqCredentialSourceSummary(appIdSource: String, appSecretSource: String): String {
-    if (appIdSource == "account" && appSecretSource == "account") {
-        return "account"
+    if (appIdSource == "account-local" && appSecretSource == "account-local") {
+        return "account-local"
     }
-    if (appIdSource == "missing" || appSecretSource == "missing") {
-        return "missing"
+    if (appIdSource == "missing-account-credential" || appSecretSource == "missing-account-credential") {
+        return "missing-account-credential"
     }
     if (appIdSource == appSecretSource) {
         return appIdSource

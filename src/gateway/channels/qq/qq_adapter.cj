@@ -53,6 +53,10 @@ public class QQAdapter <: ChannelAdapter {
         this.config.accountId
     }
 
+    public func debugLastSendErrorForTest(): String {
+        this.lastSendError
+    }
+
     private func logInfo(message: String): Unit {
         PrintUtils.printLine(message)
         LogUtils.info(message)
@@ -77,6 +81,11 @@ public class QQAdapter <: ChannelAdapter {
             return
         }
         if (this.resolvedAccount.missingAccount) {
+            this.lastSendError = this.resolvedAccount.missingDiagnostic
+            this.logError("QQ adapter start failed: ${this.lastSendError}")
+            return
+        }
+        if (this.resolvedAccount.missingCredential) {
             this.lastSendError = this.resolvedAccount.missingDiagnostic
             this.logError("QQ adapter start failed: ${this.lastSendError}")
             return
