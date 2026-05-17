@@ -1621,7 +1621,11 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
     }
     let agentId = gatewaySanitizeAgentId(requestedId)
     let entries = gatewayAgentConfigEntries(root)
-    if (gatewayAgentConfigFindEntryIndex(entries, agentId) >= 0 || gatewayAgentJsonBool(gatewayAgentGetJson(agentId), "configured", false)) {
+    let existingAgent = gatewayAgentGetJson(agentId)
+    if (gatewayAgentJsonString(existingAgent, "kind", "") == "builtin") {
+        return GatewayRpcResponse(false, "agents.add", error: "Agent \"${agentId}\" is a builtin agent and cannot be recreated. Choose a custom agent id.")
+    }
+    if (gatewayAgentConfigFindEntryIndex(entries, agentId) >= 0 || gatewayAgentJsonBool(existingAgent, "configured", false)) {
         return GatewayRpcResponse(false, "agents.add", error: "Agent \"${agentId}\" already exists.")
     }
     let name = gatewayAgentRpcStringParam(request, ["name"], agentId)
@@ -2743,6 +2747,9 @@ private func gatewayAgentDeleteJson(request: GatewayRpcRequest): GatewayRpcRespo
     }
     if (agentId == "main" || agentId == "general") {
         return GatewayRpcResponse(false, "agents.delete", error: "Agent \"${agentId}\" cannot be deleted.")
+    }
+    if (gatewayAgentJsonString(gatewayAgentGetJson(agentId), "kind", "") == "builtin") {
+        return GatewayRpcResponse(false, "agents.delete", error: "Agent \"${agentId}\" is a builtin agent and cannot be deleted.")
     }
     let entries = gatewayAgentConfigEntries(root)
     let nextEntries = JsonArray([])

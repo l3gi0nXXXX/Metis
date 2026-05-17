@@ -23,6 +23,9 @@
 | `src/program/cli_local_flows.cj:971-1039` | `agents add` 和 `agents team` 默认输出是人类可读；只有 `--json` 才输出 JSON。 |
 | `src/program/cli_local_flows.cj:2193-2217` | `metis agents` help 暴露当前用户可用的 agent/team/bind/migrate/add/set-identity/delete 子命令。 |
 | `src/gateway/runtime/gateway_server_methods_agents.cj:3421-3626` | Gateway agents family 暴露 `agents.*`、`agents.files.*`、`agents.models.*`、`agents.teams.*`、`agents.migration.dryRun`。 |
+| `src/gateway/runtime/gateway_server_methods_agents.cj:1800-1819`、`1835-1925`、`3536-3542` | `agents.update` 支持给单个 agent 写入 `model` 字段，并在模型变化时刷新该 agent 的 runtime model state。 |
+| `src/core/config/metis_agent_scope.cj:635-663` | agent scope 解析时优先读取 `agents.list[].model.primary`；没有 agent 专属模型时才读取 `agents.defaults.model.primary`。 |
+| `src/core/model/cli_model_manager.cj:146-157`、`301-313` | Gateway turn 取模型顺序时使用 agent scope；agent scope 有 primary model 时优先使用 agent 专属模型和专属 fallbacks。 |
 | `ui/src/ui/navigation.ts:5-43` | Control UI 有独立 `agentTeams` tab，路径为 `/agent-teams`。 |
 | `ui/src/ui/views/agents-panel-teams.ts:71-99` | Teams panel 接收 team CRUD、binding、model、workspace、Feishu auth 等回调。 |
 
@@ -312,6 +315,11 @@ rg -n '"phase1"|"phase2"|"phase3"|"skipped"|"external-resource-required"|"operat
 
 ### 5.4 Agent profile files 和 model 隔离
 
+模型相关验收要区分两层：
+
+- `agents.list[].model` 是产品级 agent 专属模型配置，决定某个 agent 是否覆盖 `agents.defaults.model.primary`。
+- `<agentDir>/models.json` 是该 agent 的运行时物化模型状态，用于展示、隔离和 credential source summary。它不能替代 `agents.list[].model` 的产品级验收。
+
 | ID | 手工测试项 | 操作方法 | 验收标准 | 证据 |
 | --- | --- | --- | --- | --- |
 | L1-29 | profile file list | `metis gateway call agents.files.list '{"agentId":"solo"}'` | 返回支持的 `AGENTS.md`、`SOUL.md`、`TOOLS.md`、`IDENTITY.md`、`USER.md`、`HEARTBEAT.md`、`BOOTSTRAP.md`、`MEMORY.md`；`BOOTSTRAP.md` 可为 missing | RPC 输出 |
@@ -319,6 +327,9 @@ rg -n '"phase1"|"phase2"|"phase3"|"skipped"|"external-resource-required"|"operat
 | L1-31 | profile path traversal 防护 | 尝试 `../x`、绝对路径、`~`、URI scheme | 必须拒绝；不写临时目录外文件 | RPC 错误、文件检查 |
 | L1-32 | 双 agent 文件隔离 | 给 `solo` 和 `reviewer2` 写不同 `SOUL.md` | 两边读回内容不同；互不串读 | RPC 输出 |
 | L1-33 | model get | `metis gateway call agents.models.get '{"agentId":"solo"}'` | 返回 agent-scoped model state 和 credentialSource summary；secret 脱敏 | RPC 输出 |
+| L1-33A | agent 默认模型继承 | `metis agents add --agent tg-model-inherit --name "TG Model Inherit"`，再执行 `metis gateway call --json agents.scope '{"agentId":"tg-model-inherit"}'` | scope 输出里 `modelRefSource` 为 `agents.defaults.model.primary`；说明未配置专属模型时继承默认模型；默认模型值与 `agents.defaults.model.primary` 一致 | RPC JSON、配置摘要 |
+| L1-33B | 给单 agent 配置专属大模型 | `metis agents add --agent tg-model-single --name "TG Model Single"`，再执行 `metis gateway call agents.update '{"agentId":"tg-model-single","model":"qwen/qwen3.6-plus"}'`，然后执行 `metis gateway call --json agents.scope '{"agentId":"tg-model-single"}'` | `~/.metis/metis.json` 的 `agents.list[]` 中 `tg-model-single.model` 为 `qwen/qwen3.6-plus`；scope 输出里 `modelRef` 为 `qwen/qwen3.6-plus`，`modelRefSource` 为 `agents.list[].model.primary`；该 agent 不再继承默认模型 | RPC 输出、`jq` 配置检查 |
+| L1-33C | 专属模型不影响其他 agent | 在 L1-33B 后执行 `metis gateway call --json agents.scope '{"agentId":"tg-model-inherit"}'` | `tg-model-inherit` 仍使用 `agents.defaults.model.primary`；`tg-model-single` 使用自己的 `agents.list[].model`；两个 agent 的 `modelsJsonPath` 不同 | RPC JSON |
 | L1-34 | model set | 对 `solo` 写 `primaryModelRef`，再对另一 agent 写不同模型 | 两个 agent 的 `models.json` 独立 | RPC 输出 |
 | L1-35 | invalid model state | 写入结构错误的 model state | Gateway 返回清晰错误；旧 model state 不被破坏 | RPC 输出 |
 | L1-36 | credential source 隔离 | 检查 agent-local/global/env fallback summary | 不把其他 agent 的 auth profile 当成当前 agent 凭证来源 | RPC 输出 |

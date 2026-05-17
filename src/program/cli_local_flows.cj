@@ -190,9 +190,27 @@ private func localPrintMutationResult(args: Array<String>, obj: JsonObject, warn
     printLocalCommandHuman(obj)
 }
 
+public func cliGatewayShouldPrintRuntimeHintForError(error: String): Bool {
+    let lower = error.toAsciiLower()
+    if (lower.contains("already exists") ||
+        lower.contains("not found") ||
+        lower.contains("cannot be deleted") ||
+        lower.contains("cannot be recreated") ||
+        lower.contains("is a builtin agent") ||
+        lower.contains("is required") ||
+        lower.contains("invalid") ||
+        lower.contains("duplicate") ||
+        lower.contains("conflict")) {
+        return false
+    }
+    true
+}
+
 private func printGatewayRpcFailure(scope: String, method: String, error: String): Int64 {
     PrintUtils.printLine("Gateway ${scope} failed: ${cliRedactTextForOutput(error)}")
-    PrintUtils.printLine("Start the unified Gateway main runtime with `metis gateway run`, then retry `${method}`.")
+    if (cliGatewayShouldPrintRuntimeHintForError(error)) {
+        PrintUtils.printLine("Start the unified Gateway main runtime with `metis gateway run`, then retry `${method}`.")
+    }
     CLI_EXIT_USAGE_ERROR
 }
 
@@ -2201,16 +2219,16 @@ public func cliRunAgentsFlow(args: Array<String>): Int64 {
                 "metis agents summary",
                 "metis agents health",
                 "metis agents capabilities",
-                "metis agents bindings --agent reviewer",
-                "metis agents bind --agent reviewer --bind qq:default",
-                "metis agents unbind --agent reviewer --bind qq:default",
+                "metis agents bindings --agent custom-reviewer",
+                "metis agents bind --agent custom-reviewer --bind qq:default",
+                "metis agents unbind --agent custom-reviewer --bind qq:default",
                 "metis agents team create --team content --template pm-writer-reviewer",
                 "metis agents team list --json",
                 "metis agents migrate --dry-run --json",
-                "metis agents add --agent reviewer --name Reviewer",
+                "metis agents add --agent custom-reviewer --name Reviewer",
                 "metis agents add --agent demo --name Demo --model dashscope:qwen-plus --feishu cli_test:secret_test --qqbot 1020:test_secret --telegram-bot-token test-token",
-                "metis agents set-identity --agent reviewer --name Reviewer --emoji 🔎",
-                "metis agents delete --agent reviewer",
+                "metis agents set-identity --agent custom-reviewer --name Reviewer --emoji 🔎",
+                "metis agents delete --agent custom-reviewer",
                 "metis agents list --json"
             ],
             "list [--json] | summary [--json] | health [--json] | capabilities [--json] | bindings [--agent <id>] [--json] | bind --agent <id> --bind <channel[:account]> [--bind ...] [--json] | unbind --agent <id> (--bind <channel[:account]> [--bind ...] | --all) [--json] | team list|get|create|update|delete [--team <id>] [--json] | migrate --dry-run [--json] | add --agent <id> [--name <text>] [--workspace <path>] [--model <ref>] [--bind <channel[:account]> ...] [--feishu <appId:appSecret>] [--feishu-account <id>] [--qqbot <appId:appSecret>] [--qqbot-account <id>] [--telegram-bot-token <token>] [--telegram-account <id>] [--channel-overwrite] [--json] | set-identity --agent <id> [--name <text>] [--emoji <text>] [--theme <text>] [--avatar <path>] [--json] | delete --agent <id> [--json] | help\n${cliAgentsTeamProductSemanticsHelpText()}"

@@ -6,6 +6,14 @@ import stdx.encoding.json.{JsonArray, JsonObject, JsonString}
 @Test
 public class CliLocalFlowsAgentTeamTest {
     @TestCase
+    public func semanticGatewayAgentErrorsDoNotPrintRuntimeHint(): Unit {
+        @Expect(cliGatewayShouldPrintRuntimeHintForError("Agent \"reviewer\" already exists."), false)
+        @Expect(cliGatewayShouldPrintRuntimeHintForError("Agent \"reviewer\" is a builtin agent and cannot be deleted."), false)
+        @Expect(cliGatewayShouldPrintRuntimeHintForError("Agent \"manual-reviewer\" not found."), false)
+        @Expect(cliGatewayShouldPrintRuntimeHintForError("connection refused"), true)
+    }
+
+    @TestCase
     public func buildsAgentAddRpcParamsWithoutShortcutFieldsWhenUnset(): Unit {
         let spec = cliBuildAgentsAddRpcSpec([
             "add",

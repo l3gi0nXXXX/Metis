@@ -711,6 +711,35 @@ public class GatewayServerMethodsAgentsTest {
     }
 
     @TestCase
+    public func agentsAddRejectsBuiltinAgentIdWithSpecificMessage(): Unit {
+        withAgentsTempHome("metis-agents-add-builtin-id-home", { _home: Path =>
+            let params = JsonObject()
+            params.put("id", JsonString("reviewer"))
+            params.put("name", JsonString("Reviewer"))
+
+            let response = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: params))).getOrThrow()
+
+            @Expect(response.ok, false)
+            @Expect(response.error.contains("builtin agent"), true)
+            @Expect(response.error.contains("cannot be recreated"), true)
+        })
+    }
+
+    @TestCase
+    public func agentsDeleteRejectsBuiltinAgentIdWithSpecificMessage(): Unit {
+        withAgentsTempHome("metis-agents-delete-builtin-id-home", { _home: Path =>
+            let params = JsonObject()
+            params.put("agentId", JsonString("reviewer"))
+
+            let response = handleGatewayAgentsFamily("agents.delete", request: Some(GatewayRpcRequest("agents.delete", params: params))).getOrThrow()
+
+            @Expect(response.ok, false)
+            @Expect(response.error.contains("builtin agent"), true)
+            @Expect(response.error.contains("cannot be deleted"), true)
+        })
+    }
+
+    @TestCase
     public func agentsAddDoesNotOverwriteExistingWorkspaceIdentityFile(): Unit {
         withAgentsTempHome("metis-agents-add-phase5-existing-home", { home =>
             let workspaceDir = home.join("custom-workspace")

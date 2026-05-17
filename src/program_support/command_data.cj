@@ -91,12 +91,12 @@ public func programSupportRootCommandExamples(command: String): Array<CliRootCom
             ("metis agent --local --message \"Summarize this repo\"", "Run one explicit embedded-only debug turn."),
             ("metis agents list", "List managed agents through the unified Gateway main runtime."),
             ("metis agents capabilities", "Inspect builtin agent capabilities."),
-            ("metis agents bindings --agent reviewer", "List routing bindings for one agent."),
-            ("metis agents bind --agent reviewer --bind qq:default", "Bind one route to an agent."),
-            ("metis agents unbind --agent reviewer --bind qq:default", "Remove one route binding from an agent."),
-            ("metis agents add --agent reviewer --name Reviewer", "Create a managed custom agent."),
-            ("metis agents set-identity --agent reviewer --name Reviewer", "Update managed agent identity fields."),
-            ("metis agents delete --agent reviewer", "Delete a managed custom agent.")
+            ("metis agents bindings --agent custom-reviewer", "List routing bindings for one agent."),
+            ("metis agents bind --agent custom-reviewer --bind qq:default", "Bind one route to an agent."),
+            ("metis agents unbind --agent custom-reviewer --bind qq:default", "Remove one route binding from an agent."),
+            ("metis agents add --agent custom-reviewer --name Reviewer", "Create a managed custom agent."),
+            ("metis agents set-identity --agent custom-reviewer --name Reviewer", "Update managed agent identity fields."),
+            ("metis agents delete --agent custom-reviewer", "Delete a managed custom agent.")
         ]
     }
     if (cmd == "mcp") {

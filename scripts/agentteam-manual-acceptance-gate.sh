@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 
+export GIT_PAGER=cat
+export PAGER=cat
+export LESS="-F -X"
+
 if [[ "${METIS_AGENTTEAM_SKIP_ENVSETUP:-0}" != "1" && -f /Users/l3gi0n/cangjie100/envsetup.sh ]]; then
   set +u
   source /Users/l3gi0n/cangjie100/envsetup.sh
@@ -21,6 +25,19 @@ info() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+run_git_diff_check() {
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/metis-agentteam-gate-diffcheck.XXXXXX")"
+  if git --no-pager diff --check >"$tmp" 2>&1; then
+    rm -f "$tmp"
+    info "git diff --check passed"
+    return 0
+  fi
+  cat "$tmp" >&2
+  rm -f "$tmp"
+  fail "git diff --check failed"
 }
 
 json_escape() {
@@ -675,6 +692,8 @@ write_evidence_pack() {
 
 require_command git
 require_command rg
+info "manual acceptance gate starting"
+info "interactive pagers disabled for this run: GIT_PAGER=cat PAGER=cat LESS=-F -X"
 
 SERIES23_DOC_REL="develop_steps/metis-agent-team-series-23-source-backed-gap-quantification-manual-acceptance-2026-05-16.md"
 SERIES23_DOC_MAIN="/Users/l3gi0n/work/workspace_cangjie/Metis/$SERIES23_DOC_REL"
@@ -745,8 +764,7 @@ ACTION_ROWS="$(awk '/^\| feishu_/ { count += 1 } END { print count + 0 }' "$PARI
 [[ "$ACTION_ROWS" == "108" ]] || fail "OAPI parity report must contain 108 action rows, found $ACTION_ROWS"
 info "OAPI parity report check passed"
 
-git diff --check
-info "git diff --check passed"
+run_git_diff_check
 
 if [[ -z "${METIS_AGENTTEAM_CONTROL_UI_URL:-}" ]]; then
   info "browser smoke skipped; set METIS_AGENTTEAM_CONTROL_UI_URL to a built Control UI or live Gateway URL to enable it"
@@ -847,3 +865,6 @@ else
 fi
 
 info "manual acceptance preflight passed"
+info "manual acceptance gate completed"
+info "report JSON: $REPORT_DIR_CANONICAL/report.json"
+info "manual template: $REPORT_DIR_CANONICAL/manual-acceptance-template.md"

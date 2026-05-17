@@ -50,6 +50,23 @@ test("Telegram live opt-in without external resources requires external resource
   assert(report.externalResources.some((item) => item.env === "METIS_AGENTTEAM_TELEGRAM_TEST_CHAT_ID" && item.status === "missing"));
 });
 
+test("does not invoke an interactive pager and prints final artifact paths", () => {
+  const result = runGate({
+    GIT_PAGER: "sh -c 'echo METIS_PAGER_SHOULD_NOT_RUN >&2; exit 97'",
+    PAGER: "sh -c 'echo METIS_PAGER_SHOULD_NOT_RUN >&2; exit 97'",
+    LESS: "-R",
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const combinedOutput = `${result.stdout}\n${result.stderr}`;
+  assert.doesNotMatch(combinedOutput, /METIS_PAGER_SHOULD_NOT_RUN/);
+  assert.doesNotMatch(combinedOutput, /\x1b\[[0-9;]*[JH]/);
+  assert.match(result.stdout, /interactive pagers disabled/);
+  assert.match(result.stdout, /manual acceptance gate completed/);
+  assert.match(result.stdout, /report JSON: .*\/report\.json/);
+  assert.match(result.stdout, /manual template: .*\/manual-acceptance-template\.md/);
+});
+
 test("writes a series23 phase, GAP, and M01-M32 release evidence report", () => {
   const result = runGate();
 

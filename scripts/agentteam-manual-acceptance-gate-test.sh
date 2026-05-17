@@ -50,6 +50,11 @@ run_gate "$fake_home" "$metis_home" "$report_dir" "$TMP_ROOT/success.log"
 
 [[ -f "$report_dir/report.json" ]] || fail "report.json was not written"
 [[ -f "$report_dir/manual-acceptance-template.md" ]] || fail "manual-acceptance-template.md was not written"
+assert_file_contains "$TMP_ROOT/success.log" 'manual acceptance gate starting'
+assert_file_contains "$TMP_ROOT/success.log" 'interactive pagers disabled'
+assert_file_contains "$TMP_ROOT/success.log" 'manual acceptance gate completed'
+assert_file_contains "$TMP_ROOT/success.log" 'report JSON: .*/report.json'
+assert_file_contains "$TMP_ROOT/success.log" 'manual template: .*/manual-acceptance-template.md'
 assert_file_contains "$report_dir/report.json" '"series": "23"'
 assert_file_contains "$report_dir/report.json" '"id": "series23"'
 assert_file_contains "$report_dir/report.json" '"phaseStatus"'
