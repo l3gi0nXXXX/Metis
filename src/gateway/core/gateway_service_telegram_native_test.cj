@@ -2,6 +2,7 @@ package metis.gateway.core
 
 import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager, MetisProcessEnvironmentLock, TelegramCustomCommandUserSettings}
 import metis.core.{GatewaySpeechTtsDashScopeQwenHttpResult, gatewaySubagentCreateRunRecord, gatewaySubagentListRunRecords, gatewaySubagentRunRecordString, setGatewaySpeechTtsDashScopeQwenRunnerForTest}
+import metis.gateway.logging.{gatewayLoggingCaptureConsoleForTest, gatewayLoggingCapturedConsoleForTest, gatewayLoggingResetForTest}
 import metis.gateway.model.{ChannelPolicyConfig, ChannelType, ChatType, InboundMessage, OutboundMessage, SendResult}
 import metis.core.memory.memorySessionStoreForGatewayUser
 
@@ -255,24 +256,49 @@ private func withGatewayTelegramNativeTestHome<T>(block: () -> T): T {
 private func withGatewayTelegramNativeLogCapture<T>(name: String, block: (String) -> T): T {
     let oldLevel = Config.logLevel
     let oldFile = Config.logFile
-    let path = "/tmp/metis-gateway-telegram-native-${name}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}.log"
+    let oldMetisLevel = getVariable("METIS_LOG_LEVEL")
+    let oldMetisFile = getVariable("METIS_LOG_FILE")
+    let oldMetisConsoleLevel = getVariable("METIS_CONSOLE_LEVEL")
+    let path = CliConfig.logsDir.join("metis-gateway-telegram-native-${name}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}.log").toString()
+    if (!exists(Path(path).parent)) {
+        Directory.create(Path(path).parent, recursive: true)
+    }
     try { remove(Path(path), recursive: true) } catch (_: Exception) { () }
     Config.logLevel = "info"
     Config.logFile = path
+    setVariable("METIS_LOG_LEVEL", "info")
+    setVariable("METIS_LOG_FILE", path)
+    setVariable("METIS_CONSOLE_LEVEL", "info")
+    gatewayLoggingResetForTest()
+    gatewayLoggingCaptureConsoleForTest()
     try {
         return block(path)
     } finally {
         Config.logLevel = oldLevel
         Config.logFile = oldFile
+        match (oldMetisLevel) {
+            case Some(value) => setVariable("METIS_LOG_LEVEL", value)
+            case None => setVariable("METIS_LOG_LEVEL", "")
+        }
+        match (oldMetisFile) {
+            case Some(value) => setVariable("METIS_LOG_FILE", value)
+            case None => setVariable("METIS_LOG_FILE", "")
+        }
+        match (oldMetisConsoleLevel) {
+            case Some(value) => setVariable("METIS_CONSOLE_LEVEL", value)
+            case None => setVariable("METIS_CONSOLE_LEVEL", "")
+        }
+        gatewayLoggingResetForTest()
         try { remove(Path(path), recursive: true) } catch (_: Exception) { () }
     }
 }
 
 private func gatewayTelegramNativeReadLog(path: String): String {
+    let captured = String.join(gatewayLoggingCapturedConsoleForTest(), delimiter: "\n")
     if (!exists(Path(path))) {
-        return ""
+        return captured
     }
-    String.fromUtf8(File.readFrom(Path(path)))
+    String.fromUtf8(File.readFrom(Path(path))) + "\n" + captured
 }
 
 private func gatewayTelegramNativeService(adapter: GatewayTelegramNativeTestAdapter): GatewayService {
@@ -456,15 +482,15 @@ public class GatewayServiceTelegramNativeTest {
                         }
                     }
                     @Expect(foundAnswer, true)
-                    @Expect(log.contains("event=message.inbound"), true)
-                    @Expect(log.contains("event=message.routed"), true)
-                    @Expect(log.contains("event=message.reply.generated"), true)
-                    @Expect(log.contains("event=message.outbound"), true)
-                    @Expect(log.contains("event=message.sent"), true)
-                    @Expect(log.contains("textLen=19"), true)
+                    @Expect(log.contains("\"event\":\"message.inbound\"") || log.contains("event=message.inbound"), true)
+                    @Expect(log.contains("\"event\":\"message.routed\"") || log.contains("event=message.routed"), true)
+                    @Expect(log.contains("\"event\":\"message.reply.generated\"") || log.contains("event=message.reply.generated"), true)
+                    @Expect(log.contains("\"event\":\"message.outbound\"") || log.contains("event=message.outbound"), true)
+                    @Expect(log.contains("\"event\":\"message.sent\"") || log.contains("event=message.sent"), true)
+                    @Expect(log.contains("\"textLen\":19") || log.contains("textLen=19"), true)
                     @Expect(log.contains("secret message body"), false)
-                    @Expect(log.contains("senderHash="), true)
-                    @Expect(log.contains("peerHash="), true)
+                    @Expect(log.contains("\"senderHash\"") || log.contains("senderHash="), true)
+                    @Expect(log.contains("\"peerHash\"") || log.contains("peerHash="), true)
                 } finally {
                     CliConfig.model = oldModel
                 }

@@ -1,6 +1,7 @@
 package metis.gateway.core
 
 import metis.core.config.CliConfig
+import metis.gateway.logging.{gatewayLoggingCaptureConsoleForTest, gatewayLoggingCapturedConsoleForTest, gatewayLoggingResetForTest}
 import metis.gateway.model.{ChannelType, ChatType, InboundMessage, OutboundMessage, SendResult}
 import magic.config.Config
 
@@ -48,24 +49,49 @@ private func withGatewayChannelRuntimeTestHome<T>(block: () -> T): T {
 private func withGatewayChannelRuntimeLogCapture<T>(name: String, level: String, block: (String) -> T): T {
     let oldLevel = Config.logLevel
     let oldFile = Config.logFile
-    let path = "/tmp/metis-gateway-channel-runtime-${name}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}.log"
+    let oldMetisLevel = getVariable("METIS_LOG_LEVEL")
+    let oldMetisFile = getVariable("METIS_LOG_FILE")
+    let oldMetisConsoleLevel = getVariable("METIS_CONSOLE_LEVEL")
+    let path = CliConfig.logsDir.join("metis-gateway-channel-runtime-${name}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}.log").toString()
+    if (!exists(Path(path).parent)) {
+        Directory.create(Path(path).parent, recursive: true)
+    }
     try { remove(Path(path), recursive: true) } catch (_: Exception) { () }
     Config.logLevel = level
     Config.logFile = path
+    setVariable("METIS_LOG_LEVEL", level)
+    setVariable("METIS_LOG_FILE", path)
+    setVariable("METIS_CONSOLE_LEVEL", level)
+    gatewayLoggingResetForTest()
+    gatewayLoggingCaptureConsoleForTest()
     try {
         return block(path)
     } finally {
         Config.logLevel = oldLevel
         Config.logFile = oldFile
+        match (oldMetisLevel) {
+            case Some(value) => setVariable("METIS_LOG_LEVEL", value)
+            case None => setVariable("METIS_LOG_LEVEL", "")
+        }
+        match (oldMetisFile) {
+            case Some(value) => setVariable("METIS_LOG_FILE", value)
+            case None => setVariable("METIS_LOG_FILE", "")
+        }
+        match (oldMetisConsoleLevel) {
+            case Some(value) => setVariable("METIS_CONSOLE_LEVEL", value)
+            case None => setVariable("METIS_CONSOLE_LEVEL", "")
+        }
+        gatewayLoggingResetForTest()
         try { remove(Path(path), recursive: true) } catch (_: Exception) { () }
     }
 }
 
 private func gatewayChannelRuntimeReadLog(path: String): String {
+    let captured = String.join(gatewayLoggingCapturedConsoleForTest(), delimiter: "\n")
     if (!exists(Path(path))) {
-        return ""
+        return captured
     }
-    String.fromUtf8(File.readFrom(Path(path)))
+    String.fromUtf8(File.readFrom(Path(path))) + "\n" + captured
 }
 
 private class GatewayChannelRuntimeFailingInboundAdapter <: ChannelAdapter {
@@ -179,9 +205,9 @@ public class GatewayChannelRuntimeTest {
                 manager.startChannels()
 
                 let log = gatewayChannelRuntimeReadLog(path)
-                @Expect(log.contains("event=channel.started"), true)
-                @Expect(log.contains("accountId=default"), true)
-                @Expect(log.contains("accountId=work"), true)
+                @Expect(log.contains("\"event\":\"channel.started\"") || log.contains("event=channel.started"), true)
+                @Expect(log.contains("\"accountId\":\"default\"") || log.contains("accountId=default"), true)
+                @Expect(log.contains("\"accountId\":\"work\"") || log.contains("accountId=work"), true)
                 @Expect(log.contains("can-start-checked"), false)
                 @Expect(log.contains("marked-starting"), false)
             })
@@ -198,7 +224,7 @@ public class GatewayChannelRuntimeTest {
                 manager.startChannels()
 
                 let log = gatewayChannelRuntimeReadLog(path)
-                @Expect(log.contains("event=channel.timing"), true)
+                @Expect(log.contains("\"event\":\"channel.timing\"") || log.contains("event=channel.timing"), true)
                 @Expect(log.contains("can-start-checked"), true)
             })
         }
