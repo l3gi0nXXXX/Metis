@@ -804,16 +804,22 @@ public class TelegramAdapter <: ChannelAdapter {
     }
 
     public func send(message: OutboundMessage): SendResult {
-        let sentMessageId = this.sendWithMessageId(message)
-        if (!sentMessageId.trimAscii().isEmpty() || this.lastSendError.trimAscii().isEmpty()) {
+        let attempt = this.sendWithMessageIdAttempt(message, requireRunning: true)
+        let sentMessageId = attempt[0]
+        let detail = attempt[1].trimAscii()
+        if (sentMessageId.trimAscii().isEmpty() && !detail.isEmpty() && !detail.startsWith("telegram send error class=")) {
+            this.logSendFailure(message, detail)
+        }
+        if (!sentMessageId.trimAscii().isEmpty() || detail.isEmpty()) {
             return SendResult.Success
         }
-        SendResult.Failed("failed to send telegram message: ${this.lastSendError}")
+        SendResult.Failed("failed to send telegram message: ${detail}")
     }
 
     public func sendWithMessageId(message: OutboundMessage): String {
-        let sentMessageId = this.sendWithMessageIdImpl(message, requireRunning: true)
-        let detail = this.lastSendError.trimAscii()
+        let attempt = this.sendWithMessageIdAttempt(message, requireRunning: true)
+        let sentMessageId = attempt[0]
+        let detail = attempt[1].trimAscii()
         if (sentMessageId.trimAscii().isEmpty() && !detail.isEmpty() && !detail.startsWith("telegram send error class=")) {
             this.logSendFailure(message, detail)
         }
@@ -821,8 +827,9 @@ public class TelegramAdapter <: ChannelAdapter {
     }
 
     public func sendDirectWithMessageIdForGatewayRpc(message: OutboundMessage): String {
-        let sentMessageId = this.sendWithMessageIdImpl(message, requireRunning: false)
-        let detail = this.lastSendError.trimAscii()
+        let attempt = this.sendWithMessageIdAttempt(message, requireRunning: false)
+        let sentMessageId = attempt[0]
+        let detail = attempt[1].trimAscii()
         if (sentMessageId.trimAscii().isEmpty() && !detail.isEmpty() && !detail.startsWith("telegram send error class=")) {
             this.logSendFailure(message, detail)
         }
@@ -830,138 +837,143 @@ public class TelegramAdapter <: ChannelAdapter {
     }
 
     private func sendWithMessageIdImpl(message: OutboundMessage, requireRunning!: Bool): String {
+        let attempt = this.sendWithMessageIdAttempt(message, requireRunning: requireRunning)
+        attempt[0]
+    }
+
+    private func sendWithMessageIdAttempt(message: OutboundMessage, requireRunning!: Bool): (String, String) {
         if (requireRunning && !this.running) {
             this.lastSendError = "telegram adapter is not running"
-            return ""
+            return ("", this.lastSendError)
         }
         synchronized(this.queueMutex) {
             this.outboundLog.add(message)
         }
         if (!this.config.actions.sendMessage) {
             this.lastSendError = "telegram sendMessage action is disabled"
-            return ""
+            return ("", this.lastSendError)
         }
         var lastMessageId = ""
         for (payload in this.buildSendPayloads(message)) {
             if (this.payloadIsPoll(payload) && !this.config.actions.poll) {
                 this.lastSendError = "telegram poll action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (payload.get("validation_error").isSome()) {
                 this.lastSendError = this.payloadValidationError(payload)
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsDelete(payload) && !this.config.actions.deleteMessage) {
                 this.lastSendError = "telegram deleteMessage action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsClearButtons(payload) && !this.config.actions.editMessage) {
                 this.lastSendError = "telegram clear-buttons action requires editMessage action"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsEditButtons(payload) && !this.config.actions.editMessage) {
                 this.lastSendError = "telegram editButtons action requires editMessage action"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsEdit(payload) && !this.config.actions.editMessage) {
                 this.lastSendError = "telegram editMessage action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsEditMedia(payload) && !this.config.actions.editMessage) {
                 this.lastSendError = "telegram editMessage action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsPin(payload) && !this.config.actions.pinMessage) {
                 this.lastSendError = "telegram pinMessage action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsUnpin(payload) && !this.config.actions.unpinMessage) {
                 this.lastSendError = "telegram unpinMessage action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsReaction(payload) && !this.config.actions.reactions) {
                 this.lastSendError = "telegram reaction action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsInlineKeyboardInvalid(payload)) {
                 this.lastSendError = this.payloadValidationError(payload)
-                return ""
+                return ("", this.lastSendError)
             }
             if ((this.payloadIsDraft(payload) || this.payloadIsApproval(payload)) && payload.get("validation_error").isSome()) {
                 this.lastSendError = this.payloadValidationError(payload)
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsMediaInvalid(payload)) {
                 this.lastSendError = this.payloadValidationError(payload)
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsInlineKeyboard(payload) && !this.config.actions.inlineKeyboard) {
                 this.lastSendError = "telegram inlineKeyboard action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if ((this.payloadIsInlineKeyboard(payload) || this.payloadIsApproval(payload) || this.payloadIsEditButtons(payload)) &&
                 !this.inlineButtonsAllowedForPeer(message.peerId)) {
                 this.lastSendError = "telegram inline button scope blocks peer"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsDraft(payload) && !this.config.actions.editMessage) {
                 this.lastSendError = "telegram draft preview requires editMessage action"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsApproval(payload) && !this.config.actions.inlineKeyboard) {
                 this.lastSendError = "telegram approval buttons require inlineKeyboard action"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsSticker(payload) && !this.config.actions.sticker) {
                 this.lastSendError = "telegram sticker action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsPhoto(payload) && !this.config.actions.photo) {
                 this.lastSendError = "telegram photo action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsAnimation(payload) && !this.config.actions.photo) {
                 this.lastSendError = "telegram animation action requires photo action"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsDocument(payload) && !this.config.actions.document) {
                 this.lastSendError = "telegram document action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsAudio(payload) && !this.config.actions.audio) {
                 this.lastSendError = "telegram audio action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsVoice(payload) && !this.config.actions.voice) {
                 this.lastSendError = "telegram voice action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsVideo(payload) && !this.config.actions.video) {
                 this.lastSendError = "telegram video action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsVideoNote(payload) && !this.config.actions.videoNote) {
                 this.lastSendError = "telegram video-note action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsTopicCreate(payload) && !this.config.actions.createForumTopic) {
                 this.lastSendError = "telegram topic-create action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsTopicEdit(payload) && !this.config.actions.editForumTopic) {
                 this.lastSendError = "telegram topic-edit action is disabled"
-                return ""
+                return ("", this.lastSendError)
             }
             if (this.payloadIsChatAction(payload) && this.chatActionBackoffActive()) {
                 this.lastSendError = "telegram chat-action backoff active: ${this.chatActionBackoffReason}"
-                return ""
+                return ("", this.lastSendError)
             }
             let sentMessageId = this.sendPayloadToTelegram(payload)
             if (this.payloadIsChatAction(payload) && sentMessageId.isEmpty()) {
                 this.recordChatActionBackoffIfNeeded()
             }
             if (sentMessageId.isEmpty()) {
-                return ""
+                return ("", this.lastSendError)
             }
             lastMessageId = sentMessageId
         }
@@ -969,7 +981,7 @@ public class TelegramAdapter <: ChannelAdapter {
             this.recordSentTelegramMessage(message, lastMessageId)
             this.maybeRemoveAckAfterReply(message)
         }
-        lastMessageId
+        (lastMessageId, this.lastSendError)
     }
 
     public func simulateIncomingText(

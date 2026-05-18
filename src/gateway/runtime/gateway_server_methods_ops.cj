@@ -435,12 +435,14 @@ private func gatewayRecentLogFiles(limit: Int64): JsonArray {
         return out
     }
     var count: Int64 = 0
-    for (idx in names.size - 1..=-1:-1) {
+    var idx = names.size - 1
+    while (idx >= 0) {
         if (count >= limit) {
             break
         }
         out.add(JsonString(names[idx]))
         count += 1
+        idx -= 1
     }
     out
 }
