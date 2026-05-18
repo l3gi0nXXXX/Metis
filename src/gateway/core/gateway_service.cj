@@ -165,7 +165,12 @@ public class GatewayService {
                 let (effectiveReplyToMessageId, effectiveReplyInThread, degraded, policyReason) =
                     gatewayApplyOutboundChannelPolicy(user, channelName, replyToMessageId, replyInThread)
                 if (degraded) {
-                    LogUtils.info("Gateway.send policy: channel=${channelName} peer=${peerId} degraded=true reason=${policyReason}")
+                    gatewayLogEventInfo(
+                        "gateway/message",
+                        "message.outbound",
+                        "outbound policy degraded",
+                        fields: "channel=${channelName} accountId=${deliveryAccountId} peerHash=${gatewayLogIdentityHash(peerId)} status=degraded reason=${gatewayLogEventValue(policyReason)}"
+                    )
                 }
                 let autoVoiceText = if (telegramAutoVoiceReply && this.telegramIsSilentReplyText(text)) {
                     let fallback = this.telegramVoiceFallbackText(message)
@@ -201,21 +206,41 @@ public class GatewayService {
     private func logInboundTurnOutcome(conversationKey: String, message: InboundMessage, turn: GatewayResolvedSessionTurnResult): Unit {
         let context = turn.context
         let execution = turn.execution
-        LogUtils.info("Gateway.route: conversationKey=${conversationKey}, resolvedSession=${context.sessionKey}")
-        if (!context.matchedBy.isEmpty()) {
-            LogUtils.info(
-                "Gateway.route.resolve: channel=${context.channelName}, accountId=${context.accountId}, peer=${message.peerId}, matchedBy=${context.matchedBy}, agentId=${context.agentId}"
-            )
-        }
-        LogUtils.info("Gateway.reply: answerChars=${execution.answer.size}")
+        gatewayLogEventInfo(
+            "gateway/message",
+            "message.routed",
+            "inbound message routed to session",
+            fields: "channel=${context.channelName} accountId=${context.accountId} sessionKey=${gatewayLogEventValue(context.sessionKey)} peerHash=${gatewayLogIdentityHash(message.peerId)} matchedBy=${gatewayLogEventValue(context.matchedBy)} agentId=${gatewayLogEventValue(context.agentId)} accepted=true reason=${gatewayLogEventValue("accepted")}"
+        )
+        gatewayLogEventInfo(
+            "gateway/message",
+            "message.reply.generated",
+            "gateway reply generated",
+            fields: "channel=${context.channelName} accountId=${context.accountId} sessionKey=${gatewayLogEventValue(context.sessionKey)} answerChars=${execution.answer.size} deliveryStatus=${gatewayLogEventValue(execution.deliveryStatus)}"
+        )
         match (context.deliveryTarget) {
             case Some(target) =>
-                LogUtils.info("Gateway.send: channel=${target.channelName} peer=${target.peerId} ok")
+                gatewayLogEventInfo(
+                    "gateway/message",
+                    if (execution.delivered) { "message.sent" } else { "message.send_failed" },
+                    if (execution.delivered) { "gateway reply delivered" } else { "gateway reply delivery failed" },
+                    fields: "channel=${target.channelName} accountId=${context.accountId} sessionKey=${gatewayLogEventValue(context.sessionKey)} peerHash=${gatewayLogIdentityHash(target.peerId)} deliveryStatus=${gatewayLogEventValue(execution.deliveryStatus)}"
+                )
             case None =>
-                LogUtils.info("Gateway.send: delivery target missing after execution")
+                gatewayLogEventInfo(
+                    "gateway/message",
+                    "message.send_failed",
+                    "gateway reply delivery target missing",
+                    fields: "channel=${context.channelName} accountId=${context.accountId} sessionKey=${gatewayLogEventValue(context.sessionKey)} deliveryStatus=${gatewayLogEventValue(execution.deliveryStatus)} errorKind=missing_delivery_target"
+                )
         }
         if (!execution.delivered) {
-            LogUtils.error("Gateway.send: deliveryStatus=${execution.deliveryStatus} err=${execution.deliveryError}")
+            gatewayLogEventError(
+                "gateway/message",
+                "message.send_failed",
+                "gateway reply delivery failed",
+                fields: "channel=${context.channelName} accountId=${context.accountId} sessionKey=${gatewayLogEventValue(context.sessionKey)} deliveryStatus=${gatewayLogEventValue(execution.deliveryStatus)} errorKind=delivery_failed error=${gatewayLogEventValue(execution.deliveryError)}"
+            )
         }
     }
 
@@ -225,15 +250,29 @@ public class GatewayService {
         } else {
             accountId.trimAscii()
         }
-        LogUtils.info(
-            "Gateway.inbound: channel=${channelToString(message.channel)}, account=${effectiveAccountId}, chatType=${chatTypeToString(message.chatType)}, sender=${message.senderId}, peer=${message.peerId}, text='${message.text}'"
+        gatewayLogEventInfo(
+            "gateway/message",
+            "message.inbound",
+            "inbound message accepted by gateway",
+            fields: "channel=${channelToString(message.channel)} accountId=${effectiveAccountId} chatType=${chatTypeToString(message.chatType)} senderHash=${gatewayLogIdentityHash(message.senderId)} peerHash=${gatewayLogIdentityHash(message.peerId)} textLen=${message.text.size} mediaCount=${message.mediaContext.size()} messageId=${gatewayLogEventValue(message.messageId)}"
+        )
+        gatewayLogEventDebug(
+            "gateway/message",
+            "message.inbound.preview",
+            "inbound message preview",
+            fields: "channel=${channelToString(message.channel)} accountId=${effectiveAccountId} messageId=${gatewayLogEventValue(message.messageId)} textLen=${message.text.size}"
         )
         let user = CliSettingManager.readGatewaySettings()
         if (channelToString(message.channel) == "feishu" && this.handleFeishuNativeCommand(message, effectiveAccountId, user)) {
             return
         }
         let decision = this.router.route(message)
-        LogUtils.info("Gateway.route: accepted=${decision.accepted}, reason=${decision.reason}")
+        gatewayLogEventInfo(
+            "gateway/message",
+            "message.routed",
+            "inbound route decision",
+            fields: "channel=${channelToString(message.channel)} accountId=${effectiveAccountId} peerHash=${gatewayLogIdentityHash(message.peerId)} accepted=${decision.accepted} reason=${gatewayLogEventValue(decision.reason)}"
+        )
         if (!decision.accepted) {
             // P0: 被拒绝消息直接忽略。后续可补审计日志与指标上报。
             return
@@ -3907,7 +3946,12 @@ public class GatewayService {
                     reason,
                     durationMs: this.startNowMs() - sendStartedAtMs
                 )
-                LogUtils.info("Gateway.sendTextToPeer: channel=${nm} peer=${peerId} cancelled by OpenClaw plugin hook")
+                gatewayLogEventInfo(
+                    "gateway/message",
+                    "message.send_failed",
+                    "outbound message cancelled by plugin hook",
+                    fields: "channel=${nm} accountId=${accountId} peerHash=${gatewayLogIdentityHash(peerId)} status=skipped errorKind=plugin_cancelled error=${gatewayLogEventValue(reason)} durationMs=${this.startNowMs() - sendStartedAtMs}"
+                )
                 return ""
             } else {
                 let modified = this.telegramJsonString(hook, "text", text)
@@ -3919,8 +3963,19 @@ public class GatewayService {
         let (effectiveReplyToMessageId, effectiveReplyInThread, degraded, policyReason) =
             gatewayApplyOutboundChannelPolicy(user, nm, replyToMessageId, replyInThread)
         if (degraded) {
-            LogUtils.info("Gateway.sendTextToPeer policy: channel=${nm} peer=${peerId} degraded=true reason=${policyReason}")
+            gatewayLogEventInfo(
+                "gateway/message",
+                "message.outbound",
+                "outbound policy degraded",
+                fields: "channel=${nm} accountId=${accountId} peerHash=${gatewayLogIdentityHash(peerId)} status=degraded reason=${gatewayLogEventValue(policyReason)}"
+            )
         }
+        gatewayLogEventInfo(
+            "gateway/message",
+            "message.outbound",
+            "outbound message prepared",
+            fields: "channel=${nm} accountId=${accountId} peerHash=${gatewayLogIdentityHash(peerId)} textLen=${effectiveText.size} replyTo=${if (effectiveReplyToMessageId.isSome()) { "true" } else { "false" }} replyInThread=${effectiveReplyInThread}"
+        )
         let outbound = OutboundMessage(
             channelTypeFromAdapterName(nm),
             peerId,
@@ -3943,7 +3998,12 @@ public class GatewayService {
                 "",
                 durationMs: this.startNowMs() - sendStartedAtMs
             )
-            LogUtils.info("Gateway.sendTextToPeer: channel=${nm} peer=${peerId} rawAccountId=${accountId} canonicalAccountId=${canonicalAccountId} ok")
+            gatewayLogEventInfo(
+                "gateway/message",
+                "message.sent",
+                "outbound message sent",
+                fields: "channel=${nm} accountId=${canonicalAccountId} rawAccountId=${accountId} peerHash=${gatewayLogIdentityHash(peerId)} textLen=${effectiveText.size} messageId=${gatewayLogEventValue(directSend.messageId)} status=ok durationMs=${this.startNowMs() - sendStartedAtMs}"
+            )
             return directSend.messageId
         }
         let send = this.channelManager.sendToAdapterName(nm, outbound)
@@ -3959,7 +4019,12 @@ public class GatewayService {
                 "",
                 durationMs: this.startNowMs() - sendStartedAtMs
             )
-            LogUtils.info("Gateway.sendTextToPeer: channel=${nm} peer=${peerId} rawAccountId=${accountId} canonicalAccountId=${canonicalAccountId} ok")
+            gatewayLogEventInfo(
+                "gateway/message",
+                "message.sent",
+                "outbound message sent",
+                fields: "channel=${nm} accountId=${canonicalAccountId} rawAccountId=${accountId} peerHash=${gatewayLogIdentityHash(peerId)} textLen=${effectiveText.size} messageId=${gatewayLogEventValue(send.messageId)} status=ok durationMs=${this.startNowMs() - sendStartedAtMs}"
+            )
             return send.messageId
         }
         let directFailure = if (directSend.reasonKind.isEmpty() || directSend.reasonKind == "empty_message_id") {
@@ -3979,8 +4044,11 @@ public class GatewayService {
             finalReason,
             durationMs: this.startNowMs() - sendStartedAtMs
         )
-        LogUtils.error(
-            "Gateway.sendTextToPeer: channel=${nm} peer=${peerId} rawAccountId=${accountId} canonicalAccountId=${canonicalAccountId} adapterName=${nm} reasonKind=${send.reasonKind} lastReason=${finalReason}"
+        gatewayLogEventError(
+            "gateway/message",
+            "message.send_failed",
+            "outbound message send failed",
+            fields: "channel=${nm} accountId=${canonicalAccountId} rawAccountId=${accountId} peerHash=${gatewayLogIdentityHash(peerId)} textLen=${effectiveText.size} status=failed errorKind=${send.reasonKind} error=${gatewayLogEventValue(finalReason)} durationMs=${this.startNowMs() - sendStartedAtMs}"
         )
         throw Exception("send failed for channel='${nm}' peer=${peerId} reasonKind=${send.reasonKind} lastReason=${finalReason}")
     }

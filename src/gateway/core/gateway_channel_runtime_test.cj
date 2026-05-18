@@ -2,6 +2,7 @@ package metis.gateway.core
 
 import metis.core.config.CliConfig
 import metis.gateway.model.{ChannelType, ChatType, InboundMessage, OutboundMessage, SendResult}
+import magic.config.Config
 
 import std.collection.ArrayList
 import std.env.{getVariable, setVariable}
@@ -42,6 +43,29 @@ private func withGatewayChannelRuntimeTestHome<T>(block: () -> T): T {
         }
         CliConfig.invalidatePathCache()
     }
+}
+
+private func withGatewayChannelRuntimeLogCapture<T>(name: String, level: String, block: (String) -> T): T {
+    let oldLevel = Config.logLevel
+    let oldFile = Config.logFile
+    let path = "/tmp/metis-gateway-channel-runtime-${name}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}.log"
+    try { remove(Path(path), recursive: true) } catch (_: Exception) { () }
+    Config.logLevel = level
+    Config.logFile = path
+    try {
+        return block(path)
+    } finally {
+        Config.logLevel = oldLevel
+        Config.logFile = oldFile
+        try { remove(Path(path), recursive: true) } catch (_: Exception) { () }
+    }
+}
+
+private func gatewayChannelRuntimeReadLog(path: String): String {
+    if (!exists(Path(path))) {
+        return ""
+    }
+    String.fromUtf8(File.readFrom(Path(path)))
 }
 
 private class GatewayChannelRuntimeFailingInboundAdapter <: ChannelAdapter {
@@ -142,6 +166,44 @@ private func gatewayRuntimeTestBool(obj: JsonObject, key: String): Bool {
 
 @Test
 public class GatewayChannelRuntimeTest {
+    @TestCase
+    public func channelManagerLogsAccountStartSummariesWithoutInfoTimingNoise(): Unit {
+        withGatewayChannelRuntimeTestHome {
+            withGatewayChannelRuntimeLogCapture("start-info", "info", { path =>
+                let manager = GatewayChannelManager()
+                let first = GatewayChannelLifecycleFakeAdapter("telegram", "default")
+                let second = GatewayChannelLifecycleFakeAdapter("telegram", "work")
+                manager.registerAdapter(first, channelId: "telegram", accountId: "default")
+                manager.registerAdapter(second, channelId: "telegram", accountId: "work")
+
+                manager.startChannels()
+
+                let log = gatewayChannelRuntimeReadLog(path)
+                @Expect(log.contains("event=channel.started"), true)
+                @Expect(log.contains("accountId=default"), true)
+                @Expect(log.contains("accountId=work"), true)
+                @Expect(log.contains("can-start-checked"), false)
+                @Expect(log.contains("marked-starting"), false)
+            })
+        }
+    }
+
+    @TestCase
+    public func channelManagerKeepsTimingDetailsAtDebugLevel(): Unit {
+        withGatewayChannelRuntimeTestHome {
+            withGatewayChannelRuntimeLogCapture("start-debug", "debug", { path =>
+                let manager = GatewayChannelManager()
+                manager.registerAdapter(GatewayChannelLifecycleFakeAdapter("telegram", "default"), channelId: "telegram", accountId: "default")
+
+                manager.startChannels()
+
+                let log = gatewayChannelRuntimeReadLog(path)
+                @Expect(log.contains("event=channel.timing"), true)
+                @Expect(log.contains("can-start-checked"), true)
+            })
+        }
+    }
+
     @TestCase
     public func autoEnabledPrimeClearsStaleManualStop(): Unit {
         withGatewayChannelRuntimeTestHome {

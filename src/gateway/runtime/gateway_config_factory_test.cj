@@ -52,6 +52,45 @@ private func factorySnapshotHasAccount(snapshot: JsonObject, channelId: String, 
 @Test
 public class GatewayConfigFactoryTest {
     @TestCase
+    public func gatewayShellReadySummaryFormatsHumanChannelSnapshot(): Unit {
+        let snapshot = JsonObject()
+        let channelAccounts = JsonObject()
+        let telegramAccounts = JsonArray([])
+        let running = JsonObject()
+        running.put("accountId", JsonString("default"))
+        running.put("configured", JsonBool(true))
+        running.put("running", JsonBool(true))
+        running.put("connected", JsonBool(true))
+        running.put("lastError", JsonString(""))
+        telegramAccounts.add(running)
+        let waiting = JsonObject()
+        waiting.put("accountId", JsonString("writer"))
+        waiting.put("configured", JsonBool(true))
+        waiting.put("running", JsonBool(false))
+        waiting.put("connected", JsonBool(false))
+        waiting.put("lastError", JsonString(""))
+        telegramAccounts.add(waiting)
+        channelAccounts.put("telegram", telegramAccounts)
+        snapshot.put("channelAccounts", channelAccounts)
+
+        let lines = gatewayShellReadySummaryLines(
+            "qwen/test",
+            "/tmp/metis.log",
+            "http://127.0.0.1:8080",
+            "http://127.0.0.1:8080/control",
+            snapshot,
+            42
+        )
+        let rendered = String.join(lines, delimiter: "\n")
+        @Expect(rendered.contains("model: qwen/test"), true)
+        @Expect(rendered.contains("log file: /tmp/metis.log"), true)
+        @Expect(rendered.contains("Control UI: http://127.0.0.1:8080/control"), true)
+        @Expect(rendered.contains("channel telegram/default running"), true)
+        @Expect(rendered.contains("channel telegram/writer waiting"), true)
+        @Expect(rendered.contains("{\""), false)
+    }
+
+    @TestCase
     public func buildGatewayServiceRegistersNativeTelegramAdapter(): Unit {
         var user = GatewayUserSettings()
         user.telegram.enabled = true

@@ -770,7 +770,7 @@ public class AgentBridge {
         synchronized(this.replyLock) {
             let effectiveAgentId = gatewayTurnEffectiveAgentId(agentId, turnContext)
             LogUtils.info(
-                "Gateway.reply: channel=${channelName.trimAscii().toAsciiLower()}, agentId=${effectiveAgentId}, conversationKey=${conversationKey}, rawPrompt='${prompt}'"
+                "Gateway.reply: channel=${channelName.trimAscii().toAsciiLower()}, agentId=${effectiveAgentId}, conversationKey=${conversationKey}, promptChars=${prompt.size}"
             )
             match (gatewayAgentBridgeReplyRunnerForTest) {
                 case Some(runner) => return runner(conversationKey, prompt, channelName, effectiveAgentId, streamingEnabled, streamChunkHook)
@@ -854,7 +854,7 @@ public class AgentBridge {
                 }
             }
             LogUtils.info(
-                "Gateway.reply: forcedSkill=${match (forcedSkillName) { case Some(s) => s case None => "none" }}, effectivePrompt='${effectivePrompt}'"
+                "Gateway.reply: forcedSkill=${match (forcedSkillName) { case Some(s) => s case None => "none" }}, effectivePromptChars=${effectivePrompt.size}"
             )
             let skillNotice = gatewaySkillSelectionUserNotice(skillsEnabled, selectedSkillNameOpt)
             if (!skillNotice.isEmpty()) {

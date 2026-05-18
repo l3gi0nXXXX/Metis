@@ -965,7 +965,7 @@ public class QQAdapter <: ChannelAdapter {
                 continue
             }
             if (op == 11) { // Heartbeat ACK
-                LogUtils.info("QQ official_ws: heartbeat ack")
+                LogUtils.debug("QQ official_ws: heartbeat ack")
                 continue
             }
             if (op == 9) { // Invalid Session
