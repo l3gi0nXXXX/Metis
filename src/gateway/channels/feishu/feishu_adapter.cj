@@ -63,6 +63,16 @@ public class FeishuResourceDownloadResult {
     }
 }
 
+private class FeishuEventAccountResolution {
+    public let accountId: String
+    public let reason: String
+
+    public init(accountId!: String = "", reason!: String = "") {
+        this.accountId = if (accountId.trimAscii().isEmpty()) { "" } else { gatewayFeishuNormalizeAccountId(accountId) }
+        this.reason = reason.trimAscii()
+    }
+}
+
 public class FeishuNoopApiClient <: FeishuApiClient {
     public init() {}
 
@@ -814,7 +824,15 @@ public class FeishuAdapter <: ChannelAdapter {
     }
 
     private func validateFeishuEventOwnership(root: JsonObject): Option<String> {
-        let accountId = this.resolveFeishuAccountIdWithoutApp(root)
+        let resolution = this.resolveFeishuEventAccount(root)
+        if (!resolution.reason.isEmpty()) {
+            let eventAppId = this.readFeishuEventAppId(root)
+            PrintUtils.printLine(
+                "Feishu ingest: ${resolution.reason} for event app_id=${this.feishuMaskDiagnosticValue(eventAppId)}"
+            )
+            return Some(resolution.reason)
+        }
+        let accountId = resolution.accountId
         let cfg = this.feishuConfigForAccount(accountId)
         let expectedAppId = cfg.appId.trimAscii()
         if (expectedAppId.isEmpty()) {
@@ -822,13 +840,27 @@ public class FeishuAdapter <: ChannelAdapter {
         }
         let eventAppId = this.readFeishuEventAppId(root)
         if (eventAppId.isEmpty()) {
+            PrintUtils.printLine("Feishu ingest: missing event app_id for account=${accountId}, ownership check skipped")
             return None<String>
         }
         if (eventAppId != expectedAppId) {
-            PrintUtils.printLine("Feishu ingest: wrong app for account=${accountId}, event app_id mismatch")
+            PrintUtils.printLine(
+                "Feishu ingest: wrong app for account=${accountId}, expected_app_id=${this.feishuMaskDiagnosticValue(expectedAppId)}, event_app_id=${this.feishuMaskDiagnosticValue(eventAppId)}"
+            )
             return Some("wrong_app")
         }
         None<String>
+    }
+
+    private func feishuMaskDiagnosticValue(value: String): String {
+        let trimmed = value.trimAscii()
+        if (trimmed.isEmpty()) {
+            return ""
+        }
+        if (trimmed.size <= 6) {
+            return "***"
+        }
+        "${trimmed[0..3]}...${trimmed[trimmed.size - 3..]}"
     }
 
     private func readFeishuEventAppId(root: JsonObject): String {
@@ -855,28 +887,71 @@ public class FeishuAdapter <: ChannelAdapter {
         ""
     }
 
-    private func resolveFeishuAccountIdWithoutApp(root: JsonObject): String {
+    private func resolveFeishuEventAccount(root: JsonObject): FeishuEventAccountResolution {
+        let envelopeAccountId = this.readFeishuEnvelopeAccountId(root)
+        if (!envelopeAccountId.isEmpty()) {
+            return FeishuEventAccountResolution(accountId: envelopeAccountId)
+        }
+        let eventAppId = this.readFeishuEventAppId(root)
+        if (!eventAppId.isEmpty()) {
+            let byAppId = this.resolveFeishuAccountIdByAppId(eventAppId)
+            if (!byAppId.reason.isEmpty() || !byAppId.accountId.isEmpty()) {
+                return byAppId
+            }
+        }
+        FeishuEventAccountResolution(accountId: this.effectiveAccountId())
+    }
+
+    private func readFeishuEnvelopeAccountId(root: JsonObject): String {
+        for (key in ["account_id", "accountId"]) {
+            let value = this.readStringField(root, key).trimAscii()
+            if (!value.isEmpty()) {
+                return value
+            }
+        }
         let header = match (root.get("header")) {
             case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
             case None => JsonObject()
         }
-        for (key in ["account_id", "accountId", "tenant_key", "tenantKey"]) {
+        for (key in ["account_id", "accountId"]) {
             let value = this.readStringField(header, key).trimAscii()
             if (!value.isEmpty()) {
-                return this.normalizeAccountId(value)
+                return value
             }
         }
         let event = match (root.get("event")) {
             case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
             case None => JsonObject()
         }
-        for (key in ["account_id", "accountId", "tenant_key", "tenantKey"]) {
+        for (key in ["account_id", "accountId"]) {
             let value = this.readStringField(event, key).trimAscii()
             if (!value.isEmpty()) {
-                return this.normalizeAccountId(value)
+                return value
             }
         }
-        this.effectiveAccountId()
+        ""
+    }
+
+    private func resolveFeishuAccountIdByAppId(appId: String): FeishuEventAccountResolution {
+        let trimmedAppId = appId.trimAscii()
+        if (trimmedAppId.isEmpty()) {
+            return FeishuEventAccountResolution()
+        }
+        let matches = ArrayList<String>()
+        for (candidate in gatewayFeishuListAccountIds(this.baseConfig)) {
+            let normalized = gatewayFeishuNormalizeAccountId(candidate)
+            let cfg = this.feishuConfigForAccount(normalized)
+            if (cfg.appId.trimAscii() == trimmedAppId) {
+                matches.add(normalized)
+            }
+        }
+        if (matches.size == 1) {
+            return FeishuEventAccountResolution(accountId: matches[0])
+        }
+        if (matches.size > 1) {
+            return FeishuEventAccountResolution(reason: "ambiguous_app_id")
+        }
+        FeishuEventAccountResolution()
     }
 
     private func feishuEventIsStale(root: JsonObject): Bool {
@@ -2574,25 +2649,9 @@ public class FeishuAdapter <: ChannelAdapter {
     }
 
     private func resolveFeishuAccountId(root: JsonObject): String {
-        let header = match (root.get("header")) {
-            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
-            case None => JsonObject()
-        }
-        for (key in ["account_id", "accountId", "tenant_key", "tenantKey", "app_id", "appId"]) {
-            let value = this.readStringField(header, key).trimAscii()
-            if (!value.isEmpty()) {
-                return this.normalizeAccountId(value)
-            }
-        }
-        let event = match (root.get("event")) {
-            case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
-            case None => JsonObject()
-        }
-        for (key in ["account_id", "accountId", "tenant_key", "tenantKey", "app_id", "appId"]) {
-            let value = this.readStringField(event, key).trimAscii()
-            if (!value.isEmpty()) {
-                return this.normalizeAccountId(value)
-            }
+        let resolution = this.resolveFeishuEventAccount(root)
+        if (!resolution.accountId.isEmpty()) {
+            return resolution.accountId
         }
         this.effectiveAccountId()
     }

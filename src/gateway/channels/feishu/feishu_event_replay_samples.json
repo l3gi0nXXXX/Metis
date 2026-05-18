@@ -447,6 +447,43 @@
     }
   },
   {
+    "name": "sdk_tenant_key_message",
+    "payload": {
+      "header": {
+        "event_type": "im.message.receive_v1"
+      },
+      "event": {
+        "tenant_key": "2d310bf3d74f575e",
+        "app_id": "cli_app_a",
+        "sender": {
+          "sender_id": {
+            "open_id": "ou_fixture_sender"
+          }
+        },
+        "message": {
+          "message_id": "om_fixture_sdk_tenant_key",
+          "chat_id": "oc_fixture_group",
+          "chat_type": "group",
+          "message_type": "text",
+          "content": "{\"text\":\"sdk tenant key hello\"}",
+          "root_id": "",
+          "thread_id": "omt_fixture_sdk"
+        }
+      }
+    },
+    "expected": {
+      "ignored": false,
+      "dedup": true,
+      "accountId": "tenant-a",
+      "peerId": "oc_fixture_group",
+      "messageId": "om_fixture_sdk_tenant_key",
+      "mediaMessageId": "",
+      "threadId": "omt_fixture_sdk",
+      "systemEventKind": "",
+      "mediaKind": ""
+    }
+  },
+  {
     "name": "wrong_app",
     "payload": {
       "header": {

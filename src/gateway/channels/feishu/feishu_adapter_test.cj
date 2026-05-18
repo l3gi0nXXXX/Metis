@@ -81,6 +81,8 @@ public class FeishuAdapterTest {
         threadId!: String = "",
         headerAccountId!: String = "",
         appId!: String = "",
+        eventAppId!: String = "",
+        tenantKey!: String = "",
         createTime!: String = "",
         mentions!: String = ""
     ): String {
@@ -92,11 +94,20 @@ public class FeishuAdapterTest {
             headerParts.add("\"app_id\":\"${appId}\"")
         }
         let headerExtra = if (headerParts.isEmpty()) { "" } else { "," + String.join(headerParts.toArray(), delimiter: ",") }
+        let eventParts = ArrayList<String>()
+        if (!tenantKey.isEmpty()) {
+            eventParts.add("\"tenant_key\":\"${tenantKey}\"")
+        }
+        if (!eventAppId.isEmpty()) {
+            eventParts.add("\"app_id\":\"${eventAppId}\"")
+        }
+        let eventPrefix = if (eventParts.isEmpty()) { "" } else { String.join(eventParts.toArray(), delimiter: ",") + "," }
         let mentionField = if (!mentions.isEmpty()) { ",\"mentions\":${mentions}" } else { "" }
         let createTimeField = if (!createTime.isEmpty()) { ",\"create_time\":\"${createTime}\"" } else { "" }
         "{" +
             "\"header\":{\"event_type\":\"im.message.receive_v1\"${headerExtra}}," +
             "\"event\":{" +
+            eventPrefix +
             "\"sender\":{\"sender_id\":{\"open_id\":\"${senderId}\"}}," +
             "\"message\":{" +
             "\"message_id\":\"${messageId}\"," +
@@ -113,10 +124,33 @@ public class FeishuAdapterTest {
             "}"
     }
 
-    private func cardActionPayload(action: String, accountId!: String = "tenant-a"): String {
+    private func cardActionPayload(
+        action: String,
+        accountId!: String = "tenant-a",
+        appId!: String = "",
+        eventAppId!: String = "",
+        tenantKey!: String = ""
+    ): String {
+        let headerParts = ArrayList<String>()
+        headerParts.add("\"event_type\":\"card.action.trigger\"")
+        if (!accountId.isEmpty()) {
+            headerParts.add("\"account_id\":\"${accountId}\"")
+        }
+        if (!appId.isEmpty()) {
+            headerParts.add("\"app_id\":\"${appId}\"")
+        }
+        let eventParts = ArrayList<String>()
+        if (!tenantKey.isEmpty()) {
+            eventParts.add("\"tenant_key\":\"${tenantKey}\"")
+        }
+        if (!eventAppId.isEmpty()) {
+            eventParts.add("\"app_id\":\"${eventAppId}\"")
+        }
+        let eventPrefix = if (eventParts.isEmpty()) { "" } else { String.join(eventParts.toArray(), delimiter: ",") + "," }
         "{" +
-            "\"header\":{\"event_type\":\"card.action.trigger\",\"account_id\":\"${accountId}\"}," +
+            "\"header\":{" + String.join(headerParts.toArray(), delimiter: ",") + "}," +
             "\"event\":{" +
+            eventPrefix +
             "\"operator\":{\"open_id\":\"ou_operator\"}," +
             "\"context\":{\"open_message_id\":\"om_card\",\"open_chat_id\":\"oc_card\"}," +
             "\"action\":{\"value\":{\"action\":\"${action}\",\"nonce\":\"n-1\"}}" +
@@ -124,15 +158,38 @@ public class FeishuAdapterTest {
             "}"
     }
 
-    private func reactionPayload(accountId!: String = "tenant-a", actionTime!: String = ""): String {
+    private func reactionPayload(
+        accountId!: String = "tenant-a",
+        actionTime!: String = "",
+        appId!: String = "",
+        eventAppId!: String = "",
+        tenantKey!: String = ""
+    ): String {
         let effectiveActionTime = if (actionTime.trimAscii().isEmpty()) {
             DateTime.now().toUnixTimeStamp().toMilliseconds().toString()
         } else {
             actionTime.trimAscii()
         }
+        let headerParts = ArrayList<String>()
+        headerParts.add("\"event_type\":\"im.message.reaction.created_v1\"")
+        if (!accountId.isEmpty()) {
+            headerParts.add("\"account_id\":\"${accountId}\"")
+        }
+        if (!appId.isEmpty()) {
+            headerParts.add("\"app_id\":\"${appId}\"")
+        }
+        let eventParts = ArrayList<String>()
+        if (!tenantKey.isEmpty()) {
+            eventParts.add("\"tenant_key\":\"${tenantKey}\"")
+        }
+        if (!eventAppId.isEmpty()) {
+            eventParts.add("\"app_id\":\"${eventAppId}\"")
+        }
+        let eventPrefix = if (eventParts.isEmpty()) { "" } else { String.join(eventParts.toArray(), delimiter: ",") + "," }
         "{" +
-            "\"header\":{\"event_type\":\"im.message.reaction.created_v1\",\"account_id\":\"${accountId}\"}," +
+            "\"header\":{" + String.join(headerParts.toArray(), delimiter: ",") + "}," +
             "\"event\":{" +
+            eventPrefix +
             "\"message_id\":\"om_reacted\"," +
             "\"chat_id\":\"oc_react\"," +
             "\"chat_type\":\"group\"," +
@@ -165,10 +222,32 @@ public class FeishuAdapterTest {
             "}"
     }
 
-    private func driveCommentPayload(accountId!: String = "tenant-a"): String {
+    private func driveCommentPayload(
+        accountId!: String = "tenant-a",
+        appId!: String = "",
+        eventAppId!: String = "",
+        tenantKey!: String = ""
+    ): String {
+        let headerParts = ArrayList<String>()
+        headerParts.add("\"event_type\":\"drive.file.comment.created_v1\"")
+        if (!accountId.isEmpty()) {
+            headerParts.add("\"account_id\":\"${accountId}\"")
+        }
+        if (!appId.isEmpty()) {
+            headerParts.add("\"app_id\":\"${appId}\"")
+        }
+        let eventParts = ArrayList<String>()
+        if (!tenantKey.isEmpty()) {
+            eventParts.add("\"tenant_key\":\"${tenantKey}\"")
+        }
+        if (!eventAppId.isEmpty()) {
+            eventParts.add("\"app_id\":\"${eventAppId}\"")
+        }
+        let eventPrefix = if (eventParts.isEmpty()) { "" } else { String.join(eventParts.toArray(), delimiter: ",") + "," }
         "{" +
-            "\"header\":{\"event_type\":\"drive.file.comment.created_v1\",\"account_id\":\"${accountId}\"}," +
+            "\"header\":{" + String.join(headerParts.toArray(), delimiter: ",") + "}," +
             "\"event\":{" +
+            eventPrefix +
             "\"comment_id\":\"comment_1\"," +
             "\"reply_id\":\"reply_1\"," +
             "\"file_token\":\"doccn_1\"," +
@@ -1367,6 +1446,128 @@ public class FeishuAdapterTest {
     }
 
     @TestCase
+    public func tenantKeyDoesNotOverrideMetisAccountIdForSdkEventWithoutHeaderAccount(): Unit {
+        let writer = JsonObject()
+        writer.put("appId", JsonString("cli_writer_app"))
+        let accounts = JsonObject()
+        accounts.put("feishu-writer", writer)
+        let adapter = FeishuAdapter(
+            config: FeishuConfig(enabled: true, appId: "cli_default_app", accounts: Some(accounts))
+        )
+        adapter.start()
+
+        @Expect(adapter.ingestWebhookPayload(this.webhookPayload(
+            "om_sdk_writer",
+            "oc_writer_group",
+            "ou_writer",
+            "{\\\"text\\\":\\\"writer sdk hello\\\"}",
+            eventAppId: "cli_writer_app",
+            tenantKey: "2d310bf3d74f575e"
+        )).contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 1)
+        @Expect(inbound[0].accountId, "feishu-writer")
+        @Expect(inbound[0].mediaContext.get("accountId").getOrThrow().asString().getValue(), "feishu-writer")
+        let route = inbound[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("imRoute").getOrThrow().asObject()
+        @Expect(route.get("accountId").getOrThrow().asString().getValue(), "feishu-writer")
+        @Expect(route.get("peerId").getOrThrow().asString().getValue(), "oc_writer_group")
+    }
+
+    @TestCase
+    public func explicitMetisAccountStillRejectsWrongEventAppId(): Unit {
+        let writer = JsonObject()
+        writer.put("appId", JsonString("cli_writer_app"))
+        let accounts = JsonObject()
+        accounts.put("feishu-writer", writer)
+        let adapter = FeishuAdapter(
+            config: FeishuConfig(enabled: true, appId: "cli_default_app", accounts: Some(accounts)),
+            accountId: "feishu-writer"
+        )
+        adapter.start()
+
+        let response = JsonValue.fromStr(adapter.ingestWebhookPayload(this.webhookPayload(
+            "om_writer_wrong_app",
+            "oc_writer_group",
+            "ou_writer",
+            "{\\\"text\\\":\\\"wrong app\\\"}",
+            headerAccountId: "feishu-writer",
+            eventAppId: "cli_default_app",
+            tenantKey: "2d310bf3d74f575e"
+        ))).asObject()
+        @Expect(response.get("ignored").getOrThrow().asBool().getValue(), true)
+        @Expect(response.get("reason").getOrThrow().asString().getValue(), "wrong_app")
+        @Expect(adapter.pullInbound().size, 0)
+    }
+
+    @TestCase
+    public func ambiguousEventAppIdIsRejectedBeforeTenantKeyCanRoute(): Unit {
+        let writer = JsonObject()
+        writer.put("appId", JsonString("cli_shared_app"))
+        let reader = JsonObject()
+        reader.put("appId", JsonString("cli_shared_app"))
+        let accounts = JsonObject()
+        accounts.put("feishu-writer", writer)
+        accounts.put("feishu-reader", reader)
+        let adapter = FeishuAdapter(config: FeishuConfig(enabled: true, accounts: Some(accounts)))
+        adapter.start()
+
+        let response = JsonValue.fromStr(adapter.ingestWebhookPayload(this.webhookPayload(
+            "om_ambiguous_app",
+            "oc_writer_group",
+            "ou_writer",
+            "{\\\"text\\\":\\\"ambiguous app\\\"}",
+            eventAppId: "cli_shared_app",
+            tenantKey: "feishu-writer"
+        ))).asObject()
+        @Expect(response.get("ignored").getOrThrow().asBool().getValue(), true)
+        @Expect(response.get("reason").getOrThrow().asString().getValue(), "ambiguous_app_id")
+        @Expect(adapter.pullInbound().size, 0)
+    }
+
+    @TestCase
+    public func sdkTenantKeySystemEventsResolveConfiguredAccountByAppId(): Unit {
+        let writer = JsonObject()
+        writer.put("appId", JsonString("cli_writer_app"))
+        let accounts = JsonObject()
+        accounts.put("feishu-writer", writer)
+        let adapter = FeishuAdapter(
+            config: FeishuConfig(enabled: true, appId: "cli_default_app", accounts: Some(accounts))
+        )
+        adapter.start()
+
+        @Expect(adapter.ingestWebhookPayload(this.reactionPayload(
+            accountId: "",
+            eventAppId: "cli_writer_app",
+            tenantKey: "2d310bf3d74f575e"
+        )).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.cardActionPayload(
+            "approve",
+            accountId: "",
+            eventAppId: "cli_writer_app",
+            tenantKey: "2d310bf3d74f575e"
+        )).contains("\"ok\":true"), true)
+        @Expect(adapter.ingestWebhookPayload(this.driveCommentPayload(
+            accountId: "",
+            eventAppId: "cli_writer_app",
+            tenantKey: "2d310bf3d74f575e"
+        )).contains("\"ok\":true"), true)
+
+        let inbound = adapter.pullInbound()
+        @Expect(inbound.size, 3)
+        for (i in 0..inbound.size) {
+            @Expect(inbound[i].accountId, "feishu-writer")
+            @Expect(inbound[i].mediaContext.get("accountId").getOrThrow().asString().getValue(), "feishu-writer")
+        }
+        let reactionRoute = inbound[0].mediaContext.get("context").getOrThrow().asObject()
+            .get("imRoute").getOrThrow().asObject()
+        @Expect(reactionRoute.get("accountId").getOrThrow().asString().getValue(), "feishu-writer")
+        @Expect(inbound[1].systemEventKind, "feishu.card_action")
+        @Expect(inbound[2].systemEventKind, "feishu.drive_comment")
+    }
+
+    @TestCase
     public func accountResolverMarksExplicitEmptyGroupAllowFromAndGroupsAsLocalSecurity(): Unit {
         let topGroups = JsonObject()
         let oldGroup = JsonObject()
@@ -1618,10 +1819,10 @@ public class FeishuAdapterTest {
         }
 
         let inbound = adapter.pullInbound()
-        @Expect(samples.size(), 16)
+        @Expect(samples.size(), 17)
         @Expect(ignoredCount, 3)
         @Expect(inbound.size, expectedInbound.size)
-        @Expect(inbound.size, 13)
+        @Expect(inbound.size, 14)
         for (i in 0..inbound.size) {
             this.expectFixtureInbound(inbound[i], expectedInbound[i])
         }
