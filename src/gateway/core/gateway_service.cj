@@ -3297,17 +3297,7 @@ public class GatewayService {
 
     private func telegramNormalizeModelRef(raw: String): String {
         let value = raw.trimAscii()
-        if (value.contains(":")) {
-            return value
-        }
-        match (value.indexOf("/")) {
-            case Some(idx) =>
-                if (idx > 0 && idx + 1 < value.size) {
-                    return "${value[..idx].trimAscii()}:${value[idx + 1..].trimAscii()}"
-                }
-            case None => ()
-        }
-        value
+        MetisConfigManager.storageModelRef(value).trimAscii()
     }
 
     private func telegramAddModelCandidate(out: ArrayList<String>, provider: String, modelRef: String): Unit {
@@ -3526,7 +3516,7 @@ public class GatewayService {
             return "Model switch denied: gateway.telegram.configWrites is disabled."
         }
         let modelRef = this.telegramNormalizeModelRef(rawModelRef)
-        if (modelRef.isEmpty() || modelRef.size > 128 || !modelRef.contains(":")) {
+        if (modelRef.isEmpty() || modelRef.size > 128 || (!modelRef.contains(":") && !modelRef.contains("/"))) {
             return "Model switch failed: invalid model reference."
         }
         var next = user

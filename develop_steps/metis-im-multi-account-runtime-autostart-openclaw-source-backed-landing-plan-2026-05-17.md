@@ -344,8 +344,8 @@ Metis 当前代码里没有 OpenClaw 那种配置文件 watcher + reload plan + 
 
 ### 5.2 Agent 模型配置语义
 
-1. 创建 agent 时，`metis agents add --agent feishu-writer --model dashscope:qwen3.6-plus ...` 应写入 agent 专属模型。
-2. 已存在 agent 应支持用户友好的更新命令：`metis agents update --agent feishu-writer --model dashscope:qwen3.6-plus`。
+1. 创建 agent 时，`metis agents add --agent feishu-writer --model qwen/qwen3.6-plus ...` 应写入 agent 专属模型。
+2. 已存在 agent 应支持用户友好的更新命令：`metis agents update --agent feishu-writer --model qwen/qwen3.6-plus`。
 3. 该命令必须复用现有 `agents.update` RPC，不新增第二套写配置逻辑。
 4. 未显式配置模型的 agent 继续继承 `agents.defaults.model.primary`。
 
@@ -1007,7 +1007,7 @@ OpenClaw 源码依据：
 - 该命令只作为 CLI wrapper 调用现有 `agents.update` RPC，不直接写 `metis.json`。
 - 输出使用人类可读格式，例如：
   - `Updated agent: feishu-writer`
-  - `model: dashscope:qwen3.6-plus`
+  - `model: qwen/qwen3.6-plus`
   - `modelsRefresh: ok`
 
 依据：
@@ -1018,7 +1018,7 @@ OpenClaw 源码依据：
 
 验收项：
 
-- `metis agents update --agent feishu-writer --model dashscope:qwen3.6-plus` 成功后，`agents.list` / `agents.models.get` 能看到该 agent 专属模型。
+- `metis agents update --agent feishu-writer --model qwen/qwen3.6-plus` 成功后，`agents.list` / `agents.models.get` 能看到该 agent 专属模型。
 - `--json` 时输出 JSON；默认输出不能打印原始 `toJsonString()` 大对象。
 - 单元测试断言 CLI 调用的是 `agents.update`，而不是直接写配置。
 - 未指定 `--model` 且无其他更新字段时，输出清晰的 missing argument。
@@ -1098,9 +1098,9 @@ OpenClaw 源码依据：
 当前三个 agent 的 `model` 为 `null`，这不是错误，表示继承默认模型。如果希望每个 agent 使用不同模型，完整目标命令应该是：
 
 ```bash
-metis agents update --agent feishu-writer --model dashscope:qwen3.6-plus
-metis agents update --agent tg-writer --model dashscope:qwen3.6-plus
-metis agents update --agent qq-writer --model dashscope:qwen3.6-plus
+metis agents update --agent feishu-writer --model qwen/qwen3.6-plus
+metis agents update --agent tg-writer --model qwen/qwen3.6-plus
+metis agents update --agent qq-writer --model qwen/qwen3.6-plus
 ```
 
 这条 `agents update` 需要按 Phase 6 补齐。补齐前，底层 RPC 已存在，但用户体验不完整。

@@ -392,7 +392,7 @@ public class GatewayServerMethodsAgentsTest {
         let agents = JsonObject()
         let defaults = JsonObject()
         defaults.put("workspace", JsonString(home.join("team").toString()))
-        defaults.put("model", JsonString("qwen:qwen-plus"))
+        defaults.put("model", JsonString("qwen/qwen3.6-plus"))
         agents.put("defaults", defaults)
         let list = JsonArray([])
         let pm = JsonObject()
@@ -419,7 +419,7 @@ public class GatewayServerMethodsAgentsTest {
         @Expect(exists(home), false)
         let scope = response.result.asObject().get("scope").getOrThrow().asObject()
         @Expect(agentsTestString(scope, "agentId"), "pm")
-        @Expect(agentsTestString(scope, "modelRef"), "qwen:qwen-plus")
+        @Expect(agentsTestString(scope, "modelRef"), "qwen/qwen3.6-plus")
         @Expect(agentsTestBool(agentsTestObject(scope, "accountSummary"), "apiKeyConfigured"), true)
     }
 
@@ -808,7 +808,7 @@ public class GatewayServerMethodsAgentsTest {
 
             let params = JsonObject()
             params.put("id", JsonString("writer"))
-            params.put("model", JsonString("dashscope:qwen-test"))
+            params.put("model", JsonString("qwen/qwen3.6-plus"))
             let credentials = JsonObject()
             let telegram = JsonObject()
             telegram.put("accountId", JsonString("bot-a"))
@@ -838,6 +838,7 @@ public class GatewayServerMethodsAgentsTest {
             @Expect(resultText.contains("configPreview"), false)
 
             let result = response.result.asObject()
+            @Expect(agentsTestString(result, "model"), "qwen/qwen3.6-plus")
             let summaries = agentsTestArray(result, "channelAccounts")
             let tgSummary = agentsTestFindChannelAccountSummary(summaries, "telegram", "bot-a")
             let fsSummary = agentsTestFindChannelAccountSummary(summaries, "feishu", "fs-a")
@@ -878,6 +879,7 @@ public class GatewayServerMethodsAgentsTest {
             @Expect(agentsTestString(agentsTestObject(agentsTestObject(root, "gateway"), "telegram"), "defaultAccount"), "primary-tg")
             @Expect(agentsTestString(agentsTestObject(agentsTestObject(root, "gateway"), "feishu"), "defaultAccount"), "primary-fs")
             let agentEntry = agentsTestConfiguredAgent(root, "writer")
+            @Expect(agentsTestString(agentEntry, "model"), "qwen/qwen3.6-plus")
             @Expect(agentEntry.get("telegram").isSome(), false)
             @Expect(agentEntry.get("feishu").isSome(), false)
             @Expect(agentEntry.get("qq").isSome(), false)
@@ -1343,7 +1345,7 @@ public class GatewayServerMethodsAgentsTest {
             @Expect(addResponse.ok, true)
 
             let model = JsonObject()
-            model.put("primary", JsonString("qwen:qwen-plus"))
+            model.put("primary", JsonString("qwen/qwen3.6-plus"))
             model.put("fallbacks", agentsTestStringArray(["openai:gpt-4o-mini"]))
             let groupChat = JsonObject()
             groupChat.put("mentionPatterns", agentsTestStringArray(["@writer", "/agent writer"]))
@@ -1368,7 +1370,7 @@ public class GatewayServerMethodsAgentsTest {
             let agent = getResponse.result.asObject().get("agent").getOrThrow().asObject()
             @Expect(agentsTestString(agent, "name"), "Writer Prime")
             @Expect(agentsTestString(agent, "workspace"), home.join("team-workspace").toString())
-            @Expect(agentsTestString(agent.get("model").getOrThrow().asObject(), "primary"), "qwen:qwen-plus")
+            @Expect(agentsTestString(agent.get("model").getOrThrow().asObject(), "primary"), "qwen/qwen3.6-plus")
             let returnedGroupChat = agent.get("groupChat").getOrThrow().asObject()
             @Expect(agentsTestObjectArrayContainsString(returnedGroupChat, "mentionPatterns", "@writer"), true)
             @Expect(agentsTestObjectArrayContainsString(agent, "aliases", "/agent writer"), true)
@@ -1499,7 +1501,7 @@ public class GatewayServerMethodsAgentsTest {
 
             let agentBParams = JsonObject()
             agentBParams.put("id", JsonString("agent-b"))
-            agentBParams.put("model", JsonString("dashscope:qwen-plus"))
+            agentBParams.put("model", JsonString("qwen/qwen3.6-plus"))
             let agentBAdd = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: agentBParams))).getOrThrow()
             @Expect(agentBAdd.ok, true)
 
@@ -1514,8 +1516,8 @@ public class GatewayServerMethodsAgentsTest {
             @Expect(agentASet.ok, true)
 
             let agentBState = JsonObject()
-            agentBState.put("primaryModelRef", JsonString("dashscope:qwen-plus"))
-            agentBState.put("runtimePrimaryModelRef", JsonString("dashscope:qwen-plus"))
+            agentBState.put("primaryModelRef", JsonString("qwen/qwen3.6-plus"))
+            agentBState.put("runtimePrimaryModelRef", JsonString("qwen/qwen3.6-plus"))
             agentBState.put("providers", JsonArray([]))
             let agentBSetParams = JsonObject()
             agentBSetParams.put("agentId", JsonString("agent-b"))
@@ -1541,10 +1543,10 @@ public class GatewayServerMethodsAgentsTest {
             @Expect(agentsTestString(agentBModels, "path"), agentBPath.toString())
             @Expect(agentsTestString(agentAModels, "path") != agentsTestString(agentBModels, "path"), true)
             @Expect(agentsTestString(agentAModels, "modelRef"), "openai:gpt-4o-mini")
-            @Expect(agentsTestString(agentBModels, "modelRef"), "dashscope:qwen-plus")
+            @Expect(agentsTestString(agentBModels, "modelRef"), "qwen/qwen3.6-plus")
             @Expect(agentsTestString(agentAModels, "runtimePrimaryModelRef"), "openai:gpt-4o-mini")
-            @Expect(agentsTestString(agentBModels, "runtimePrimaryModelRef"), "dashscope:qwen-plus")
-            @Expect(String.fromUtf8(File.readFrom(agentAPath)).contains("dashscope:qwen-plus"), false)
+            @Expect(agentsTestString(agentBModels, "runtimePrimaryModelRef"), "qwen/qwen3.6-plus")
+            @Expect(String.fromUtf8(File.readFrom(agentAPath)).contains("qwen/qwen3.6-plus"), false)
             @Expect(String.fromUtf8(File.readFrom(agentBPath)).contains("openai:gpt-4o-mini"), false)
         })
     }
@@ -1608,7 +1610,7 @@ public class GatewayServerMethodsAgentsTest {
         withAgentsTempHome("metis-agents-models-phase7-home", { home: Path =>
             let addParams = JsonObject()
             addParams.put("id", JsonString("pm"))
-            addParams.put("model", JsonString("qwen:qwen-plus"))
+            addParams.put("model", JsonString("qwen/qwen3.6-plus"))
             let addResponse = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: addParams))).getOrThrow()
             @Expect(addResponse.ok, true)
 
@@ -1654,7 +1656,7 @@ public class GatewayServerMethodsAgentsTest {
 
             let addParams = JsonObject()
             addParams.put("id", JsonString("pm"))
-            addParams.put("model", JsonString("qwen:qwen-plus"))
+            addParams.put("model", JsonString("qwen/qwen3.6-plus"))
             let addResponse = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: addParams))).getOrThrow()
             @Expect(addResponse.ok, true)
 
@@ -1698,7 +1700,7 @@ public class GatewayServerMethodsAgentsTest {
 
             let opsParams = JsonObject()
             opsParams.put("id", JsonString("ops"))
-            opsParams.put("model", JsonString("dashscope:qwen-plus"))
+            opsParams.put("model", JsonString("qwen/qwen3.6-plus"))
             let opsAdd = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: opsParams))).getOrThrow()
             @Expect(opsAdd.ok, true)
 
@@ -1708,7 +1710,7 @@ public class GatewayServerMethodsAgentsTest {
             )
             File.writeTo(
                 home.join("agents").join("ops").join("agent").join("auth-profiles.json"),
-                "{\"profiles\":[{\"id\":\"ops-dashscope\",\"provider\":\"dashscope\",\"apiKey\":\"ops-secret-never-log\"}]}\n".toArray()
+                "{\"profiles\":[{\"id\":\"ops-qwen\",\"provider\":\"qwen\",\"apiKey\":\"ops-secret-never-log\"}]}\n".toArray()
             )
 
             let writerScopeParams = JsonObject()
@@ -1727,8 +1729,8 @@ public class GatewayServerMethodsAgentsTest {
             @Expect(agentsTestString(writerScope, "modelsJsonPath") != agentsTestString(opsScope, "modelsJsonPath"), true)
             @Expect(agentsTestString(writerScope, "authProfilesPath") != agentsTestString(opsScope, "authProfilesPath"), true)
             @Expect(agentsTestString(writerScope, "sessionsDir") != agentsTestString(opsScope, "sessionsDir"), true)
-            @Expect(agentsTestString(writerScope, "modelRef"), "openai:gpt-4o-mini")
-            @Expect(agentsTestString(opsScope, "modelRef"), "dashscope:qwen-plus")
+            @Expect(agentsTestString(writerScope, "modelRef"), "openai/gpt-4o-mini")
+            @Expect(agentsTestString(opsScope, "modelRef"), "qwen/qwen3.6-plus")
 
             let writerModelsResponse = handleGatewayAgentsFamily("agents.models.get", request: Some(GatewayRpcRequest("agents.models.get", params: writerScopeParams))).getOrThrow()
             let writerModels = writerModelsResponse.result.asObject().get("models").getOrThrow().asObject()
@@ -1738,12 +1740,12 @@ public class GatewayServerMethodsAgentsTest {
             let opsSource = agentsTestObject(opsModels, "credentialSource")
 
             @Expect(agentsTestString(writerSource, "source"), "agent.auth-profiles.openai")
-            @Expect(agentsTestString(opsSource, "source"), "agent.auth-profiles.dashscope")
+            @Expect(agentsTestString(opsSource, "source"), "agent.auth-profiles.qwen")
             let rendered = writerModels.toJsonString() + opsModels.toJsonString()
             @Expect(rendered.contains("writer-secret-never-log"), false)
             @Expect(rendered.contains("ops-secret-never-log"), false)
             @Expect(rendered.contains("agent.auth-profiles.openai"), true)
-            @Expect(rendered.contains("agent.auth-profiles.dashscope"), true)
+            @Expect(rendered.contains("agent.auth-profiles.qwen"), true)
         })
     }
 
@@ -1752,7 +1754,7 @@ public class GatewayServerMethodsAgentsTest {
         withAgentsTempHome("metis-agents-models-refresh-hook-home", { home: Path =>
             let addParams = JsonObject()
             addParams.put("id", JsonString("pm"))
-            addParams.put("model", JsonString("qwen:qwen-plus"))
+            addParams.put("model", JsonString("qwen/qwen3.6-plus"))
             let addResponse = handleGatewayAgentsFamily("agents.add", request: Some(GatewayRpcRequest("agents.add", params: addParams))).getOrThrow()
             @Expect(addResponse.ok, true)
 
@@ -1762,7 +1764,7 @@ public class GatewayServerMethodsAgentsTest {
             @Expect(statusResponse.ok, true)
             let modelsPath = home.join("agents").join("pm").join("agent").join("models.json")
             let initialState = statusResponse.result.asObject().get("models").getOrThrow().asObject().get("state").getOrThrow().asObject()
-            @Expect(agentsTestString(initialState, "runtimePrimaryModelRef").contains("qwen-plus"), true)
+            @Expect(agentsTestString(initialState, "runtimePrimaryModelRef").contains("qwen3.6-plus"), true)
             @Expect(agentsTestBool(initialState, "generated"), true)
 
             let updateParams = JsonObject()

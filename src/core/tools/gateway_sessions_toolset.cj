@@ -310,7 +310,7 @@ public class GatewaySessionsToolset {
             case "telegram" | "gateway.telegram" =>
                 "gateway.telegram: object. Common keys: enabled, botToken, tokenFile, dmPolicy, allowFrom, groupPolicy, groupAllowFrom, groups, groupHistoryEnabled, groupHistoryLimit, replyToMode, textChunkLimit, streaming, webhookUrl, webhookSecret, webhookPath, webhookHost, webhookPort, apiRoot, proxy, actions, media, network, threadBindings."
             case "channelmodels" | "gateway.channelmodels" =>
-                "gateway.channelModels: map<string,string>. Per-channel primary model binding, e.g. feishu -> provider:model."
+                "gateway.channelModels: map<string,string>. Per-channel primary model binding, e.g. feishu -> provider/model."
             case "tools" | "gateway.tools" =>
                 "gateway.tools: object. Keys: allow, deny. deny has priority; allow empty means allow all built-in gateway tools."
             case "gatewayplugins" | "gateway.gatewayplugins" =>

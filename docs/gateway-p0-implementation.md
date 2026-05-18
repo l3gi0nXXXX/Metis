@@ -553,7 +553,7 @@ api_key_env: DEEPSEEK_API_KEY
 "gateway": {
   "channelModels": {
     "feishu": "deepseek:deepseek-chat",
-    "qq": "qwen:qwen-plus"
+    "qq": "qwen/qwen3.6-plus"
   }
 }
 ```

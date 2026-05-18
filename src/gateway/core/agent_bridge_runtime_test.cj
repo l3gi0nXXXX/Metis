@@ -54,7 +54,7 @@ private func writeAgentBridgeAgentConfig(home: Path): Unit {
     agents.put("defaults", defaults)
     let list = JsonArray([])
     list.add(agentBridgeAgentEntry("writer", home.join("workspaces").join("writer"), home.join("agents").join("writer").join("agent"), "openai:gpt-4o-mini"))
-    list.add(agentBridgeAgentEntry("ops", home.join("workspaces").join("ops"), home.join("agents").join("ops").join("agent"), "dashscope:qwen-plus"))
+    list.add(agentBridgeAgentEntry("ops", home.join("workspaces").join("ops"), home.join("agents").join("ops").join("agent"), "qwen/qwen3.6-plus"))
     agents.put("list", list)
     root.put("agents", agents)
     File.writeTo(MetisConfigManager.configPath(), root.toJsonString().toArray())
@@ -372,7 +372,7 @@ public class AgentBridgeRuntimeTest {
             let opsPrompt = gatewayPolicyFilteredSystemPromptForTurnContext(
                 opsContext.turnContext,
                 channelName: "dashboard",
-                modelName: "dashscope:qwen-plus"
+                modelName: "qwen/qwen3.6-plus"
             )
 
             @Expect(writerPrompt.contains("writer-only-soul"), true)
@@ -407,7 +407,7 @@ public class AgentBridgeRuntimeTest {
             @Expect(writerModels.size > 0, true)
             @Expect(opsModels.size > 0, true)
             @Expect(writerModels[0], "openai:gpt-4o-mini")
-            @Expect(opsModels[0], "dashscope:qwen-plus")
+            @Expect(opsModels[0], "dashscope:qwen3.6-plus")
             @Expect(exists(home.join("agents").join("writer").join("agent").join("models.json")), true)
             @Expect(exists(home.join("agents").join("ops").join("agent").join("models.json")), true)
             @Expect(exists(home.join("models.json")), false)
@@ -421,7 +421,7 @@ public class AgentBridgeRuntimeTest {
             let writerAuth = home.join("agents").join("writer").join("agent").join("auth-profiles.json")
             let opsAuth = home.join("agents").join("ops").join("agent").join("auth-profiles.json")
             writeAgentBridgeAuthProfile(writerAuth, "openai", "writer-secret-never-log")
-            writeAgentBridgeAuthProfile(opsAuth, "dashscope", "ops-secret-never-log")
+            writeAgentBridgeAuthProfile(opsAuth, "qwen", "ops-secret-never-log")
 
             let writerContext = gatewayResolveSessionContext(
                 GatewaySessionRequest(
@@ -439,7 +439,7 @@ public class AgentBridgeRuntimeTest {
             )
 
             @Expect(gatewayDebugModelOrderForTurnContext(writerContext.turnContext)[0], "openai:gpt-4o-mini")
-            @Expect(gatewayDebugModelOrderForTurnContext(opsContext.turnContext)[0], "dashscope:qwen-plus")
+            @Expect(gatewayDebugModelOrderForTurnContext(opsContext.turnContext)[0], "dashscope:qwen3.6-plus")
 
             let writerModelsPath = home.join("agents").join("writer").join("agent").join("models.json")
             let opsModelsPath = home.join("agents").join("ops").join("agent").join("models.json")
@@ -447,8 +447,8 @@ public class AgentBridgeRuntimeTest {
             let opsRuntime = readAgentBridgeJson(opsModelsPath).toJsonString()
 
             @Expect(writerRuntime.contains("agent.auth-profiles.openai"), true)
-            @Expect(writerRuntime.contains("agent.auth-profiles.dashscope"), false)
-            @Expect(opsRuntime.contains("agent.auth-profiles.dashscope"), true)
+            @Expect(writerRuntime.contains("agent.auth-profiles.qwen"), false)
+            @Expect(opsRuntime.contains("agent.auth-profiles.qwen"), true)
             @Expect(opsRuntime.contains("agent.auth-profiles.openai"), false)
             @Expect(writerRuntime.contains("writer-secret-never-log"), false)
             @Expect(writerRuntime.contains("ops-secret-never-log"), false)
@@ -492,7 +492,7 @@ public class AgentBridgeRuntimeTest {
     // public func gatewayProviderTimingSummaryIncludesCoreFields(): Unit {
     //     let line = gatewayProviderTimingSummary(
     //         "telegram",
-    //         "dashscope:qwen3.6-plus",
+    //         "qwen/qwen3.6-plus",
     //         1,
     //         39077,
     //         105,
@@ -501,8 +501,8 @@ public class AgentBridgeRuntimeTest {
     //         localPreCallMs: 11
     //     )
     //     @Expect(line.contains("channel=telegram"), true)
-    //     @Expect(line.contains("provider=dashscope"), true)
-    //     @Expect(line.contains("model=dashscope:qwen3.6-plus"), true)
+    //     @Expect(line.contains("provider=qwen"), true)
+    //     @Expect(line.contains("model=qwen/qwen3.6-plus"), true)
     //     @Expect(line.contains("attempt=1"), true)
     //     @Expect(line.contains("status=success"), true)
     //     @Expect(line.contains("promptChars=39077"), true)
@@ -515,7 +515,7 @@ public class AgentBridgeRuntimeTest {
     // public func gatewayProviderTimingSummarySanitizesFailureError(): Unit {
     //     let line = gatewayProviderTimingSummary(
     //         "cli",
-    //         "dashscope:qwen3.6-plus",
+    //         "qwen/qwen3.6-plus",
     //         1,
     //         0,
     //         0,

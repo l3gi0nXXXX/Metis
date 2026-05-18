@@ -2357,8 +2357,8 @@ public func cliRunAgentsFlow(args: Array<String>): Int64 {
                 "metis agents team list --json",
                 "metis agents migrate --dry-run --json",
                 "metis agents add --agent custom-reviewer --name Reviewer",
-                "metis agents add --agent demo --name Demo --model dashscope:qwen-plus --feishu cli_test:secret_test --qqbot 1020:test_secret --telegram-bot-token test-token",
-                "metis agents update --agent custom-reviewer --model dashscope:qwen-plus",
+                "metis agents add --agent demo --name Demo --model qwen/qwen3.6-plus --feishu cli_test:secret_test --qqbot 1020:test_secret --telegram-bot-token test-token",
+                "metis agents update --agent custom-reviewer --model qwen/qwen3.6-plus",
                 "metis agents set-identity --agent custom-reviewer --name Reviewer --emoji 🔎",
                 "metis agents delete --agent custom-reviewer",
                 "metis agents list --json"

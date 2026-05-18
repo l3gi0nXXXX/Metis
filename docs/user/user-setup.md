@@ -176,7 +176,7 @@ Magic CLI 支持两种 skill 触发方式：
 "gateway": {
   "channelModels": {
     "feishu": "deepseek:deepseek-chat",
-    "qq": "qwen:qwen-plus"
+    "qq": "qwen/qwen3.6-plus"
   }
 }
 ```

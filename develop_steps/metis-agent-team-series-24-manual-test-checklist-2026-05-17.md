@@ -270,7 +270,7 @@ rg -n '"phase1"|"phase2"|"phase3"|"skipped"|"external-resource-required"|"operat
 
 | ID | 手工测试项 | 操作方法 | 验收标准 | 证据 |
 | --- | --- | --- | --- | --- |
-| L1-01 | agent 创建 | `metis agents add --agent manual-reviewer --name "Reviewer" --model dashscope:qwen3.6-plus` | 创建成功；默认输出不是大 JSON；显示 workspace/agentDir/sessionsDir 或等价摘要；不要使用 `reviewer`，因为它是内置 agent ID，不是自定义 agent ID | stdout |
+| L1-01 | agent 创建 | `metis agents add --agent manual-reviewer --name "Reviewer" --model qwen/qwen3.6-plus` | 创建成功；默认输出不是大 JSON；显示 workspace/agentDir/sessionsDir 或等价摘要；不要使用 `reviewer`，因为它是内置 agent ID，不是自定义 agent ID | stdout |
 | L1-02 | agent 查询（OpenClaw 对齐） | `metis agents list`，再执行 `metis agents bindings --agent manual-reviewer` | `agents list` 能在 Custom 区看到 `manual-reviewer`；默认输出是人类可读文本，不是裸 JSON；`agents bindings --agent manual-reviewer` 能查询该 agent 的路由绑定或明确提示无绑定 | stdout |
 | L1-03 | agent 列表 | `metis agents list` 和 `metis agents summary` | 人类可读；能看到 custom agent 数量变化 | stdout |
 | L1-04 | agent 健康 | `metis agents health` | 返回人类可读健康摘要；无 Gateway 401/500 | stdout |
@@ -286,7 +286,7 @@ rg -n '"phase1"|"phase2"|"phase3"|"skipped"|"external-resource-required"|"operat
 
 | ID | 手工测试项 | 操作方法 | 验收标准 | 证据 |
 | --- | --- | --- | --- | --- |
-| L1-08 | 只创建单 agent 不建 team | `metis agents add --agent solo --name "Solo" --model dashscope:qwen3.6-plus` | `metis agents team list` 不新增 team；`metis agents bindings --agent solo` 为空或明确无 binding | stdout |
+| L1-08 | 只创建单 agent 不建 team | `metis agents add --agent solo --name "Solo" --model qwen/qwen3.6-plus` | `metis agents team list` 不新增 team；`metis agents bindings --agent solo` 为空或明确无 binding | stdout |
 | L1-09 | Telegram shortcut | `metis agents add --agent tg-writer --telegram-bot-token "123456789:fake-telegram-token"`，再执行 `metis agents bindings --agent tg-writer` 和 `metis gateway channel get telegram` | `agents add` 输出包含 `Configured channel accounts` 且显示 `telegram/tg-writer`；存在 `telegram:tg-writer` binding；`gateway channel get telegram` 输出包含 `Accounts` 段、`telegram/tg-writer`、default 标记、`binding=telegram:tg-writer`；token 脱敏且 stdout/stderr 不出现 raw token | stdout、logs |
 | L1-10 | Feishu shortcut | `metis agents add --agent feishu-writer --feishu "cli_fake_app_id:fake-feishu-secret"`，再执行 `metis agents bindings --agent feishu-writer` 和 `metis gateway channel get feishu` | `agents add` 输出包含 `Configured channel accounts` 且显示 `feishu/feishu-writer`；存在 `feishu:feishu-writer` binding；`gateway channel get feishu` 输出包含 `Accounts` 段、`feishu/feishu-writer`、default 标记、`binding=feishu:feishu-writer`；appSecret 脱敏 | stdout、logs |
 | L1-11 | QQ shortcut | `metis agents add --agent qq-writer --qqbot "1020000000:fake-qq-secret"`，再执行 `metis agents bindings --agent qq-writer` 和 `metis gateway channel get qq` | `agents add` 输出包含 `Configured channel accounts` 且显示 `qq/qq-writer`；存在 `qq:qq-writer` binding；`gateway channel get qq` 输出包含 `Accounts` 段、`qq/qq-writer`、default 标记、`binding=qq:qq-writer`；appSecret 脱敏；不破坏旧顶层 QQ 配置兼容 | stdout、logs |

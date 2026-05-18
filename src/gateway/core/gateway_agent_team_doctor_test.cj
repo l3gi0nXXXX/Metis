@@ -267,7 +267,7 @@ public class GatewayAgentTeamDoctorTest {
         let agents = JsonObject()
         let list = JsonArray([])
         let pm = doctorAgent("pm", home.join("workspace").toString(), isDefault: true, agentDir: agentDir.toString())
-        pm.put("model", JsonString("qwen:qwen-plus"))
+        pm.put("model", JsonString("qwen/qwen3.6-plus"))
         list.add(pm)
         agents.put("list", list)
         root.put("agents", agents)

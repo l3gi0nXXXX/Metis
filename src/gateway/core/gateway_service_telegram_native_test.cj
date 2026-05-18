@@ -545,10 +545,10 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queue("[telegram-callback]\nid=cb-1\nmessageId=1\ndata=models:set:qwen:qwen3.5-plus\nby=8734062810")
             service.processOnce()
 
-            @Expect(adapter.sentText(0).contains("Telegram session model switched to qwen:qwen3.5-plus"), true)
+            @Expect(adapter.sentText(0).contains("Telegram session model switched to qwen/qwen3.5-plus"), true)
             let updated = CliSettingManager.readGatewaySettings()
             @Expect(updated.channelModels.get("telegram") ?? "", "")
-            @Expect(updated.channelModels.get("telegram:telegram:direct:8734062810") ?? "", "qwen:qwen3.5-plus")
+            @Expect(updated.channelModels.get("telegram:telegram:direct:8734062810") ?? "", "qwen/qwen3.5-plus")
         }
     }
 
@@ -566,9 +566,9 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queue("[telegram-callback]\nid=cb-setidx\nmessageId=1\ndata=models:setidx:qwen:1:0\nby=8734062810")
             service.processOnce()
 
-            @Expect(adapter.sentText(0).contains("Telegram session model switched to qwen:qwen3.5-plus"), true)
+            @Expect(adapter.sentText(0).contains("Telegram session model switched to qwen/qwen3.5-plus"), true)
             let updated = CliSettingManager.readGatewaySettings()
-            @Expect(updated.channelModels.get("telegram:telegram:direct:8734062810") ?? "", "qwen:qwen3.5-plus")
+            @Expect(updated.channelModels.get("telegram:telegram:direct:8734062810") ?? "", "qwen/qwen3.5-plus")
         }
     }
 
@@ -586,9 +586,9 @@ public class GatewayServiceTelegramNativeTest {
             adapter.queue("/model qwen/qwen3.6-plus")
             service.processOnce()
 
-            @Expect(adapter.sentText(0).contains("Telegram session model switched to qwen:qwen3.6-plus"), true)
+            @Expect(adapter.sentText(0).contains("Telegram session model switched to qwen/qwen3.6-plus"), true)
             let updated = CliSettingManager.readGatewaySettings()
-            @Expect(updated.channelModels.get("telegram:telegram:direct:8734062810") ?? "", "qwen:qwen3.6-plus")
+            @Expect(updated.channelModels.get("telegram:telegram:direct:8734062810") ?? "", "qwen/qwen3.6-plus")
         }
     }
 

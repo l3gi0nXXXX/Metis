@@ -95,7 +95,7 @@ public func programSupportRootCommandExamples(command: String): Array<CliRootCom
             ("metis agents bind --agent custom-reviewer --bind qq:default", "Bind one route to an agent."),
             ("metis agents unbind --agent custom-reviewer --bind qq:default", "Remove one route binding from an agent."),
             ("metis agents add --agent custom-reviewer --name Reviewer", "Create a managed custom agent."),
-            ("metis agents update --agent custom-reviewer --model dashscope:qwen-plus", "Update a managed agent model or metadata."),
+            ("metis agents update --agent custom-reviewer --model qwen/qwen3.6-plus", "Update a managed agent model or metadata."),
             ("metis agents set-identity --agent custom-reviewer --name Reviewer", "Update managed agent identity fields."),
             ("metis agents delete --agent custom-reviewer", "Delete a managed custom agent.")
         ]

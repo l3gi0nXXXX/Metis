@@ -126,7 +126,7 @@ public class CliModelRuntimeStateManagerTest {
             Directory.create(agentDir, recursive: true)
             File.writeTo(path, "{\"primaryModelRef\":\"manual:model\",\"runtimePrimaryModelRef\":\"manual:model\",\"providers\":[]}".toArray())
 
-            let scope = MetisAgentScope.resolve(runtimeStateTestRoot("writer", "qwen:qwen-plus"), agentId: "writer", homeRoot: home, defaultWorkspace: home.join("workspace"))
+            let scope = MetisAgentScope.resolve(runtimeStateTestRoot("writer", "qwen/qwen3.6-plus"), agentId: "writer", homeRoot: home, defaultWorkspace: home.join("workspace"))
             let refresh = CliModelRuntimeStateManager.refreshAgentRuntimeStateForScope(agentDir, scope)
             let preserved = runtimeStateTestRead(path)
 

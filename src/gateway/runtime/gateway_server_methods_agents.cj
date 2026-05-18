@@ -291,6 +291,58 @@ private func gatewayAgentSummaryModelJson(model: String): JsonObject {
     out
 }
 
+private func gatewayAgentStorageModelRef(raw: String): String {
+    let trimmed = raw.trimAscii()
+    if (trimmed.isEmpty()) {
+        return ""
+    }
+    let storageRef = MetisConfigManager.storageModelRef(trimmed).trimAscii()
+    if (storageRef.isEmpty()) {
+        trimmed
+    } else {
+        storageRef
+    }
+}
+
+private func gatewayAgentStorageModelObject(raw: JsonObject): JsonObject {
+    let out = gatewayAgentCloneObject(raw)
+    match (out.get("primary")) {
+        case Some(v) =>
+            try {
+                let primary = gatewayAgentStorageModelRef(v.asString().getValue())
+                if (!primary.isEmpty()) {
+                    out.put("primary", JsonString(primary))
+                }
+            } catch (_e: Exception) {
+                ()
+            }
+        case None => ()
+    }
+    match (out.get("fallbacks")) {
+        case Some(v) =>
+            try {
+                let fallbacks = v.asArray()
+                let normalized = JsonArray([])
+                for (i in 0..fallbacks.size()) {
+                    try {
+                        var item = gatewayAgentStorageModelRef(fallbacks[i].asString().getValue())
+                        if (item.isEmpty()) {
+                            item = fallbacks[i].asString().getValue().trimAscii()
+                        }
+                        normalized.add(JsonString(item))
+                    } catch (_inner: Exception) {
+                        normalized.add(gatewayAgentCloneValue(fallbacks[i]))
+                    }
+                }
+                out.put("fallbacks", normalized)
+            } catch (_e: Exception) {
+                ()
+            }
+        case None => ()
+    }
+    out
+}
+
 private func gatewayAgentPutModelJson(out: JsonObject, entry: JsonObject): Unit {
     match (entry.get("model")) {
         case Some(v) =>
@@ -1820,6 +1872,7 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
     let model = gatewayAgentRpcStringParam(request, ["model"], "")
     let agentDir = gatewayAgentRpcStringParam(request, ["agentDir"], gatewayAgentDefaultAgentDir(agentId).toString())
     let sessionsDir = gatewayAgentRpcStringParam(request, ["sessionsDir"], gatewayAgentDefaultSessionsDir(agentId).toString())
+    let modelRef = gatewayAgentStorageModelRef(model)
     let agentDirPath = Path(agentDir)
     let workspacePath = Path(workspace)
     let sessionsDirPath = Path(sessionsDir)
@@ -1833,8 +1886,8 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
     preflightEntry.put("workspace", JsonString(workspace))
     preflightEntry.put("agentDir", JsonString(agentDir))
     preflightEntry.put("sessionsDir", JsonString(sessionsDir))
-    if (!model.trimAscii().isEmpty()) {
-        preflightEntry.put("model", JsonString(model.trimAscii()))
+    if (!modelRef.isEmpty()) {
+        preflightEntry.put("model", JsonString(modelRef))
     }
     let preflightEntries = JsonArray([])
     for (i in 0..entries.size()) {
@@ -1895,8 +1948,8 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
     entry.put("workspace", JsonString(workspace))
     entry.put("agentDir", JsonString(agentDir))
     entry.put("sessionsDir", JsonString(sessionsDir))
-    if (!model.trimAscii().isEmpty()) {
-        entry.put("model", JsonString(model.trimAscii()))
+    if (!modelRef.isEmpty()) {
+        entry.put("model", JsonString(modelRef))
     }
     let nextEntries = JsonArray([])
     let configuredEntries = gatewayAgentConfigEntries(root)
@@ -1914,6 +1967,9 @@ private func gatewayAgentAddJson(request: GatewayRpcRequest): GatewayRpcResponse
     result.put("name", JsonString(name))
     result.put("workspace", JsonString(workspace))
     result.put("workspaceDir", JsonString(workspace))
+    if (!modelRef.isEmpty()) {
+        result.put("model", JsonString(modelRef))
+    }
     result.put("agentDir", JsonString(agentDir))
     result.put("sessionsDir", JsonString(sessionsDir))
     result.put("createdManifest", JsonString(manifestPath.toString()))
@@ -1988,13 +2044,13 @@ private func gatewayAgentPutModelFromRequest(entry: JsonObject, request: Gateway
     match (request.params.get("model")) {
         case Some(v) =>
             try {
-                entry.put("model", gatewayAgentCloneObject(v.asObject()))
+                entry.put("model", gatewayAgentStorageModelObject(v.asObject()))
                 return ""
             } catch (_e: Exception) {
                 ()
             }
             try {
-                let model = v.asString().getValue().trimAscii()
+                let model = gatewayAgentStorageModelRef(v.asString().getValue())
                 if (!model.isEmpty()) {
                     entry.put("model", JsonString(model))
                 }

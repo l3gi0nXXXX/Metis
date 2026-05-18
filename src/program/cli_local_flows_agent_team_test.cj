@@ -24,7 +24,7 @@ public class CliLocalFlowsAgentTeamTest {
             "--workspace",
             "/tmp/metis-demo",
             "--model",
-            "dashscope:qwen-plus"
+            "qwen/qwen3.6-plus"
         ]).getOrThrow()
 
         @Expect(spec.method, "agents.add")
@@ -32,7 +32,7 @@ public class CliLocalFlowsAgentTeamTest {
         @Expect(spec.params.get("agentId").getOrThrow().asString().getValue(), "demo")
         @Expect(spec.params.get("name").getOrThrow().asString().getValue(), "Demo")
         @Expect(spec.params.get("workspace").getOrThrow().asString().getValue(), "/tmp/metis-demo")
-        @Expect(spec.params.get("model").getOrThrow().asString().getValue(), "dashscope:qwen-plus")
+        @Expect(spec.params.get("model").getOrThrow().asString().getValue(), "qwen/qwen3.6-plus")
         @Expect(spec.params.get("bind").isNone(), true)
         @Expect(spec.params.get("channelCredentials").isNone(), true)
         @Expect(spec.params.get("channelOverwrite").isNone(), true)
@@ -105,7 +105,7 @@ public class CliLocalFlowsAgentTeamTest {
         let result = JsonObject()
         result.put("agentId", JsonString("demo"))
         result.put("name", JsonString("Demo"))
-        result.put("model", JsonString("dashscope:qwen-plus"))
+        result.put("model", JsonString("qwen/qwen3.6-plus"))
         result.put("workspace", JsonString("/tmp/metis-demo"))
         result.put("agentDir", JsonString("/tmp/metis-demo/.metis/agents/demo"))
         let accounts = JsonArray([])
@@ -132,7 +132,7 @@ public class CliLocalFlowsAgentTeamTest {
 
         let text = cliRenderGatewayAgentAddResult(result, "demo")
         @Expect(text.contains("Added agent: demo"), true)
-        @Expect(text.contains("model: dashscope:qwen-plus"), true)
+        @Expect(text.contains("model: qwen/qwen3.6-plus"), true)
         @Expect(text.contains("Configured channel accounts:"), true)
         @Expect(text.contains("token=[redacted]"), true)
         @Expect(text.contains("appId=cli_..."), true)
@@ -150,14 +150,14 @@ public class CliLocalFlowsAgentTeamTest {
             "--agent",
             "reviewer",
             "--model",
-            "dashscope:qwen-plus",
+            "qwen/qwen3.6-plus",
             "--json"
         ]).getOrThrow()
 
         @Expect(spec.method, "agents.update")
         @Expect(spec.json, true)
         @Expect(spec.params.get("agentId").getOrThrow().asString().getValue(), "reviewer")
-        @Expect(spec.params.get("model").getOrThrow().asString().getValue(), "dashscope:qwen-plus")
+        @Expect(spec.params.get("model").getOrThrow().asString().getValue(), "qwen/qwen3.6-plus")
         @Expect(spec.params.get("channelCredentials").isNone(), true)
     }
 
@@ -168,7 +168,7 @@ public class CliLocalFlowsAgentTeamTest {
         let agent = JsonObject()
         agent.put("id", JsonString("reviewer"))
         agent.put("name", JsonString("Reviewer"))
-        agent.put("model", JsonString("dashscope:qwen-plus"))
+        agent.put("model", JsonString("qwen/qwen3.6-plus"))
         agent.put("workspace", JsonString("/tmp/reviewer"))
         result.put("agent", agent)
         let refresh = JsonObject()
@@ -177,7 +177,7 @@ public class CliLocalFlowsAgentTeamTest {
 
         let text = cliRenderGatewayAgentUpdateResult(result, "reviewer")
         @Expect(text.contains("Updated agent: reviewer"), true)
-        @Expect(text.contains("model: dashscope:qwen-plus"), true)
+        @Expect(text.contains("model: qwen/qwen3.6-plus"), true)
         @Expect(text.contains("modelsRefresh: ok"), true)
         @Expect(text.contains("{\""), false)
     }

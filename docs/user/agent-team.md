@@ -211,7 +211,7 @@ Create one agent and configure Telegram:
 metis agents add \
   --agent tg-writer \
   --name "Telegram Writer" \
-  --model dashscope:qwen3.6-plus \
+  --model qwen/qwen3.6-plus \
   --telegram-bot-token "123456789:fake-telegram-token"
 ```
 
@@ -221,7 +221,7 @@ Create one agent and configure Feishu:
 metis agents add \
   --agent feishu-writer \
   --name "Feishu Writer" \
-  --model dashscope:qwen3.6-plus \
+  --model qwen/qwen3.6-plus \
   --feishu "cli_fake_app_id:fake-feishu-secret"
 ```
 
@@ -231,7 +231,7 @@ Create one agent and configure QQ Bot:
 metis agents add \
   --agent qq-writer \
   --name "QQ Writer" \
-  --model dashscope:qwen3.6-plus \
+  --model qwen/qwen3.6-plus \
   --qqbot "1020000000:fake-qq-secret"
 ```
 
@@ -241,7 +241,7 @@ Create one agent and configure all three IM channels:
 metis agents add \
   --agent zhihu-strategist \
   --name "Zhihu Strategist" \
-  --model dashscope:qwen3.6-plus \
+  --model qwen/qwen3.6-plus \
   --feishu "cli_fake_app_id:fake-feishu-secret" \
   --qqbot "1020000000:fake-qq-secret" \
   --telegram-bot-token "123456789:fake-telegram-token"
@@ -253,7 +253,7 @@ When a channel credential is provided, Metis also creates the corresponding rout
 metis agents add \
   --agent support-router \
   --name "Support Router" \
-  --model dashscope:qwen3.6-plus \
+  --model qwen/qwen3.6-plus \
   --telegram-account support-test-bot \
   --telegram-bot-token "123456789:fake-telegram-token" \
   --feishu-account support-test-feishu \
@@ -437,7 +437,7 @@ The RPC path rejects absolute paths, `~`, URI schemes, and `..` traversal. Keep 
 For a simple default model on the agent entry, use `metis agents add --model` when creating the agent:
 
 ```bash
-metis agents add --agent custom-reviewer --name Reviewer --model qwen:qwen-plus
+metis agents add --agent custom-reviewer --name Reviewer --model qwen/qwen3.6-plus
 ```
 
 For runtime model state in the agent's `models.json`, use `agents.models.*` RPC:

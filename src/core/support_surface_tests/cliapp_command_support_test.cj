@@ -61,7 +61,7 @@ public class CliappCommandSupportTest {
         @Expect(help.contains("/models <provider>"), true)
         @Expect(help.contains("/models <page>"), true)
         @Expect(help.contains("may write metis.json"), true)
-        @Expect(help.contains("metis models set <provider:model>"), true)
+        @Expect(help.contains("metis models set <provider/model>"), true)
 
         let status = programSupportRenderModelsStatus()
         @Expect(status.contains("Models status (CLI chat)"), true)
@@ -75,13 +75,13 @@ public class CliappCommandSupportTest {
         let index = programSupportRenderModelsProviderIndex(1)
         @Expect(index.contains("CLI models providers"), true)
         @Expect(index.contains("Use: /models <provider>"), true)
-        @Expect(index.contains("Switch: metis models set <provider:model>"), true)
+        @Expect(index.contains("Switch: metis models set <provider/model>"), true)
 
         let provider = programSupportRenderModelsProviderModels("openai", 1)
         @Expect(provider.contains("Models (openai)"), true)
         @Expect(provider.contains("openai/"), true)
         @Expect(provider.contains("Back: /models"), true)
-        @Expect(provider.contains("Switch: metis models set <provider:model>"), true)
+        @Expect(provider.contains("Switch: metis models set <provider/model>"), true)
     }
 
     @TestCase

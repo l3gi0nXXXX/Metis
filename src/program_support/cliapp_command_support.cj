@@ -125,12 +125,12 @@ public func programSupportRenderModelsHelp(): String {
     "Usage: /models [status|help|set-image|image-fallbacks|<provider>|<page>]\n" +
     "  /models              Open the interactive provider/model configuration flow and may write metis.json.\n" +
     "  /models status       Print read-only CLI chat model status.\n" +
-    "  /models set-image <provider:model>  Set the dedicated image-understanding model.\n" +
-    "  /models image-fallbacks add|remove|clear <provider:model>  Manage image-understanding fallbacks.\n" +
+    "  /models set-image <provider/model>  Set the dedicated image-understanding model.\n" +
+    "  /models image-fallbacks add|remove|clear <provider/model>  Manage image-understanding fallbacks.\n" +
     "  /models help         Show this help.\n" +
     "  /models <provider>   Show read-only model candidates for a provider.\n" +
     "  /models <page>       Show a provider page.\n" +
-    "  metis models set <provider:model>  Switch the persisted CLI model outside chat.\n"
+    "  metis models set <provider/model>  Switch the persisted CLI model outside chat.\n"
 }
 
 public func programSupportRenderModelsStatus(): String {
@@ -152,7 +152,7 @@ public func programSupportRenderModelsStatus(): String {
     "  Image primary: ${imageModel}\n" +
     "  Image fallbacks: ${imageFallbacks}\n" +
     "  Scope: image understanding is independent from the main chat model; this is not gateway runtime status.\n" +
-    "  Configure: use `/models`, `/models set-image <provider:model>`, or `metis models set-image <provider:model>` outside chat.\n"
+    "  Configure: use `/models`, `/models set-image <provider/model>`, or `metis models set-image <provider/model>` outside chat.\n"
 }
 
 public func programSupportRenderModelsProviderIndex(page: Int64): String {
@@ -184,7 +184,7 @@ public func programSupportRenderModelsProviderIndex(page: Int64): String {
     if (effectivePage < totalPages) {
         sb.append("More: /models ${effectivePage + 1}\n")
     }
-    sb.append("Switch: metis models set <provider:model>\n")
+    sb.append("Switch: metis models set <provider/model>\n")
     sb.toString()
 }
 
@@ -226,7 +226,7 @@ public func programSupportRenderModelsProviderModels(provider: String, page: Int
         sb.append("- ${normalizedProvider}/${model}${mark}\n")
     }
     sb.append("Back: /models\n")
-    sb.append("Switch: metis models set <provider:model>\n")
+    sb.append("Switch: metis models set <provider/model>\n")
     sb.toString()
 }
 

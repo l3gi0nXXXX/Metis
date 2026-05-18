@@ -12,7 +12,7 @@
 metis agents add \
   --agent zhihu-strategist \
   --name "知乎策略师" \
-  --model dashscope:qwen3.6-plus \
+  --model qwen/qwen3.6-plus \
   --feishu "cli_fake_app_id:fake_feishu_secret" \
   --qqbot "1020000000:fake_qq_secret" \
   --telegram-bot-token "123456789:fake_telegram_token"
@@ -24,7 +24,7 @@ metis agents add \
 metis agents add \
   --agent zhihu-strategist \
   --name "知乎策略师" \
-  --model dashscope:qwen3.6-plus \
+  --model qwen/qwen3.6-plus \
   --feishu-account zhihu-feishu \
   --feishu "cli_fake_app_id:fake_feishu_secret" \
   --qqbot-account zhihu-qq \
@@ -199,7 +199,7 @@ QQ adapter 当前启动时要求 `config.appId` 和 `config.appSecret` 非空，
 {
   "agentId": "zhihu-strategist",
   "name": "知乎策略师",
-  "model": "dashscope:qwen3.6-plus",
+  "model": "qwen/qwen3.6-plus",
   "bind": ["telegram:zhihu-strategist", "feishu:zhihu-strategist", "qq:zhihu-strategist"],
   "channelCredentials": {
     "telegram": {
@@ -313,7 +313,7 @@ Feishu 和 QQ 同理。binding 冲突继续使用现有 `gatewayApplyAgentRouteB
 ```text
 Added agent: zhihu-strategist
   name: 知乎策略师
-  model: dashscope:qwen3.6-plus
+  model: qwen/qwen3.6-plus
   workspace: /Users/...
   agentDir: /Users/...
 Configured channel accounts:
@@ -539,7 +539,7 @@ Phase 0 文档验收矩阵：
 
 ```bash
 metis agents add --agent demo --name Demo \
-  --model dashscope:qwen3.6-plus \
+  --model qwen/qwen3.6-plus \
   --bind telegram:demo \
   --feishu "cli_test:secret_test" \
   --qqbot "1020:test_secret" \
@@ -577,7 +577,7 @@ metis agents add --agent demo --name Demo \
   "agentId": "zhihu-strategist",
   "name": "知乎策略师",
   "workspace": "/path/to/workspace",
-  "model": "dashscope:qwen3.6-plus",
+  "model": "qwen/qwen3.6-plus",
   "bind": ["telegram:zhihu-strategist"],
   "channelCredentials": {
     "telegram": {"accountId": "zhihu-strategist", "botToken": "123456:fake_test_token"},
@@ -944,7 +944,7 @@ Gateway result 建议结构：
   "name": "知乎策略师",
   "workspace": "...",
   "agentDir": "...",
-  "model": "dashscope:qwen3.6-plus",
+  "model": "qwen/qwen3.6-plus",
   "channelAccounts": [
     {"channel": "telegram", "accountId": "zhihu-strategist", "action": "created", "token": "[redacted]"},
     {"channel": "feishu", "accountId": "zhihu-strategist", "action": "created", "appId": "cli_...", "appSecret": "[redacted]"},
@@ -963,7 +963,7 @@ Gateway result 建议结构：
 ```text
 Added agent: zhihu-strategist
   name: 知乎策略师
-  model: dashscope:qwen3.6-plus
+  model: qwen/qwen3.6-plus
   workspace: /Users/...
   agentDir: /Users/...
 Configured channel accounts:
@@ -1051,7 +1051,7 @@ redaction helper 规则：
 
 | 场景 | 用户命令 | 验收检查命令 | 必须说明的预期 |
 | --- | --- | --- | --- |
-| 只创建单 agent | `metis agents add --agent reviewer --name "Reviewer" --model dashscope:qwen3.6-plus` | `metis agents get --agent reviewer`、`metis agents bindings --agent reviewer` | 创建单 agent，不创建 team，不新增 channel account 或 route binding |
+| 只创建单 agent | `metis agents add --agent reviewer --name "Reviewer" --model qwen/qwen3.6-plus` | `metis agents get --agent reviewer`、`metis agents bindings --agent reviewer` | 创建单 agent，不创建 team，不新增 channel account 或 route binding |
 | Telegram shortcut | `metis agents add --agent tg-writer --telegram-bot-token "123456789:fake-telegram-token"` | `metis gateway channel telegram accounts`、`metis agents bindings --agent tg-writer` | token redacted；默认 accountId 为 `tg-writer`；binding 为 `telegram:tg-writer` |
 | Feishu shortcut | `metis agents add --agent feishu-writer --feishu "cli_fake_app_id:fake-feishu-secret"` | `metis gateway channel feishu accounts`、`metis agents bindings --agent feishu-writer` | appSecret redacted；account 写入 Feishu accounts；binding 为 `feishu:feishu-writer` |
 | QQ shortcut | `metis agents add --agent qq-writer --qqbot "1020000000:fake-qq-secret"` | `metis gateway channel qq accounts`、`metis agents bindings --agent qq-writer` | appSecret redacted；account 写入 QQ accounts；旧顶层 QQ 配置兼容性不被破坏 |
@@ -1291,7 +1291,7 @@ cjpm test
 操作：
 
 ```bash
-metis agents add --agent reviewer --name "Reviewer" --model dashscope:qwen3.6-plus
+metis agents add --agent reviewer --name "Reviewer" --model qwen/qwen3.6-plus
 metis agents get --agent reviewer
 ```
 
@@ -1313,7 +1313,7 @@ metis agents get --agent reviewer
 metis agents add \
   --agent tg-writer \
   --name "Telegram Writer" \
-  --model dashscope:qwen3.6-plus \
+  --model qwen/qwen3.6-plus \
   --telegram-bot-token "123456789:test_token"
 
 metis agents bindings --agent tg-writer
@@ -1337,7 +1337,7 @@ metis gateway channel telegram accounts
 metis agents add \
   --agent feishu-writer \
   --name "Feishu Writer" \
-  --model dashscope:qwen3.6-plus \
+  --model qwen/qwen3.6-plus \
   --feishu "cli_test:secret_test"
 
 metis agents bindings --agent feishu-writer
@@ -1361,7 +1361,7 @@ metis gateway channel feishu accounts
 metis agents add \
   --agent qq-writer \
   --name "QQ Writer" \
-  --model dashscope:qwen3.6-plus \
+  --model qwen/qwen3.6-plus \
   --qqbot "10201234:secret_test"
 
 metis agents bindings --agent qq-writer
@@ -1385,7 +1385,7 @@ metis gateway channel qq accounts
 metis agents add \
   --agent zhihu-strategist \
   --name "知乎策略师" \
-  --model dashscope:qwen3.6-plus \
+  --model qwen/qwen3.6-plus \
   --feishu "cli_test:secret_test" \
   --qqbot "10201234:secret_test" \
   --telegram-bot-token "123456789:test_token"

@@ -164,7 +164,7 @@ protected func handleModelsCommandLine(app: CliApp, raw: String): Unit {
     }
     if (sub == "set-image") {
         if (tokens.size < 3) {
-            PrintUtils.printLine("Usage: /models set-image <provider:model>")
+            PrintUtils.printLine("Usage: /models set-image <provider/model>")
             return
         }
         let applied = MetisConfigManager.setImageModelRef(tokens[2])
@@ -173,7 +173,7 @@ protected func handleModelsCommandLine(app: CliApp, raw: String): Unit {
     }
     if (sub == "image-fallbacks") {
         if (tokens.size < 3) {
-            PrintUtils.printLine("Usage: /models image-fallbacks add|remove|clear <provider:model>")
+            PrintUtils.printLine("Usage: /models image-fallbacks add|remove|clear <provider/model>")
             return
         }
         let action = tokens[2].toAsciiLower()
@@ -189,7 +189,7 @@ protected func handleModelsCommandLine(app: CliApp, raw: String): Unit {
             return
         }
         if (tokens.size < 4) {
-            PrintUtils.printLine("Usage: /models image-fallbacks ${action} <provider:model>")
+            PrintUtils.printLine("Usage: /models image-fallbacks ${action} <provider/model>")
             return
         }
         let canonical = MetisConfigManager.canonicalModelRef(tokens[3]).trimAscii()
@@ -209,7 +209,7 @@ protected func handleModelsCommandLine(app: CliApp, raw: String): Unit {
                 current.add(item)
             }
         } else {
-            PrintUtils.printLine("Usage: /models image-fallbacks add|remove|clear <provider:model>")
+            PrintUtils.printLine("Usage: /models image-fallbacks add|remove|clear <provider/model>")
             return
         }
         let applied = MetisConfigManager.setImageFallbackModelRefs(current.toArray())

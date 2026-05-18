@@ -600,7 +600,7 @@ public struct GatewayUserSettings {
      * Example:
      * {
      *   "feishu": "deepseek:deepseek-chat",
-     *   "qq": "qwen:qwen-plus"
+     *   "qq": "qwen/qwen3.6-plus"
      * }
      */
     public var channelModels: HashMap<String, String> = HashMap<String, String>()

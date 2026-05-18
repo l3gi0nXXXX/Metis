@@ -1573,7 +1573,7 @@ renderAgentModelsStatus(turnContext): String
 
 验收：
 
-- agent A 配置 `openai:gpt-*`，agent B 配置 `dashscope:qwen-*`，解析结果互不影响。
+- agent A 配置 `openai:gpt-*`，agent B 配置 `qwen/qwen-*`，解析结果互不影响。
 - agent A 的 `/models status` 显示 A 的 `models.json` 和 `auth-profiles.json`。
 - agent B 的 `/models status` 显示 B 的 `models.json` 和 `auth-profiles.json`。
 - agent `model.fallbacks=[]` 能禁用 default fallbacks。

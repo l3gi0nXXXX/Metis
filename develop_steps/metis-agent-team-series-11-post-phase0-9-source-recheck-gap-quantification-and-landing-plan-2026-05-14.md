@@ -469,7 +469,7 @@ Teams 页面当前由这些区域组成：
 
 1. 在 `Model Editor` 的 `Member` 选择成员。
 2. 点击 `Load Model`。
-3. 修改 `Primary model ref` 或 `Runtime primary model ref`，例如 `dashscope:qwen-plus`。
+3. 修改 `Primary model ref` 或 `Runtime primary model ref`，例如 `qwen/qwen3.6-plus`。
 4. 修改 `models.json state` 时不要写入 API key。
 5. 点击 `Save Model`。
 
