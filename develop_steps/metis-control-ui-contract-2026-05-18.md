@@ -29,7 +29,7 @@ These methods are the current compatibility baseline.
 
 Telegram and Feishu are the first-priority IM objects for AgentTeam control-plane flows. The UI should model them as channel/account/peer/thread route targets owned by Gateway. Other IMs should be added through the same ChannelAdapter and route-binding semantics, not by introducing IM-specific agent selectors in the UI contract.
 
-Feishu fields in Control UI are configuration and diagnostics fields. They must not imply that the full OpenClaw Lark plugin surface is complete. Plugin-level capabilities such as Feishu docs, wiki, drive, task, calendar, resource download, OAuth/auth, and native `/feishu ...` commands should be shown only when the backing Gateway method exists.
+Feishu fields in Control UI are configuration and diagnostics fields. They must not imply that every Feishu plugin capability is complete. Plugin-level capabilities such as Feishu docs, wiki, drive, task, calendar, resource download, OAuth/auth, and native `/feishu ...` commands should be shown only when the backing Gateway method exists.
 
 ## Chat Slash Commands
 

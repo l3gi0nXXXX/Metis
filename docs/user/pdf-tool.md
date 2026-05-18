@@ -32,13 +32,27 @@ Text extraction fallback is provided by the PDF runtime worker. When that worker
 - `pdfjs-dist`
 - `@napi-rs/canvas`
 
+Install the fallback dependencies from the Metis repository root:
+
+```bash
+npm --prefix tools/pdf_extract install
+```
+
+Restart the Gateway after installing dependencies so the running process can use the extractor:
+
+```bash
+metis gateway restart
+```
+
 Run the diagnostic command to check whether those packages are loadable:
 
 ```bash
 metis models pdf-status
 ```
 
-The default output is human-readable. Use `--json` only for machine-readable diagnostics.
+The default output is human-readable. Use `--json` only for machine-readable diagnostics. A healthy fallback setup should show `pdfjs-dist` and `@napi-rs/canvas` as `loadable`.
+
+These dependencies are required when the selected PDF model candidate is not a native PDF provider and Metis must first extract PDF text or render page images locally. Native PDF providers can read PDF bytes directly, but fallback models such as vision/text chat models need the local extractor path.
 
 ## CLI Usage
 

@@ -26,11 +26,11 @@ That gives the project a few defining characteristics:
 
 ## High performance
 
-Without undergoing any specialized performance optimization, Metis has achieved a more than 20-fold leap in startup and shutdown efficiency, thereby completely resolving the critical issue of slow startup times associated with OpenClaw.
+Without undergoing any specialized performance optimization, Metis has achieved a more than 20-fold leap in startup and shutdown efficiency compared with OpenClaw in the measured baseline scenario.
 
 Absent any specialized performance optimization, Metis has realized a qualitative leap in its startup and shutdown efficiency:
 
-| Comparison Item               | openclaw Average Duration | Metis Average Duration | Magnification Factor |
+| Comparison Item               | OpenClaw Average Duration | Metis Average Duration | Magnification Factor |
 | ----------------------------- | ------------------------- | ---------------------- | -------------------- |
 | onboard（Cold Start）         | 2\.591s                   | 0\.122s                | 21\.2 times          |
 | gateway restart（Cold Start） | 2\.366s                   | 0\.073s                | 32\.4 times          |
@@ -39,7 +39,7 @@ Absent any specialized performance optimization, Metis has realized a qualitativ
 
 The detailed data is presented below; notably, these figures were achieved without any performance optimizations whatsoever (perhaps because Metis's feature set is not yet fully comprehensive?).
 
-| Num     | openclaw onboard | openclaw gateway restart | openclaw gateway start | openclaw gateway stop |
+| Num     | OpenClaw onboard | OpenClaw gateway restart | OpenClaw gateway start | OpenClaw gateway stop |
 | ------- | ---------------: | -----------------------: | ---------------------: | --------------------: |
 | 1       |           3.563s |                   1.989s |                 2.462s |                2.136s |
 | 2       |           2.470s |                   2.044s |                 2.397s |                1.955s |
@@ -74,42 +74,148 @@ Test Environment:
 
 ## Quick Start
 
-### Prerequisites
+Metis is a source-first Cangjie project. Start from the core dependencies, build once, then install optional feature dependencies only when you use those features.
 
-- Cangjie `1.0.0+`
-- A working `MAGIC_PATH` that points to your Cangjie Magic installation: https://gitcode.com/Cangjie-TPC/CangjieMagic
-- install openssl3 and config DYLD_LIBRARY_PATH in env
-- Model provider credentials stored in `~/.metis/metis.json`
+### 1. Install Core Dependencies
 
-### 1. Configure env
+| Dependency | Required for | Setup |
+|---|---|---|
+| Cangjie SDK `1.0.0` | `cjpm build`, `cjpm run`, `cjpm test` | Download Cangjie LTS General Edition 1.0.0 from https://cangjie-lang.cn/download/1.0.0, install it locally, and source its `envsetup.sh` before building. |
+| CangjieMagic source checkout | Metis `magic` dependency | Clone/build CangjieMagic locally, then export `MAGIC_PATH` to its repository root. |
+| Cangjie stdx libraries bundled with CangjieMagic | stdx JSON/HTTP/TLS/runtime modules | Keep the `libs/cangjie-stdx-*` directories inside `MAGIC_PATH`. |
+| OpenSSL 3 | HTTPS/TLS through Cangjie stdx | On macOS install `openssl@3` and export `DYLD_LIBRARY_PATH`. |
+| macOS SDK path (`SDKROOT`) | macOS Cangjie build/link step | On macOS, install Xcode or the macOS SDK from Apple Developer Downloads: https://developer.apple.com/download/all, then export `SDKROOT` to the installed `MacOSX.sdk` path. |
+| curl / libcurl | CangjieMagic HTTP backend | Ensure `curl` and its runtime library are available on the host. |
+| Git | Fetching source dependencies | Install system Git. |
+| C compiler toolchain and `make` | Only when rebuilding FFI libraries | Not needed for normal build if the checked-in FFI libraries are present. Install Xcode Command Line Tools on macOS if rebuilding. |
+
+### 2. Configure Build Environment
 
 ```bash
+# Cangjie SDK
+export CANGJIE_HOME="/path/to/cangjie-sdk-1.0.0"
+source "$CANGJIE_HOME/envsetup.sh"
+
+# CangjieMagic dependency used by cjpm.toml
 export MAGIC_PATH="/path/to/CangjieMagic"
+
+# stdx TLS/OpenSSL runtime on macOS
 brew install openssl@3
 export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
+
+# macOS SDK used by the Cangjie build/link step
+export SDKROOT="/path/to/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
 ```
 
-### 2. Start the interactive CLI
+### 3. Build CangjieMagic
+
+```bash
+cd "$MAGIC_PATH"
+cjpm clean
+cjpm build -i
+```
+
+### 4. Build and Verify Metis
+
+```bash
+cd /path/to/Metis
+cjpm clean
+cjpm build -i
+cjpm test --parallel 1
+```
+
+### 5. Configure Runtime Credentials
+
+The build can pass without model or IM credentials, but real conversations need provider configuration under `~/.metis/metis.json`.
+
+Run the onboarding flow for first-time setup:
+
+```bash
+cjpm run --skip-build --name metis --run-args "onboard"
+```
+
+At minimum, configure one chat model provider, for example `qwen`, `deepseek`, `openai`, or another provider supported by the model catalog:
+
+```json
+{
+  "models": {
+    "providers": {
+      "qwen": {
+        "apiKey": "<your-api-key>",
+        "baseUrl": "https://coding.dashscope.aliyuncs.com/v1"
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "qwen/qwen3.6-plus"
+      }
+    }
+  }
+}
+```
+
+IM channels need their own credentials only when that channel is enabled:
+
+- Telegram: bot token from BotFather, configured under `gateway.telegram` or a Telegram account entry.
+- Feishu: app id/app secret, and for long-connect mode the official SDK dependency described below.
+- QQ: app id/app secret or the official gateway credentials required by the selected QQ mode.
+- Plugin IM adapters: plugin runtime files plus the Python dependencies and credentials for that adapter.
+
+### 6. Start Metis
+
+Interactive CLI:
 
 ```bash
 cjpm run --name metis
-cjpm run --skip-build --name metis --run-args "onboard"
 cjpm run --skip-build --name metis --run-args "chat"
 ```
 
-### 3. Start the Gateway runtime
+Gateway runtime:
 
 ```bash
 cjpm run --skip-build --name metis --run-args "gateway run"
 cjpm run --skip-build --name metis --run-args "gateway serve"
 ```
 
-### 4. Others
+Other entry points:
 
 ```bash
 cjpm run --skip-build --name metis --run-args "dashboard"
 cjpm run --skip-build --name metis --run-args "gateway help"
 ```
+
+### Optional Feature Dependencies
+
+| Feature | Dependency | Install command | When to install |
+|---|---|---|---|
+| Control UI source rebuild and UI tests | Node.js + npm from the official Node.js download page: https://nodejs.org/en/download | `npm --prefix ui install` | Required when changing `ui/` source or running `npm --prefix ui run build` / UI tests. The committed `assets/control-ui` bundle is enough for normal Gateway startup. |
+| PDF fallback extraction | Node.js + npm from the official Node.js download page: https://nodejs.org/en/download; `tools/pdf_extract` packages `pdfjs-dist` and `@napi-rs/canvas` | `npm --prefix tools/pdf_extract install` | Required when PDF analysis uses non-native PDF models and Metis must extract text or render page images locally. Check with `metis models pdf-status`. |
+| Feishu long-connect native adapter | Node.js + npm from the official Node.js download page: https://nodejs.org/en/download; official SDK package `@larksuiteoapi/node-sdk` under `tools/feishu-official-sdk` | `npm --prefix tools/feishu-official-sdk install @larksuiteoapi/node-sdk` | Required when `gateway.feishu.receiveMode` is `long_connect`, because `scripts/feishu-ws-sidecar.mjs` loads the SDK from this directory. |
+| Gateway plugin IM adapters | Python 3 + pip; per-channel requirements under `tools/gateway_plugin_tool/requirements/` | `python tools/gateway_plugin_tool/install.py deps all` or `python tools/gateway_plugin_tool/install.py deps dingtalk` | Required only for plugin-style adapters such as DingTalk, WeChat, WeCom, plugin Feishu, or plugin QQ. Built-in Telegram/QQ/Feishu Cangjie adapters do not need these Python packages. |
+| Docker image build | Docker + Docker Compose; `CANGJIE_HOME` pointing to SDK | `scripts/build-docker-image.sh` | Required only when building the container image. |
+| Faster source search | ripgrep | `brew install ripgrep` | Optional. Metis/Magic workflows can fall back to slower search tools, but `rg` is recommended for development. |
+
+Run optional verification only for the features you installed:
+
+```bash
+npm --prefix ui run build
+npm --prefix tools/pdf_extract run check
+cjpm run --skip-build --name metis --run-args "models pdf-status"
+```
+
+### Common Build Failures
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `MAGIC_PATH` dependency cannot be resolved | `MAGIC_PATH` is missing or points to the wrong directory. | `export MAGIC_PATH="/path/to/CangjieMagic"` and verify `$MAGIC_PATH/cjpm.toml` exists. |
+| `cjc` / `cjpm` not found | Cangjie SDK env was not sourced. | `source "$CANGJIE_HOME/envsetup.sh"`. |
+| macOS build fails during compile/link with missing SDK or system headers/libraries | `SDKROOT` is missing or points to the wrong macOS SDK. | Install Xcode or the macOS SDK from https://developer.apple.com/download/all, then `export SDKROOT="/path/to/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"`. |
+| TLS/OpenSSL errors on macOS | OpenSSL 3 runtime library is not visible to dyld. | `brew install openssl@3` and export `DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"`. |
+| `stdx` `.dylib` fails with `library load disallowed by system policy` on macOS | macOS quarantine attribute on downloaded libraries. | Run `xattr -rd com.apple.quarantine "$MAGIC_PATH/libs"`; if the directory is not writable by your user, retry with `sudo`. |
+| PDF upload says extractor failed or `pdfjs-dist` is `not_loadable` | PDF fallback dependencies are not installed. | Install Node.js from https://nodejs.org/en/download, run `npm --prefix tools/pdf_extract install`, restart Gateway, then run `metis models pdf-status`. |
+| Feishu long-connect says official SDK monitor host is unavailable | `@larksuiteoapi/node-sdk` is missing under `tools/feishu-official-sdk`. | Install Node.js from https://nodejs.org/en/download, run `npm --prefix tools/feishu-official-sdk install @larksuiteoapi/node-sdk`, then restart Gateway. |
 
 ## Common Workflows
 
@@ -262,8 +368,8 @@ That makes Metis suitable for:
 Useful project documents:
 
 - `README.md` for the current project intro and command overview
-- `docs/user/runtime-execution-model.md` for how Gateway-first execution works
 - `docs/user/telegram.md` for Telegram channel configuration, media usage, and troubleshooting
+- `docs/user/pdf-tool.md` for PDF reading, model configuration, fallback dependency installation, and Telegram PDF usage
 - `docs/user/subagents.md` for background subagent usage and control-ui operations
 - `docs/user/skills-guide.md` for skills discovery, commands, and installation
 - `docs/user/gateway-im-plugins.md` for IM plugin integration
@@ -279,14 +385,10 @@ If you are evaluating the codebase, start with:
 2. `src/program_runner.cj`
 3. `src/app/`
 4. `src/gateway/`
-5. `docs/user/runtime-execution-model.md`
 
 ## Thanks
 
-This is a personal project which is based on magic-cli and CangjieMagic. I found a lot of inspiration from the OpenClaw, Evolver,  hermes-agent project.
+This is a personal project based on magic-cli and CangjieMagic.
 
 * https://gitcode.com/Cangjie-TPC/CangjieMagic
 * https://gitcode.com/cangjie-sig/magic-cli
-* https://github.com/openclaw/openclaw#
-* https://github.com/nousresearch/hermes-agent
-* https://github.com/EvoMap/evolver

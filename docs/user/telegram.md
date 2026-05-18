@@ -226,7 +226,7 @@ allowMultiselect=true
 pollPublic=true
 ```
 
-`durationSeconds` 支持 `5..600` 秒；`pollPublic=true` 等价于非匿名投票，`pollAnonymous=true` 等价于匿名投票。`durationHours` 与 OpenClaw 保持一致，不做自动换算，使用时会在网络请求前返回明确错误。
+`durationSeconds` 支持 `5..600` 秒；`pollPublic=true` 等价于非匿名投票，`pollAnonymous=true` 等价于匿名投票。`durationHours` 不做自动换算，使用时会在网络请求前返回明确错误。
 
 ## 文本与回复
 
@@ -352,6 +352,16 @@ modelHandling=vision-input-ready
 | `video` / `video_note` | `video-understanding` | 视频可作为视频理解输入；未配置视频理解时保留本地路径和元数据。 |
 | `document` | `file-context` | 文本类文件直接预览；PDF/Office 等依赖 extractor 或 companion extract；不可读时保留元数据。 |
 | `sticker` | `vision` / `metadata-only` | sticker 按 image-like 流程理解；描述会进入 sticker durable cache。 |
+
+Telegram 收到 PDF 后会把文件下载到媒体归档目录，再复用共享 PDF runtime 做自动提取。若 `documentExtractStatus=extractor_error`，并且 `metis models pdf-status` 显示 `pdfjs-dist` 或 `@napi-rs/canvas` 为 `not_loadable`，请在 Metis 项目根目录执行：
+
+```bash
+npm --prefix tools/pdf_extract install
+metis gateway restart
+metis models pdf-status
+```
+
+确认两个依赖均为 `loadable` 后，再重新发送 PDF 或让 agent 读取已下载的 PDF 路径。
 
 ### 入站媒体理解工具
 
@@ -754,7 +764,7 @@ remove=true
 render=remove
 ```
 
-状态 reaction 可使用 OpenClaw 同名生命周期字段，Metis 会映射为 Telegram 支持的 emoji 并保留 `available_reactions` fallback：
+状态 reaction 可使用 Metis 生命周期字段，Metis 会映射为 Telegram 支持的 emoji 并保留 `available_reactions` fallback：
 
 ```text
 [reaction]
@@ -884,7 +894,7 @@ TTS/ASR 的 canonical 配置入口是 Gateway speech 配置：
 - `gateway.telegram.speech.audioAsVoice` / `autoReplyToVoice`：Telegram 投递和会话行为偏好；不覆盖 provider、voice 或 api key。
 - `gateway.channelsExtra.telegramTts`：legacy TTS 兼容入口，仅在共享和 Telegram override 都未配置时 fallback，并应迁移到 `gateway.telegram.speech.tts` 或 `gateway.speech.tts`。
 
-依据：OpenClaw TTS 文档把 provider-owned settings 放在 `messages.tts.providers.<id>`，并允许 provider fallback；OpenClaw-China QQBot 文档把腾讯 Flash ASR 配置在通道 ASR 下；Hermes 示例把 messaging voice transcription 作为独立 STT provider 配置。Metis 采用 Gateway 共享默认配置加通道覆盖配置：先读取 `gateway.speech.tts/asr`，再深合并 `gateway.telegram.speech.tts/asr`，因此 Telegram 自己的 speech 配置优先于共享配置。
+Metis 的语音配置采用 Gateway 共享默认配置加通道覆盖配置：先读取 `gateway.speech.tts/asr`，再深合并 `gateway.telegram.speech.tts/asr`，因此 Telegram 自己的 speech 配置优先于共享配置。
 
 正常对话中，用户明确要求 Metis 用语音/音频回复时，模型应调用 Gateway 暴露的 `tts` 工具，由工具生成 `[voice]` 或 `[audio]` payload 并通过当前 Telegram 会话发送；发送成功后模型应返回 silent reply，避免再追加一条普通文本。`/tts audio <text>` 仍是 native command 测试入口，用于直接验证 provider、音频生成和 Telegram 发送链路。
 
@@ -1003,7 +1013,7 @@ Telegram 收到 voice/audio 输入时，`autoReplyToVoice=true` 且 `audioAsVoic
 - `gateway.speech.tts.providers.openai-tts-compatible.kind=openai-compatible` 保留给真正兼容 `/audio/speech` 的 TTS provider；可以按实际服务替换 `baseUrl`、`model`、`voice` 和 `${OPENAI_TTS_API_KEY}`。
 - `gateway.speech.asr.providers.openai-whisper.kind=openai-compatible` 用于 Whisper-compatible `/audio/transcriptions` 类接口；示例用 `${OPENAI_ASR_API_KEY}`，也可以替换为兼容服务的 base URL 和模型。
 - `gateway.speech.asr.providers.openrouter-whisper.kind=openai-compatible` 使用 OpenRouter ASR 的 JSON base64 `input_audio` 请求形态；必须配置 `requestFormat=openrouter-input-audio-json`，示例使用 `${OPENROUTER_API_KEY}` 和 `openai/whisper-large-v3-turbo`。
-- `gateway.speech.asr.providers.tencent-flash.kind=tencent-flash` 对齐 OpenClaw-China QQBot 的腾讯录音文件识别极速版配置，需要 `${TENCENT_ASR_APP_ID}`、`${TENCENT_ASR_SECRET_ID}`、`${TENCENT_ASR_SECRET_KEY}`。
+- `gateway.speech.asr.providers.tencent-flash.kind=tencent-flash` 用于腾讯录音文件识别极速版配置，需要 `${TENCENT_ASR_APP_ID}`、`${TENCENT_ASR_SECRET_ID}`、`${TENCENT_ASR_SECRET_KEY}`。
 - `command` provider 是本地 fallback，不需要云 key；只把文件路径和文本作为数组参数传给命令，不通过 shell 拼接。
 - `gateway.telegram.speech.tts/asr` 可以只覆盖 `provider`，继续复用共享 `providers`；如果 Telegram 需要不同 voice、输出格式、ASR engine 或 fallback，再在 Telegram 覆盖块内补充同名 provider 字段。
 - 显式配置本地/免费 ASR provider 后，Metis 不应静默回退到付费云 provider。不同 IM 通道自己的 `speech` 配置优先于 `gateway.speech`，共享配置只是默认值。
@@ -1011,8 +1021,8 @@ Telegram 收到 voice/audio 输入时，`autoReplyToVoice=true` 且 `audioAsVoic
 ASR 请求格式不要混用：
 
 - OpenRouter ASR 需要 JSON body，音频放在 `input_audio.data` 的 base64 字符串里，格式名放在 `input_audio.format`。这对应 OpenRouter `POST /api/v1/audio/transcriptions` 的 `input_audio` 形态。
-- OpenAI/Groq/Hermes 参考实现是文件上传形态，不是 OpenRouter 的 `input_audio` JSON。源码依据：Hermes Groq STT 在 `/Users/l3gi0n/work/workspace_cangjie/hermes-agent/tools/transcription_tools.py:448-471` 通过 OpenAI SDK 传入 `file`，Hermes OpenAI STT 在 `/Users/l3gi0n/work/workspace_cangjie/hermes-agent/tools/transcription_tools.py:500-528` 也打开本地音频文件传给 `audio.transcriptions.create`，Hermes xAI STT 在 `/Users/l3gi0n/work/workspace_cangjie/hermes-agent/tools/transcription_tools.py:596-625` 明确走 REST `multipart/form-data`。
-- Tencent Flash 是 provider 专用 `application/octet-stream` 形态，不是 multipart，也不是 OpenRouter JSON。源码依据：OpenClaw-China Tencent Flash ASR 在 `/Users/l3gi0n/work/workspace_cangjie/openclaw-china/packages/shared/src/asr/tencent-flash.ts:73-104` 以原始音频 bytes 作为 body，并按腾讯规则签名。
+- Whisper-compatible ASR provider 通常使用文件上传形态，不是 OpenRouter 的 `input_audio` JSON。
+- Tencent Flash 是 provider 专用 `application/octet-stream` 形态，不是 multipart，也不是 OpenRouter JSON。
 - provider 级 `insecureSkipTlsVerify` 只影响该 ASR/TTS provider 的 HTTPS 调用；`gateway.telegram.network.insecureSkipTlsVerify` 是 Telegram Bot API transport 的网络开关。两者不是同一个开关，也不会互相替代。
 
 #### 迁移建议
@@ -1046,7 +1056,7 @@ OpenClaw 插件兼容使用 Gateway 管理的 Node sidecar，不替换 Telegram 
       "openclawPluginCompatibility": {
         "enabled": true,
         "nodeCommand": "node",
-        "scriptPath": "/Users/l3gi0n/work/workspace_cangjie/Metis/scripts/openclaw-plugin-sidecar.mjs",
+        "scriptPath": "/path/to/Metis/scripts/openclaw-plugin-sidecar.mjs",
         "timeoutMs": 10000,
         "plugins": [
           "/absolute/path/to/openclaw-plugin"

@@ -36,7 +36,7 @@ Qwen/OpenAI-compatible video understanding can use DashScope compatible mode:
 }
 ```
 
-The provider sends an OpenAI-compatible `/chat/completions` request with a `video_url` data URL, matching OpenClaw's Qwen media-understanding provider shape.
+The provider sends an OpenAI-compatible `/chat/completions` request with a `video_url` data URL for media-understanding models that accept video input.
 
 ## Video Generation
 
