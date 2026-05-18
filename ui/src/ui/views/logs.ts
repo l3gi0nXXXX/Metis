@@ -36,7 +36,7 @@ function matchesFilter(entry: LogEntry, needle: string) {
   if (!needle) {
     return true;
   }
-  const haystack = [entry.message, entry.subsystem, entry.raw]
+  const haystack = [entry.message, entry.subsystem, entry.event, entry.raw]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
@@ -137,7 +137,9 @@ export function renderLogs(props: LogsProps) {
                 <div class="log-row">
                   <div class="log-time mono">${formatTime(entry.time)}</div>
                   <div class="log-level ${entry.level ?? ""}">${entry.level ?? ""}</div>
-                  <div class="log-subsystem mono">${entry.subsystem ?? ""}</div>
+                  <div class="log-subsystem mono">
+                    ${[entry.subsystem, entry.event].filter(Boolean).join(" ")}
+                  </div>
                   <div class="log-message mono">${entry.message ?? entry.raw}</div>
                 </div>
               `,

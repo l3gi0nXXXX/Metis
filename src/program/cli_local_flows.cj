@@ -2,6 +2,7 @@ package metis.program
 
 import magic.utils.readFile
 import magic.jsonable.*
+import magic.config.Config
 
 import metis.cliapp.runEmbeddedPrompt
 import metis.core.config.{CliConfig, MetisConfigManager, MetisPaths, CliSettingManager, cliFindModelProviderDescriptor, cliModelProviderCatalogDescriptors, cliValidateProviderBaseUrl}
@@ -15,7 +16,7 @@ import metis.program_support.{programSupportBuildPdfStatusSnapshot, programSuppo
 
 import std.collection.ArrayList
 import std.convert.*
-import std.fs.exists
+import std.fs.{Directory, File, exists}
 import std.fs.Path
 import std.sort.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonObject, JsonString, JsonValue}
@@ -189,6 +190,438 @@ private func localPrintMutationResult(args: Array<String>, obj: JsonObject, warn
     }
     PrintUtils.printLine("Warning: ${warning}")
     printLocalCommandHuman(obj)
+}
+
+private func cliLogsHasFlag(args: Array<String>, flag: String): Bool {
+    for (arg in args) {
+        if (arg.trimAscii().toAsciiLower() == flag) {
+            return true
+        }
+    }
+    false
+}
+
+private func cliLogsIntArg(args: Array<String>, names: Array<String>, defaultValue: Int64): Int64 {
+    var i: Int64 = 0
+    while (i < args.size) {
+        let raw = args[i].trimAscii()
+        let low = raw.toAsciiLower()
+        for (name in names) {
+            if (low == name && i + 1 < args.size) {
+                try {
+                    let parsed = Int64.parse(args[i + 1].trimAscii())
+                    if (parsed >= 0) {
+                        return parsed
+                    }
+                } catch (_e: Exception) {
+                    ()
+                }
+            }
+            let prefix = "${name}="
+            if (low.startsWith(prefix)) {
+                try {
+                    let parsed = Int64.parse(raw[prefix.size..].trimAscii())
+                    if (parsed >= 0) {
+                        return parsed
+                    }
+                } catch (_e: Exception) {
+                    ()
+                }
+            }
+        }
+        i += 1
+    }
+    defaultValue
+}
+
+private func cliLogsStringArg(args: Array<String>, names: Array<String>, defaultValue: String): String {
+    var i: Int64 = 0
+    while (i < args.size) {
+        let raw = args[i].trimAscii()
+        let low = raw.toAsciiLower()
+        for (name in names) {
+            if (low == name && i + 1 < args.size) {
+                return args[i + 1].trimAscii()
+            }
+            let prefix = "${name}="
+            if (low.startsWith(prefix)) {
+                return raw[prefix.size..].trimAscii()
+            }
+        }
+        i += 1
+    }
+    defaultValue
+}
+
+private func cliLogsIsValueFlag(flag: String): Bool {
+    flag == "--limit" || flag == "-n" || flag == "--max-bytes" || flag == "--cursor" ||
+        flag == "--file" || flag == "--interval"
+}
+
+private func cliLogsPositionalTarget(args: Array<String>): String {
+    let explicit = cliLogsStringArg(args, ["--file"], "")
+    if (!explicit.isEmpty()) {
+        return explicit
+    }
+    var i: Int64 = 1
+    while (i < args.size) {
+        let raw = args[i].trimAscii()
+        let low = raw.toAsciiLower()
+        if (low.startsWith("--") || low == "-n") {
+            i += if (cliLogsIsValueFlag(low) && i + 1 < args.size) { 2 } else { 1 }
+            continue
+        }
+        if (!raw.isEmpty()) {
+            return raw
+        }
+        i += 1
+    }
+    ""
+}
+
+private func cliLogsResolvePath(raw: String): Path {
+    let target = raw.trimAscii()
+    if (target.isEmpty()) {
+        let configured = Config.logFile.trimAscii()
+        if (!configured.isEmpty() && exists(Path(configured))) {
+            return Path(configured)
+        }
+        return cliLogsLatestPath()
+    }
+    if (target.contains("/")) {
+        return Path(target)
+    }
+    CliConfig.logsDir.join(target)
+}
+
+private func cliLogsRecentNames(limit: Int64): Array<String> {
+    let rows = ArrayList<String>()
+    if (exists(CliConfig.logsDir)) {
+        for (entry in Directory.readFrom(CliConfig.logsDir)) {
+            if (!entry.isDirectory()) {
+                rows.add(entry.name)
+            }
+        }
+    }
+    let names = rows.toArray()
+    sort(names)
+    if (limit <= 0 || Int64(names.size) <= limit) {
+        return names
+    }
+    names[(Int64(names.size) - limit)..]
+}
+
+private func cliLogsLatestPath(): Path {
+    let names = cliLogsRecentNames(1)
+    if (!names.isEmpty()) {
+        return CliConfig.logsDir.join(names[names.size - 1])
+    }
+    let configured = Config.logFile.trimAscii()
+    if (!configured.isEmpty()) {
+        return Path(configured)
+    }
+    CliConfig.logsDir.join("metis.log")
+}
+
+private func cliLogsFileSize(path: Path): Int64 {
+    if (!exists(path)) {
+        return 0
+    }
+    try {
+        return Int64(File.readFrom(path).size)
+    } catch (_e: Exception) {
+        return 0
+    }
+}
+
+private func cliLogsTailPayload(path: Path, cursor: Int64, limitRaw: Int64, maxBytesRaw: Int64): JsonObject {
+    let result = JsonObject()
+    result.put("file", JsonString(path.toString()))
+    let limit = if (limitRaw <= 0) { 200 } else { min(limitRaw, 5000) }
+    let maxBytes = if (maxBytesRaw <= 0) { 250000 } else { min(maxBytesRaw, 1000000) }
+    if (!exists(path)) {
+        result.put("cursor", 0.toJsonValue())
+        result.put("size", 0.toJsonValue())
+        result.put("lines", JsonArray([]))
+        result.put("truncated", false.toJsonValue())
+        result.put("reset", false.toJsonValue())
+        return result
+    }
+    let bytes = File.readFrom(path)
+    let size = Int64(bytes.size)
+    var start: Int64 = 0
+    var reset = false
+    var truncated = false
+    if (cursor >= 0) {
+        if (cursor > size) {
+            reset = true
+            start = max(0, size - maxBytes)
+            truncated = start > 0
+        } else {
+            start = cursor
+            if (size - start > maxBytes) {
+                reset = true
+                truncated = true
+                start = max(0, size - maxBytes)
+            }
+        }
+    } else {
+        start = max(0, size - maxBytes)
+        truncated = start > 0
+    }
+    let text = String.fromUtf8(bytes)
+    let slice = if (start > 0 && start < text.size) {
+        text[start..]
+    } else if (start >= text.size) {
+        ""
+    } else {
+        text
+    }
+    let split = slice.split("\n")
+    var first: Int64 = 0
+    if (start > 0) {
+        let prev = if (start <= text.size) { text[(start - 1)..start] } else { "" }
+        first = if (prev == "\n") { 0 } else { 1 }
+    }
+    var end: Int64 = Int64(split.size)
+    if (end > 0 && split[end - 1].isEmpty()) {
+        end -= 1
+    }
+    if (first > end) {
+        first = end
+    }
+    let keptStart = max(first, end - limit)
+    let lines = JsonArray([])
+    for (idx in keptStart..end) {
+        let line = split[idx]
+        if (!line.isEmpty()) {
+            lines.add(JsonString(line))
+        }
+    }
+    result.put("cursor", size.toJsonValue())
+    result.put("size", size.toJsonValue())
+    result.put("lines", lines)
+    result.put("truncated", truncated.toJsonValue())
+    result.put("reset", reset.toJsonValue())
+    result
+}
+
+private func cliLogsJsonStringValue(obj: JsonObject, key: String): String {
+    match (obj.get(key)) {
+        case Some(value) => try { value.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func cliLogsEscapeJsonString(value: String): String {
+    value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+}
+
+private func cliLogsJsonStringPair(key: String, value: String): String {
+    "\"${key}\":\"${cliLogsEscapeJsonString(value)}\""
+}
+
+private func cliLogsJsonValueText(obj: JsonObject, key: String, defaultValue: String): String {
+    match (obj.get(key)) {
+        case Some(value) => value.toJsonString().replace("\n", "").replace(" ", "").trimAscii()
+        case None => defaultValue
+    }
+}
+
+private func cliLogsJsonStringArray(values: Array<String>): String {
+    let parts = ArrayList<String>()
+    for (value in values) {
+        parts.add("\"${cliLogsEscapeJsonString(value)}\"")
+    }
+    "[${String.join(parts.toArray(), delimiter: ",")}]"
+}
+
+private func cliLogsMetaLine(command: String, pairs: Array<String>): String {
+    let parts = ArrayList<String>()
+    parts.add(cliLogsJsonStringPair("type", "meta"))
+    if (!command.isEmpty()) {
+        parts.add(cliLogsJsonStringPair("command", command))
+    }
+    for (pair in pairs) {
+        if (!pair.isEmpty()) {
+            parts.add(pair)
+        }
+    }
+    "{${String.join(parts.toArray(), delimiter: ",")}}"
+}
+
+private func cliLogsNoticeLine(message: String): String {
+    "{${cliLogsJsonStringPair("type", "notice")},${cliLogsJsonStringPair("message", message)}}"
+}
+
+private func cliLogsParsedMeta(obj: JsonObject): JsonObject {
+    match (obj.get("_meta")) {
+        case Some(value) => try { value.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+}
+
+private func cliLogsHumanLine(raw: String): String {
+    let obj = try {
+        JsonValue.fromStr(raw).asObject()
+    } catch (_e: Exception) {
+        return raw
+    }
+    let meta = cliLogsParsedMeta(obj)
+    var ts = cliLogsJsonStringValue(obj, "ts")
+    if (ts.isEmpty()) {
+        ts = cliLogsJsonStringValue(obj, "time")
+    }
+    if (ts.isEmpty()) {
+        ts = cliLogsJsonStringValue(meta, "date")
+    }
+    var level = cliLogsJsonStringValue(obj, "level").toAsciiLower()
+    if (level.isEmpty()) {
+        let metaLevel = cliLogsJsonStringValue(meta, "logLevelName")
+        level = if (metaLevel.isEmpty()) { cliLogsJsonStringValue(meta, "level").toAsciiLower() } else { metaLevel.toAsciiLower() }
+    }
+    var subsystem = cliLogsJsonStringValue(obj, "subsystem")
+    if (subsystem.isEmpty()) {
+        subsystem = cliLogsJsonStringValue(meta, "name")
+    }
+    let event = cliLogsJsonStringValue(obj, "event")
+    var message = cliLogsJsonStringValue(obj, "message")
+    if (message.isEmpty()) {
+        message = cliLogsJsonStringValue(obj, "1")
+    }
+    if (message.isEmpty()) {
+        message = cliLogsJsonStringValue(obj, "2")
+    }
+    if (message.isEmpty()) {
+        message = raw
+    }
+    let fields = ArrayList<String>()
+    if (!ts.isEmpty()) { fields.add(ts) }
+    if (!level.isEmpty()) { fields.add(level) }
+    if (!subsystem.isEmpty()) { fields.add(subsystem) }
+    if (!event.isEmpty()) { fields.add(event) }
+    fields.add(message)
+    String.join(fields.toArray(), delimiter: " ")
+}
+
+private func cliLogsJsonLine(raw: String): String {
+    let trimmed = raw.trimAscii()
+    let _ = try {
+        JsonValue.fromStr(raw).asObject()
+    } catch (_e: Exception) {
+        return "{${cliLogsJsonStringPair("type", "raw")},${cliLogsJsonStringPair("raw", raw)}}"
+    }
+    if (trimmed.startsWith("{") && trimmed.endsWith("}") && trimmed.size >= 2) {
+        let body = trimmed[1..(trimmed.size - 1)].trimAscii()
+        if (body.isEmpty()) {
+            return "{${cliLogsJsonStringPair("type", "log")},${cliLogsJsonStringPair("raw", raw)}}"
+        }
+        return "{${cliLogsJsonStringPair("type", "log")},${body},${cliLogsJsonStringPair("raw", raw)}}"
+    }
+    "{${cliLogsJsonStringPair("type", "log")},${cliLogsJsonStringPair("raw", raw)}}"
+}
+
+private func cliLogsAppendTail(out: ArrayList<String>, payload: JsonObject, jsonMode: Bool, follow: Bool): Unit {
+    let file = cliLogsJsonStringValue(payload, "file")
+    if (jsonMode) {
+        out.add(cliLogsMetaLine("", [
+            cliLogsJsonStringPair("file", file),
+            "\"cursor\":${cliLogsJsonValueText(payload, "cursor", "0")}",
+            "\"size\":${cliLogsJsonValueText(payload, "size", "0")}"
+        ]))
+    } else {
+        out.add("Log file: ${file}")
+    }
+    let lines = match (payload.get("lines")) {
+        case Some(value) => try { value.asArray() } catch (_e: Exception) { JsonArray([]) }
+        case None => JsonArray([])
+    }
+    for (idx in 0..lines.size()) {
+        let raw = try { lines[idx].asString().getValue() } catch (_e: Exception) { "" }
+        if (raw.isEmpty()) {
+            continue
+        }
+        out.add(if (jsonMode) { cliLogsJsonLine(raw) } else { cliLogsHumanLine(raw) })
+    }
+    let truncated = match (payload.get("truncated")) {
+        case Some(v) => try { v.asBool().getValue() } catch (_e: Exception) { false }
+        case None => false
+    }
+    let reset = match (payload.get("reset")) {
+        case Some(v) => try { v.asBool().getValue() } catch (_e: Exception) { false }
+        case None => false
+    }
+    if (truncated || reset || follow) {
+        let notices = ArrayList<String>()
+        if (truncated) { notices.add("Log tail truncated; increase --max-bytes to read more.") }
+        if (reset) { notices.add("Log cursor reset because the requested cursor is outside the file.") }
+        if (follow) { notices.add("Follow mode is bounded in local logs flow; rerun the command or use the Control UI for live polling.") }
+        for (notice in notices) {
+            if (jsonMode) {
+                out.add(cliLogsNoticeLine(notice))
+            } else {
+                out.add("Notice: ${notice}")
+            }
+        }
+    }
+}
+
+public func executeCliLogsCommand(args: Array<String>): (String, Int64) {
+    let sub = firstArg(args)
+    let jsonMode = localArgsWantJson(args)
+    let out = ArrayList<String>()
+    if (sub == "path") {
+        if (jsonMode) {
+            out.add(cliLogsMetaLine("logs.path", [
+                cliLogsJsonStringPair("logsDir", CliConfig.logsDir.toString())
+            ]))
+        } else {
+            out.add(CliConfig.logsDir.toString())
+        }
+        return (String.join(out.toArray(), delimiter: "\n"), CLI_EXIT_OK)
+    }
+    if (sub == "recent") {
+        let limit = cliLogsIntArg(args, ["--limit", "-n"], 10)
+        let names = cliLogsRecentNames(limit)
+        if (jsonMode) {
+            out.add(cliLogsMetaLine("logs.recent", [
+                cliLogsJsonStringPair("logsDir", CliConfig.logsDir.toString()),
+                "\"entries\":${cliLogsJsonStringArray(names)}"
+            ]))
+        } else {
+            out.add("Recent log files:")
+            for (name in names) { out.add("  ${name}") }
+            if (names.isEmpty()) { out.add("  (none)") }
+        }
+        return (String.join(out.toArray(), delimiter: "\n"), CLI_EXIT_OK)
+    }
+    if (sub == "current") {
+        let path = cliLogsLatestPath()
+        if (jsonMode) {
+            out.add(cliLogsMetaLine("logs.current", [
+                cliLogsJsonStringPair("file", path.toString()),
+                "\"exists\":${if (exists(path)) { "true" } else { "false" }}",
+                "\"size\":${cliLogsFileSize(path)}"
+            ]))
+        } else {
+            out.add("Current log file: ${path.toString()}")
+            out.add("Exists: ${if (exists(path)) { "yes" } else { "no" }}")
+            out.add("Size: ${cliLogsFileSize(path)} bytes")
+        }
+        return (String.join(out.toArray(), delimiter: "\n"), CLI_EXIT_OK)
+    }
+    if (sub == "tail" || sub == "show") {
+        let target = cliLogsPositionalTarget(args)
+        let path = cliLogsResolvePath(target)
+        let cursor = cliLogsIntArg(args, ["--cursor"], -1)
+        let defaultLimit: Int64 = if (sub == "show") { 500 } else { 200 }
+        let limit = cliLogsIntArg(args, ["--limit", "-n"], defaultLimit)
+        let maxBytes = cliLogsIntArg(args, ["--max-bytes"], 250000)
+        let payload = cliLogsTailPayload(path, cursor, limit, maxBytes)
+        cliLogsAppendTail(out, payload, jsonMode, cliLogsHasFlag(args, "--follow"))
+        return (String.join(out.toArray(), delimiter: "\n"), CLI_EXIT_OK)
+    }
+    ("", CLI_EXIT_USAGE_ERROR)
 }
 
 public func cliGatewayShouldPrintRuntimeHintForError(error: String): Bool {
@@ -3029,32 +3462,18 @@ public func cliRunLogsFlow(args: Array<String>): Int64 {
             "logs",
             "Inspect local CLI and runtime logs",
             ["metis logs", "metis logs path", "metis logs recent", "metis logs current",
-                "metis logs tail [file]", "metis logs show [file]"],
-            "path | recent | current | tail [file] | show [file] | help"
+                "metis logs tail [file] --limit 100", "metis logs show [file] --json"],
+            "path | recent [--limit n] | current | tail [file] [--limit n] [--max-bytes n] [--cursor n] [--json] | show [file] [--limit n] [--json] | help"
         )
     }
-    if (sub == "path") {
-        PrintUtils.printLine(CliConfig.logsDir.toString())
-        return CLI_EXIT_OK
-    }
-    if (sub == "recent" || sub == "current") {
-        let obj = buildCommandEnvelope("logs", sub)
-        obj.put("logsDir", JsonString(CliConfig.logsDir.toString()))
-        obj.put("mode", JsonString(sub))
-        let entries = ArrayList<JsonValue>()
-        entries.add(JsonString("cli.log"))
-        entries.add(JsonString("gateway.log"))
-        obj.put("entries", JsonArray(entries))
-        putNextSteps(obj, ["metis logs path", "metis system paths"])
-        return localPrintCommandResult(args, obj)
-    }
-    if (sub == "tail" || sub == "show") {
-        let obj = buildCommandEnvelope("logs", sub)
-        obj.put("logsDir", JsonString(CliConfig.logsDir.toString()))
-        obj.put("target", JsonString(if (argAt(args, 1).isEmpty()) { "cli.log" } else { argAt(args, 1) }))
-        obj.put("preview", JsonString("log output is truncated in local flow mode"))
-        putNextSteps(obj, ["metis logs recent", "metis logs path"])
-        return localPrintCommandResult(args, obj)
+    let (text, code) = executeCliLogsCommand(args)
+    if (code == CLI_EXIT_OK) {
+        if (!text.isEmpty()) {
+            for (line in text.split("\n")) {
+                PrintUtils.printLine(line)
+            }
+        }
+        return code
     }
     printUnknownLocalSubcommand("logs", sub, "path | recent | current | tail [file] | show [file] | help")
 }

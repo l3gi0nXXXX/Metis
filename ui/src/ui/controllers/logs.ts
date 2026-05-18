@@ -60,14 +60,22 @@ export function parseLogLine(line: string): LogEntry {
         ? (obj._meta as Record<string, unknown>)
         : null;
     const time =
-      typeof obj.time === "string" ? obj.time : typeof meta?.date === "string" ? meta?.date : null;
-    const level = normalizeLevel(meta?.logLevelName ?? meta?.level);
+      typeof obj.ts === "string"
+        ? obj.ts
+        : typeof obj.time === "string"
+          ? obj.time
+          : typeof meta?.date === "string"
+            ? meta?.date
+            : null;
+    const level = normalizeLevel(obj.level ?? meta?.logLevelName ?? meta?.level);
 
     const contextCandidate =
       typeof obj["0"] === "string" ? obj["0"] : typeof meta?.name === "string" ? meta?.name : null;
     const contextObj = parseMaybeJsonString(contextCandidate);
     let subsystem: string | null = null;
-    if (contextObj) {
+    if (typeof obj.subsystem === "string") {
+      subsystem = obj.subsystem;
+    } else if (contextObj) {
       if (typeof contextObj.subsystem === "string") {
         subsystem = contextObj.subsystem;
       } else if (typeof contextObj.module === "string") {
@@ -79,14 +87,14 @@ export function parseLogLine(line: string): LogEntry {
     }
 
     let message: string | null = null;
-    if (typeof obj["1"] === "string") {
+    if (typeof obj.message === "string") {
+      message = obj.message;
+    } else if (typeof obj["1"] === "string") {
       message = obj["1"];
     } else if (typeof obj["2"] === "string") {
       message = obj["2"];
     } else if (!contextObj && typeof obj["0"] === "string") {
       message = obj["0"];
-    } else if (typeof obj.message === "string") {
-      message = obj.message;
     }
 
     return {
@@ -94,6 +102,7 @@ export function parseLogLine(line: string): LogEntry {
       time,
       level,
       subsystem,
+      event: typeof obj.event === "string" ? obj.event : null,
       message: message ?? line,
       meta: meta ?? undefined,
     };
