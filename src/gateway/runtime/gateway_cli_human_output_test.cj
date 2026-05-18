@@ -87,6 +87,12 @@ private func gatewayHumanFeishuChannelGetRaw(): String {
                     "\"hasAppId\":true," +
                     "\"hasAppSecret\":true," +
                     "\"appId\":\"cli***ult\"," +
+                    "\"dmPolicy\":\"pairing\"," +
+                    "\"allowFromCount\":0," +
+                    "\"allowFromEffectiveCount\":0," +
+                    "\"pairingPendingCount\":2," +
+                    "\"approvedSenderCount\":1," +
+                    "\"pairing\":{\"channel\":\"feishu\",\"accountId\":\"default\",\"dmPolicy\":\"pairing\",\"pendingCount\":2,\"approvedCount\":1,\"advice\":[\"Approve pending Feishu DMs with metis pairing approve feishu <CODE> --account default.\"],\"redacted\":true}," +
                     "\"appSecret\":\"fake-feishu-secret-never-output\"," +
                     "\"token\":\"fake-feishu-token-never-output\"" +
                 "}," +
@@ -100,6 +106,12 @@ private func gatewayHumanFeishuChannelGetRaw(): String {
                     "\"hasAppId\":true," +
                     "\"hasAppSecret\":true," +
                     "\"appId\":\"cli***ter\"," +
+                    "\"dmPolicy\":\"open\"," +
+                    "\"allowFromCount\":1," +
+                    "\"allowFromEffectiveCount\":1," +
+                    "\"pairingPendingCount\":0," +
+                    "\"approvedSenderCount\":0," +
+                    "\"pairing\":{\"channel\":\"feishu\",\"accountId\":\"feishu-writer\",\"dmPolicy\":\"open\",\"pendingCount\":0,\"approvedCount\":0,\"advice\":[\"dmPolicy=open allows any Feishu DM user to reach this account; prefer pairing in production.\"],\"redacted\":true}," +
                     "\"appSecret\":\"fake-feishu-writer-secret-never-output\"," +
                     "\"verificationToken\":\"fake-feishu-verification-token-never-output\"," +
                     "\"encryptKey\":\"fake-feishu-encrypt-key-never-output\"" +
@@ -198,6 +210,11 @@ public class GatewayCliHumanOutputTest {
         @Expect(out.contains("feishu/feishu-writer"), true)
         @Expect(out.contains("credential=account"), true)
         @Expect(out.contains("appId=cli***ter"), true)
+        @Expect(out.contains("dmPolicy=pairing"), true)
+        @Expect(out.contains("pairingPending=2"), true)
+        @Expect(out.contains("approvedSenders=1"), true)
+        @Expect(out.contains("pairing next: Approve pending Feishu DMs with metis pairing approve feishu <CODE> --account default."), true)
+        @Expect(out.contains("warning"), false)
         @Expect(out.contains("binding=feishu:default"), true)
         @Expect(out.contains("binding=feishu:feishu-writer"), true)
         @Expect(out.contains("fake-feishu-secret-never-output"), false)
@@ -205,6 +222,7 @@ public class GatewayCliHumanOutputTest {
         @Expect(out.contains("fake-feishu-token-never-output"), false)
         @Expect(out.contains("fake-feishu-verification-token-never-output"), false)
         @Expect(out.contains("fake-feishu-encrypt-key-never-output"), false)
+        @Expect(out.contains("\"pairing\""), false)
         @Expect(out.contains("\"appSecret\""), false)
         @Expect(out.contains("\"token\""), false)
         @Expect(out.contains("{"), false)
@@ -292,6 +310,10 @@ public class GatewayCliHumanOutputTest {
                         "\"hasAppId\":true," +
                         "\"hasAppSecret\":true," +
                         "\"appId\":\"cli***123\"," +
+                        "\"dmPolicy\":\"pairing\"," +
+                        "\"pairingPendingCount\":1," +
+                        "\"approvedSenderCount\":1," +
+                        "\"pairing\":{\"channel\":\"feishu\",\"accountId\":\"tenant-a\",\"dmPolicy\":\"pairing\",\"pendingCount\":1,\"approvedCount\":1,\"advice\":[\"Approve pending Feishu DMs with metis pairing approve feishu <CODE> --account tenant-a.\"],\"redacted\":true}," +
                         "\"appSecret\":\"fake-feishu-secret-never-output\"" +
                     "}," +
                     "{" +
@@ -303,6 +325,9 @@ public class GatewayCliHumanOutputTest {
                         "\"hasAppId\":true," +
                         "\"hasAppSecret\":true," +
                         "\"appId\":\"cli***456\"," +
+                        "\"dmPolicy\":\"pairing\"," +
+                        "\"pairingPendingCount\":0," +
+                        "\"approvedSenderCount\":0," +
                         "\"appSecret\":\"fake-feishu-secret-never-output\"" +
                     "}" +
                 "]" +
@@ -317,6 +342,10 @@ public class GatewayCliHumanOutputTest {
         @Expect(out.contains("Configured accounts: 2"), true)
         @Expect(out.contains("feishu/tenant-a [default]"), true)
         @Expect(out.contains("feishu/tenant-b"), true)
+        @Expect(out.contains("dmPolicy=pairing"), true)
+        @Expect(out.contains("pairingPending=1"), true)
+        @Expect(out.contains("approvedSenders=1"), true)
+        @Expect(out.contains("pairing next: Approve pending Feishu DMs with metis pairing approve feishu <CODE> --account tenant-a."), true)
         @Expect(out.contains("binding=feishu:tenant-a"), true)
         @Expect(out.contains("binding=feishu:tenant-b"), true)
         @Expect(out.contains("fake-feishu-secret-never-output"), false)

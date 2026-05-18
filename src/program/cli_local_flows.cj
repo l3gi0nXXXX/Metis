@@ -7,6 +7,7 @@ import metis.cliapp.runEmbeddedPrompt
 import metis.core.config.{CliConfig, MetisConfigManager, MetisPaths, CliSettingManager, cliFindModelProviderDescriptor, cliModelProviderCatalogDescriptors, cliValidateProviderBaseUrl}
 import metis.core.mcp.{mcpConfiguredServerJson, mcpConfiguredServersJson, mcpConfiguredServersPath, mcpResolveSecretOption, mcpSetConfiguredServerJson, mcpUnsetConfiguredServerJson}
 import metis.gateway.channels.telegram.telegramPairingAccountStore
+import metis.gateway.security.{gatewayNormalizePairingAccountId, gatewayPairingAccountStore}
 import metis.mcp.{MetisMcpServeOptions, serveMetisChannelMcp}
 import metis.gateway.runtime.{gatewayCliClient, gatewayCliShouldPrintRuntimeRequiredHint, gatewayInvokeCliAgent, gatewayInvokeCliAgentResult}
 import metis.io.PrintUtils
@@ -134,7 +135,6 @@ private func localSummaryKnownField(key: String): Bool {
     key == "providers" ||
     key == "pending" ||
     key == "approvedSenders" ||
-    key == "approved" ||
     key == "code"
 }
 
@@ -148,6 +148,7 @@ private func localFieldLabel(key: String): String {
     if (key == "rootRemoval") { return "Would remove root" }
     if (key == "pendingCount") { return "Pending" }
     if (key == "approvedCount") { return "Approved senders" }
+    if (key == "approved") { return "Approved" }
     if (key == "dispatchMode") { return "Dispatch mode" }
     if (key == "primaryPath") { return "Primary path" }
     return key
@@ -3428,6 +3429,177 @@ public func cliRunQrFlow(args: Array<String>): Int64 {
     printUnknownLocalSubcommand("qr", sub, "show | status | open | payload | copy | link | help")
 }
 
+private func cliPairingFlagValue(args: Array<String>, name: String, start!: Int64 = 0): String {
+    var i: Int64 = start
+    let prefix = "${name}="
+    while (i < args.size) {
+        let arg = args[i].trimAscii()
+        if (arg == name) {
+            if (i + 1 < args.size && !args[i + 1].trimAscii().startsWith("--")) {
+                return args[i + 1].trimAscii()
+            }
+            return ""
+        }
+        if (arg.startsWith(prefix)) {
+            return arg[prefix.size..].trimAscii()
+        }
+        i += 1
+    }
+    ""
+}
+
+private func cliPairingDefaultAccountId(channel: String): String {
+    let normalized = channel.trimAscii().toAsciiLower()
+    if (normalized == "feishu") {
+        try {
+            let configured = CliSettingManager.readGatewaySettings().feishu.defaultAccount.trimAscii()
+            if (!configured.isEmpty()) {
+                return gatewayNormalizePairingAccountId("feishu", configured)
+            }
+        } catch (_e: Exception) {
+            ()
+        }
+    }
+    "default"
+}
+
+private func cliPairingResolveAccountId(channel: String, accountId: String): String {
+    let normalized = channel.trimAscii().toAsciiLower()
+    let raw = accountId.trimAscii()
+    if (!raw.isEmpty()) {
+        return gatewayNormalizePairingAccountId(normalized, raw)
+    }
+    cliPairingDefaultAccountId(normalized)
+}
+
+private func cliBuildPairingStateObject(
+    channel: String,
+    accountId: String,
+    storeRoot: String,
+    pendingRows: Array<JsonObject>,
+    approvedSenders: Array<String>,
+    recommended: String,
+    nextSteps: Array<String>
+): JsonObject {
+    let pending = JsonArray([])
+    for (row in pendingRows) {
+        pending.add(row.toJsonValue())
+    }
+    let approved = JsonArray([])
+    for (sender in approvedSenders) {
+        approved.add(sender.toJsonValue())
+    }
+    let obj = JsonObject()
+    obj.put("kind", JsonString("pairing"))
+    obj.put("surface", JsonString("local"))
+    obj.put("channel", JsonString(channel))
+    obj.put("accountId", JsonString(accountId))
+    obj.put("storeRoot", JsonString(storeRoot))
+    obj.put("pending", pending)
+    obj.put("approvedSenders", approved)
+    obj.put("pendingCount", Int64(pending.size()).toJsonValue())
+    obj.put("approvedCount", Int64(approved.size()).toJsonValue())
+    obj.put("recommended", JsonString(recommended))
+    putNextSteps(obj, nextSteps)
+    obj
+}
+
+public func cliBuildPairingListResult(
+    channel: String,
+    accountId!: String = "",
+    rootDir!: Path = CliConfig.dotDir
+): Option<JsonObject> {
+    let normalizedChannel = channel.trimAscii().toAsciiLower()
+    if (normalizedChannel == "telegram") {
+        let resolvedAccountId = cliPairingResolveAccountId(normalizedChannel, accountId)
+        let store = telegramPairingAccountStore(rootDir: rootDir, accountId: resolvedAccountId)
+        return Some(cliBuildPairingStateObject(
+            "telegram",
+            resolvedAccountId,
+            store.rootPath().toString(),
+            store.pendingRows(),
+            store.approvedSenders(),
+            "metis pairing approve telegram <CODE>",
+            ["metis pairing approve telegram <CODE>", "send Telegram DM again after approval"]
+        ))
+    }
+    if (normalizedChannel == "feishu") {
+        let resolvedAccountId = cliPairingResolveAccountId(normalizedChannel, accountId)
+        let store = gatewayPairingAccountStore(channel: "feishu", accountId: resolvedAccountId, rootDir: rootDir)
+        return Some(cliBuildPairingStateObject(
+            "feishu",
+            resolvedAccountId,
+            store.rootPath().toString(),
+            store.pendingRows(),
+            store.approvedSenders(),
+            "metis pairing approve feishu <CODE> --account ${resolvedAccountId}",
+            ["metis pairing approve feishu <CODE> --account ${resolvedAccountId}", "send Feishu DM again after approval"]
+        ))
+    }
+    None<JsonObject>
+}
+
+public func cliBuildPairingApproveResult(
+    channel: String,
+    code: String,
+    accountId!: String = "",
+    rootDir!: Path = CliConfig.dotDir
+): Option<JsonObject> {
+    let normalizedChannel = channel.trimAscii().toAsciiLower()
+    let normalizedCode = code.trimAscii().toAsciiUpper()
+    if (normalizedChannel == "telegram") {
+        let resolvedAccountId = cliPairingResolveAccountId(normalizedChannel, accountId)
+        let store = telegramPairingAccountStore(rootDir: rootDir, accountId: resolvedAccountId)
+        let approved = store.approve(normalizedCode)
+        let recommended = if (approved) { "send Telegram DM again" } else { "metis pairing list telegram" }
+        let nextSteps = if (approved) {
+            ["send Telegram DM again", "metis pairing list telegram"]
+        } else {
+            ["metis pairing list telegram", "retry with a pending Telegram pairing code"]
+        }
+        let obj = cliBuildPairingStateObject(
+            "telegram",
+            resolvedAccountId,
+            store.rootPath().toString(),
+            store.pendingRows(),
+            store.approvedSenders(),
+            recommended,
+            nextSteps
+        )
+        obj.put("code", JsonString(normalizedCode))
+        obj.put("approved", approved.toJsonValue())
+        return Some(obj)
+    }
+    if (normalizedChannel == "feishu") {
+        let resolvedAccountId = cliPairingResolveAccountId(normalizedChannel, accountId)
+        let store = gatewayPairingAccountStore(channel: "feishu", accountId: resolvedAccountId, rootDir: rootDir)
+        let approved = store.approve(normalizedCode)
+        let recommended = if (approved) {
+            "send Feishu DM again"
+        } else {
+            "metis pairing list feishu --account ${resolvedAccountId}"
+        }
+        let nextSteps = if (approved) {
+            ["send Feishu DM again", "metis pairing list feishu --account ${resolvedAccountId}"]
+        } else {
+            ["metis pairing list feishu --account ${resolvedAccountId}", "retry with a pending Feishu pairing code"]
+        }
+        let obj = cliBuildPairingStateObject(
+            "feishu",
+            resolvedAccountId,
+            store.rootPath().toString(),
+            store.pendingRows(),
+            store.approvedSenders(),
+            recommended,
+            nextSteps
+        )
+        obj.put("code", JsonString(normalizedCode))
+        obj.put("approved", approved.toJsonValue())
+        return Some(obj)
+    }
+    None<JsonObject>
+}
+
 public func cliRunPairingFlow(args: Array<String>): Int64 {
     let sub = firstArg(args)
     if (sub.isEmpty() || sub == "help") {
@@ -3435,71 +3607,52 @@ public func cliRunPairingFlow(args: Array<String>): Int64 {
             "pairing",
             "Inspect pairing state and pairing handoff",
             ["metis pairing", "metis pairing status", "metis pairing list",
-                "metis pairing approve telegram <CODE>", "metis pairing current", "metis pairing open",
+                "metis pairing list feishu --account <id>",
+                "metis pairing approve telegram <CODE>",
+                "metis pairing approve feishu <CODE> --account <id>", "metis pairing current", "metis pairing open",
                 "metis pairing code", "metis pairing sessions"],
             "status | list | approve | current | open | code | sessions | help"
         )
     }
     if (sub == "status" || sub == "list") {
         let channel = argAt(args, 1).trimAscii().toAsciiLower()
-        if (channel == "telegram") {
-            let accountId = "default"
-            let store = telegramPairingAccountStore(accountId: accountId)
-            let pending = JsonArray([])
-            for (row in store.pendingRows()) {
-                pending.add(row.toJsonValue())
+        if (channel == "telegram" || channel == "feishu") {
+            let accountId = cliPairingFlagValue(args, "--account", start: 2)
+            match (cliBuildPairingListResult(channel, accountId: accountId)) {
+                case Some(obj) => return localPrintCommandResult(args, obj)
+                case None => ()
             }
-            let approved = JsonArray([])
-            for (sender in store.approvedSenders()) {
-                approved.add(sender.toJsonValue())
-            }
-            let obj = JsonObject()
-            obj.put("kind", JsonString("pairing"))
-            obj.put("surface", JsonString("local"))
-            obj.put("channel", JsonString("telegram"))
-            obj.put("accountId", JsonString(accountId))
-            obj.put("storeRoot", JsonString(store.rootPath().toString()))
-            obj.put("pending", pending)
-            obj.put("approvedSenders", approved)
-            obj.put("pendingCount", Int64(pending.size()).toJsonValue())
-            obj.put("approvedCount", Int64(approved.size()).toJsonValue())
-            obj.put("recommended", JsonString("metis pairing approve telegram <CODE>"))
-            putNextSteps(obj, ["metis pairing approve telegram <CODE>", "send Telegram DM again after approval"])
-            return localPrintCommandResult(args, obj)
         }
         let obj = JsonObject()
         obj.put("kind", JsonString("pairing"))
         obj.put("surface", JsonString("local"))
         obj.put("recommended", JsonString("metis qr show"))
-        putNextSteps(obj, ["metis qr show", "metis pairing help"])
+        putNextSteps(obj, ["metis pairing list telegram", "metis pairing list feishu --account <id>", "metis pairing help"])
         return localPrintCommandResult(args, obj)
     }
     if (sub == "approve") {
         let channel = argAt(args, 1).trimAscii().toAsciiLower()
-        if (channel != "telegram") {
+        if (channel != "telegram" && channel != "feishu") {
             PrintUtils.printLine("Unsupported pairing approval target: ${channel}")
-            PrintUtils.printLine("Supported approval targets: telegram")
+            PrintUtils.printLine("Supported approval targets: telegram, feishu")
             return CLI_EXIT_USAGE_ERROR
         }
         let code = argAt(args, 2).trimAscii().toAsciiUpper()
         if (code.isEmpty()) {
             PrintUtils.printLine("Usage: metis pairing approve telegram <CODE>")
+            PrintUtils.printLine("       metis pairing approve feishu <CODE> --account <id>")
             return CLI_EXIT_USAGE_ERROR
         }
-        let accountId = "default"
-        let store = telegramPairingAccountStore(accountId: accountId)
-        let approved = store.approve(code)
-        let obj = JsonObject()
-        obj.put("kind", JsonString("pairing"))
-        obj.put("surface", JsonString("local"))
-        obj.put("channel", JsonString("telegram"))
-        obj.put("accountId", JsonString(accountId))
-        obj.put("storeRoot", JsonString(store.rootPath().toString()))
-        obj.put("code", JsonString(code))
-        obj.put("approved", approved.toJsonValue())
-        obj.put("recommended", JsonString("send Telegram DM again"))
-        putNextSteps(obj, ["send Telegram DM again", "metis pairing list telegram"])
-        return localPrintMutationResult(args, obj, "this approves a pending Telegram sender in local pairing state.")
+        let accountId = cliPairingFlagValue(args, "--account", start: 3)
+        match (cliBuildPairingApproveResult(channel, code, accountId: accountId)) {
+            case Some(obj) =>
+                let targetLabel = if (channel == "feishu") { "Feishu" } else { "Telegram" }
+                return localPrintMutationResult(args, obj, "this approves a pending ${targetLabel} sender in local pairing state.")
+            case None => ()
+        }
+        PrintUtils.printLine("Unsupported pairing approval target: ${channel}")
+        PrintUtils.printLine("Supported approval targets: telegram, feishu")
+        return CLI_EXIT_USAGE_ERROR
     }
     if (sub == "current" || sub == "open") {
         let obj = buildCommandEnvelope("pairing", sub)

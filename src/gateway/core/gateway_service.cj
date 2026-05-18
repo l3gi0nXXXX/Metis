@@ -4,6 +4,7 @@ import metis.core.{GatewayToolRuntimeContext, gatewaySpeechResolveDeliveryPrefs,
 import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager, MetisPaths, cliFindModelAuthChoicesForProvider, cliSetupVisibleModelProviders}
 import metis.core.skills.SkillsPrompt
 import metis.gateway.model.*
+import metis.gateway.security.gatewayPairingAccountStore
 import metis.gateway.session.{GatewaySessionContext, GatewaySessionRequest, gatewayResolveSessionContext, gatewaySessionRequestFromInbound}
 import metis.gateway.tools.{gatewayHandleNativeCommandLine, gatewayHandleSubagentsCommandLine}
 import magic.jsonable.*
@@ -560,6 +561,7 @@ public class GatewayService {
         lines.add("receiveMode: ${user.feishu.receiveMode}")
         lines.add("peer: ${message.peerId}")
         lines.add("threadSession: ${if (user.feishu.threadSession) { "enabled" } else { "disabled" }}")
+        this.appendFeishuNativePairingLines(lines, normalized, user, includeAdvice: false)
         lines.add(this.feishuNativeRouteReadinessLine(message, normalized))
         lines.add("route: AgentTeam bindings=${this.feishuNativeBindingsCount()} agents=${this.feishuNativeAgentsCount()}")
         lines.add("OAPI: ${this.feishuNativeOapiDisplayStatus(hasCredentials, oauthStatus)}")
@@ -590,6 +592,7 @@ public class GatewayService {
         lines.add(this.feishuNativeRouteReadinessLine(_message, normalized))
         this.appendFeishuNativeReadinessLines(lines, hasCredentials, oauthStatus)
         lines.add("threadSession: ${if (user.feishu.threadSession) { "enabled" } else { "disabled" }}")
+        this.appendFeishuNativePairingLines(lines, normalized, user, includeAdvice: true)
         lines.add("groupPolicy: ${user.feishu.groupPolicy}")
         lines.add("requireMention: ${if (user.feishu.requireMention) { "true" } else { "false" }}")
         if (this.feishuNativeBindingsCount() == 0) {
@@ -685,6 +688,7 @@ public class GatewayService {
         lines.add("webhookPath: ${user.feishu.webhookPath}")
         lines.add("appId: ${this.feishuNativeRedactedValue(user.feishu.appId)}")
         lines.add("appSecret: ${if (user.feishu.appSecret.trimAscii().isEmpty()) { "" } else { "[redacted]" }}")
+        this.appendFeishuNativePairingLines(lines, this.feishuNativeAccountId(accountId, user), user, includeAdvice: false)
         lines.add("accounts: ${this.feishuNativeAccountsCount(user)}")
         lines.add("bindings: ${this.feishuNativeBindingsCount()}")
         lines.add("agents: ${this.feishuNativeAgentsCount()}")
@@ -719,6 +723,62 @@ public class GatewayService {
             return "missing_credentials"
         }
         "configured"
+    }
+
+    private func feishuNativePairingSummary(accountId: String, user: GatewayUserSettings): JsonObject {
+        let normalized = this.feishuNativeAccountId(accountId, user)
+        let store = gatewayPairingAccountStore(channel: "feishu", accountId: normalized)
+        let pendingCount = store.pendingRows().size
+        let approvedCount = store.approvedSenders().size
+        let out = JsonObject()
+        out.put("accountId", JsonString(normalized))
+        out.put("dmPolicy", JsonString(this.feishuNativeDmPolicy(accountId, user)))
+        out.put("allowFromCount", this.feishuNativeAllowFromCount(accountId, user).toJsonValue())
+        out.put("pendingCount", pendingCount.toJsonValue())
+        out.put("approvedCount", approvedCount.toJsonValue())
+        out
+    }
+
+    private func feishuNativeDmPolicy(accountId: String, user: GatewayUserSettings): String {
+        let accountConfig = this.feishuNativeAccountConfig(accountId, user)
+        let raw = this.feishuNativeJsonStringFallback(accountConfig, ["dmPolicy", "dm_policy"], user.feishu.dmPolicy)
+        match (raw.trimAscii().toAsciiLower()) {
+            case "open" => "open"
+            case "disabled" => "disabled"
+            case "allowlist" => "allowlist"
+            case _ => "pairing"
+        }
+    }
+
+    private func feishuNativeAllowFromCount(accountId: String, user: GatewayUserSettings): Int64 {
+        let accountConfig = this.feishuNativeAccountConfig(accountId, user)
+        this.feishuNativeJsonArraySizeFallback(accountConfig, ["allowFrom", "allow_from"], user.feishu.allowFrom.size)
+    }
+
+    private func appendFeishuNativePairingLines(
+        lines: ArrayList<String>,
+        accountId: String,
+        user: GatewayUserSettings,
+        includeAdvice!: Bool = false
+    ): Unit {
+        let summary = this.feishuNativePairingSummary(accountId, user)
+        let normalized = this.feishuNativeJsonString(summary, "accountId")
+        let dmPolicy = this.feishuNativeJsonString(summary, "dmPolicy")
+        let pendingCount = this.feishuNativeJsonInt(summary, "pendingCount", 0)
+        let approvedCount = this.feishuNativeJsonInt(summary, "approvedCount", 0)
+        lines.add("dmPolicy: ${dmPolicy}")
+        lines.add("allowFrom: ${this.feishuNativeJsonInt(summary, "allowFromCount", 0)}")
+        lines.add("pairing pending=${pendingCount} approved=${approvedCount}")
+        if (!includeAdvice) {
+            return
+        }
+        if (dmPolicy == "pairing" && approvedCount == 0) {
+            lines.add("pairing advice: first unapproved Feishu DM receives a pairing code; approve it with `metis pairing approve feishu <CODE> --account ${normalized}`.")
+        } else if (dmPolicy == "pairing" && pendingCount > 0) {
+            lines.add("pairing advice: approve pending Feishu DMs with `metis pairing approve feishu <CODE> --account ${normalized}`.")
+        } else if (dmPolicy == "open") {
+            lines.add("warning: dmPolicy=open allows any Feishu DM user to reach this account; prefer pairing in production.")
+        }
     }
 
     private func feishuNativeOAuthDisplayStatus(auth: JsonObject): String {
@@ -893,6 +953,23 @@ public class GatewayService {
         match (obj.get(key)) {
             case Some(v) => try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
             case None => JsonArray([])
+        }
+    }
+
+    private func feishuNativeJsonArraySizeFallback(obj: JsonObject, keys: Array<String>, fallback: Int64): Int64 {
+        for (key in keys) {
+            match (obj.get(key)) {
+                case Some(v) => try { return v.asArray().size() } catch (_e: Exception) { () }
+                case None => ()
+            }
+        }
+        fallback
+    }
+
+    private func feishuNativeJsonInt(obj: JsonObject, key: String, fallback: Int64): Int64 {
+        match (obj.get(key)) {
+            case Some(v) => try { Int64.parse(v.toJsonString()) } catch (_e: Exception) { fallback }
+            case None => fallback
         }
     }
 

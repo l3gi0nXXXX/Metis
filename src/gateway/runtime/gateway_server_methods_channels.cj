@@ -82,6 +82,7 @@ import metis.gateway.config.{
     pluginConfigFromChannelsExtra,
     registeredGatewayPluginIds
 }
+import metis.gateway.security.gatewayPairingAccountStore
 
 import std.convert.Parsable
 import std.collection.{ArrayList, HashMap}
@@ -517,6 +518,8 @@ private func gatewayFeishuGroupsJson(user: GatewayUserSettings): JsonArray {
 
 private func gatewayFeishuAccountInspectRow(user: GatewayUserSettings, accountId: String, accountConfig: JsonObject, defaultAccountId: String): JsonObject {
     let row = JsonObject()
+    let resolved = gatewayFeishuResolveAccount(buildGatewayConfigFromUserSettings(user).feishu, accountId)
+    let pairing = gatewayFeishuPairingSummaryJson(user, accountId)
     let accountAppId = gatewayBindingStringParam(accountConfig, ["appId", "app_id"], "")
     let accountSecret = gatewayBindingStringParam(accountConfig, ["appSecret", "app_secret"], "")
     let accountEnabled = gatewayJsonBool(accountConfig, "enabled", true)
@@ -558,7 +561,14 @@ private func gatewayFeishuAccountInspectRow(user: GatewayUserSettings, accountId
     row.put("hasAppSecret", (!accountSecret.isEmpty()).toJsonValue())
     row.put("redacted", true.toJsonValue())
     row.put("hasGroupsOverride", gatewayTelegramConfigHasObject(accountConfig, "groups").toJsonValue())
+    row.put("dmPolicy", JsonString(resolved.config.dmPolicy))
+    row.put("allowFromCount", gatewayTelegramConfigArraySize(accountConfig, "allowFrom").toJsonValue())
+    row.put("allowFromEffectiveCount", resolved.config.allowFrom.size.toJsonValue())
     row.put("groupAllowFromCount", gatewayTelegramConfigArraySize(accountConfig, "groupAllowFrom").toJsonValue())
+    row.put("securitySources", resolved.securitySources)
+    row.put("pairing", pairing)
+    row.put("pairingPendingCount", pairing.get("pendingCount") ?? 0.toJsonValue())
+    row.put("approvedSenderCount", pairing.get("approvedCount") ?? 0.toJsonValue())
     return row
 }
 
@@ -617,6 +627,62 @@ private func gatewayFeishuDiagArray(obj: JsonObject, key: String): JsonArray {
         case Some(v) => try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
         case None => JsonArray([])
     }
+}
+
+private func gatewayFeishuPairingAdvice(
+    policy: String,
+    pendingCount: Int64,
+    approvedCount: Int64,
+    accountId: String
+): JsonArray {
+    let advice = JsonArray([])
+    if (policy == "pairing" && pendingCount > 0) {
+        advice.add(JsonString("Approve pending Feishu DMs with metis pairing approve feishu <CODE> --account ${accountId}."))
+    } else if (policy == "pairing" && approvedCount == 0) {
+        advice.add(JsonString("First unapproved Feishu DM will receive a pairing code; approve it with metis pairing approve feishu <CODE> --account ${accountId}."))
+    } else if (policy == "open") {
+        advice.add(JsonString("dmPolicy=open allows any Feishu DM user to reach this account; prefer pairing in production."))
+    }
+    advice
+}
+
+private func gatewayFeishuPairingSummaryJson(user: GatewayUserSettings, accountId: String): JsonObject {
+    let resolved = gatewayFeishuResolveAccount(buildGatewayConfigFromUserSettings(user).feishu, accountId)
+    let store = gatewayPairingAccountStore(channel: "feishu", accountId: resolved.accountId)
+    let pendingCount = store.pendingRows().size
+    let approvedCount = store.approvedSenders().size
+    let out = JsonObject()
+    out.put("channel", JsonString("feishu"))
+    out.put("accountId", JsonString(resolved.accountId))
+    out.put("policy", JsonString(resolved.config.dmPolicy))
+    out.put("dmPolicy", JsonString(resolved.config.dmPolicy))
+    out.put("allowFromCount", resolved.config.allowFrom.size.toJsonValue())
+    out.put("pendingCount", pendingCount.toJsonValue())
+    out.put("approvedCount", approvedCount.toJsonValue())
+    out.put("advice", gatewayFeishuPairingAdvice(resolved.config.dmPolicy, pendingCount, approvedCount, resolved.accountId))
+    out.put("redacted", true.toJsonValue())
+    out
+}
+
+private func gatewayFeishuPairingCollectionJson(user: GatewayUserSettings): JsonObject {
+    let cfg = buildGatewayConfigFromUserSettings(user).feishu
+    let out = JsonObject()
+    let rows = JsonArray([])
+    var pendingTotal: Int64 = 0
+    var approvedTotal: Int64 = 0
+    for (accountId in gatewayFeishuListAccountIds(cfg)) {
+        let row = gatewayFeishuPairingSummaryJson(user, accountId)
+        pendingTotal += gatewayFeishuDiagInt(row, "pendingCount")
+        approvedTotal += gatewayFeishuDiagInt(row, "approvedCount")
+        rows.add(row)
+    }
+    out.put("channel", JsonString("feishu"))
+    out.put("accounts", rows)
+    out.put("accountCount", rows.size().toJsonValue())
+    out.put("pendingCount", pendingTotal.toJsonValue())
+    out.put("approvedCount", approvedTotal.toJsonValue())
+    out.put("redacted", true.toJsonValue())
+    out
 }
 
 private func gatewayFeishuDiagObject(obj: JsonObject, key: String): JsonObject {
@@ -878,6 +944,7 @@ private func gatewayFeishuRuntimeViewJson(user: GatewayUserSettings, runtime: Js
     let accountInspect = gatewayFeishuAccountInspectJson(user)
     out.put("mode", JsonString(user.feishu.receiveMode))
     out.put("accountInspect", accountInspect)
+    out.put("pairing", gatewayFeishuPairingCollectionJson(user))
     out.put("eventOwnership", gatewayFeishuEventOwnershipDiagnosticsJson(user, runtime: runtime))
     out.put("diagnostics", gatewayFeishuChannelDiagnosticsJson(user, runtime: runtime))
     out.put("redacted", true.toJsonValue())
@@ -992,6 +1059,7 @@ private func gatewayFeishuChannelDiagnosticsJson(user: GatewayUserSettings, runt
         JsonString("groupPolicy"),
         JsonString("threadSession"),
         JsonString("media"),
+        JsonString("pairing"),
         JsonString("nativeCommands"),
         JsonString("eventOwnership")
     ]))
@@ -1000,6 +1068,7 @@ private func gatewayFeishuChannelDiagnosticsJson(user: GatewayUserSettings, runt
     out.put("groupPolicy", gatewayFeishuGroupPolicyDiagnosticsJson(user))
     out.put("threadSession", gatewayFeishuThreadSessionDiagnosticsJson(user))
     out.put("media", gatewayFeishuMediaJson(user))
+    out.put("pairing", gatewayFeishuPairingCollectionJson(user))
     out.put("nativeCommands", gatewayFeishuNativeCommandsJson())
     out.put("eventOwnership", gatewayFeishuEventOwnershipDiagnosticsJson(user, runtime: runtime))
     out.put("unsupportedFields", account.get("unsupportedFields") ?? JsonArray([]))
@@ -1088,6 +1157,7 @@ public func gatewayChannelGetJson(user: GatewayUserSettings, channelId: String):
         result.put("nativeCommands", gatewayFeishuNativeCommandsJson())
         result.put("directory", gatewayFeishuDirectoryJson(user))
         result.put("accountInspect", gatewayFeishuAccountInspectJson(user))
+        result.put("pairing", gatewayFeishuPairingCollectionJson(user))
         result.put("accountOps", gatewayFeishuAccountOpsJson())
         result.put("supports", gatewayChannelSupportsJson(user, normalized))
         return result
@@ -2421,6 +2491,7 @@ private func gatewayChannelStatusRow(user: GatewayUserSettings, channelId: Strin
         row.put("auth", auth)
         row.put("oauth", auth)
         row.put("doctor", gatewayFeishuChannelDiagnosticsJson(user, runtime: runtime))
+        row.put("pairing", gatewayFeishuPairingCollectionJson(user))
         row.put("capabilities", JsonArray([
             JsonString("oauth:device-flow"),
             JsonString("oauth:lifecycle"),

@@ -2,6 +2,7 @@ package metis.gateway.core
 
 import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings, MetisConfigManager, MetisProcessEnvironmentLock}
 import metis.gateway.model.{ChannelPolicyConfig, ChannelType, ChatType, InboundMessage, OutboundMessage, SendResult}
+import metis.gateway.security.gatewayPairingAccountStore
 
 import std.collection.{ArrayList, HashMap}
 import std.env.{getVariable, setVariable}
@@ -302,6 +303,62 @@ public class GatewayServiceFeishuNativeTest {
                 @Expect(reply.contains("credentials: configured"), true)
                 @Expect(reply.contains("bindings: missing"), true)
                 @Expect(reply.contains("top-secret"), false)
+            } finally {
+                service.stop()
+            }
+        })
+    }
+
+    @TestCase
+    public func feishuNativeCommandsExposePairingCountsWithoutCodesOrSenderDetails(): Unit {
+        withGatewayFeishuNativeTestHome("pairing-visible", gatewayFeishuNativeTestRoot(appSecret: "pairing-secret"), { =>
+            let store = gatewayPairingAccountStore(channel: "feishu", accountId: "default", rootDir: CliConfig.dotDir)
+            let approvedCode = store.ensurePending("ou_approved")
+            @Expect(store.approve(approvedCode), true)
+            let pendingCode = store.ensurePending("ou_pending")
+            let adapter = GatewayFeishuNativeTestAdapter()
+            let service = gatewayFeishuNativeService(adapter)
+            service.start()
+            try {
+                adapter.queueDirect("/feishu start")
+                adapter.queueDirect("/feishu doctor")
+                adapter.queueDirect("/feishu info --all")
+                service.processOnce()
+                service.processOnce()
+                service.processOnce()
+                @Expect(adapter.sentCount(), 3)
+                let all = adapter.sentText(0) + "\n" + adapter.sentText(1) + "\n" + adapter.sentText(2)
+                @Expect(all.contains("dmPolicy: pairing"), true)
+                @Expect(all.contains("pairing pending=1 approved=1"), true)
+                @Expect(all.contains("metis pairing approve feishu <CODE> --account default"), true)
+                @Expect(all.contains(pendingCode), false)
+                @Expect(all.contains(approvedCode), false)
+                @Expect(all.contains("ou_pending"), false)
+                @Expect(all.contains("ou_approved"), false)
+                @Expect(all.contains("pairing-secret"), false)
+            } finally {
+                service.stop()
+            }
+        })
+    }
+
+    @TestCase
+    public func feishuDoctorWarnsWhenDmPolicyIsOpen(): Unit {
+        let root = gatewayFeishuNativeTestRoot(appSecret: "open-secret")
+        let gateway = root.get("gateway").getOrThrow().asObject()
+        let feishu = gateway.get("feishu").getOrThrow().asObject()
+        feishu.put("dmPolicy", JsonString("open"))
+        withGatewayFeishuNativeTestHome("doctor-open-policy", root, { =>
+            let adapter = GatewayFeishuNativeTestAdapter()
+            let service = gatewayFeishuNativeService(adapter)
+            service.start()
+            try {
+                adapter.queueDirect("/feishu doctor")
+                service.processOnce()
+                let reply = adapter.sentText(0)
+                @Expect(reply.contains("dmPolicy: open"), true)
+                @Expect(reply.contains("warning: dmPolicy=open allows any Feishu DM user"), true)
+                @Expect(reply.contains("open-secret"), false)
             } finally {
                 service.stop()
             }

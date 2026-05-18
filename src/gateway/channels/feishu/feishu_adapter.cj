@@ -5,8 +5,10 @@ import metis.core.config.CliConfig
 import metis.gateway.core.ChannelAdapter
 import metis.gateway.model.*
 import metis.gateway.model.FeishuConfig
+import metis.gateway.security.gatewayPairingAccountStore
 import metis.io.PrintUtils
 import metis.utils.ShellUtils
+import magic.log.LogUtils
 import magic.utils.http.HttpUtils
 
 import std.collection.{ArrayList, HashMap}
@@ -125,6 +127,8 @@ public class FeishuFakeApiClient <: FeishuApiClient {
     private let textMessages = ArrayList<String>()
     private let sentCards = ArrayList<FeishuInteractiveCard>()
     private let patchedCards = ArrayList<FeishuInteractiveCard>()
+    private var nextTextSendFailureStatus: String = ""
+    private var nextTextSendFailureError: String = ""
     private var nextCardSendFailureStatus: String = ""
     private var nextCardSendFailureError: String = ""
     private var nextCardPatchFailureStatus: String = ""
@@ -197,6 +201,13 @@ public class FeishuFakeApiClient <: FeishuApiClient {
         _replyInThread: Bool
     ): FeishuApiSendResult {
         this.textMessages.add("${this.normalize(accountId)}|${rawPeerId.trimAscii()}|${receiveId.trimAscii()}|${receiveIdType.trimAscii()}|${text}")
+        if (!this.nextTextSendFailureStatus.trimAscii().isEmpty()) {
+            let status = this.nextTextSendFailureStatus.trimAscii()
+            let error = this.nextTextSendFailureError.trimAscii()
+            this.nextTextSendFailureStatus = ""
+            this.nextTextSendFailureError = ""
+            return FeishuApiSendResult(status: status, error: error)
+        }
         FeishuApiSendResult(ok: true, status: "ok", messageId: "fake-feishu-text-${this.textMessages.size}")
     }
 
@@ -249,6 +260,11 @@ public class FeishuFakeApiClient <: FeishuApiClient {
 
     public func cardPatchCount(): Int64 {
         this.patchedCards.size
+    }
+
+    public func failNextTextSend(status: String, error!: String = ""): Unit {
+        this.nextTextSendFailureStatus = if (status.trimAscii().isEmpty()) { "error" } else { status.trimAscii() }
+        this.nextTextSendFailureError = error.trimAscii()
     }
 
     public func failNextCardSend(status: String, error!: String = ""): Unit {
@@ -357,11 +373,13 @@ public class FeishuAdapter <: ChannelAdapter {
     private let chatQueue = FeishuChatQueue()
     private let apiClient: FeishuApiClient
     private let eventDedup = HashMap<String, Bool>()
+    private let pairingRoot: Path
 
     public init(
         config!: FeishuConfig = FeishuConfig(),
         accountId!: String = "default",
-        apiClient!: FeishuApiClient = FeishuNoopApiClient()
+        apiClient!: FeishuApiClient = FeishuNoopApiClient(),
+        pairingRoot!: Path = CliConfig.dotDir
     ) {
         let trimmedAccountId = accountId.trimAscii()
         let requestedAccountId = if (trimmedAccountId.isEmpty()) { config.accountId } else { trimmedAccountId }
@@ -370,6 +388,7 @@ public class FeishuAdapter <: ChannelAdapter {
         this.config = resolved.config
         this.accountId = resolved.accountId
         this.apiClient = apiClient
+        this.pairingRoot = pairingRoot
         feishuInstallGatewayNativeAuthRunner()
     }
 
@@ -383,6 +402,24 @@ public class FeishuAdapter <: ChannelAdapter {
 
     public func debugOfficialSdkMonitorHostArgsForTest(): Array<String> {
         this.feishuOfficialSdkMonitorHostArgs(redactSecrets: true)
+    }
+
+    public func debugFeishuPairingPendingCodeForTest(senderId: String, accountId!: String = ""): String {
+        gatewayPairingAccountStore(
+            channel: "feishu",
+            accountId: this.normalizeAccountId(if (accountId.trimAscii().isEmpty()) { this.effectiveAccountId() } else { accountId }),
+            rootDir: this.pairingRoot
+        )
+            .pendingCodeForSender(senderId)
+    }
+
+    public func debugFeishuPairingApproveForTest(code: String, accountId!: String = ""): Bool {
+        gatewayPairingAccountStore(
+            channel: "feishu",
+            accountId: this.normalizeAccountId(if (accountId.trimAscii().isEmpty()) { this.effectiveAccountId() } else { accountId }),
+            rootDir: this.pairingRoot
+        )
+            .approve(code)
     }
 
     public func start(): Unit {
@@ -1480,7 +1517,7 @@ public class FeishuAdapter <: ChannelAdapter {
         let accountId = this.effectiveAccountId()
         let cfg = this.feishuConfigForAccount(accountId)
         this.attachFeishuImRouteContext(mediaContext, cfg, accountId, peerId, chatType, senderId, messageId, "", "")
-        this.attachFeishuGateContext(mediaContext, cfg, chatType, mentioned, peerId, senderId)
+        this.attachFeishuGateContext(mediaContext, cfg, accountId, chatType, mentioned, peerId, senderId)
         let msg = InboundMessage(
             ChannelType.Feishu,
             messageId,
@@ -1621,7 +1658,7 @@ public class FeishuAdapter <: ChannelAdapter {
             (accountConfig.botOpenId.isEmpty() && (text.contains("@") || text.contains("<at ")))
         let mediaContext = JsonObject()
         this.attachFeishuImRouteContext(mediaContext, accountConfig, accountId, chatId, chatType, senderId, messageId, rootId, threadId)
-        this.attachFeishuGateContext(mediaContext, accountConfig, chatType, mentioned, chatId, senderId)
+        this.attachFeishuGateContext(mediaContext, accountConfig, accountId, chatType, mentioned, chatId, senderId)
         this.attachFeishuQuoteContext(mediaContext, accountId, chatId, senderId, messageId, rootId, threadId, chatType)
         this.attachFeishuAliasCandidates(mediaContext, accountConfig, messageObj)
         this.attachFeishuAttachmentContext(mediaContext, accountConfig, accountId, chatId, senderId, messageId, messageType, contentJsonString)
@@ -1721,6 +1758,7 @@ public class FeishuAdapter <: ChannelAdapter {
     private func attachFeishuGateContext(
         mediaContext: JsonObject,
         cfg: FeishuConfig,
+        accountId: String,
         chatType: ChatType,
         mentioned: Bool,
         chatId: String,
@@ -1736,6 +1774,7 @@ public class FeishuAdapter <: ChannelAdapter {
         match (chatType) {
             case ChatType.Direct =>
                 let dmPolicy = cfg.dmPolicy.trimAscii().toAsciiLower()
+                let normalizedAccountId = this.normalizeAccountId(accountId)
                 if (dmPolicy == "disabled") {
                     accepted = false
                     reason = "dm_disabled"
@@ -1746,9 +1785,12 @@ public class FeishuAdapter <: ChannelAdapter {
                 } else if (dmPolicy == "allowlist") {
                     accepted = false
                     reason = "dm_sender_not_allowed"
+                } else if (gatewayPairingAccountStore(channel: "feishu", accountId: normalizedAccountId, rootDir: this.pairingRoot).isApproved(senderId)) {
+                    ()
                 } else {
                     accepted = false
-                    reason = "dm_pairing_required"
+                    reason = "pairing_pending"
+                    this.attachFeishuPairingPromptContext(gate, normalizedAccountId, chatId, senderId)
                 }
             case ChatType.Group =>
                 let groupConfig = this.feishuGroupConfig(cfg, chatId)
@@ -1784,6 +1826,54 @@ public class FeishuAdapter <: ChannelAdapter {
         gate.put("reason", JsonString(reason))
         context.put("feishuGate", gate)
         mediaContext.put("context", context)
+    }
+
+    private func attachFeishuPairingPromptContext(
+        gate: JsonObject,
+        accountId: String,
+        chatId: String,
+        senderId: String
+    ): Unit {
+        let normalizedAccountId = this.normalizeAccountId(accountId)
+        let normalizedSenderId = senderId.trimAscii()
+        gate.put("pairingAccountId", JsonString(normalizedAccountId))
+        gate.put("pairingSenderId", JsonString(normalizedSenderId))
+        let code = gatewayPairingAccountStore(channel: "feishu", accountId: normalizedAccountId, rootDir: this.pairingRoot).ensurePending(normalizedSenderId)
+        if (normalizedSenderId.isEmpty() || code.trimAscii().isEmpty()) {
+            gate.put("pairingPromptSent", JsonBool(false))
+            gate.put("pairingPromptError", JsonString("missing_pairing_sender_or_code"))
+            return
+        }
+        let prompt = this.feishuPairingPromptText(normalizedAccountId, code)
+        let sent = this.sendTextToFeishuDetailedForAccount(normalizedAccountId, chatId, prompt)
+        gate.put("pairingPromptSent", JsonBool(sent[0]))
+        if (!sent[0]) {
+            let error = this.feishuRedactedPairingPromptError(this.lastSendError)
+            gate.put("pairingPromptError", JsonString(error))
+            LogUtils.info(
+                "Feishu pairing prompt failed account=${normalizedAccountId} sender=${this.feishuMaskDiagnosticValue(normalizedSenderId)}: ${error}"
+            )
+        }
+    }
+
+    private func feishuPairingPromptText(accountId: String, code: String): String {
+        "Pairing required.\n" +
+            "Approve this Feishu DM with:\n" +
+            "metis pairing approve feishu ${code.trimAscii()} --account ${this.normalizeAccountId(accountId)}"
+    }
+
+    private func feishuRedactedPairingPromptError(raw: String): String {
+        let trimmed = raw.trimAscii()
+        if (trimmed.isEmpty()) {
+            return "send_failed"
+        }
+        let lowered = trimmed.toAsciiLower()
+        if (lowered.contains("authorization") || lowered.contains("bearer ") ||
+            lowered.contains("token") || lowered.contains("secret") ||
+            lowered.contains("password") || lowered.contains("app_secret")) {
+            return "send_failed_redacted"
+        }
+        trimmed
     }
 
     private func feishuGroupAllowed(cfg: FeishuConfig, chatId: String): Bool {

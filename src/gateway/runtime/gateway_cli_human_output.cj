@@ -362,6 +362,16 @@ private func cliRenderChannelAccountRow(channelId: String, row: JsonObject, defa
     if (cliJsonHasField(row, "groupAllowFromEffectiveCount")) {
         bits.add("groupAllowEffective=${cliJsonInt(row, "groupAllowFromEffectiveCount")}")
     }
+    let pairing = cliJsonObject(row, "pairing")
+    let dmPolicy = cliJsonString(row, "dmPolicy", defaultValue: cliJsonString(pairing, "dmPolicy", defaultValue: cliJsonString(pairing, "policy")))
+    if (!dmPolicy.isEmpty()) {
+        bits.add("dmPolicy=${dmPolicy}")
+    }
+    if (cliJsonHasField(row, "pairingPendingCount")) {
+        bits.add("pairingPending=${cliJsonInt(row, "pairingPendingCount")}")
+    } else if (cliJsonHasField(pairing, "pendingCount")) {
+        bits.add("pairingPending=${cliJsonInt(pairing, "pendingCount")}")
+    }
     let securitySources = cliJsonObject(row, "securitySources")
     cliAddAccountSourceBit(bits, "allowSource", securitySources, "allowFrom")
     cliAddAccountSourceBit(bits, "groupAllowSource", securitySources, "groupAllowFrom")
@@ -369,6 +379,8 @@ private func cliRenderChannelAccountRow(channelId: String, row: JsonObject, defa
     cliAddAccountSourceBit(bits, "groupPolicySource", securitySources, "groupPolicy")
     if (cliJsonHasField(row, "approvedSenderCount")) {
         bits.add("approvedSenders=${cliJsonInt(row, "approvedSenderCount")}")
+    } else if (cliJsonHasField(pairing, "approvedCount")) {
+        bits.add("approvedSenders=${cliJsonInt(pairing, "approvedCount")}")
     }
     bits.add("overrides=${cliAccountOverrideSummary(row)}")
     bits.add("binding=${channelId}:${accountId}")
@@ -394,7 +406,15 @@ private func cliRenderChannelAccountInspectLines(channelId: String, inspect: Jso
     lines.add(header)
     for (i in 0..accounts.size()) {
         try {
-            lines.add(cliRenderChannelAccountRow(channelId, accounts[i].asObject(), defaultAccountId: defaultAccountId))
+            let row = accounts[i].asObject()
+            lines.add(cliRenderChannelAccountRow(channelId, row, defaultAccountId: defaultAccountId))
+            let advice = cliJsonArray(cliJsonObject(row, "pairing"), "advice")
+            if (advice.size() > 0) {
+                let first = try { advice[0].asString().getValue().trimAscii() } catch (_: Exception) { "" }
+                if (!first.isEmpty()) {
+                    lines.add("    pairing next: ${cliOneLine(cliSafeDiagnosticText(first), maxLen: 180)}")
+                }
+            }
         } catch (_: Exception) {
             ()
         }

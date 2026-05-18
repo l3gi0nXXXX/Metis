@@ -21,7 +21,7 @@ Manager delegation can coexist with this model, but it is not a separate product
 | Workspace profiles | Control UI and RPC can list, read, and write `AGENTS.md`, `SOUL.md`, `TOOLS.md`, `IDENTITY.md`, `USER.md`, `HEARTBEAT.md`, `BOOTSTRAP.md`, and `MEMORY.md` through Gateway only. | `BOOTSTRAP.md` is supported but not auto-created. |
 | Model state | Control UI and RPC can read/write per-agent `models.json` state, render provider/model chips from `agents.models.*`, and display redacted credential-source summaries. | Operators still need to configure real provider credentials explicitly per agent or allowed fallback source. |
 | Telegram | Existing Telegram adapter has broad fake-tested group/topic/media/native-command coverage and AgentTeam alias routing baseline. | Telegram remains the first full IM validation path for future ChannelAdapter route extensions. |
-| Feishu | Built-in Feishu support includes unified route context, account id, group/thread context, rich-event baselines, native `/feishu ...` command replies, OAuth lifecycle RPC/buttons, native OAPI client/toolset baseline, user/TAT/bot/app token provider support, tool-level repair actions, 108 action parity reporting, streaming-card controller, and redacted status/doctor surfaces. | Real tenant UAT/TAT/app-token behavior, operator-executed app-scope grants, historical resource fetch, complete CardKit parity, and live event matrix validation remain release gates. |
+| Feishu | Built-in Feishu support includes unified route context, account id, group/thread context, rich-event baselines, native `/feishu ...` command replies, OAuth lifecycle RPC/buttons, native OAPI client/toolset baseline, user/TAT/bot/app token provider support, tool-level repair actions, 108 action parity reporting, streaming-card controller, redacted status/doctor surfaces, and Feishu DM pairing visibility for policy, pending count, and approved count. | Real tenant UAT/TAT/app-token behavior, operator-executed app-scope grants, historical resource fetch, complete CardKit parity, and live event matrix validation remain release gates. |
 | Migration | `agents.migration.dryRun` is read-only, previews doctor findings, binding apply, redacted config preview, and Feishu single-account migration suggestions. | Future migration may add apply-mode helpers after dry-run acceptance, but it must not rewrite user config silently. |
 
 ## Start Gateway
@@ -56,6 +56,107 @@ Telegram series23 Phase 1 acceptance is split between fake tests and an opt-in l
 Feishu: create the Feishu app/bot manually in the Feishu developer console, configure the app credentials and event subscription in Metis, then use native `/feishu start`, `/feishu doctor`, `/feishu auth`, and `/feishu info --all` from Feishu conversations when available. Bind `feishu:<accountId>` or structured group/thread routes to member agents. Metis can guide setup, validate status, and save Gateway-backed configuration, but it cannot non-interactively create a Feishu bot/app or grant tenant permissions on your behalf. OAuth/OAPI and card behavior remain Gateway-backed and are not handled by browser-local files.
 
 Control UI: open Agents -> Teams to create teams, edit members and aliases, preview bindings, apply Gateway RPC changes, edit allowed profile files, inspect per-agent model state, and review Feishu readiness/doctor guidance. The browser is a Gateway RPC client only.
+
+## Feishu DM Access Policy
+
+Feishu direct-message access is account-scoped. New Feishu accounts created through `metis agents add --feishu ...` use `dmPolicy="pairing"` and an empty `allowFrom` list by default. Operators can inspect the effective state without exposing sender details or secrets:
+
+```bash
+metis gateway channel get feishu
+metis gateway channel runtime feishu
+```
+
+From Feishu itself, these native commands show the same redacted state for the active account:
+
+```text
+/feishu start
+/feishu doctor
+/feishu info --all
+```
+
+The summaries include `dmPolicy`, `allowFrom` count, `pairing pending=<n> approved=<n>`, and advice for the next operator action. They do not print pending codes, approved sender IDs, app secrets, tenant tokens, or authorization headers.
+
+### Direct Configuration Allow
+
+This path is currently available and is suitable for tests, one-person bots, or tightly trusted tenants. Edit `~/.metis/metis.json` and restart the target account.
+
+Allow all Feishu DM users for a test account:
+
+```json
+{
+  "gateway": {
+    "feishu": {
+      "accounts": {
+        "feishu-writer": {
+          "dmPolicy": "open",
+          "allowFrom": ["*"]
+        }
+      }
+    }
+  }
+}
+```
+
+Allow only specific Feishu user IDs:
+
+```json
+{
+  "gateway": {
+    "feishu": {
+      "accounts": {
+        "feishu-writer": {
+          "dmPolicy": "allowlist",
+          "allowFrom": ["ou_test_user"]
+        }
+      }
+    }
+  }
+}
+```
+
+Restart the account after editing:
+
+```bash
+metis gateway channel restart feishu --account feishu-writer
+```
+
+Use `/feishu doctor` or `metis gateway channel get feishu` to verify the policy and counts. `dmPolicy="open"` intentionally allows any Feishu user who can DM the bot to reach the account, so prefer pairing outside short-lived tests.
+
+### Pairing Authorization Loop
+
+The recommended production path is the Feishu pairing loop. Confirm the pairing CLI target exists with:
+
+```bash
+metis pairing help
+```
+
+The expected operator flow is:
+
+1. Keep the account on `dmPolicy="pairing"` with `allowFrom=[]`.
+2. Restart the account:
+
+```bash
+metis gateway channel restart feishu --account feishu-writer
+```
+
+3. Ask the unapproved user to send a Feishu DM to the bot.
+4. The user receives a pairing prompt in the same Feishu DM.
+5. The operator approves the displayed code:
+
+```bash
+metis pairing approve feishu <CODE> --account feishu-writer
+```
+
+6. The user sends another DM. It should enter normal Gateway routing and receive an agent reply.
+
+Operational checks:
+
+```bash
+metis gateway channel get feishu
+metis gateway channel runtime feishu
+```
+
+Expected evidence is `pairing pending=<n> approved=<n>` changing as users request pairing and operators approve them. The default human-readable output must not be a raw JSON dump; use `--json` only for automation.
 
 ## Team Collaboration Semantics
 

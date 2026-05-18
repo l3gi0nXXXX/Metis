@@ -35,6 +35,7 @@ import metis.gateway.core.{
     setGatewayOpenClawPluginSidecarRunnerForTest
 }
 import metis.gateway.model.{ChannelPolicyConfig, InboundMessage, OutboundMessage, SendResult}
+import metis.gateway.security.gatewayPairingAccountStore
 
 import std.convert.Parsable
 import std.collection.{ArrayList, HashMap}
@@ -114,6 +115,20 @@ private func channelsRowsContainStringField(rows: JsonArray, key: String, value:
         }
     }
     false
+}
+
+private func channelsRowByStringField(rows: JsonArray, key: String, value: String): JsonObject {
+    for (i in 0..rows.size()) {
+        try {
+            let row = rows[i].asObject()
+            if (channelsTestString(row, key) == value) {
+                return row
+            }
+        } catch (_: Exception) {
+            ()
+        }
+    }
+    JsonObject()
 }
 
 private func channelsTelegramRouteBinding(agentId: String, peerKind: String, peerId: String): JsonObject {
@@ -853,6 +868,55 @@ public class GatewayServerMethodsChannelsTest {
     }
 
     @TestCase
+    public func feishuChannelGetExposesPairingSummaryWithoutCodesOrSenderDetails(): Unit {
+        withGatewayChannelsTestHome {
+            var user = GatewayUserSettings()
+            user.feishu.enabled = true
+            user.feishu.defaultAccount = "tenant-a"
+            let accounts = JsonObject()
+            let tenantA = JsonObject()
+            tenantA.put("appId", JsonString("tenant-app-a"))
+            tenantA.put("appSecret", JsonString("tenant-secret-a-never-visible"))
+            accounts.put("tenant-a", tenantA)
+            let tenantB = JsonObject()
+            tenantB.put("dmPolicy", JsonString("open"))
+            tenantB.put("appId", JsonString("tenant-app-b"))
+            tenantB.put("appSecret", JsonString("tenant-secret-b-never-visible"))
+            accounts.put("tenant-b", tenantB)
+            user.feishu.accounts = Some(accounts)
+
+            let storeA = gatewayPairingAccountStore(channel: "feishu", accountId: "tenant-a", rootDir: CliConfig.dotDir)
+            let approvedCode = storeA.ensurePending("ou_approved")
+            @Expect(storeA.approve(approvedCode), true)
+            let pendingCodeA = storeA.ensurePending("ou_pending_a")
+            let pendingCodeB = gatewayPairingAccountStore(channel: "feishu", accountId: "tenant-b", rootDir: CliConfig.dotDir).ensurePending("ou_pending_b")
+
+            let channel = gatewayChannelGetJson(user, "feishu")
+            let pairing = channel.get("pairing").getOrThrow().asObject()
+            @Expect(channelsTestString(pairing, "channel"), "feishu")
+            @Expect(channelsTestInt(pairing, "pendingCount"), 2)
+            @Expect(channelsTestInt(pairing, "approvedCount"), 1)
+            let inspect = channel.get("accountInspect").getOrThrow().asObject()
+            let rows = inspect.get("accounts").getOrThrow().asArray()
+            let rowA = channelsRowByStringField(rows, "accountId", "tenant-a")
+            let rowB = channelsRowByStringField(rows, "accountId", "tenant-b")
+            @Expect(channelsTestString(rowA, "dmPolicy"), "pairing")
+            @Expect(channelsTestString(rowB, "dmPolicy"), "open")
+            @Expect(channelsTestInt(rowA, "pairingPendingCount"), 1)
+            @Expect(channelsTestInt(rowA, "approvedSenderCount"), 1)
+            let raw = channel.toJsonString()
+            @Expect(raw.contains("tenant-secret-a-never-visible"), false)
+            @Expect(raw.contains("tenant-secret-b-never-visible"), false)
+            @Expect(raw.contains(pendingCodeA), false)
+            @Expect(raw.contains(pendingCodeB), false)
+            @Expect(raw.contains(approvedCode), false)
+            @Expect(raw.contains("ou_pending_a"), false)
+            @Expect(raw.contains("ou_pending_b"), false)
+            @Expect(raw.contains("ou_approved"), false)
+        }
+    }
+
+    @TestCase
     public func feishuChannelsRuntimeIncludesConfiguredAccountInspectWithoutSecrets(): Unit {
         var user = GatewayUserSettings()
         user.feishu.enabled = true
@@ -1000,6 +1064,10 @@ public class GatewayServerMethodsChannelsTest {
             accounts.put("default", defaultAccount)
             accounts.put("feishu-writer", writer)
             user.feishu.accounts = Some(accounts)
+            let defaultStore = gatewayPairingAccountStore(channel: "feishu", accountId: "default", rootDir: CliConfig.dotDir)
+            let approvedCode = defaultStore.ensurePending("ou_runtime_approved")
+            @Expect(defaultStore.approve(approvedCode), true)
+            let pendingCode = defaultStore.ensurePending("ou_runtime_pending")
 
             gatewayChannelRuntimeRegisterAccount("feishu", accountId: "default")
             gatewayChannelRuntimeMarkRunning("feishu", accountId: "default")
@@ -1027,12 +1095,19 @@ public class GatewayServerMethodsChannelsTest {
             @Expect(channelsTestString(ownership, "status"), "wrong_app")
             let ownershipRows = ownership.get("accounts").getOrThrow().asArray()
             @Expect(channelsRowsContainStringField(ownershipRows, "status", "wrong_app"), true)
+            let pairing = feishu.get("pairing").getOrThrow().asObject()
+            @Expect(channelsTestInt(pairing, "pendingCount"), 1)
+            @Expect(channelsTestInt(pairing, "approvedCount"), 1)
             let raw = result.toJsonString()
             @Expect(raw.contains("default-secret-never-visible"), false)
             @Expect(raw.contains("writer-secret-never-visible"), false)
             @Expect(raw.contains("cli_default_app"), false)
             @Expect(raw.contains("cli_writer_app"), false)
             @Expect(raw.contains("cli***app"), true)
+            @Expect(raw.contains(pendingCode), false)
+            @Expect(raw.contains(approvedCode), false)
+            @Expect(raw.contains("ou_runtime_pending"), false)
+            @Expect(raw.contains("ou_runtime_approved"), false)
         }
     }
 

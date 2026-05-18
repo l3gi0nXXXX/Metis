@@ -70,6 +70,15 @@ public class FeishuAdapterTest {
         }
     }
 
+    private func pairingTestRoot(suffix: String): Path {
+        Path("/tmp/metis-feishu-pairing-${suffix}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+    }
+
+    private func feishuGate(inbound: InboundMessage): JsonObject {
+        inbound.mediaContext.get("context").getOrThrow().asObject()
+            .get("feishuGate").getOrThrow().asObject()
+    }
+
     private func webhookPayload(
         messageId: String,
         chatId: String,
@@ -1604,28 +1613,201 @@ public class FeishuAdapterTest {
         writer.put("allowFrom", JsonArray([]))
         let accounts = JsonObject()
         accounts.put("feishuWriter", writer)
+        let root = this.pairingTestRoot("account-empty-allowfrom")
+        try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        let client = FeishuFakeApiClient()
         let adapter = FeishuAdapter(
             config: FeishuConfig(enabled: true, dmPolicy: "pairing", allowFrom: ["ou_old"], accounts: Some(accounts)),
-            accountId: "feishuWriter"
+            accountId: "feishuWriter",
+            apiClient: client,
+            pairingRoot: root
         )
         adapter.start()
+        try {
+            @Expect(adapter.ingestWebhookPayload(this.webhookPayload(
+                "om_dm_block",
+                "ou_old",
+                "ou_old",
+                "{\\\"text\\\":\\\"hello\\\"}",
+                chatType: "p2p",
+                headerAccountId: "feishuWriter"
+            )).contains("\"ok\":true"), true)
 
-        @Expect(adapter.ingestWebhookPayload(this.webhookPayload(
-            "om_dm_block",
-            "ou_old",
-            "ou_old",
-            "{\\\"text\\\":\\\"hello\\\"}",
-            chatType: "p2p",
-            headerAccountId: "feishuWriter"
-        )).contains("\"ok\":true"), true)
+            let inbound = adapter.pullInbound()
+            @Expect(inbound.size, 1)
+            let gate = this.feishuGate(inbound[0])
+            @Expect(gate.get("triggerAgent").getOrThrow().asBool().getValue(), false)
+            @Expect(gate.get("reason").getOrThrow().asString().getValue(), "pairing_pending")
+            @Expect(gate.get("allowFrom").getOrThrow().asArray().size(), 0)
+            @Expect(gate.get("pairingPromptSent").getOrThrow().asBool().getValue(), true)
+            @Expect(client.textSendCount(), 1)
+        } finally {
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
 
-        let inbound = adapter.pullInbound()
-        @Expect(inbound.size, 1)
-        let gate = inbound[0].mediaContext.get("context").getOrThrow().asObject()
-            .get("feishuGate").getOrThrow().asObject()
-        @Expect(gate.get("triggerAgent").getOrThrow().asBool().getValue(), false)
-        @Expect(gate.get("reason").getOrThrow().asString().getValue(), "dm_pairing_required")
-        @Expect(gate.get("allowFrom").getOrThrow().asArray().size(), 0)
+    @TestCase
+    public func dmPairingPromptRejectsFirstMessageAndApprovedSenderPasses(): Unit {
+        let root = this.pairingTestRoot("prompt-approve")
+        try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        let client = FeishuFakeApiClient()
+        let adapter = FeishuAdapter(
+            config: FeishuConfig(enabled: true, dmPolicy: "pairing"),
+            accountId: "tenant-a",
+            apiClient: client,
+            pairingRoot: root
+        )
+        adapter.start()
+        try {
+            @Expect(adapter.ingestWebhookPayload(this.webhookPayload(
+                "om_pair_first",
+                "oc_dm_a",
+                "ou_pair_sender",
+                "{\\\"text\\\":\\\"hello\\\"}",
+                chatType: "p2p",
+                headerAccountId: "tenant-a"
+            )).contains("\"ok\":true"), true)
+
+            let inbound = adapter.pullInbound()
+            @Expect(inbound.size, 1)
+            let gate = this.feishuGate(inbound[0])
+            @Expect(gate.get("triggerAgent").getOrThrow().asBool().getValue(), false)
+            @Expect(gate.get("reason").getOrThrow().asString().getValue(), "pairing_pending")
+            @Expect(gate.get("pairingPromptSent").getOrThrow().asBool().getValue(), true)
+            @Expect(gate.get("pairingAccountId").getOrThrow().asString().getValue(), "tenant-a")
+            @Expect(gate.get("pairingSenderId").getOrThrow().asString().getValue(), "ou_pair_sender")
+
+            let code = adapter.debugFeishuPairingPendingCodeForTest("ou_pair_sender", accountId: "tenant-a")
+            @Expect(code.isEmpty(), false)
+            @Expect(client.textSendCount(), 1)
+            let prompt = client.lastTextMessage()
+            @Expect(prompt.startsWith("tenant-a|oc_dm_a|oc_dm_a|chat_id|"), true)
+            @Expect(prompt.contains("Pairing required."), true)
+            @Expect(prompt.contains("metis pairing approve feishu ${code} --account tenant-a"), true)
+            @Expect(prompt.contains("appSecret"), false)
+            @Expect(prompt.contains("Authorization"), false)
+
+            @Expect(adapter.debugFeishuPairingApproveForTest(code, accountId: "tenant-a"), true)
+            @Expect(adapter.ingestWebhookPayload(this.webhookPayload(
+                "om_pair_after",
+                "oc_dm_a",
+                "ou_pair_sender",
+                "{\\\"text\\\":\\\"again\\\"}",
+                chatType: "p2p",
+                headerAccountId: "tenant-a"
+            )).contains("\"ok\":true"), true)
+
+            let accepted = adapter.pullInbound()
+            @Expect(accepted.size, 1)
+            let acceptedGate = this.feishuGate(accepted[0])
+            @Expect(acceptedGate.get("triggerAgent").getOrThrow().asBool().getValue(), true)
+            @Expect(acceptedGate.get("reason").getOrThrow().asString().getValue(), "accepted")
+            @Expect(client.textSendCount(), 1)
+        } finally {
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func dmPairingApprovalIsAccountScoped(): Unit {
+        let root = this.pairingTestRoot("account-scope")
+        try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        let accounts = JsonObject()
+        accounts.put("tenant-a", JsonObject())
+        accounts.put("tenant-b", JsonObject())
+        let client = FeishuFakeApiClient()
+        let adapter = FeishuAdapter(
+            config: FeishuConfig(enabled: true, dmPolicy: "pairing", accounts: Some(accounts)),
+            accountId: "tenant-a",
+            apiClient: client,
+            pairingRoot: root
+        )
+        adapter.start()
+        try {
+            @Expect(adapter.ingestWebhookPayload(this.webhookPayload(
+                "om_scope_first",
+                "oc_dm_a",
+                "ou_same_sender",
+                "{\\\"text\\\":\\\"hello\\\"}",
+                chatType: "p2p",
+                headerAccountId: "tenant-a"
+            )).contains("\"ok\":true"), true)
+            @Expect(adapter.pullInbound().size, 1)
+            let code = adapter.debugFeishuPairingPendingCodeForTest("ou_same_sender", accountId: "tenant-a")
+            @Expect(adapter.debugFeishuPairingApproveForTest(code, accountId: "tenant-a"), true)
+
+            @Expect(adapter.ingestWebhookPayload(this.webhookPayload(
+                "om_scope_a_after",
+                "oc_dm_a",
+                "ou_same_sender",
+                "{\\\"text\\\":\\\"again\\\"}",
+                chatType: "p2p",
+                headerAccountId: "tenant-a"
+            )).contains("\"ok\":true"), true)
+            @Expect(adapter.ingestWebhookPayload(this.webhookPayload(
+                "om_scope_b_first",
+                "oc_dm_b",
+                "ou_same_sender",
+                "{\\\"text\\\":\\\"hello b\\\"}",
+                chatType: "p2p",
+                headerAccountId: "tenant-b"
+            )).contains("\"ok\":true"), true)
+
+            let inbound = adapter.pullInbound()
+            @Expect(inbound.size, 2)
+            let gateA = this.feishuGate(inbound[0])
+            let gateB = this.feishuGate(inbound[1])
+            @Expect(inbound[0].accountId, "tenant-a")
+            @Expect(inbound[1].accountId, "tenant-b")
+            @Expect(gateA.get("triggerAgent").getOrThrow().asBool().getValue(), true)
+            @Expect(gateA.get("reason").getOrThrow().asString().getValue(), "accepted")
+            @Expect(gateB.get("triggerAgent").getOrThrow().asBool().getValue(), false)
+            @Expect(gateB.get("reason").getOrThrow().asString().getValue(), "pairing_pending")
+            @Expect(gateB.get("pairingAccountId").getOrThrow().asString().getValue(), "tenant-b")
+            @Expect(adapter.debugFeishuPairingPendingCodeForTest("ou_same_sender", accountId: "tenant-b").isEmpty(), false)
+            @Expect(client.textSendCount(), 2)
+        } finally {
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
+    }
+
+    @TestCase
+    public func dmPairingPromptSendFailureRecordsRedactedDiagnostic(): Unit {
+        let root = this.pairingTestRoot("send-failure")
+        try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        let client = FeishuFakeApiClient()
+        client.failNextTextSend("forbidden", error: "Authorization: Bearer super-secret-token")
+        let adapter = FeishuAdapter(
+            config: FeishuConfig(enabled: true, dmPolicy: "pairing"),
+            accountId: "tenant-a",
+            apiClient: client,
+            pairingRoot: root
+        )
+        adapter.start()
+        try {
+            @Expect(adapter.ingestWebhookPayload(this.webhookPayload(
+                "om_pair_fail",
+                "oc_dm_fail",
+                "ou_fail_sender",
+                "{\\\"text\\\":\\\"hello\\\"}",
+                chatType: "p2p",
+                headerAccountId: "tenant-a"
+            )).contains("\"ok\":true"), true)
+
+            let inbound = adapter.pullInbound()
+            @Expect(inbound.size, 1)
+            let gate = this.feishuGate(inbound[0])
+            @Expect(gate.get("triggerAgent").getOrThrow().asBool().getValue(), false)
+            @Expect(gate.get("reason").getOrThrow().asString().getValue(), "pairing_pending")
+            @Expect(gate.get("pairingPromptSent").getOrThrow().asBool().getValue(), false)
+            let error = gate.get("pairingPromptError").getOrThrow().asString().getValue()
+            @Expect(error, "send_failed_redacted")
+            @Expect(error.contains("super-secret-token"), false)
+            @Expect(error.contains("Authorization"), false)
+            @Expect(client.textSendCount(), 1)
+        } finally {
+            try { remove(root, recursive: true) } catch (_e: Exception) { () }
+        }
     }
 
     @TestCase

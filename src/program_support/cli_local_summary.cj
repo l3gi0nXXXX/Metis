@@ -73,7 +73,6 @@ private func localSummaryKnownField(key: String): Bool {
     key == "providers" ||
     key == "pending" ||
     key == "approvedSenders" ||
-    key == "approved" ||
     key == "code"
 }
 
@@ -87,6 +86,7 @@ private func localFieldLabel(key: String): String {
     if (key == "rootRemoval") { return "Would remove root" }
     if (key == "pendingCount") { return "Pending" }
     if (key == "approvedCount") { return "Approved senders" }
+    if (key == "approved") { return "Approved" }
     if (key == "dispatchMode") { return "Dispatch mode" }
     if (key == "primaryPath") { return "Primary path" }
     return key
