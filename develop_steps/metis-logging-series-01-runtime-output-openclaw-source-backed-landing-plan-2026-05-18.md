@@ -2,7 +2,7 @@
 
 创建日期：2026-05-18
 
-状态：方案已落盘，尚未修改 Metis 源码。
+状态：历史方案。2026-05-18 已完成一次基础设施落地与源码复核，本文件继续保留为系列 01；最新整改矩阵、目标标准修订、遗漏项与一次性补齐计划见 `develop_steps/metis-logging-series-02-complete-gap-matrix-and-landing-plan-2026-05-18.md`。
 
 ## 1. 目标与边界
 
