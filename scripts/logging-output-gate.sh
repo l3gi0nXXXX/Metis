@@ -82,39 +82,60 @@ check_file_allowlist() {
 cd "$ROOT_DIR" || exit 2
 
 logutils_scan="$TMP_DIR/logutils.txt"
+printutils_scan="$TMP_DIR/printutils.txt"
 direct_print_scan="$TMP_DIR/direct-print.txt"
+direct_json_scan="$TMP_DIR/direct-json.txt"
 sidecar_stdout_scan="$TMP_DIR/sidecar-stdout.txt"
 sidecar_stderr_scan="$TMP_DIR/sidecar-stderr.txt"
+sidecar_console_scan="$TMP_DIR/sidecar-console.txt"
 
 report_scan \
-  "gateway/channel LogUtils" \
-  'LogUtils\.(trace|debug|info|error)' \
+  "Gateway LogUtils" \
+  'LogUtils\.(trace|debug|info|warn|error|fatal)' \
   "$logutils_scan" \
-  -g '*.cj' src/gateway/core src/gateway/runtime src/gateway/channels
+  -g '*.cj' -g '!**/*_test.cj' src/gateway/core src/gateway/runtime src/gateway/channels
 
 report_scan \
-  "gateway/channel direct print" \
+  "Gateway PrintUtils.printLine" \
+  'PrintUtils\.printLine' \
+  "$printutils_scan" \
+  -g '*.cj' -g '!**/*_test.cj' src/gateway/core src/gateway/runtime src/gateway/channels
+
+report_scan \
+  "Gateway raw print/eprintln" \
   '(^|[^A-Za-z0-9_])(println|print|eprintln)\(' \
   "$direct_print_scan" \
-  -g '*.cj' src/gateway/core src/gateway/runtime src/gateway/channels
+  -g '*.cj' -g '!**/*_test.cj' src/gateway/core src/gateway/runtime src/gateway/channels
 
 report_scan \
-  "JS sidecar stdout" \
+  "Gateway direct toJsonString output" \
+  '(PrintUtils\.printLine|println|print|eprintln).*toJsonString\(' \
+  "$direct_json_scan" \
+  -g '*.cj' -g '!**/*_test.cj' src/gateway/core src/gateway/runtime src/gateway/channels
+
+report_scan \
+  "JS stdout protocol/report" \
   'process\.stdout\.write' \
   "$sidecar_stdout_scan" \
-  -g '*.mjs' scripts
+  -g '*.mjs' -g '!**/*.test.mjs' scripts
 
 report_scan \
-  "JS sidecar stderr" \
+  "JS stderr diagnostics" \
   'process\.stderr\.write' \
   "$sidecar_stderr_scan" \
-  -g '*.mjs' scripts
+  -g '*.mjs' -g '!**/*.test.mjs' scripts
 
-# Phase 0/8 legacy allowlist. These files are still direct-output owners until
-# the Gateway logger facade and sidecar helper are landed. New files should not
-# be added here without updating the internal logging plan.
+report_scan \
+  "JS console usage" \
+  'console\.(log|info|warn|error|debug|trace)' \
+  "$sidecar_console_scan" \
+  -g '*.mjs' -g '!**/*.test.mjs' scripts
+
+# Phase 0/7/9 output boundary allowlists. These are intentionally narrow:
+# command files may own human output, JSON-mode branches may own protocol JSON,
+# and runtime sidecars must keep diagnostics off stdout.
 check_file_allowlist \
-  "gateway/channel LogUtils" \
+  "Gateway LogUtils" \
   "$logutils_scan" \
   "$TMP_DIR/logutils.allowed" \
   "src/gateway/core/agent_bridge.cj" \
@@ -142,13 +163,30 @@ check_file_allowlist \
   "src/gateway/channels/telegram/telegram_adapter.cj"
 
 check_file_allowlist \
-  "gateway/channel direct print" \
+  "Gateway PrintUtils.printLine" \
+  "$printutils_scan" \
+  "$TMP_DIR/printutils.allowed" \
+  "src/gateway/runtime/gateway_cli.cj" \
+  "src/gateway/runtime/gateway_settings_actions.cj" \
+  "src/gateway/runtime/gateway_sessions_cli.cj" \
+  "src/gateway/runtime/gateway_external_console.cj" \
+  "src/gateway/runtime/gateway_cron_cli.cj" \
+  "src/gateway/runtime/gateway_cli_human_output.cj"
+
+check_file_allowlist \
+  "Gateway raw print/eprintln" \
   "$direct_print_scan" \
   "$TMP_DIR/direct-print.allowed" \
   "src/gateway/runtime/gateway_control_ui_app.cj"
 
 check_file_allowlist \
-  "JS sidecar stdout" \
+  "Gateway direct toJsonString output" \
+  "$direct_json_scan" \
+  "$TMP_DIR/direct-json.allowed" \
+  "src/gateway/runtime/gateway_cli.cj"
+
+check_file_allowlist \
+  "JS stdout protocol/report" \
   "$sidecar_stdout_scan" \
   "$TMP_DIR/sidecar-stdout.allowed" \
   "scripts/feishu-ws-sidecar.mjs" \
@@ -162,10 +200,20 @@ check_file_allowlist \
   "scripts/openclaw-plugin-sidecar.mjs"
 
 check_file_allowlist \
-  "JS sidecar stderr" \
+  "JS stderr diagnostics" \
   "$sidecar_stderr_scan" \
   "$TMP_DIR/sidecar-stderr.allowed" \
-  "scripts/feishu-ws-sidecar.mjs"
+  "scripts/feishu-ws-sidecar.mjs" \
+  "scripts/lib/metis-sidecar-logger.mjs"
+
+check_file_allowlist \
+  "JS console usage" \
+  "$sidecar_console_scan" \
+  "$TMP_DIR/sidecar-console.allowed" \
+  "scripts/lib/metis-sidecar-logger.mjs" \
+  "scripts/openclaw-compat-ci-gate.mjs" \
+  "scripts/openclaw-compat-security-policy.mjs" \
+  "scripts/openclaw-plugin-inventory.mjs"
 
 if [ "$failures" -gt 0 ]; then
   echo "logging-output-gate: failed"

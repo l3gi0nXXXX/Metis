@@ -6,8 +6,8 @@ import metis.core.config.{CliConfig, CliSettingManager, GatewayLoggingUserSettin
 
 import std.collection.ArrayList
 import std.env.getVariable
-import std.fs.{Directory, File, Path, exists}
-import std.regex.{Regex, RegexFlag}
+import std.fs.{Directory, File, FileInfo, Path, exists}
+import std.regex.{MatchData, Regex, RegexFlag}
 import std.time.DateTime
 import stdx.encoding.json.{JsonArray, JsonBool, JsonFloat, JsonInt, JsonObject, JsonString, JsonValue}
 
@@ -47,6 +47,7 @@ public class MetisLogEvent {
     public static const rpcSlow: String = "rpc.slow"
     public static const rpcFailed: String = "rpc.failed"
     public static const loggingRaw: String = "logging.raw"
+    public static const loggingFileSizeCap: String = "logging.file_size_cap"
 
     public static func all(): Array<String> {
         [
@@ -54,7 +55,8 @@ public class MetisLogEvent {
             channelStarted, channelFailed, channelStopped, channelTiming, channelStartupSummary,
             channelPull, channelSend, messageInbound, messageInboundPreview, messageRouted,
             messageReplyGenerated, messageOutbound, messageSent, messageSendFailed,
-            modelRequest, modelResponse, modelFailed, rpcSlow, rpcFailed, loggingRaw
+            modelRequest, modelResponse, modelFailed, rpcSlow, rpcFailed, loggingRaw,
+            loggingFileSizeCap
         ]
     }
 }
@@ -91,9 +93,13 @@ private let DEFAULT_MAX_LOG_FILE_BYTES: Int64 = 500 * 1024 * 1024
 private let LOG_MESSAGE_LIMIT: Int64 = 500
 private let LOG_META_STRING_LIMIT: Int64 = 1000
 private let LOG_TRUNCATED_MARKER: String = "...[truncated]"
+private let LOG_REDACTED_MARKER: String = "[redacted]"
 
 private var cachedGatewayLoggingSettings: Option<GatewayResolvedLoggingSettings> = None
 private var gatewayLoggingConsoleCaptureForTest: Option<ArrayList<String>> = None
+private var gatewayLoggingFileSizeCachePath: String = ""
+private var gatewayLoggingFileSizeBytes: Int64 = 0
+private var gatewayLoggingFileSizeCapWarnedPath: String = ""
 
 private func gatewayLogLevelRank(level: String): Int64 {
     match (level.trimAscii().toAsciiLower()) {
@@ -195,6 +201,9 @@ public func gatewayLoggingCurrentLogFile(): String {
 public func gatewayLoggingResetForTest(): Unit {
     cachedGatewayLoggingSettings = None<GatewayResolvedLoggingSettings>
     gatewayLoggingConsoleCaptureForTest = None<ArrayList<String>>
+    gatewayLoggingFileSizeCachePath = ""
+    gatewayLoggingFileSizeBytes = 0
+    gatewayLoggingFileSizeCapWarnedPath = ""
 }
 
 public func gatewayLoggingCaptureConsoleForTest(): Unit {
@@ -216,6 +225,44 @@ private func gatewayLogRegexReplace(text: String, pattern: String, replacement: 
     }
 }
 
+private func gatewayLogRegexReplaceMatch(text: String, pattern: String, replacement: (MatchData) -> String): String {
+    try {
+        let builder = StringBuilder()
+        var prev = 0
+        for (md in Regex(pattern, [RegexFlag.IgnoreCase]).findAll(text, group: true)) {
+            let pos = md.matchPosition()
+            builder.append(text[prev..pos.start])
+            builder.append(replacement(md))
+            prev = pos.end
+        }
+        builder.append(text[prev..])
+        builder.toString()
+    } catch (_: Exception) {
+        text
+    }
+}
+
+private func gatewayLoggingTimestamp(): String {
+    DateTime.now().toString()
+}
+
+private func gatewayLogSensitiveKey(key: String): Bool {
+    let k = key.trimAscii().toAsciiLower()
+    k.contains("secret") ||
+    k.contains("token") ||
+    k.contains("password") ||
+    k.contains("passwd") ||
+    k.contains("authorization") ||
+    k.contains("api_key") ||
+    k.contains("apikey") ||
+    k.contains("accesskey") ||
+    k.contains("privatekey") ||
+    k.contains("private_key") ||
+    k.contains("client_secret") ||
+    k.contains("refresh_token") ||
+    k.contains("access_token")
+}
+
 public func gatewayLogTruncateText(text: String, limit!: Int64 = LOG_META_STRING_LIMIT): String {
     if (limit <= 0 || Int64(text.size) <= limit) {
         return text
@@ -233,17 +280,68 @@ public func gatewayLogRedactText(text: String): String {
     if (!settings.redactSensitive) {
         return out
     }
-    out = gatewayLogRegexReplace(out, "Authorization\\s*[:=]\\s*Bearer\\s+[^\\s,;\\}\\]]+", "Authorization: Bearer [redacted]")
-    out = gatewayLogRegexReplace(out, "Authorization\\s*[:=]\\s*[^\\s,;\\}\\]]+", "Authorization: [redacted]")
-    out = gatewayLogRegexReplace(out, "Bearer\\s+[^\\s,;\\}\\]]+", "Bearer [redacted]")
-    out = gatewayLogRegexReplace(out, "[0-9]{5,}:[A-Za-z0-9_-]{6,}", "[redacted]")
-    out = gatewayLogRegexReplace(out, "app[_-]?secret[_a-zA-Z0-9-]*", "[redacted]")
-    out = gatewayLogRegexReplace(out, "api[_-]?key\\s*[:=]\\s*[^\\s,;\\}\\]]+", "api_key=[redacted]")
-    out = gatewayLogRegexReplace(out, "(https?://[^\\s:/@]+:)[^\\s/@]+(@)", "$1[redacted]$2")
+    out = gatewayLogRegexReplaceMatch(
+        out,
+        "(\\b[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD)\\b\\s*[=:]\\s*[\"']?)[^\\s\"'\\\\]+([\"']?)",
+        { md => "${md.matchString(1)}${LOG_REDACTED_MARKER}${md.matchString(2)}" }
+    )
+    out = gatewayLogRegexReplaceMatch(
+        out,
+        "(\"(?:apiKey|token|secret|password|passwd|accessToken|refreshToken)\"\\s*:\\s*\")[^\"]+(\")",
+        { md => "${md.matchString(1)}${LOG_REDACTED_MARKER}${md.matchString(2)}" }
+    )
+    out = gatewayLogRegexReplaceMatch(
+        out,
+        "(--(?:api[-_]?key|token|secret|password|passwd)\\s+[\"']?)[^\\s\"']+([\"']?)",
+        { md => "${md.matchString(1)}${LOG_REDACTED_MARKER}${md.matchString(2)}" }
+    )
+    out = gatewayLogRegexReplaceMatch(
+        out,
+        "(Authorization\\s*[:=]\\s*Bearer\\s+)[A-Za-z0-9._\\-+=]+",
+        { md => "${md.matchString(1)}${LOG_REDACTED_MARKER}" }
+    )
+    out = gatewayLogRegexReplaceMatch(
+        out,
+        "(Authorization\\s*[:=]\\s*)[^\\s,;\\}\\]]+",
+        { md => "${md.matchString(1)}${LOG_REDACTED_MARKER}" }
+    )
+    out = gatewayLogRegexReplaceMatch(
+        out,
+        "(\\bBearer\\s+)[A-Za-z0-9._\\-+=]{18,}\\b",
+        { md => "${md.matchString(1)}${LOG_REDACTED_MARKER}" }
+    )
+    out = gatewayLogRegexReplaceMatch(
+        out,
+        "(-----BEGIN [A-Z ]*PRIVATE KEY-----)[\\s\\S]+?(-----END [A-Z ]*PRIVATE KEY-----)",
+        { md => "${md.matchString(1)}\n${LOG_REDACTED_MARKER}\n${md.matchString(2)}" }
+    )
+    out = gatewayLogRegexReplace(out, "\\bsk-[A-Za-z0-9_-]{8,}\\b", LOG_REDACTED_MARKER)
+    out = gatewayLogRegexReplace(out, "\\bghp_[A-Za-z0-9]{20,}\\b", LOG_REDACTED_MARKER)
+    out = gatewayLogRegexReplace(out, "\\bgithub_pat_[A-Za-z0-9_]{20,}\\b", LOG_REDACTED_MARKER)
+    out = gatewayLogRegexReplace(out, "\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b", LOG_REDACTED_MARKER)
+    out = gatewayLogRegexReplace(out, "\\bxapp-[A-Za-z0-9-]{10,}\\b", LOG_REDACTED_MARKER)
+    out = gatewayLogRegexReplace(out, "\\bgsk_[A-Za-z0-9_-]{10,}\\b", LOG_REDACTED_MARKER)
+    out = gatewayLogRegexReplace(out, "\\bAIza[0-9A-Za-z\\-_]{20,}\\b", LOG_REDACTED_MARKER)
+    out = gatewayLogRegexReplace(out, "\\bpplx-[A-Za-z0-9_-]{10,}\\b", LOG_REDACTED_MARKER)
+    out = gatewayLogRegexReplace(out, "\\bnpm_[A-Za-z0-9]{10,}\\b", LOG_REDACTED_MARKER)
+    out = gatewayLogRegexReplace(out, "\\bbot[0-9]{6,}:[A-Za-z0-9_-]{20,}\\b", "bot${LOG_REDACTED_MARKER}")
+    out = gatewayLogRegexReplace(out, "\\b[0-9]{6,}:[A-Za-z0-9_-]{20,}\\b", LOG_REDACTED_MARKER)
+    out = gatewayLogRegexReplace(out, "\\b[0-9]{5,}:[A-Za-z0-9_-]{6,}\\b", LOG_REDACTED_MARKER)
+    out = gatewayLogRegexReplace(out, "app[_-]?secret[_a-zA-Z0-9-]*", LOG_REDACTED_MARKER)
+    out = gatewayLogRegexReplaceMatch(
+        out,
+        "(api[_-]?key\\s*[:=]\\s*)[^\\s,;\\}\\]]+",
+        { md => "${md.matchString(1)}${LOG_REDACTED_MARKER}" }
+    )
+    out = gatewayLogRegexReplaceMatch(
+        out,
+        "(https?://[^\\s:/@]+:)[^\\s/@]+(@)",
+        { md => "${md.matchString(1)}${LOG_REDACTED_MARKER}${md.matchString(2)}" }
+    )
     for (pattern in settings.redactPatterns) {
         let p = pattern.trimAscii()
         if (!p.isEmpty()) {
-            out = gatewayLogRegexReplace(out, p, "[redacted]")
+            out = gatewayLogRegexReplace(out, p, LOG_REDACTED_MARKER)
         }
     }
     out
@@ -256,6 +354,9 @@ private func gatewayLogSanitizeString(text: String, limit: Int64): String {
 private func gatewayLogSanitizeJsonValue(key: String, value: JsonValue): JsonValue {
     match (value) {
         case s: JsonString =>
+            if (gatewayLogSensitiveKey(key)) {
+                return JsonString(LOG_REDACTED_MARKER)
+            }
             JsonString(gatewayLogSanitizeString(s.getValue(), LOG_META_STRING_LIMIT))
         case o: JsonObject =>
             let out = JsonObject()
@@ -288,6 +389,51 @@ private func gatewayLogSanitizeMeta(meta: JsonObject): JsonObject {
         }
     }
     out
+}
+
+private func gatewayLoggingCachedFileSize(path: Path): Int64 {
+    let key = path.toString()
+    if (gatewayLoggingFileSizeCachePath != key) {
+        gatewayLoggingFileSizeCachePath = key
+        gatewayLoggingFileSizeBytes = try { FileInfo(path).size } catch (_: Exception) { 0 }
+        gatewayLoggingFileSizeCapWarnedPath = ""
+    }
+    gatewayLoggingFileSizeBytes
+}
+
+private func gatewayLoggingAddCachedFileBytes(path: Path, count: Int64): Unit {
+    if (gatewayLoggingFileSizeCachePath != path.toString()) {
+        _ = gatewayLoggingCachedFileSize(path)
+    }
+    gatewayLoggingFileSizeBytes += count
+}
+
+private func gatewayLoggingAppendFile(path: Path, line: String): Bool {
+    try {
+        let bytes = line.toArray()
+        File.appendTo(path, bytes)
+        gatewayLoggingAddCachedFileBytes(path, Int64(bytes.size))
+        true
+    } catch (_: Exception) {
+        false
+    }
+}
+
+private func gatewayLoggingWriteSizeCapWarning(settings: GatewayResolvedLoggingSettings, path: Path): Unit {
+    let key = path.toString()
+    if (gatewayLoggingFileSizeCapWarnedPath == key) {
+        return
+    }
+    gatewayLoggingFileSizeCapWarnedPath = key
+    let row = JsonObject()
+    row.put("time", JsonString(gatewayLoggingTimestamp()))
+    row.put("level", JsonString(MetisLogLevel.warn))
+    row.put("subsystem", JsonString("gateway/logging"))
+    row.put("event", JsonString(MetisLogEvent.loggingFileSizeCap))
+    row.put("message", JsonString("log file size cap reached; suppressing further file log writes"))
+    row.put("file", JsonString(settings.file))
+    row.put("maxFileBytes", JsonInt(settings.maxFileBytes))
+    _ = gatewayLoggingAppendFile(path, row.toJsonString() + "\n")
 }
 
 private func gatewayLoggingLevelEnabled(level: String, configured: String): Bool {
@@ -390,7 +536,7 @@ public class MetisSubsystemLogger {
                 Directory.create(path.parent, recursive: true)
             }
             let row = JsonObject()
-            row.put("time", JsonString(DateTime.now().format("yyyy-MM-dd'T'HH:mm:ss.SSS")))
+            row.put("time", JsonString(gatewayLoggingTimestamp()))
             row.put("level", JsonString(level))
             row.put("subsystem", JsonString(this.subsystem))
             row.put("event", JsonString(if (gatewayLogEventIsKnown(event)) { event } else { MetisLogEvent.loggingRaw }))
@@ -402,11 +548,13 @@ public class MetisSubsystemLogger {
                 }
             }
             let line = row.toJsonString() + "\n"
-            let nextSize = if (exists(path)) { Int64(File.readFrom(path).size) + Int64(line.size) } else { Int64(line.size) }
+            let lineSize = Int64(line.toArray().size)
+            let nextSize = gatewayLoggingCachedFileSize(path) + lineSize
             if (settings.maxFileBytes > 0 && nextSize > settings.maxFileBytes) {
+                gatewayLoggingWriteSizeCapWarning(settings, path)
                 return
             }
-            File.appendTo(path, line.toArray())
+            _ = gatewayLoggingAppendFile(path, line)
         } catch (_: Exception) {
             ()
         }
@@ -424,7 +572,7 @@ public class MetisSubsystemLogger {
             message
         } else if (settings.consoleStyle == "json") {
             let row = JsonObject()
-            row.put("time", JsonString(DateTime.now().format("yyyy-MM-dd'T'HH:mm:ss.SSS")))
+            row.put("time", JsonString(gatewayLoggingTimestamp()))
             row.put("level", JsonString(level))
             row.put("subsystem", JsonString(this.subsystem))
             row.put("event", JsonString(event))

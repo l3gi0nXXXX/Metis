@@ -19,6 +19,7 @@ test("sidecar logger keeps stdout protocol JSON and routes diagnostics to stderr
         configureKnownSecrets(["fake-secret-token"]);
         installConsoleStderrPatch({ prefix: "fixture-sidecar" });
         console.log("console fake-secret-token");
+        console.error("console-error fake-secret-token");
         writeDiagnostic("warn", "diagnostic fake-secret-token", { authorization: "Bearer fake-secret-token" }, { prefix: "fixture-sidecar" });
         writeProtocol({ type: "event", payload: { text: "hello fake-secret-token", nested: { token: "fake-secret-token" } } });
       `,
@@ -36,7 +37,17 @@ test("sidecar logger keeps stdout protocol JSON and routes diagnostics to stderr
   assert.equal(frame.type, "event");
   assert.equal(frame.payload.text.includes("fake-secret-token"), false);
   assert.equal(frame.payload.nested.token, "[REDACTED]");
+  for (const line of stdoutLines) {
+    assert.doesNotThrow(() => JSON.parse(line));
+  }
+  const stderrLines = child.stderr.trim().split(/\n+/).filter(Boolean);
+  assert.ok(stderrLines.length >= 3, child.stderr);
+  for (const line of stderrLines) {
+    assert.match(line, /^\[fixture-sidecar\] /);
+    assert.throws(() => JSON.parse(line));
+  }
   assert.match(child.stderr, /\[fixture-sidecar\] info: console \[REDACTED\]/);
+  assert.match(child.stderr, /\[fixture-sidecar\] error: console-error \[REDACTED\]/);
   assert.match(child.stderr, /\[fixture-sidecar\] warn: diagnostic \[REDACTED\]/);
   assert.equal(`${child.stdout}${child.stderr}`.includes("fake-secret-token"), false);
 });

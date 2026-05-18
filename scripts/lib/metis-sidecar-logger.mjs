@@ -74,6 +74,8 @@ function writeLine(stream, line) {
   }
 }
 
+// Runtime sidecar stdout is reserved for machine protocol frames.
+// Human diagnostics, console capture, and crash context must use stderr.
 export function writeProtocol(frame) {
   writeLine(process.stdout, JSON.stringify(redactKnownSecrets(frame)));
 }
