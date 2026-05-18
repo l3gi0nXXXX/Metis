@@ -2643,6 +2643,11 @@ public func handleGatewayChannelsFamily(method: String, user: GatewayUserSetting
         if (channelId == "telegram") {
             result.put("telegram", gatewayTelegramRuntimeJson(user, liveProbe: wantsProbe))
         }
+        if (channelId == "feishu") {
+            let feishu = JsonObject()
+            feishu.put("accountInspect", gatewayFeishuAccountInspectJson(user))
+            result.put("feishu", feishu)
+        }
         return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "channels.manager") {

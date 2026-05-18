@@ -260,6 +260,61 @@ public class GatewayCliHumanOutputTest {
     }
 
     @TestCase
+    public func formatsFeishuRuntimeWithConfiguredAndLiveAccountsWithoutRawJson(): Unit {
+        let raw = "{\"ok\":true,\"method\":\"channels.runtime\",\"result\":{" +
+            "\"channelId\":\"feishu\"," +
+            "\"defaultAccountId\":\"tenant-a\"," +
+            "\"accounts\":[" +
+                "{\"channelId\":\"feishu\",\"accountId\":\"tenant-a\",\"running\":true,\"phase\":\"running\",\"pullCount\":0,\"inboundCount\":1,\"sendSuccessCount\":1,\"sendFailureCount\":0}," +
+                "{\"channelId\":\"feishu\",\"accountId\":\"tenant-b\",\"running\":false,\"phase\":\"configured\",\"pullCount\":0,\"inboundCount\":0,\"sendSuccessCount\":0,\"sendFailureCount\":0,\"lastError\":\"wrong_app for account tenant-b\"}" +
+            "]," +
+            "\"feishu\":{\"accountInspect\":{" +
+                "\"defaultAccountId\":\"tenant-a\"," +
+                "\"redacted\":true," +
+                "\"count\":2," +
+                "\"accounts\":[" +
+                    "{" +
+                        "\"accountId\":\"tenant-a\"," +
+                        "\"defaultAccount\":true," +
+                        "\"enabled\":true," +
+                        "\"configured\":true," +
+                        "\"credentialSource\":\"account\"," +
+                        "\"hasAppId\":true," +
+                        "\"hasAppSecret\":true," +
+                        "\"appId\":\"cli***123\"," +
+                        "\"appSecret\":\"fake-feishu-secret-never-output\"" +
+                    "}," +
+                    "{" +
+                        "\"accountId\":\"tenant-b\"," +
+                        "\"defaultAccount\":false," +
+                        "\"enabled\":true," +
+                        "\"configured\":true," +
+                        "\"credentialSource\":\"account\"," +
+                        "\"hasAppId\":true," +
+                        "\"hasAppSecret\":true," +
+                        "\"appId\":\"cli***456\"," +
+                        "\"appSecret\":\"fake-feishu-secret-never-output\"" +
+                    "}" +
+                "]" +
+            "}}" +
+        "}}"
+        let out = gatewayFormatCommandOutput(raw)
+        @Expect(out.contains("Channel runtime: feishu"), true)
+        @Expect(out.contains("Configured default account: tenant-a"), true)
+        @Expect(out.contains("Runtime accounts:"), true)
+        @Expect(out.contains("feishu/tenant-a: running=true phase=running"), true)
+        @Expect(out.contains("feishu/tenant-b: running=false phase=configured"), true)
+        @Expect(out.contains("Configured accounts: 2"), true)
+        @Expect(out.contains("feishu/tenant-a [default]"), true)
+        @Expect(out.contains("feishu/tenant-b"), true)
+        @Expect(out.contains("binding=feishu:tenant-a"), true)
+        @Expect(out.contains("binding=feishu:tenant-b"), true)
+        @Expect(out.contains("fake-feishu-secret-never-output"), false)
+        @Expect(out.contains("\"accounts\""), false)
+        @Expect(out.contains("{"), false)
+    }
+
+    @TestCase
     public func formatsUnsupportedRpcErrorClearly(): Unit {
         let raw = "{\"ok\":false,\"method\":\"channels.unknown\",\"error\":\"Unsupported local gateway RPC method\",\"errorCode\":\"UNSUPPORTED_METHOD\"}"
         let out = gatewayFormatCommandOutput(raw)

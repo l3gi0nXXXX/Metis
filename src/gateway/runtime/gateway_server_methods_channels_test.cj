@@ -853,6 +853,42 @@ public class GatewayServerMethodsChannelsTest {
     }
 
     @TestCase
+    public func feishuChannelsRuntimeIncludesConfiguredAccountInspectWithoutSecrets(): Unit {
+        var user = GatewayUserSettings()
+        user.feishu.enabled = true
+        user.feishu.defaultAccount = "tenant-a"
+        let accounts = JsonObject()
+        let tenantA = JsonObject()
+        tenantA.put("appId", JsonString("tenant-app-a"))
+        tenantA.put("appSecret", JsonString("tenant-secret-a-never-visible"))
+        accounts.put("tenant-a", tenantA)
+        let tenantB = JsonObject()
+        tenantB.put("appId", JsonString("tenant-app-b"))
+        tenantB.put("appSecret", JsonString("tenant-secret-b-never-visible"))
+        accounts.put("tenant-b", tenantB)
+        user.feishu.accounts = Some(accounts)
+
+        let params = JsonObject()
+        params.put("channelId", JsonString("feishu"))
+        let result = handleGatewayChannelsFamily(
+            "channels.runtime",
+            user,
+            request: Some(GatewayRpcRequest("channels.runtime", params: params))
+        ).getOrThrow().result.asObject()
+
+        let feishu = result.get("feishu").getOrThrow().asObject()
+        let inspect = feishu.get("accountInspect").getOrThrow().asObject()
+        @Expect(channelsTestString(inspect, "defaultAccountId"), "tenant-a")
+        @Expect(inspect.get("tokenRedacted").getOrThrow().asBool().getValue(), true)
+        let inspectRows = inspect.get("accounts").getOrThrow().asArray()
+        @Expect(channelsRowsContainStringField(inspectRows, "accountId", "tenant-a"), true)
+        @Expect(channelsRowsContainStringField(inspectRows, "accountId", "tenant-b"), true)
+        let raw = inspect.toJsonString()
+        @Expect(raw.contains("tenant-secret-a-never-visible"), false)
+        @Expect(raw.contains("tenant-secret-b-never-visible"), false)
+    }
+
+    @TestCase
     public func feishuChannelGetExposesExecutableDiagnosticsForAccountsThreadGroupMediaAndIgnoredFields(): Unit {
         var user = GatewayUserSettings()
         user.feishu.enabled = true

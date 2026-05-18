@@ -381,6 +381,10 @@ public class FeishuAdapter <: ChannelAdapter {
         this.accountId
     }
 
+    public func debugOfficialSdkMonitorHostArgsForTest(): Array<String> {
+        this.feishuOfficialSdkMonitorHostArgs(redactSecrets: true)
+    }
+
     public func start(): Unit {
         if (this.running) {
             return
@@ -3208,6 +3212,29 @@ public class FeishuAdapter <: ChannelAdapter {
         }
     }
 
+    private func feishuOfficialSdkMonitorHostArgs(redactSecrets!: Bool = false): Array<String> {
+        let appSecret = if (redactSecrets && !this.config.appSecret.trimAscii().isEmpty()) { "[redacted]" } else { this.config.appSecret }
+        let verificationToken = if (redactSecrets && !this.config.verificationToken.trimAscii().isEmpty()) { "[redacted]" } else { this.config.verificationToken }
+        let encryptKey = if (redactSecrets && !this.config.encryptKey.trimAscii().isEmpty()) { "[redacted]" } else { this.config.encryptKey }
+        [
+            this.feishuOfficialSdkMonitorHostScript().toString(),
+            "--sdk-root",
+            this.feishuOfficialSdkDepsRoot().toString(),
+            "--account-id",
+            this.accountId,
+            "--app-id",
+            this.config.appId,
+            "--app-secret",
+            appSecret,
+            "--domain",
+            this.config.domain,
+            "--verification-token",
+            verificationToken,
+            "--encrypt-key",
+            encryptKey
+        ]
+    }
+
     private func handleFeishuOfficialSdkMonitorHostLine(line: String): Unit {
         let trimmed = line.trimAscii()
         if (trimmed.isEmpty()) {
@@ -3271,21 +3298,7 @@ public class FeishuAdapter <: ChannelAdapter {
                         this.feishuMonitorLastError = ""
                         let process = launch(
                             "node",
-                            [
-                                this.feishuOfficialSdkMonitorHostScript().toString(),
-                                "--sdk-root",
-                                this.feishuOfficialSdkDepsRoot().toString(),
-                                "--app-id",
-                                this.config.appId,
-                                "--app-secret",
-                                this.config.appSecret,
-                                "--domain",
-                                this.config.domain,
-                                "--verification-token",
-                                this.config.verificationToken,
-                                "--encrypt-key",
-                                this.config.encryptKey
-                            ],
+                            this.feishuOfficialSdkMonitorHostArgs(),
                             stdIn: ProcessRedirect.Pipe,
                             stdOut: ProcessRedirect.Pipe,
                             stdErr: ProcessRedirect.Pipe,
