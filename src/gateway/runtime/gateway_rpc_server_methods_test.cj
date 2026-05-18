@@ -2,18 +2,26 @@ package metis.gateway.runtime
 
 import metis.core.skills.setClawHubHttpGetForTest
 import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager, MetisProcessEnvironmentLock}
+import metis.gateway.logging.{MetisLogEvent, gatewayLoggingResetForTest, metisCreateSubsystemLogger}
 
 import std.env.{getVariable, setVariable}
 import std.fs.{Directory, Path, remove}
 import std.time.DateTime
 import std.unittest.testmacro.*
-import stdx.encoding.json.{JsonBool, JsonObject, JsonString}
+import stdx.encoding.json.{JsonBool, JsonInt, JsonObject, JsonString}
 
 private func gatewayRpcTestString(obj: JsonObject, key: String): String {
     match (obj.get(key)) {
         case Some(v) =>
             try { v.asString().getValue() } catch (_: Exception) { "" }
         case None => ""
+    }
+}
+
+private func gatewayRpcRestoreEnv(name: String, oldValue: Option<String>): Unit {
+    match (oldValue) {
+        case Some(value) => setVariable(name, value)
+        case None => setVariable(name, "")
     }
 }
 
@@ -182,6 +190,45 @@ public class GatewayRpcServerMethodsTest {
             @Expect(rendered.contains("rpc-telegram-token-never-visible"), false)
             @Expect(rendered.contains("Bearer rpc-feishu-secret-never-visible"), false)
             @Expect(rendered.contains("Bearer rpc-telegram-token-never-visible"), false)
+        })
+    }
+
+    @TestCase
+    public func logsRpcTailUsesCurrentLoggingFile(): Unit {
+        withGatewayRpcTestHome("logs-rpc", { =>
+            let oldLogLevel = getVariable("METIS_LOG_LEVEL")
+            let oldLogFile = getVariable("METIS_LOG_FILE")
+            let oldConsoleLevel = getVariable("METIS_CONSOLE_LEVEL")
+            let logFile = CliConfig.logsDir.join("phase9-rpc.log").toString()
+            try {
+                setVariable("METIS_LOG_LEVEL", "info")
+                setVariable("METIS_LOG_FILE", logFile)
+                setVariable("METIS_CONSOLE_LEVEL", "silent")
+                gatewayLoggingResetForTest()
+
+                metisCreateSubsystemLogger("gateway").info(MetisLogEvent.gatewayReady, "rpc log ready")
+
+                let params = JsonObject()
+                params.put("file", JsonString(logFile))
+                params.put("limit", JsonInt(10))
+                params.put("cursor", JsonInt(-1))
+                let tail = gatewayDispatchLocalMethod(GatewayRpcRequest("logs.tail", params: params))
+                @Expect(tail.ok, true)
+                let tailResult = tail.result.asObject()
+                @Expect(gatewayRpcTestString(tailResult, "file"), logFile)
+                @Expect(tailResult.get("cursor").isSome(), true)
+                @Expect(tailResult.get("size").isSome(), true)
+                @Expect(tailResult.get("truncated").isSome(), true)
+                @Expect(tailResult.get("reset").isSome(), true)
+                let lines = tailResult.get("lines").getOrThrow().asArray()
+                @Expect(lines.size() >= 1, true)
+                @Expect(tailResult.toJsonString().contains("rpc log ready"), true)
+            } finally {
+                gatewayRpcRestoreEnv("METIS_LOG_LEVEL", oldLogLevel)
+                gatewayRpcRestoreEnv("METIS_LOG_FILE", oldLogFile)
+                gatewayRpcRestoreEnv("METIS_CONSOLE_LEVEL", oldConsoleLevel)
+                gatewayLoggingResetForTest()
+            }
         })
     }
 

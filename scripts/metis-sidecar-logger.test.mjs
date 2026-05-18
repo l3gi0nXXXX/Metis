@@ -51,3 +51,72 @@ test("sidecar logger keeps stdout protocol JSON and routes diagnostics to stderr
   assert.match(child.stderr, /\[fixture-sidecar\] warn: diagnostic \[REDACTED\]/);
   assert.equal(`${child.stdout}${child.stderr}`.includes("fake-secret-token"), false);
 });
+
+test("sidecar logger redacts nested protocol secrets and patches all console levels", () => {
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `
+        import {
+          configureKnownSecrets,
+          installConsoleStderrPatch,
+          writeDiagnostic,
+          writeProtocol,
+        } from "./lib/metis-sidecar-logger.mjs";
+
+        configureKnownSecrets(["phase9-known-secret"]);
+        installConsoleStderrPatch({ prefix: "phase9-sidecar" });
+        console.info("info phase9-known-secret");
+        console.warn("warn token=phase9-query-secret");
+        console.error("error https://example.test/?token=phase9-url-secret");
+        console.debug("debug ok");
+        console.trace("trace ok");
+        writeDiagnostic("error", "diagnostic phase9-known-secret", {
+          token: "phase9-field-secret",
+          nested: {
+            authorization: "Bearer phase9-field-bearer",
+            url: "https://example.test/?key=phase9-field-key",
+          },
+        }, { prefix: "phase9-sidecar" });
+        writeProtocol({
+          type: "event",
+          payload: {
+            url: "https://example.test/path?secret=phase9-protocol-secret",
+            token: "phase9-protocol-token",
+            nested: { api_key: "phase9-protocol-api-key" },
+          },
+        });
+      `,
+    ],
+    {
+      cwd: import.meta.dirname,
+      encoding: "utf8",
+    },
+  );
+
+  assert.equal(child.status, 0, child.stderr);
+  const stdoutLines = child.stdout.trim().split(/\n+/).filter(Boolean);
+  assert.equal(stdoutLines.length, 1, child.stdout);
+  const frame = JSON.parse(stdoutLines[0]);
+  assert.equal(frame.type, "event");
+  assert.equal(frame.payload.token, "[REDACTED]");
+  assert.equal(frame.payload.nested.api_key, "[REDACTED]");
+  assert.equal(frame.payload.url.includes("phase9-protocol-secret"), false);
+  assert.match(child.stderr, /\[phase9-sidecar\] info:/);
+  assert.match(child.stderr, /\[phase9-sidecar\] warn:/);
+  assert.match(child.stderr, /\[phase9-sidecar\] error:/);
+  assert.match(child.stderr, /\[phase9-sidecar\] debug:/);
+  assert.match(child.stderr, /\[phase9-sidecar\] trace:/);
+  assert.doesNotMatch(child.stderr, /^\{"type":"event"/m);
+  assert.equal(`${child.stdout}${child.stderr}`.includes("phase9-known-secret"), false);
+  assert.equal(`${child.stdout}${child.stderr}`.includes("phase9-query-secret"), false);
+  assert.equal(`${child.stdout}${child.stderr}`.includes("phase9-url-secret"), false);
+  assert.equal(`${child.stdout}${child.stderr}`.includes("phase9-field-secret"), false);
+  assert.equal(`${child.stdout}${child.stderr}`.includes("phase9-field-bearer"), false);
+  assert.equal(`${child.stdout}${child.stderr}`.includes("phase9-field-key"), false);
+  assert.equal(`${child.stdout}${child.stderr}`.includes("phase9-protocol-secret"), false);
+  assert.equal(`${child.stdout}${child.stderr}`.includes("phase9-protocol-token"), false);
+  assert.equal(`${child.stdout}${child.stderr}`.includes("phase9-protocol-api-key"), false);
+});

@@ -9,7 +9,7 @@ import std.fs.{Directory, File, Path, exists}
 import std.regex.Regex
 import std.time.DateTime
 import std.unittest.testmacro.*
-import stdx.encoding.json.{JsonObject, JsonString, JsonValue}
+import stdx.encoding.json.{JsonInt, JsonObject, JsonString, JsonValue}
 
 private func loggingTestRestoreEnv(name: String, oldValue: Option<String>): Unit {
     match (oldValue) {
@@ -178,6 +178,55 @@ public class GatewayLoggingTest {
     }
 
     @TestCase
+    public func loggerRedactsSupportedSensitiveInputsWithoutRealHome(): Unit {
+        let oldHome = getVariable("METIS_HOME")
+        let oldLevel = getVariable("METIS_LOG_LEVEL")
+        let oldFile = getVariable("METIS_LOG_FILE")
+        let oldConsoleLevel = getVariable("METIS_CONSOLE_LEVEL")
+        let home = loggingTestHome("redaction-supported")
+        let file = home.join("logs").join("gateway-redaction.log").toString()
+        try {
+            loggingTestReset(home)
+            setVariable("METIS_LOG_LEVEL", "info")
+            setVariable("METIS_LOG_FILE", file)
+            setVariable("METIS_CONSOLE_LEVEL", "silent")
+
+            let meta = JsonObject()
+            meta.put("authorization", JsonString("Authorization: Bearer meta-secret-token"))
+            meta.put("url", JsonString("https://bot:meta-url-secret@example.test/path"))
+            meta.put("apiKey", JsonString("api_key=meta-api-secret"))
+            metisCreateSubsystemLogger("gateway/security").info(
+                MetisLogEvent.gatewayStarting,
+                ("Authorization: Bearer message-secret-token " +
+                    "Bearer standalone-secret-token 123456:telegram_secret_token " +
+                    "app_secret_for_test api_key=message-api-secret " +
+                    "https://bot:message-url-secret@example.test/send"),
+                meta: meta
+            )
+
+            let raw = String.fromUtf8(File.readFrom(Path(file)))
+            @Expect(raw.contains("message-secret-token"), false)
+            @Expect(raw.contains("standalone-secret-token"), false)
+            @Expect(raw.contains("telegram_secret_token"), false)
+            @Expect(raw.contains("app_secret_for_test"), false)
+            @Expect(raw.contains("message-api-secret"), false)
+            @Expect(raw.contains("message-url-secret"), false)
+            @Expect(raw.contains("meta-secret-token"), false)
+            @Expect(raw.contains("meta-url-secret"), false)
+            @Expect(raw.contains("meta-api-secret"), false)
+            @Expect(raw.contains("[redacted]"), true)
+        } finally {
+            loggingTestRestoreEnv("METIS_HOME", oldHome)
+            loggingTestRestoreEnv("METIS_LOG_LEVEL", oldLevel)
+            loggingTestRestoreEnv("METIS_LOG_FILE", oldFile)
+            loggingTestRestoreEnv("METIS_CONSOLE_LEVEL", oldConsoleLevel)
+            CliConfig.invalidatePathCache()
+            CliSettingManager.invalidate()
+            gatewayLoggingResetForTest()
+        }
+    }
+
+    @TestCase
     public func fileSizeCapUsesSingleWarningAndSuppressesRepeatedWrites(): Unit {
         let oldHome = getVariable("METIS_HOME")
         let oldLevel = getVariable("METIS_LOG_LEVEL")
@@ -206,6 +255,89 @@ public class GatewayLoggingTest {
             @Expect(raw.contains("second line should stay suppressed"), false)
             let row = JsonValue.fromStr(raw.trimAscii()).asObject()
             @Expect(row.get("event").getOrThrow().asString().getValue(), MetisLogEvent.loggingFileSizeCap)
+        } finally {
+            loggingTestRestoreEnv("METIS_HOME", oldHome)
+            loggingTestRestoreEnv("METIS_LOG_LEVEL", oldLevel)
+            loggingTestRestoreEnv("METIS_LOG_FILE", oldFile)
+            loggingTestRestoreEnv("METIS_CONSOLE_LEVEL", oldConsoleLevel)
+            CliConfig.invalidatePathCache()
+            CliSettingManager.invalidate()
+            gatewayLoggingResetForTest()
+        }
+    }
+
+    @TestCase
+    public func loggerWritesStructuredMetaAsTopLevelJsonFields(): Unit {
+        let oldHome = getVariable("METIS_HOME")
+        let oldLevel = getVariable("METIS_LOG_LEVEL")
+        let oldFile = getVariable("METIS_LOG_FILE")
+        let oldConsoleLevel = getVariable("METIS_CONSOLE_LEVEL")
+        let home = loggingTestHome("meta")
+        let file = home.join("logs").join("gateway-meta.log").toString()
+        try {
+            loggingTestReset(home)
+            setVariable("METIS_LOG_LEVEL", "info")
+            setVariable("METIS_LOG_FILE", file)
+            setVariable("METIS_CONSOLE_LEVEL", "silent")
+
+            let meta = JsonObject()
+            meta.put("channel", JsonString("telegram"))
+            meta.put("accountId", JsonString("default"))
+            meta.put("textLen", JsonInt(19))
+            metisCreateSubsystemLogger("gateway/message").info(
+                MetisLogEvent.messageInbound,
+                "inbound message accepted by gateway",
+                meta: meta
+            )
+
+            let row = JsonValue.fromStr(String.fromUtf8(File.readFrom(Path(file))).trimAscii()).asObject()
+            @Expect(row.get("event").getOrThrow().asString().getValue(), "message.inbound")
+            @Expect(row.get("channel").getOrThrow().asString().getValue(), "telegram")
+            @Expect(row.get("accountId").getOrThrow().asString().getValue(), "default")
+            @Expect(row.get("textLen").getOrThrow().asInt().getValue(), 19)
+            @Expect(row.get("fields").isNone(), true)
+        } finally {
+            loggingTestRestoreEnv("METIS_HOME", oldHome)
+            loggingTestRestoreEnv("METIS_LOG_LEVEL", oldLevel)
+            loggingTestRestoreEnv("METIS_LOG_FILE", oldFile)
+            loggingTestRestoreEnv("METIS_CONSOLE_LEVEL", oldConsoleLevel)
+            CliConfig.invalidatePathCache()
+            CliSettingManager.invalidate()
+            gatewayLoggingResetForTest()
+        }
+    }
+
+    @TestCase
+    public func loggerMaxFileBytesSuppressesLaterPayloadsInTempHome(): Unit {
+        let oldHome = getVariable("METIS_HOME")
+        let oldLevel = getVariable("METIS_LOG_LEVEL")
+        let oldFile = getVariable("METIS_LOG_FILE")
+        let oldConsoleLevel = getVariable("METIS_CONSOLE_LEVEL")
+        let home = loggingTestHome("cap")
+        let file = home.join("logs").join("gateway-cap.log").toString()
+        try {
+            loggingTestReset(home)
+            File.writeTo(
+                home.join("metis.json"),
+                "{\"gateway\":{\"logging\":{\"maxFileBytes\":350}}}".toArray()
+            )
+            CliSettingManager.invalidate()
+            gatewayLoggingResetForTest()
+            setVariable("METIS_LOG_LEVEL", "info")
+            setVariable("METIS_LOG_FILE", file)
+            setVariable("METIS_CONSOLE_LEVEL", "silent")
+
+            let logger = metisCreateSubsystemLogger("gateway")
+            logger.info(MetisLogEvent.gatewayReady, "first accepted")
+            var longPayload = "second should be suppressed "
+            for (_i in 0..40) {
+                longPayload += "because this payload is intentionally long "
+            }
+            logger.info(MetisLogEvent.gatewayReady, longPayload)
+
+            let raw = String.fromUtf8(File.readFrom(Path(file)))
+            @Expect(raw.contains("first accepted"), true)
+            @Expect(raw.contains("second should be suppressed"), false)
         } finally {
             loggingTestRestoreEnv("METIS_HOME", oldHome)
             loggingTestRestoreEnv("METIS_LOG_LEVEL", oldLevel)
