@@ -186,6 +186,17 @@ cjpm run --skip-build --name metis --run-args "dashboard"
 cjpm run --skip-build --name metis --run-args "gateway help"
 ```
 
+Logs and runtime diagnostics:
+
+```bash
+cjpm run --skip-build --name metis --run-args "logs path"
+cjpm run --skip-build --name metis --run-args "logs recent"
+cjpm run --skip-build --name metis --run-args "logs current"
+cjpm run --skip-build --name metis --run-args "logs tail --limit 100"
+```
+
+Use `gateway run --verbose` for temporary runtime detail while diagnosing channel startup, inbound, outbound, or model failures. See [docs/user/logging.md](docs/user/logging.md) for the logging workflow.
+
 ### Optional Feature Dependencies
 
 | Feature | Dependency | Install command | When to install |

@@ -162,6 +162,8 @@ cjpm run -- gateway serve
 
 ### 2.8 日志与排错
 
+通用日志命令见 [日志与排障](logging.md)。排查 IM 无回复时，先用 `metis logs tail --limit 200` 看主日志是否已经出现 inbound，再继续区分路由、模型回复和发送路径。
+
 | 位置 | 内容 |
 |------|------|
 | `~/.metis/logs/*.log` | 网关主日志：`Gateway.serve` / `Gateway.inbound` / `Gateway.reply` / `Gateway.send` 等 |
