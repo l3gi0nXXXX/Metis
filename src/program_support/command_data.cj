@@ -125,7 +125,9 @@ public func programSupportRootCommandExamples(command: String): Array<CliRootCom
     if (cmd == "logs") {
         return [
             ("metis logs recent", "Inspect recent log inventory."),
-            ("metis logs tail gateway.log", "Preview one log target.")
+            ("metis logs current", "Show the current or latest log file."),
+            ("metis logs tail --limit 100", "Tail the current log file in human-readable form."),
+            ("metis logs tail --json", "Emit type-tagged JSONL log events for tooling.")
         ]
     }
     if (cmd == "docs") {

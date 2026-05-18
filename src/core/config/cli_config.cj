@@ -23,6 +23,7 @@ protected class CliConfig {
     private static var _dotDir: Option<Path> = None
     private static var _cwd: Option<Path> = None
     public static var workspaceDirOverride: String = ""
+    private static var _logFile: Option<Path> = None
 
     /**
      * All generated files are stored under a hidden directory
@@ -42,6 +43,7 @@ protected class CliConfig {
         _dotDir = None<Path>
         _cwd = None<Path>
         _subagentDirs = None<ArrayList<Path>>
+        _logFile = None<Path>
     }
 
     /**
@@ -92,8 +94,13 @@ protected class CliConfig {
      */
     public static prop logFile: Path {
         get() {
+            if (let Some(p) <- _logFile) {
+                return p
+            }
             let time = DateTime.now().format("yyyy_MM_dd-HH_mm_ss_SSS")
-            CliConfig.logsDir.join("${time}.log")
+            let path = CliConfig.logsDir.join("${time}.log")
+            _logFile = Some(path)
+            path
         }
     }
 

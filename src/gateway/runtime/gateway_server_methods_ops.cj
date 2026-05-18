@@ -1,6 +1,7 @@
 package metis.gateway.runtime
 
 import magic.jsonable.*
+import magic.config.Config
 
 import metis.core.config.{CliConfig, GatewayUserSettings, MetisConfigManager, MetisPaths}
 import metis.gateway.config.buildGatewayConfigFromUserSettings
@@ -10,8 +11,9 @@ import metis.core.model.CliModelManager
 
 import std.collection.ArrayList
 import std.convert.Parsable
-import std.fs.{Directory, File, exists}
+import std.fs.{Directory, File, Path, exists}
 import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
+import std.sort.*
 
 private func gatewayOpsStringParam(request: GatewayRpcRequest, keys: Array<String>, defaultValue: String): String {
     for (key in keys) {
@@ -428,6 +430,7 @@ private func gatewayRecentLogFiles(limit: Int64): JsonArray {
     }
     let out = JsonArray([])
     let names = rows.toArray()
+    sort(names)
     if (names.isEmpty()) {
         return out
     }
@@ -440,6 +443,43 @@ private func gatewayRecentLogFiles(limit: Int64): JsonArray {
         count += 1
     }
     out
+}
+
+private func gatewayCurrentLogPath(): Path {
+    let configured = Config.logFile.trimAscii()
+    if (!configured.isEmpty()) {
+        return Path(configured)
+    }
+    let latest = match (gatewayRecentLogFiles(1).get(0)) {
+        case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { "" }
+        case None => ""
+    }
+    if (!latest.isEmpty()) {
+        return CliConfig.logsDir.join(latest)
+    }
+    CliConfig.logsDir.join("metis.log")
+}
+
+private func gatewayResolveLogPath(fileName: String): Path {
+    let normalized = fileName.trimAscii()
+    if (normalized.isEmpty()) {
+        return gatewayCurrentLogPath()
+    }
+    if (normalized.contains("/")) {
+        return Path(normalized)
+    }
+    CliConfig.logsDir.join(normalized)
+}
+
+private func gatewayLogFileSize(path: Path): Int64 {
+    if (!exists(path)) {
+        return 0
+    }
+    try {
+        return Int64(File.readFrom(path).size)
+    } catch (_e: Exception) {
+        0
+    }
 }
 
 private func gatewayModelsStatusJson(): JsonObject {
@@ -489,7 +529,10 @@ private func gatewayModelGetJson(modelId: String): JsonObject {
 private func gatewayLogsStatusJson(): JsonObject {
     let result = JsonObject()
     result.put("logsDir", JsonString(CliConfig.logsDir.toString()))
-    result.put("currentLogFile", JsonString(CliConfig.logFile.toString()))
+    let current = gatewayCurrentLogPath()
+    result.put("currentLogFile", JsonString(current.toString()))
+    result.put("currentExists", exists(current).toJsonValue())
+    result.put("currentSize", gatewayLogFileSize(current).toJsonValue())
     result.put("recentFiles", gatewayRecentLogFiles(10))
     result
 }
@@ -497,7 +540,7 @@ private func gatewayLogsStatusJson(): JsonObject {
 private func gatewayLogGetJson(fileName: String): JsonObject {
     let result = gatewayLogsStatusJson()
     let normalized = fileName.trimAscii()
-    let path = CliConfig.logsDir.join(normalized)
+    let path = gatewayResolveLogPath(normalized)
     result.put("requestedFile", JsonString(normalized))
     result.put("requestedPath", JsonString(path.toString()))
     result.put("exists", exists(path).toJsonValue())
@@ -524,7 +567,7 @@ private func gatewayLogGetJson(fileName: String): JsonObject {
 }
 
 private func gatewayCurrentLogFileName(): String {
-    let full = CliConfig.logFile.toString()
+    let full = gatewayCurrentLogPath().toString()
     let parts = full.split("/")
     if (parts.isEmpty()) {
         return full
@@ -532,27 +575,77 @@ private func gatewayCurrentLogFileName(): String {
     parts[parts.size - 1]
 }
 
-private func gatewayLogTailJson(maxLines: Int64): JsonObject {
-    let result = gatewayLogsStatusJson()
+private func gatewayLogTailJson(fileName: String, cursor: Int64, maxLines: Int64, maxBytesRaw: Int64): JsonObject {
+    let path = gatewayResolveLogPath(fileName)
+    let result = JsonObject()
+    result.put("file", JsonString(path.toString()))
     let lines = JsonArray([])
-    if (exists(CliConfig.logFile)) {
-        let all = String.fromUtf8(File.readFrom(CliConfig.logFile)).split("\n")
-        let total = all.size
-        let limit = if (maxLines <= 0) { 80 } else { maxLines }
-        var count: Int64 = 0
-        for (idx in total - 1..=-1:-1) {
-            if (count >= limit) {
-                break
+    let limit = if (maxLines <= 0) { 80 } else { min(maxLines, 5000) }
+    let maxBytes = if (maxBytesRaw <= 0) { 250000 } else { min(maxBytesRaw, 1000000) }
+    if (!exists(path)) {
+        result.put("cursor", 0.toJsonValue())
+        result.put("size", 0.toJsonValue())
+        result.put("lines", lines)
+        result.put("truncated", false.toJsonValue())
+        result.put("reset", false.toJsonValue())
+        return result
+    }
+    let bytes = File.readFrom(path)
+    let size = Int64(bytes.size)
+    var start: Int64 = 0
+    var reset = false
+    var truncated = false
+    if (cursor >= 0) {
+        if (cursor > size) {
+            reset = true
+            start = max(0, size - maxBytes)
+            truncated = start > 0
+        } else {
+            start = cursor
+            if (size - start > maxBytes) {
+                reset = true
+                truncated = true
+                start = max(0, size - maxBytes)
             }
-            let line = all[idx].trimAscii()
-            if (line.isEmpty()) {
-                continue
-            }
+        }
+    } else {
+        start = max(0, size - maxBytes)
+        truncated = start > 0
+    }
+    let text = String.fromUtf8(bytes)
+    let slice = if (start > 0 && start < text.size) {
+        text[start..]
+    } else if (start >= text.size) {
+        ""
+    } else {
+        text
+    }
+    let all = slice.split("\n")
+    var first: Int64 = 0
+    if (start > 0) {
+        let prev = if (start <= text.size) { text[(start - 1)..start] } else { "" }
+        first = if (prev == "\n") { 0 } else { 1 }
+    }
+    var end: Int64 = Int64(all.size)
+    if (end > 0 && all[end - 1].isEmpty()) {
+        end -= 1
+    }
+    if (first > end) {
+        first = end
+    }
+    let keptStart = max(first, end - limit)
+    for (idx in keptStart..end) {
+        let line = all[idx].trimAscii()
+        if (!line.isEmpty()) {
             lines.add(JsonString(line))
-            count += 1
         }
     }
+    result.put("cursor", size.toJsonValue())
+    result.put("size", size.toJsonValue())
     result.put("tail", lines)
+    result.put("lines", lines)
+    result.put("truncated", truncated.toJsonValue())
+    result.put("reset", reset.toJsonValue())
     result
 }
 
@@ -1792,8 +1885,12 @@ public func handleGatewayOpsFamily(method: String, user: GatewayUserSettings, re
         return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "logs.status" || method == "logs.list") {
+        let status = gatewayLogsStatusJson()
         let result = JsonObject()
-        result.put("logs", gatewayLogsStatusJson())
+        for ((key, value) in status.getFields()) {
+            result.put(key, value)
+        }
+        result.put("logs", status)
         return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "logs.get") {
@@ -1804,12 +1901,19 @@ public func handleGatewayOpsFamily(method: String, user: GatewayUserSettings, re
                 try { v.asString().getValue() } catch (_e: Exception) { gatewayCurrentLogFileName() }
             case None => gatewayCurrentLogFileName()
         }
-        result.put("logs", gatewayLogGetJson(if (requested.isEmpty()) { latest } else { requested }))
+        let payload = gatewayLogGetJson(if (requested.isEmpty()) { latest } else { requested })
+        for ((key, value) in payload.getFields()) {
+            result.put(key, value)
+        }
+        result.put("logs", payload)
         return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "logs.tail") {
-        let result = JsonObject()
-        result.put("logs", gatewayLogTailJson(80))
+        let requested = gatewayOpsStringParam(requestValue, ["file", "name", "id"], "")
+        let cursor = gatewayOpsJsonInt(requestValue.params, "cursor", -1)
+        let limit = gatewayOpsJsonInt(requestValue.params, "limit", 80)
+        let maxBytes = gatewayOpsJsonInt(requestValue.params, "maxBytes", 250000)
+        let result = gatewayLogTailJson(requested, cursor, limit, maxBytes)
         return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "usage.status") {

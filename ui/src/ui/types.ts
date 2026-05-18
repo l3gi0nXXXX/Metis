@@ -732,6 +732,7 @@ export type LogEntry = {
   time?: string | null;
   level?: LogLevel | null;
   subsystem?: string | null;
+  event?: string | null;
   message?: string | null;
   meta?: Record<string, unknown> | null;
 };

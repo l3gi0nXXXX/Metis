@@ -1,12 +1,44 @@
 package metis.core.support_surface_tests
 
-import metis.core.config.{CliSettingManager, MetisConfigManager}
+import magic.config.Config
+
+import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager}
+import metis.program.executeCliLogsCommand
 import metis.program_support.*
 
-import std.env.setVariable
+import std.env.{getVariable, setVariable}
+import std.fs.{Directory, File, Path, remove}
 import std.unittest.testmacro.*
 import std.collection.ArrayList
 import stdx.encoding.json.{JsonArray, JsonInt, JsonObject, JsonString, JsonValue}
+
+private func withLogsCliTestHome<T>(block: () -> T): T {
+    let testHome = "/tmp/metis-logs-cli-test-home"
+    try {
+        remove(Path(testHome), recursive: true)
+    } catch (_e: Exception) {
+        ()
+    }
+    Directory.create(testHome, recursive: true)
+    let oldHome = getVariable("METIS_HOME")
+    let oldLogFile = Config.logFile
+    setVariable("METIS_HOME", testHome)
+    CliConfig.invalidatePathCache()
+    MetisConfigManager.invalidate()
+    CliSettingManager.invalidate()
+    try {
+        return block()
+    } finally {
+        Config.logFile = oldLogFile
+        match (oldHome) {
+            case Some(value) => setVariable("METIS_HOME", value)
+            case None => setVariable("METIS_HOME", "")
+        }
+        CliConfig.invalidatePathCache()
+        MetisConfigManager.invalidate()
+        CliSettingManager.invalidate()
+    }
+}
 
 @Test
 public class CliLocalFlowsTest {
@@ -107,5 +139,78 @@ public class CliLocalFlowsTest {
         @Expect(rendered.contains("\"ok\""), false)
         @Expect(rendered.contains("\"result\""), false)
         @Expect(rendered.contains("\"sessions\""), false)
+    }
+
+    @TestCase
+    public func logFileGetterIsStableWithinProcess(): Unit {
+        withLogsCliTestHome({ =>
+            let first = CliConfig.logFile.toString()
+            let second = CliConfig.logFile.toString()
+            @Expect(first, second)
+        })
+    }
+
+    @TestCase
+    public func logsCliRendersRecentCurrentTailAndJsonlWithoutRawJsonByDefault(): Unit {
+        withLogsCliTestHome({ =>
+            let first = "{\"ts\":\"2026-05-18T10:00:00.000Z\",\"level\":\"info\",\"subsystem\":\"gateway\",\"event\":\"ready\",\"message\":\"gateway ready\"}\n"
+            let second = "{\"ts\":\"2026-05-18T10:00:01.000Z\",\"level\":\"warn\",\"subsystem\":\"gateway/channel/telegram\",\"event\":\"poll.retry\",\"message\":\"retrying poll\"}\n"
+            let third = "plain fallback line\n"
+            let logPath = CliConfig.logsDir.join("2026_05_18-10_00_00_000.log")
+            File.writeTo(logPath, "${first}${second}${third}".toArray())
+            Config.logFile = logPath.toString()
+
+            let (recent, recentCode) = executeCliLogsCommand(["recent", "--limit", "1"])
+            @Expect(recentCode, 0)
+            @Expect(recent.contains("Recent log files:"), true)
+            @Expect(recent.contains("2026_05_18-10_00_00_000.log"), true)
+            @Expect(recent.contains("\"level\""), false)
+
+            let (current, currentCode) = executeCliLogsCommand(["current"])
+            @Expect(currentCode, 0)
+            @Expect(current.contains("Current log file:"), true)
+            @Expect(current.contains(logPath.toString()), true)
+
+            let (tail, tailCode) = executeCliLogsCommand(["tail", "--limit", "2"])
+            @Expect(tailCode, 0)
+            @Expect(tail.contains("poll.retry retrying poll"), true)
+            @Expect(tail.contains("plain fallback line"), true)
+            @Expect(tail.contains("\"message\""), false)
+
+            let (jsonl, jsonCode) = executeCliLogsCommand(["tail", "--limit", "1", "--json"])
+            @Expect(jsonCode, 0)
+            let rows = jsonl.split("\n")
+            @Expect(JsonValue.fromStr(rows[0]).asObject().get("type").getOrThrow().asString().getValue(), "meta")
+            @Expect(JsonValue.fromStr(rows[1]).asObject().get("type").getOrThrow().asString().getValue(), "raw")
+        })
+    }
+
+    @TestCase
+    public func logsCliTailHonorsCursorLimitAndMaxBytes(): Unit {
+        withLogsCliTestHome({ =>
+            let first = "{\"ts\":\"2026-05-18T10:00:00.000Z\",\"level\":\"info\",\"subsystem\":\"gateway\",\"event\":\"one\",\"message\":\"one\"}\n"
+            let second = "{\"ts\":\"2026-05-18T10:00:01.000Z\",\"level\":\"info\",\"subsystem\":\"gateway\",\"event\":\"two\",\"message\":\"two\"}\n"
+            let third = "{\"ts\":\"2026-05-18T10:00:02.000Z\",\"level\":\"info\",\"subsystem\":\"gateway\",\"event\":\"three\",\"message\":\"three\"}\n"
+            let logPath = CliConfig.logsDir.join("2026_05_18-10_00_01_000.log")
+            File.writeTo(logPath, "${first}${second}${third}".toArray())
+            Config.logFile = logPath.toString()
+
+            let cursor = Int64(first.toArray().size)
+            let (cursorTail, cursorCode) = executeCliLogsCommand(["tail", "--cursor", "${cursor}", "--limit", "10", "--json"])
+            @Expect(cursorCode, 0)
+            @Expect(cursorTail.contains("\"event\":\"one\""), false)
+            @Expect(cursorTail.contains("\"event\":\"two\""), true)
+            @Expect(cursorTail.contains("\"event\":\"three\""), true)
+
+            let (limited, limitedCode) = executeCliLogsCommand(["tail", "--limit", "1", "--json"])
+            @Expect(limitedCode, 0)
+            @Expect(limited.contains("\"event\":\"two\""), false)
+            @Expect(limited.contains("\"event\":\"three\""), true)
+
+            let (truncated, truncatedCode) = executeCliLogsCommand(["tail", "--cursor", "0", "--max-bytes", "80", "--json"])
+            @Expect(truncatedCode, 0)
+            @Expect(truncated.contains("\"type\":\"notice\""), true)
+            @Expect(truncated.contains("truncated"), true)
+        })
     }
 }

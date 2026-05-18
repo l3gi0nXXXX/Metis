@@ -25,4 +25,25 @@ describe("parseLogLine", () => {
       }),
     );
   });
+
+  it("parses Metis JSONL fields directly", () => {
+    const line = JSON.stringify({
+      ts: "2026-05-18T10:00:00.000Z",
+      level: "info",
+      subsystem: "gateway/channel/telegram",
+      event: "message.inbound",
+      message: "inbound accepted",
+      accountId: "default",
+    });
+
+    expect(parseLogLine(line)).toEqual(
+      expect.objectContaining({
+        time: "2026-05-18T10:00:00.000Z",
+        level: "info",
+        subsystem: "gateway/channel/telegram",
+        event: "message.inbound",
+        message: "inbound accepted",
+      }),
+    );
+  });
 });

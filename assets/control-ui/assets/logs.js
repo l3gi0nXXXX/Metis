@@ -1,4 +1,4 @@
-import{f as e,r as t,u as n}from"./i18n.js";var r=[`trace`,`debug`,`info`,`warn`,`error`,`fatal`];function i(e){if(!e)return``;let t=new Date(e);return Number.isNaN(t.getTime())?e:t.toLocaleTimeString()}function a(e,t){return t?[e.message,e.subsystem,e.raw].filter(Boolean).join(` `).toLowerCase().includes(t):!0}function o(o){let s=o.filterText.trim().toLowerCase(),c=r.some(e=>!o.levelFilters[e]),l=o.entries.filter(e=>e.level&&!o.levelFilters[e.level]?!1:a(e,s)),u=s||c?`filtered`:`visible`;return e`
+import{f as e,r as t,u as n}from"./i18n.js";var r=[`trace`,`debug`,`info`,`warn`,`error`,`fatal`];function i(e){if(!e)return``;let t=new Date(e);return Number.isNaN(t.getTime())?e:t.toLocaleTimeString()}function a(e,t){return t?[e.message,e.subsystem,e.event,e.raw].filter(Boolean).join(` `).toLowerCase().includes(t):!0}function o(o){let s=o.filterText.trim().toLowerCase(),c=r.some(e=>!o.levelFilters[e]),l=o.entries.filter(e=>e.level&&!o.levelFilters[e.level]?!1:a(e,s)),u=s||c?`filtered`:`visible`;return e`
     <section class="card">
       <div class="row" style="justify-content: space-between;">
         <div>
@@ -64,7 +64,9 @@ import{f as e,r as t,u as n}from"./i18n.js";var r=[`trace`,`debug`,`info`,`warn`
                 <div class="log-row">
                   <div class="log-time mono">${i(t.time)}</div>
                   <div class="log-level ${t.level??``}">${t.level??``}</div>
-                  <div class="log-subsystem mono">${t.subsystem??``}</div>
+                  <div class="log-subsystem mono">
+                    ${[t.subsystem,t.event].filter(Boolean).join(` `)}
+                  </div>
                   <div class="log-message mono">${t.message??t.raw}</div>
                 </div>
               `)}
