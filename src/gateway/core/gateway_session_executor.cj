@@ -5,7 +5,6 @@ import metis.core.renderGatewayEditText
 import metis.core.config.{CliConfig, CliSettingManager}
 import metis.gateway.session.GatewaySessionContext
 
-import magic.log.LogUtils
 import std.core.Duration
 import std.fs.{Directory, File, Path, exists}
 import std.time.DateTime
@@ -595,10 +594,28 @@ public func gatewayExecuteSessionTurn(
                             )
                             if (streamingState.messageId.trimAscii().isEmpty()) {
                                 streamingState.failed = true
-                                LogUtils.info("Gateway streaming fallback: channel=${context.channelName}, reason=missing-message-id")
+                                gatewayLogEventWarn(
+                                    "gateway/session",
+                                    "message.send.failed",
+                                    "streaming delivery fallback",
+                                    meta: gatewayLogMeta()
+                                        .string("channel", context.channelName)
+                                        .identityHash("sessionHash", context.sessionKey)
+                                        .string("reason", "missing-message-id")
+                                        .object()
+                                )
                                 return
                             }
-                            LogUtils.info("Gateway streaming start: channel=${context.channelName}, session=${context.sessionKey}, messageId=${streamingState.messageId}")
+                            gatewayLogEventInfo(
+                                "gateway/session",
+                                "message.outbound",
+                                "streaming delivery started",
+                                meta: gatewayLogMeta()
+                                    .string("channel", context.channelName)
+                                    .identityHash("sessionHash", context.sessionKey)
+                                    .identityHash("messageHash", streamingState.messageId)
+                                    .object()
+                            )
                         } else {
                             let _ = send(
                                 context.deliveryTarget.getOrThrow().channelName,
@@ -613,7 +630,16 @@ public func gatewayExecuteSessionTurn(
                         streamingState.lastText = visibleText
                     } catch (ex: Exception) {
                         streamingState.failed = true
-                        LogUtils.info("Gateway streaming fallback: channel=${context.channelName}, reason=${ex.message}")
+                        gatewayLogEventWarn(
+                            "gateway/session",
+                            "message.send.failed",
+                            "streaming delivery fallback",
+                            meta: gatewayLogMeta()
+                                .string("channel", context.channelName)
+                                .identityHash("sessionHash", context.sessionKey)
+                                .rawString("reason", ex.message)
+                                .object()
+                        )
                     }
                 case None => ()
             }
@@ -693,7 +719,16 @@ public func gatewayExecuteSessionTurn(
                                     false
                                 )
                                 if (finalEditMessageId.trimAscii().isEmpty()) {
-                                    LogUtils.info("Gateway streaming final fallback: channel=${context.channelName}, session=${context.sessionKey}, messageId=${streamingState.messageId}")
+                                    gatewayLogEventWarn(
+                                        "gateway/session",
+                                        "message.send.failed",
+                                        "streaming final edit fallback",
+                                        meta: gatewayLogMeta()
+                                            .string("channel", context.channelName)
+                                            .identityHash("sessionHash", context.sessionKey)
+                                            .identityHash("messageHash", streamingState.messageId)
+                                            .object()
+                                    )
                                     let fallbackMessageId = send(target.channelName, target.accountId, target.peerId, deliveryText, effectiveReplyToMessageId, effectiveReplyInThread)
                                     gatewayNotifySessionLifecycle(lifecycleHook, "done")
                                     return GatewaySessionExecutionResult(
@@ -704,7 +739,16 @@ public func gatewayExecuteSessionTurn(
                                     )
                                 }
                             }
-                            LogUtils.info("Gateway streaming finish: channel=${context.channelName}, session=${context.sessionKey}, messageId=${streamingState.messageId}")
+                            gatewayLogEventInfo(
+                                "gateway/session",
+                                "message.sent",
+                                "streaming delivery finished",
+                                meta: gatewayLogMeta()
+                                    .string("channel", context.channelName)
+                                    .identityHash("sessionHash", context.sessionKey)
+                                    .identityHash("messageHash", streamingState.messageId)
+                                    .object()
+                            )
                             gatewayNotifySessionLifecycle(lifecycleHook, "done")
                             return GatewaySessionExecutionResult(
                                 answer,

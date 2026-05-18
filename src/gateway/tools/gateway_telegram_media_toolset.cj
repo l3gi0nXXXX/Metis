@@ -890,6 +890,10 @@ public class GatewayTelegramMediaToolset {
         this.renderTelegramDoctorFromEnvelope(doctorEnvelope)
     }
 
+    public func debugTelegramConfigExplainForTest(): String {
+        this.telegramConfigExplainText()
+    }
+
     public func debugTelegramTargetWritebackDryRunForTest(target: String, resolvedChatId: Option<String>): String {
         this.telegramTargetWritebackDryRun(target, resolvedChatId)
     }
@@ -1719,6 +1723,42 @@ public class GatewayTelegramMediaToolset {
         out.toJsonString()
     }
 
+    private func renderTelegramConfigExplainFromAudit(auditEnvelope: JsonObject): String {
+        let telegram = try {
+            auditEnvelope.get("audit").getOrThrow().asObject().get("telegram").getOrThrow().asObject()
+        } catch (_e: Exception) {
+            try {
+                auditEnvelope.get("telegram").getOrThrow().asObject()
+            } catch (_e2: Exception) {
+                JsonObject()
+            }
+        }
+        let rows = try {
+            telegram.get("directory").getOrThrow().asObject().get("rows").getOrThrow().asArray()
+        } catch (_e: Exception) {
+            JsonArray([])
+        }
+        let lines = ArrayList<String>()
+        lines.add("Telegram configuration")
+        lines.add("enabled: ${telegramMediaToolBool(telegram, "enabled")}")
+        lines.add("targets: ${rows.size()}")
+        let maxRows = min(Int64(rows.size()), 5)
+        for (i in 0..maxRows) {
+            let row = try { rows[i].asObject() } catch (_e: Exception) { JsonObject() }
+            let display = telegramMediaToolString(row, "displayName")
+            let targetId = telegramMediaToolString(row, "id")
+            let accountId = telegramMediaToolString(row, "accountId")
+            let label = if (display.isEmpty()) { targetId } else { display }
+            if (!label.isEmpty()) {
+                lines.add("- ${label} (${targetId}) account=${accountId}")
+            }
+        }
+        if (Int64(rows.size()) > maxRows) {
+            lines.add("- ... ${Int64(rows.size()) - maxRows} more")
+        }
+        String.join(lines.toArray(), delimiter: "\n")
+    }
+
     private func renderTelegramTargetResolveFromAudit(target: String, auditEnvelope: JsonObject): String {
         let normalizedTarget = target.trimAscii()
         let list = JsonValue.fromStr(this.renderTelegramTargetListFromAudit(auditEnvelope)).asObject()
@@ -1740,6 +1780,13 @@ public class GatewayTelegramMediaToolset {
         out.put("target", JsonString(normalizedTarget))
         out.put("error", JsonString("Unknown or unauthorized Telegram target"))
         out.toJsonString()
+    }
+
+    private func telegramConfigExplainText(): String {
+        let params = JsonObject()
+        params.put("channelId", JsonString("telegram"))
+        let audit = telegramMediaToolInvokeGatewayCall("channels.audit", params: Some(params))
+        this.renderTelegramConfigExplainFromAudit(audit)
     }
 
     private func renderTelegramDoctorFromEnvelope(doctorEnvelope: JsonObject): String {
@@ -2394,11 +2441,9 @@ public class GatewayTelegramMediaToolset {
     ]
     public func telegram_config_explain(): String {
         PrintUtils.printTool("telegram_config_explain", shortMessage: "audit")
-        let params = JsonObject()
-        params.put("channelId", JsonString("telegram"))
-        let audit = telegramMediaToolInvokeGatewayCall("channels.audit", params: Some(params))
-        PrintUtils.printToolResult(audit.toJsonString())
-        return audit.toJsonString()
+        let text = this.telegramConfigExplainText()
+        PrintUtils.printToolResult(text)
+        return text
     }
 
     @tool[

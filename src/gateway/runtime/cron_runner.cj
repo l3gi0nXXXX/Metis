@@ -7,6 +7,10 @@ import metis.gateway.core.{
     GatewayCronSessionReaperState,
     GatewayService,
     gatewayBridgeForSessionRequest,
+    gatewayLogEventError,
+    gatewayLogEventInfo,
+    gatewayLogEventWarn,
+    gatewayLogMeta,
     gatewayListPersistedAgentIdsForUser,
     gatewaySessionStoreForUserWithAgentId
 }
@@ -31,7 +35,6 @@ import metis.cron.{
     resolveCronFailurePlan
 }
 
-import magic.log.LogUtils
 import magic.prelude.*
 
 import std.collection.{ArrayList, HashMap}
@@ -147,12 +150,23 @@ public class CronRunner {
     private func recordScheduleComputeFailure(j: CronJob): Unit {
         j.state.scheduleErrorCount += 1
         j.state.nextRunAtMs = 0
-        LogUtils.info(
-            "CronRunner: schedule compute failed for job id=${j.id} count=${j.state.scheduleErrorCount}"
+        gatewayLogEventWarn(
+            "gateway/cron",
+            "cron.failed",
+            "cron schedule compute failed",
+            meta: gatewayLogMeta()
+                .string("jobId", j.id)
+                .int("scheduleErrorCount", j.state.scheduleErrorCount)
+                .object()
         )
         if (j.state.scheduleErrorCount >= MAX_SCHEDULE_ERRORS) {
             j.enabled = false
-            LogUtils.error("CronRunner: auto-disabled job id=${j.id} after repeated schedule errors")
+            gatewayLogEventError(
+                "gateway/cron",
+                "cron.disabled",
+                "cron job auto-disabled after repeated schedule errors",
+                meta: gatewayLogMeta().string("jobId", j.id).object()
+            )
         }
     }
 
@@ -161,7 +175,12 @@ public class CronRunner {
         for (j in this.jobs) {
             let r = j.state.runningAtMs
             if (r > 0 && now - r > STUCK_RUN_MS) {
-                LogUtils.info("CronRunner: clearing stale runningAtMs for job id=${j.id}")
+                gatewayLogEventInfo(
+                    "gateway/cron",
+                    "cron.skipped",
+                    "cleared stale cron running marker",
+                    meta: gatewayLogMeta().string("jobId", j.id).int("runningAtMs", r).object()
+                )
                 j.state.runningAtMs = 0
                 changed = true
             }
@@ -221,8 +240,14 @@ public class CronRunner {
             changed = true
         }
         if (changed) {
-            LogUtils.info(
-                "CronRunner: staggering missed jobs (deferred ${arr.size - MAX_STARTUP_IMMEDIATE_RUNS} of ${arr.size})"
+            gatewayLogEventInfo(
+                "gateway/cron",
+                "cron.scheduled",
+                "staggered missed cron jobs",
+                meta: gatewayLogMeta()
+                    .int("deferred", arr.size - MAX_STARTUP_IMMEDIATE_RUNS)
+                    .int("due", arr.size)
+                    .object()
             )
         }
         changed
@@ -360,8 +385,14 @@ public class CronRunner {
                     answer = if (cronShouldRouteThroughDreaming(j)) {
                         match (DreamingPhaseRuntime.handleSystemEvent(j.systemEvent)) {
                             case Some(result) =>
-                                LogUtils.info(
-                                    "CronRunner: handled managed system event '${j.systemEvent}' for job id=${j.id}"
+                                gatewayLogEventInfo(
+                                    "gateway/cron",
+                                    "cron.succeeded",
+                                    "handled managed cron system event",
+                                    meta: gatewayLogMeta()
+                                        .string("jobId", j.id)
+                                        .string("systemEvent", j.systemEvent)
+                                        .object()
                                 )
                                 result
                             case None => cronBridgeReply(jobBridge, jobRequest, j.prompt, j.timeoutMs)
@@ -375,8 +406,16 @@ public class CronRunner {
                 } catch (e: Exception) {
                     status = "error"
                     errMsg = e.message
-                    LogUtils.error(
-                        "CronRunner: job id=${j.id} attempt=${attempt + 1}/${maxAttempts} failed: ${e.message}"
+                    gatewayLogEventError(
+                        "gateway/cron",
+                        "cron.failed",
+                        "cron job attempt failed",
+                        meta: gatewayLogMeta()
+                            .string("jobId", j.id)
+                            .int("attempt", attempt + 1)
+                            .int("maxAttempts", maxAttempts)
+                            .rawString("error", e.message)
+                            .object()
                     )
                     if (attempt + 1 >= maxAttempts) {
                         break
@@ -401,8 +440,11 @@ public class CronRunner {
                             gw.sendTextToPeer(dc, dt, body)
                             deliveryStatus = "unknown"
                         } else {
-                            LogUtils.info(
-                                "CronRunner: job id=${j.id} 已配置 announce 投递但未注入 GatewayService，跳过 IM"
+                            gatewayLogEventWarn(
+                                "gateway/cron",
+                                "cron.skipped",
+                                "cron announce delivery skipped without GatewayService",
+                                meta: gatewayLogMeta().string("jobId", j.id).object()
                             )
                             deliveryStatus = "not-delivered"
                         }
@@ -471,7 +513,15 @@ public class CronRunner {
             )
         } catch (fatal: Exception) {
             j.state.runningAtMs = 0
-            LogUtils.error("CronRunner: unexpected failure for job id=${j.id}: ${fatal.message}")
+            gatewayLogEventError(
+                "gateway/cron",
+                "cron.failed",
+                "unexpected cron job failure",
+                meta: gatewayLogMeta()
+                    .string("jobId", j.id)
+                    .rawString("error", fatal.message)
+                    .object()
+            )
         }
     }
 
@@ -567,13 +617,28 @@ public class CronRunner {
             if (isTransientCronError(errMsg) && j.state.consecutiveErrors <= MAX_AT_TRANSIENT_RETRIES) {
                 let bo = afterRun + cronErrorBackoffMs(j.state.consecutiveErrors)
                 j.state.nextRunAtMs = bo
-                LogUtils.info(
-                    "CronRunner: at job id=${j.id} transient error, retry scheduled at +${bo - afterRun}ms"
+                gatewayLogEventWarn(
+                    "gateway/cron",
+                    "cron.failed",
+                    "transient one-shot cron error scheduled retry",
+                    meta: gatewayLogMeta()
+                        .string("jobId", j.id)
+                        .int("retryDelayMs", bo - afterRun)
+                        .rawString("error", errMsg)
+                        .object()
                 )
             } else {
                 j.enabled = false
                 j.state.nextRunAtMs = 0
-                LogUtils.info("CronRunner: at job id=${j.id} disabled after error")
+                gatewayLogEventWarn(
+                    "gateway/cron",
+                    "cron.disabled",
+                    "one-shot cron job disabled after error",
+                    meta: gatewayLogMeta()
+                        .string("jobId", j.id)
+                        .rawString("error", errMsg)
+                        .object()
+                )
             }
             return
         }
@@ -586,8 +651,15 @@ public class CronRunner {
                 if (j.state.scheduleErrorCount >= MAX_SCHEDULE_ERRORS) {
                     j.enabled = false
                     j.state.nextRunAtMs = 0
-                    LogUtils.error(
-                        "CronRunner: recurring job id=${j.id} auto-disabled after schedule errors (error path)"
+                    gatewayLogEventError(
+                        "gateway/cron",
+                        "cron.disabled",
+                        "recurring cron job auto-disabled after schedule errors",
+                        meta: gatewayLogMeta()
+                            .string("jobId", j.id)
+                            .int("scheduleErrorCount", j.state.scheduleErrorCount)
+                            .rawString("error", errMsg)
+                            .object()
                     )
                 } else {
                     j.state.nextRunAtMs = afterRun + cronErrorBackoffMs(j.state.consecutiveErrors)
@@ -671,7 +743,15 @@ public class CronRunner {
 
             let startedAtMs = epochMs()
             let conv = cronExecutionConversationKey(j, startedAtMs)
-            LogUtils.info("CronRunner: firing job id=${j.id} conversationKey=${conv}")
+            gatewayLogEventInfo(
+                "gateway/cron",
+                "cron.started",
+                "cron job firing",
+                meta: gatewayLogMeta()
+                    .string("jobId", j.id)
+                    .identityHash("conversationHash", conv)
+                    .object()
+            )
             this.lastFireWallMs[j.id] = now
 
             j.state.runningAtMs = startedAtMs

@@ -120,3 +120,53 @@ test("sidecar logger redacts nested protocol secrets and patches all console lev
   assert.equal(`${child.stdout}${child.stderr}`.includes("phase9-protocol-token"), false);
   assert.equal(`${child.stdout}${child.stderr}`.includes("phase9-protocol-api-key"), false);
 });
+
+test("sidecar logger redacts common provider tokens without explicit secret registration", () => {
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `
+        import {
+          installConsoleStderrPatch,
+          writeDiagnostic,
+          writeProtocol,
+        } from "./lib/metis-sidecar-logger.mjs";
+
+        installConsoleStderrPatch({ prefix: "pattern-sidecar" });
+        console.warn("openai sk-proj-1234567890abcdef github ghp_1234567890abcdef1234567890abcdef1234");
+        writeDiagnostic("error", "telegram bot123456:abcdefghijklmnopqrstuvwxyz_123456789 bearer Bearer abcdefghijklmnopqrstuvwxyz123456", {
+          pem: "-----BEGIN PRIVATE KEY-----\\nabc123\\n-----END PRIVATE KEY-----",
+          google: "AIza1234567890abcdefghijklmnop",
+          npm: "npm_1234567890abcdef",
+        }, { prefix: "pattern-sidecar" });
+        writeProtocol({
+          type: "event",
+          payload: {
+            tokenLike: "pplx-1234567890abcdef",
+            groq: "gsk_1234567890abcdef",
+            slack: "xoxb-1234567890-abcdef",
+          },
+        });
+      `,
+    ],
+    {
+      cwd: import.meta.dirname,
+      encoding: "utf8",
+    },
+  );
+
+  assert.equal(child.status, 0, child.stderr);
+  const combined = `${child.stdout}${child.stderr}`;
+  assert.equal(combined.includes("sk-proj-1234567890abcdef"), false);
+  assert.equal(combined.includes("ghp_1234567890abcdef1234567890abcdef1234"), false);
+  assert.equal(combined.includes("bot123456:abcdefghijklmnopqrstuvwxyz_123456789"), false);
+  assert.equal(combined.includes("Bearer abcdefghijklmnopqrstuvwxyz123456"), false);
+  assert.equal(combined.includes("-----BEGIN PRIVATE KEY-----"), false);
+  assert.equal(combined.includes("AIza1234567890abcdefghijklmnop"), false);
+  assert.equal(combined.includes("npm_1234567890abcdef"), false);
+  assert.equal(combined.includes("pplx-1234567890abcdef"), false);
+  assert.equal(combined.includes("gsk_1234567890abcdef"), false);
+  assert.equal(combined.includes("xoxb-1234567890-abcdef"), false);
+});

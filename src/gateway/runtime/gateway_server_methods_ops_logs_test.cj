@@ -83,4 +83,25 @@ public class GatewayServerMethodsOpsLogsTest {
             @Expect(lines[0].asString().getValue().contains("\"event\":\"two\""), true)
         }
     }
+
+    @TestCase
+    public func logsTailKeepsUtf8WhenMaxBytesUsesByteCursor(): Unit {
+        withLogsOpsTestHome {
+            let logPath = CliConfig.logsDir.join("utf8-gateway.log")
+            let first = "{\"time\":\"2026-05-18T10:00:00.000+08:00\",\"level\":\"info\",\"subsystem\":\"gateway\",\"event\":\"first\",\"message\":\"前置日志\"}\n"
+            let second = "{\"time\":\"2026-05-18T10:00:01.000+08:00\",\"level\":\"info\",\"subsystem\":\"gateway\",\"event\":\"second\",\"message\":\"尾部中文\"}\n"
+            File.writeTo(logPath, "${first}${second}".toArray())
+            setVariable("METIS_LOG_FILE", logPath.toString())
+            gatewayLoggingResetForTest()
+
+            let params = JsonObject()
+            params.put("limit", 5.toJsonValue())
+            params.put("maxBytes", Int64(second.toArray().size).toJsonValue())
+            let tail = gatewayDispatchLocalMethod(GatewayRpcRequest("logs.tail", params: params))
+            @Expect(tail.ok, true)
+            let rendered = tail.result.toJsonString()
+            @Expect(rendered.contains("尾部中文"), true)
+            @Expect(rendered.contains("前置日志"), false)
+        }
+    }
 }

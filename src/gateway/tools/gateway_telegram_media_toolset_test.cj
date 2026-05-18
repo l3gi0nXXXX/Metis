@@ -1173,6 +1173,42 @@ public class GatewayTelegramMediaToolsetTest {
     }
 
     @TestCase
+    public func telegramConfigExplainRendersHumanSummaryWithoutRawAuditJson(): Unit {
+        let toolset = GatewayTelegramMediaToolset()
+        toolset.debugSetGatewayCallRunnerForTest(Some({ method: String, _params: JsonObject =>
+            @Expect(method, "channels.audit")
+            let row = JsonObject()
+            row.put("kind", JsonString("user"))
+            row.put("id", JsonString("user:123"))
+            row.put("displayName", JsonString("Metis User"))
+            row.put("accountId", JsonString("default"))
+            let directory = JsonObject()
+            directory.put("rows", JsonArray([row]))
+            let telegram = JsonObject()
+            telegram.put("enabled", JsonBool(true))
+            telegram.put("token", JsonString("123456:telegram-secret-never-visible"))
+            telegram.put("directory", directory)
+            let audit = JsonObject()
+            audit.put("telegram", telegram)
+            let envelope = JsonObject()
+            envelope.put("audit", audit)
+            envelope
+        }))
+        try {
+            let out = toolset.debugTelegramConfigExplainForTest()
+            @Expect(out.contains("Telegram configuration"), true)
+            @Expect(out.contains("targets: 1"), true)
+            @Expect(out.contains("Metis User"), true)
+            @Expect(out.contains("telegram-secret-never-visible"), false)
+            @Expect(out.contains("\"audit\""), false)
+            @Expect(out.contains("\"ok\""), false)
+            @Expect(out.contains("{"), false)
+        } finally {
+            toolset.debugSetGatewayCallRunnerForTest(None<(String, JsonObject) -> JsonObject>)
+        }
+    }
+
+    @TestCase
     public func telegramDoctorReadsDiagnosticsEnvelope(): Unit {
         let summary = JsonObject()
         summary.put("state", JsonString("ready"))

@@ -5,7 +5,6 @@ import magic.core.agent.*
 import magic.core.tool.*
 import magic.interaction.*
 import magic.jsonable.TypeSchema
-import magic.log.LogUtils
 import magic.prelude.*
 
 import metis.core.{RuntimeToolInvocationPolicyContext, gatewayMainRuntimeRequiredToolNames, gatewayNotifyCurrentToolRuntimeStatus, resolveRuntimeToolPolicyFromRoot, runtimePopToolInvocationPolicyContext, runtimePushToolInvocationPolicyContext, runtimeToolInvocationAllowedFromRoot, runtimeToolNamesContain, runtimeToolNamesContainAll}
@@ -712,6 +711,47 @@ private func gatewayProviderTimingSummary(
     return "Gateway model timing: channel=${channel}, provider=${provider}, model=${modelName.trimAscii()}, attempt=${attempt}, status=${status.trimAscii()}, promptChars=${promptChars}, answerChars=${answerChars}, elapsedMs=${elapsedMs}, localPreCallMs=${localPreCallMs}, firstTokenMs=${firstTokenMs}, promptTokens=${promptTokens}, completionTokens=${completionTokens}, totalTokens=${totalTokens}, error=${safeError}"
 }
 
+private func gatewayLogModelTiming(
+    channelName: String,
+    modelName: String,
+    attempt: Int64,
+    promptChars: Int64,
+    answerChars: Int64,
+    elapsedMs: Int64,
+    status: String,
+    error!: String = "",
+    localPreCallMs!: Int64 = -1,
+    firstTokenMs!: Int64 = -1,
+    promptTokens!: Int64 = -1,
+    completionTokens!: Int64 = -1,
+    totalTokens!: Int64 = -1
+): Unit {
+    let normalizedStatus = status.trimAscii()
+    let meta = gatewayLogMeta()
+        .string("channel", channelName.trimAscii().toAsciiLower())
+        .string("provider", gatewayModelProviderName(modelName))
+        .string("model", modelName)
+        .int("attempt", attempt)
+        .string("status", normalizedStatus)
+        .int("promptChars", promptChars)
+        .int("answerChars", answerChars)
+        .int("elapsedMs", elapsedMs)
+        .int("localPreCallMs", localPreCallMs)
+        .int("firstTokenMs", firstTokenMs)
+        .int("promptTokens", promptTokens)
+        .int("completionTokens", completionTokens)
+        .int("totalTokens", totalTokens)
+    let safeError = error.trimAscii()
+    if (!safeError.isEmpty()) {
+        meta.rawString("error", safeError)
+    }
+    if (normalizedStatus == "success") {
+        gatewayLogEventInfo("gateway/model", "model.response", "gateway model call finished", meta: meta.object())
+    } else {
+        gatewayLogEventWarn("gateway/model", "model.failed", "gateway model call failed", meta: meta.object())
+    }
+}
+
 private func buildGatewayModelInput(
     history: Array<String>,
     latestUserPrompt: String,
@@ -1016,11 +1056,40 @@ public class AgentBridge {
                     let bootstrap = promptBuild[1]
                     agent.systemPrompt = builtPrompt
                     let restrictedSummary = String.join(restrictedTools, delimiter: ",")
-                    let promptBuildSummary =
-                        "Gateway system prompt source=built, channel=${channelName.trimAscii().toAsciiLower()}, model=${currModel.fullName}, chars=${builtPrompt.size}, restrictedTools=${restrictedSummary}, bootstrapFiles=${bootstrap.files.size}, bootstrapChars=${bootstrap.totalChars}, bootstrapOriginalChars=${bootstrap.originalTotalChars}, bootstrapTruncatedFiles=${bootstrap.truncatedFiles}, bootstrapMissingFiles=${bootstrap.missingFiles}, bootstrapSkippedFiles=${bootstrap.skippedFiles}, bootstrapWarnings=${bootstrap.warnings.size}, hasTooling=${builtPrompt.contains("## Tooling")}, hasRuntime=${builtPrompt.contains("## Runtime")}, hasGroupContext=${builtPrompt.contains("## Group Chat Context")}, hasSilentReplies=${builtPrompt.contains("## Silent Replies")}"
-                    LogUtils.info(promptBuildSummary)
+                    gatewayLogEventInfo(
+                        "gateway/agent",
+                        "model.request",
+                        "gateway system prompt built",
+                        meta: gatewayLogMeta()
+                            .string("source", "built")
+                            .string("channel", channelName.trimAscii().toAsciiLower())
+                            .string("model", currModel.fullName)
+                            .int("chars", Int64(builtPrompt.size))
+                            .rawString("restrictedTools", restrictedSummary)
+                            .int("bootstrapFiles", Int64(bootstrap.files.size))
+                            .int("bootstrapChars", bootstrap.totalChars)
+                            .int("bootstrapOriginalChars", bootstrap.originalTotalChars)
+                            .int("bootstrapTruncatedFiles", bootstrap.truncatedFiles)
+                            .int("bootstrapMissingFiles", bootstrap.missingFiles)
+                            .int("bootstrapSkippedFiles", bootstrap.skippedFiles)
+                            .int("bootstrapWarnings", Int64(bootstrap.warnings.size))
+                            .bool("hasTooling", builtPrompt.contains("## Tooling"))
+                            .bool("hasRuntime", builtPrompt.contains("## Runtime"))
+                            .bool("hasGroupContext", builtPrompt.contains("## Group Chat Context"))
+                            .bool("hasSilentReplies", builtPrompt.contains("## Silent Replies"))
+                            .object()
+                    )
                     for (warning in bootstrap.warnings) {
-                        LogUtils.info("Gateway bootstrap truncation: channel=${channelName.trimAscii().toAsciiLower()}, model=${currModel.fullName}, detail=${warning}")
+                        gatewayLogEventWarn(
+                            "gateway/agent",
+                            "model.request",
+                            "gateway bootstrap truncation",
+                            meta: gatewayLogMeta()
+                                .string("channel", channelName.trimAscii().toAsciiLower())
+                                .string("model", currModel.fullName)
+                                .rawString("detail", warning)
+                                .object()
+                        )
                     }
                     let modelCallStartedAtMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
                     let localPreCallMs = modelCallStartedAtMs - preCallStartedAtMs
@@ -1089,21 +1158,19 @@ public class AgentBridge {
                         modelName: currModel.fullName,
                         note: "attempt=${idx + 1}, answerChars=${answer.size}"
                     )
-                    LogUtils.info(
-                        gatewayProviderTimingSummary(
-                            channelName,
-                            currModel.fullName,
-                            Int64(idx + 1),
-                            Int64(builtPrompt.size),
-                            Int64(answer.size),
-                            modelCallFinishedAtMs - modelCallStartedAtMs,
-                            "success",
-                            localPreCallMs: localPreCallMs,
-                            firstTokenMs: firstTokenMs,
-                            promptTokens: successfulPromptTokens,
-                            completionTokens: successfulCompletionTokens,
-                            totalTokens: if (successfulPromptTokens >= 0 && successfulCompletionTokens >= 0) { successfulPromptTokens + successfulCompletionTokens } else { -1 }
-                        )
+                    gatewayLogModelTiming(
+                        channelName,
+                        currModel.fullName,
+                        Int64(idx + 1),
+                        Int64(builtPrompt.size),
+                        Int64(answer.size),
+                        modelCallFinishedAtMs - modelCallStartedAtMs,
+                        "success",
+                        localPreCallMs: localPreCallMs,
+                        firstTokenMs: firstTokenMs,
+                        promptTokens: successfulPromptTokens,
+                        completionTokens: successfulCompletionTokens,
+                        totalTokens: if (successfulPromptTokens >= 0 && successfulCompletionTokens >= 0) { successfulPromptTokens + successfulCompletionTokens } else { -1 }
                     )
                     lastEx = None
                     break
@@ -1121,17 +1188,15 @@ public class AgentBridge {
                         modelName: currModel.fullName,
                         note: "attempt=${idx + 1}, error=${e.message}"
                     )
-                    LogUtils.info(
-                        gatewayProviderTimingSummary(
-                            channelName,
-                            currModel.fullName,
-                            Int64(idx + 1),
-                            attemptPromptChars,
-                            Int64(answer.size),
-                            modelCallFailedAtMs - preCallStartedAtMs,
-                            "failed",
-                            error: e.message
-                        )
+                    gatewayLogModelTiming(
+                        channelName,
+                        currModel.fullName,
+                        Int64(idx + 1),
+                        attemptPromptChars,
+                        Int64(answer.size),
+                        modelCallFailedAtMs - preCallStartedAtMs,
+                        "failed",
+                        error: e.message
                     )
                     lastEx = Some(e)
                     let isChannelBoundFirst = match (channelBoundModelOpt) {
@@ -1146,11 +1211,25 @@ public class AgentBridge {
                     // if channel-bound model fails for any reason (invalid key/model/endpoint),
                     // always continue to global model chain.
                     if (isChannelBoundFirst) {
-                        LogUtils.info(
-                            "Gateway channel-bound model ${currModel.fullName} failed, force fallback to global models: ${e.message}"
+                        gatewayLogEventWarn(
+                            "gateway/model",
+                            "model.failed",
+                            "channel-bound model failed; falling back to global models",
+                            meta: gatewayLogMeta()
+                                .string("model", currModel.fullName)
+                                .rawString("error", e.message)
+                                .object()
                         )
                     } else if (match (turnContext) { case Some(ctx) => CliModelManager.shouldFallbackForAgentScope(e, ctx.agentScope) case None => CliModelManager.shouldFallback(e) }) {
-                        LogUtils.info("Gateway model ${currModel.fullName} failed, trying fallback: ${e.message}")
+                        gatewayLogEventWarn(
+                            "gateway/model",
+                            "model.failed",
+                            "gateway model failed; trying fallback",
+                            meta: gatewayLogMeta()
+                                .string("model", currModel.fullName)
+                                .rawString("error", e.message)
+                                .object()
+                        )
                     } else {
                         throw e
                     }
@@ -1257,12 +1336,23 @@ public class AgentBridge {
             for (m in models) {
                 out.add(m)
             }
-            LogUtils.info("Gateway: channel-bound model '${modelName}' applied")
+            gatewayLogEventInfo(
+                "gateway/model",
+                "model.request",
+                "channel-bound model applied",
+                meta: gatewayLogMeta().string("model", modelName).object()
+            )
             out.toArray()
         } catch (e: Exception) {
             // Invalid model name/provider or initialization failure: fall back to global models directly.
-            LogUtils.info(
-                "Gateway: channel-bound model '${modelName}' invalid/unavailable, fallback to global models: ${e.message}"
+            gatewayLogEventWarn(
+                "gateway/model",
+                "model.failed",
+                "channel-bound model unavailable; falling back to global models",
+                meta: gatewayLogMeta()
+                    .string("model", modelName)
+                    .rawString("error", e.message)
+                    .object()
             )
             models
         }

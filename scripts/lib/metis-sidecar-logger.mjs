@@ -41,7 +41,23 @@ function redactString(value) {
   return out
     .replace(/([?&](?:token|secret|password|key|authorization)=)[^&#\s]+/gi, "$1[REDACTED]")
     .replace(/\b(authorization:\s*bearer\s+)[^\s,;]+/gi, "$1[REDACTED]")
-    .replace(/\b(password|token|secret|api[_-]?key)=([^\s&]+)/gi, "$1=[REDACTED]");
+    .replace(/\b(authorization\s*[:=]\s*)[^\s,;}\]]+/gi, "$1[REDACTED]")
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._\-+=]{18,}\b/g, "$1[REDACTED]")
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED]")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]")
+    .replace(/\bghp_[A-Za-z0-9]{20,}\b/g, "[REDACTED]")
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "[REDACTED]")
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, "[REDACTED]")
+    .replace(/\bxapp-[A-Za-z0-9-]{10,}\b/g, "[REDACTED]")
+    .replace(/\bgsk_[A-Za-z0-9_-]{10,}\b/g, "[REDACTED]")
+    .replace(/\bAIza[0-9A-Za-z\-_]{20,}\b/g, "[REDACTED]")
+    .replace(/\bpplx-[A-Za-z0-9_-]{10,}\b/g, "[REDACTED]")
+    .replace(/\bnpm_[A-Za-z0-9]{10,}\b/g, "[REDACTED]")
+    .replace(/\bbot[0-9]{6,}:[A-Za-z0-9_-]{20,}\b/g, "bot[REDACTED]")
+    .replace(/\b[0-9]{6,}:[A-Za-z0-9_-]{20,}\b/g, "[REDACTED]")
+    .replace(/\b[0-9]{5,}:[A-Za-z0-9_-]{6,}\b/g, "[REDACTED]")
+    .replace(/\b(password|token|secret|api[_-]?key)=([^\s&]+)/gi, "$1=[REDACTED]")
+    .replace(/(--(?:api[-_]?key|token|secret|password|passwd)\s+["']?)[^\s"']+(["']?)/gi, "$1[REDACTED]$2");
 }
 
 export function redactKnownSecrets(value, key = "") {

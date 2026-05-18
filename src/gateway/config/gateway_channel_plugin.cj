@@ -3,9 +3,7 @@ package metis.gateway.config
 import metis.core.config.CliConfig
 import metis.gateway.channels.plugin.CommandPluginAdapter
 import metis.gateway.channels.plugin.LegacyNodePluginAdapter
-import metis.gateway.core.ChannelAdapter
-
-import magic.log.LogUtils
+import metis.gateway.core.{ChannelAdapter, gatewayLogEventError, gatewayLogEventWarn, gatewayLogMeta}
 
 import std.collection.{ArrayList, HashMap}
 import std.env.getVariable
@@ -41,7 +39,12 @@ public class GatewayChannelPluginRegistry {
         let next = ArrayList<GatewayChannelPlugin>()
         for (existing in plugins) {
             if (existing.pluginId() == pid) {
-                LogUtils.info("GatewayChannelPluginRegistry: duplicate pluginId '${pid}', replacing")
+                gatewayLogEventWarn(
+                    "gateway/plugin",
+                    "channel.registered",
+                    "duplicate gateway channel plugin id replaced",
+                    meta: gatewayLogMeta().string("pluginId", pid).object()
+                )
                 continue
             }
             next.add(existing)
@@ -199,7 +202,12 @@ public func registerInstalledGatewayPlugins(): Unit {
             registerInstalledGatewayPluginManifest(pluginDir, manifest)
         }
     } catch (e: Exception) {
-        LogUtils.error("Gateway plugin discover failed: ${e.message}")
+        gatewayLogEventError(
+            "gateway/plugin",
+            "channel.failed",
+            "gateway plugin discovery failed",
+            meta: gatewayLogMeta().rawString("error", e.message).object()
+        )
     }
 }
 
@@ -225,7 +233,12 @@ private func registerInstalledGatewayPluginManifest(pluginDir: Path, manifestPat
             let command = readManifestString(rt, "command")
             let script = readManifestString(rt, "script")
             if (command.isEmpty() || script.isEmpty()) {
-                LogUtils.info("Gateway plugin '${id}' skipped: command/script missing")
+                gatewayLogEventWarn(
+                    "gateway/plugin",
+                    "channel.failed",
+                    "gateway plugin skipped because command or script is missing",
+                    meta: gatewayLogMeta().string("pluginId", id).string("channelId", channelId).object()
+                )
                 return
             }
             GatewayChannelPluginRegistry.register(
@@ -255,9 +268,26 @@ private func registerInstalledGatewayPluginManifest(pluginDir: Path, manifestPat
             )
             return
         }
-        LogUtils.info("Gateway plugin '${id}' skipped: unsupported gatewayRuntime.kind='${kind}'")
+        gatewayLogEventWarn(
+            "gateway/plugin",
+            "channel.failed",
+            "gateway plugin skipped because runtime kind is unsupported",
+            meta: gatewayLogMeta()
+                .string("pluginId", id)
+                .string("channelId", channelId)
+                .string("kind", kind)
+                .object()
+        )
     } catch (e: Exception) {
-        LogUtils.error("Gateway plugin manifest parse failed (${manifestPath.toString()}): ${e.message}")
+        gatewayLogEventError(
+            "gateway/plugin",
+            "channel.failed",
+            "gateway plugin manifest parse failed",
+            meta: gatewayLogMeta()
+                .rawString("manifestPath", manifestPath.toString())
+                .rawString("error", e.message)
+                .object()
+        )
     }
 }
 

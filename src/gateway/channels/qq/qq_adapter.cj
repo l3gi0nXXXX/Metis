@@ -56,6 +56,14 @@ public class QQAdapter <: ChannelAdapter {
         this.lastSendError
     }
 
+    public func debugParseOfficialSendSuccessForTest(raw: String): Bool {
+        this.parseOfficialSendSuccess(raw)
+    }
+
+    public func debugParseOfficialSendMessageIdForTest(raw: String): String {
+        this.parseOfficialSendMessageId(raw)
+    }
+
     private func channelLogMeta(
         phase: String,
         status: String,
@@ -914,8 +922,7 @@ public class QQAdapter <: ChannelAdapter {
                 false
             }
         } catch (e: Exception) {
-            let preview = if (raw.size > 200) { raw[..200] + "..." } else { raw }
-            this.lastSendError = "official send parse failed: ${e.message}, raw=${preview}"
+            this.lastSendError = "official send parse failed: ${e.message}, bodyLen=${raw.size}, bodyHash=${gatewayLogIdentityHash(raw)}"
             false
         }
     }
@@ -934,8 +941,7 @@ public class QQAdapter <: ChannelAdapter {
             this.lastSendError = "official send failed: code=${code}, message=${msg}, msg=${detail}"
             ""
         } catch (e: Exception) {
-            let preview = if (raw.size > 200) { raw[..200] + "..." } else { raw }
-            this.lastSendError = "official send parse failed: ${e.message}, raw=${preview}"
+            this.lastSendError = "official send parse failed: ${e.message}, bodyLen=${raw.size}, bodyHash=${gatewayLogIdentityHash(raw)}"
             ""
         }
     }

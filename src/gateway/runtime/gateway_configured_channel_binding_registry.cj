@@ -4,16 +4,22 @@ import magic.jsonable.*
 
 import metis.core.config.GatewayUserSettings
 import metis.gateway.config.{gatewayConfiguredBindingRowByField, gatewayConfiguredBindingRowJson, gatewayConfiguredBuiltinBindingRows, gatewayConfiguredBuiltinPrimeEntries, gatewayConfiguredPluginDefaultBindingRow, gatewayConfiguredPrimeEntryFromBindingRow, gatewayPluginConfigPresent, normalizeGatewayChannelId}
-import metis.gateway.core.{gatewayChannelRuntimePrimeAccounts, gatewayLogProcessMemory}
+import metis.gateway.core.{gatewayChannelRuntimePrimeAccounts, gatewayLogEventInfo, gatewayLogMeta, gatewayLogProcessMemory}
 
-import magic.log.LogUtils
 import std.convert.Parsable
 
 import stdx.encoding.json.{JsonArray, JsonObject, JsonString}
 
 private func gatewayConfiguredBindingsPrimeLog(step: String, configuredCount: Int64, queuedCount: Int64): Unit {
-    LogUtils.info(
-        "Gateway.bindings-prime: step=${step} configuredCount=${configuredCount} queuedPrimeCount=${queuedCount}"
+    gatewayLogEventInfo(
+        "gateway/channel/binding",
+        "channel.registered",
+        "configured channel bindings primed",
+        meta: gatewayLogMeta()
+            .string("step", step)
+            .int("configuredCount", configuredCount)
+            .int("queuedPrimeCount", queuedCount)
+            .object()
     )
     gatewayLogProcessMemory(
         "bindings-prime:${step}",

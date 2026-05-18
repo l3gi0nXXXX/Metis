@@ -172,6 +172,25 @@ Note its a huge file, you should search the short summary for efficiency.
 
 You can run `cjpm build -i` to build the project. If there are some errors, you should fix it.
 
+## Cangjie full-test execution notes
+
+When a change requires the project-wide verification command, run it from the repository root with
+the Cangjie SDK and OpenSSL library path prepared:
+
+```bash
+source /Users/l3gi0n/cangjie100/envsetup.sh
+export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
+cjpm clean && cjpm build -i && cjpm test
+```
+
+If plain `cjpm test` reports package-level `failed to run package (exit code = 9)` without failed
+test cases, do not treat it as an application assertion failure immediately. First rerun the
+reported package path directly, then compare with `cjpm test -j 1` or `cjpm test --parallel false`
+to separate code failures from package-level test-runner resource pressure. In this project, a
+random package-level exit 9 after `cjpm clean` was resolved by lowering the test process heap in
+`[profile.test.env]` from `128MB` to `64MB`; `jobs` must not be added to `[profile.test]`, because
+the Cangjie unittest runtime treats it as an unknown runtime option.
+
 ## Code Style
 
 You must write readable code, e.g., adding clear and concise comments.

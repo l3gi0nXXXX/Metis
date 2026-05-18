@@ -1,7 +1,5 @@
 package metis.gateway.core
 
-import magic.log.LogUtils
-
 import std.fs.{FileInfo, exists}
 import std.time.DateTime
 
@@ -55,8 +53,14 @@ public class GatewayCronSessionReaperState {
             }
         }
         if (pruned > 0) {
-            LogUtils.info(
-                "CronReaper: pruned ${pruned} gateway:cron:run session(s), retentionHours=${retentionHours}"
+            gatewayLogEventInfo(
+                "gateway/session",
+                "session.reaped",
+                "cron run sessions pruned",
+                meta: gatewayLogMeta()
+                    .int("pruned", pruned)
+                    .int("retentionHours", retentionHours)
+                    .object()
             )
         }
         pruned

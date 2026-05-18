@@ -1,8 +1,7 @@
 package metis.gateway
 
 import metis.core.config.GatewayUserSettings
-
-import magic.log.LogUtils
+import metis.gateway.logging.{MetisLogEvent, metisCreateSubsystemLogger}
 
 import std.random.Random
 
@@ -61,8 +60,9 @@ public func gatewayPrepareStartupAuth(user: GatewayUserSettings): (GatewayUserSe
     updated.auth.token = generatedToken
     gatewayRuntimeAuthTokenOverride = generatedToken
 
-    LogUtils.info(
-        "Gateway startup auth: generated runtime-only gateway.auth.token for this startup; config was not modified."
+    metisCreateSubsystemLogger("gateway/auth").info(
+        MetisLogEvent.gatewayStarting,
+        "generated runtime-only gateway auth token; config was not modified"
     )
     (updated, true, false)
 }

@@ -1,10 +1,9 @@
 package metis.gateway.runtime
 
 import magic.jsonable.*
-import magic.log.LogUtils
 
 import metis.core.config.{CliConfig, CliSettingManager, GatewayUserSettings}
-import metis.gateway.core.{GatewaySessionStore, gatewayBuildChatEventMessage, gatewayBuildChatEventPayload, gatewayBuildChatTurnResult, gatewayBuildSessionEventPayload, gatewayBuildSessionTranscriptEventPayload, gatewayExecuteSessionRequestTurnForUser, gatewayFindSessionConversationViewForUser, gatewaySessionStoreForSessionKey}
+import metis.gateway.core.{GatewaySessionStore, gatewayBuildChatEventMessage, gatewayBuildChatEventPayload, gatewayBuildChatTurnResult, gatewayBuildSessionEventPayload, gatewayBuildSessionTranscriptEventPayload, gatewayExecuteSessionRequestTurnForUser, gatewayFindSessionConversationViewForUser, gatewayLogEventInfo, gatewayLogMeta, gatewaySessionStoreForSessionKey}
 import metis.gateway.session.{GatewayIngressSource, gatewayBuildSessionRpcParams, gatewayResolveSessionContext, gatewaySessionRequestFromRpcParams}
 
 import std.collection.HashMap
@@ -249,8 +248,16 @@ public func gatewayExecuteChatTurnFromRpc(
         errorMessage: execution.deliveryError
     )
     let sessionPublished = gatewayServerPublishSessionEvent(sessionEventPayload, detail: "chat-turn-completed")
-    LogUtils.info(
-        "Gateway.chat.turn: published chat event session=${context.sessionKey} runId=${if (idempotencyKey.isEmpty()) { "<empty>" } else { idempotencyKey }} chatClients=${published} sessionClients=${sessionPublished}"
+    gatewayLogEventInfo(
+        "gateway/chat-turn",
+        "chat_turn.published",
+        "chat turn events published",
+        meta: gatewayLogMeta()
+            .identityHash("sessionHash", context.sessionKey)
+            .identityHash("runHash", if (idempotencyKey.isEmpty()) { "<empty>" } else { idempotencyKey })
+            .int("chatClients", published)
+            .int("sessionClients", sessionPublished)
+            .object()
     )
     result
 }

@@ -244,6 +244,23 @@ public func gatewayLogEventInfo(
     )
 }
 
+public func gatewayLogEventWarn(
+    subsystem: String,
+    event: String,
+    summary: String,
+    meta!: JsonObject = JsonObject(),
+    fields!: String = ""
+): Unit {
+    let canonicalEvent = gatewayLogCanonicalEvent(event)
+    let mergedMeta = gatewayLogMergeMeta(meta, fields)
+    metisCreateSubsystemLogger(subsystem).warn(
+        canonicalEvent,
+        summary,
+        meta: mergedMeta,
+        consoleMessage: gatewayLogEventLine(subsystem, canonicalEvent, summary, meta: mergedMeta)
+    )
+}
+
 public func gatewayLogEventDebug(
     subsystem: String,
     event: String,

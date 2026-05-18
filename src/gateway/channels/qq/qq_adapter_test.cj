@@ -158,4 +158,20 @@ public class QQAdapterTest {
         @Expect(adapter.debugLastSendErrorForTest().contains("account-local credential"), true)
         @Expect(adapter.debugLastSendErrorForTest().contains("qqWriter"), true)
     }
+
+    @TestCase
+    public func qqOfficialSendParseFailureDoesNotKeepRawResponseBody(): Unit {
+        let adapter = QQAdapter(config: QQConfig(enabled: true, appId: "102012345", appSecret: "top-secret-never-visible"))
+        let secretBody = "not-json token=qq-raw-token-never-visible Authorization: Bearer qq-bearer-never-visible"
+
+        let success = adapter.debugParseOfficialSendSuccessForTest(secretBody)
+
+        @Expect(success, false)
+        let err = adapter.debugLastSendErrorForTest()
+        @Expect(err.contains("official send parse failed"), true)
+        @Expect(err.contains("qq-raw-token-never-visible"), false)
+        @Expect(err.contains("qq-bearer-never-visible"), false)
+        @Expect(err.contains("raw="), false)
+        @Expect(err.contains("bodyHash=redacted-len-"), true)
+    }
 }

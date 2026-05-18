@@ -1,7 +1,5 @@
 package metis.gateway.core
 
-import magic.log.LogUtils
-
 import std.convert.Parsable
 import std.process.executeWithOutput
 
@@ -52,5 +50,15 @@ public func gatewayProcessResidentSetKb(): Int64 {
 public func gatewayLogProcessMemory(scope: String, note!: String = ""): Unit {
     let pid = gatewayProcessCurrentPid()
     let rssKb = gatewayProcessResidentSetKb()
-    LogUtils.info("Gateway.memory: scope=${scope.trimAscii()}, pid=${pid}, rssKb=${rssKb}, note=${note.trimAscii()}")
+    gatewayLogEventInfo(
+        "gateway/runtime",
+        "process.memory",
+        "gateway process memory snapshot",
+        meta: gatewayLogMeta()
+            .string("scope", scope)
+            .int("pid", pid)
+            .int("rssKb", rssKb)
+            .rawString("note", note.trimAscii())
+            .object()
+    )
 }

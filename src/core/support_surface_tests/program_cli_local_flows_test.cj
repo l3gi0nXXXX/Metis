@@ -220,4 +220,23 @@ public class CliLocalFlowsTest {
             @Expect(truncated.contains("truncated"), true)
         })
     }
+
+    @TestCase
+    public func logsCliTailKeepsUtf8WhenMaxBytesUsesByteCursor(): Unit {
+        withLogsCliTestHome({ =>
+            let first = "{\"ts\":\"2026-05-18T10:00:00.000Z\",\"level\":\"info\",\"subsystem\":\"gateway\",\"event\":\"first\",\"message\":\"前置日志\"}\n"
+            let second = "{\"ts\":\"2026-05-18T10:00:01.000Z\",\"level\":\"info\",\"subsystem\":\"gateway\",\"event\":\"second\",\"message\":\"尾部中文\"}\n"
+            let logPath = CliConfig.logsDir.join("2026_05_18-10_00_02_000.log")
+            File.writeTo(logPath, "${first}${second}".toArray())
+            setVariable("METIS_LOG_FILE", logPath.toString())
+            gatewayLoggingResetForTest()
+
+            let maxBytes = Int64(second.toArray().size)
+            let (tail, code) = executeCliLogsCommand(["tail", "--limit", "5", "--max-bytes", "${maxBytes}", "--json"])
+
+            @Expect(code, 0)
+            @Expect(tail.contains("尾部中文"), true)
+            @Expect(tail.contains("前置日志"), false)
+        })
+    }
 }

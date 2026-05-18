@@ -93,25 +93,25 @@ report_scan \
   "Gateway LogUtils" \
   'LogUtils\.(trace|debug|info|warn|error|fatal)' \
   "$logutils_scan" \
-  -g '*.cj' -g '!**/*_test.cj' src/gateway/core src/gateway/runtime src/gateway/channels
+  -g '*.cj' -g '!**/*_test.cj' src/gateway
 
 report_scan \
   "Gateway PrintUtils.printLine" \
   'PrintUtils\.printLine' \
   "$printutils_scan" \
-  -g '*.cj' -g '!**/*_test.cj' src/gateway/core src/gateway/runtime src/gateway/channels
+  -g '*.cj' -g '!**/*_test.cj' src/gateway
 
 report_scan \
   "Gateway raw print/eprintln" \
   '(^|[^A-Za-z0-9_])(println|print|eprintln)\(' \
   "$direct_print_scan" \
-  -g '*.cj' -g '!**/*_test.cj' src/gateway/core src/gateway/runtime src/gateway/channels
+  -g '*.cj' -g '!**/*_test.cj' src/gateway
 
 report_scan \
   "Gateway direct toJsonString output" \
-  '(PrintUtils\.printLine|println|print|eprintln).*toJsonString\(' \
+  '(PrintUtils\.printLine|PrintUtils\.printToolResult|println|print|eprintln).*toJsonString\(' \
   "$direct_json_scan" \
-  -g '*.cj' -g '!**/*_test.cj' src/gateway/core src/gateway/runtime src/gateway/channels
+  -g '*.cj' -g '!**/*_test.cj' src/gateway
 
 report_scan \
   "JS stdout protocol/report" \
@@ -137,30 +137,7 @@ report_scan \
 check_file_allowlist \
   "Gateway LogUtils" \
   "$logutils_scan" \
-  "$TMP_DIR/logutils.allowed" \
-  "src/gateway/core/agent_bridge.cj" \
-  "src/gateway/core/gateway_channel_manager.cj" \
-  "src/gateway/core/gateway_cron_session_reaper.cj" \
-  "src/gateway/core/gateway_process_memory.cj" \
-  "src/gateway/core/gateway_service.cj" \
-  "src/gateway/core/gateway_session_executor.cj" \
-  "src/gateway/core/gateway_session_store.cj" \
-  "src/gateway/runtime/cron_runner.cj" \
-  "src/gateway/runtime/demo.cj" \
-  "src/gateway/runtime/gateway_chat_turn_runtime.cj" \
-  "src/gateway/runtime/gateway_cli.cj" \
-  "src/gateway/runtime/gateway_config_factory.cj" \
-  "src/gateway/runtime/gateway_config_reload_handler.cj" \
-  "src/gateway/runtime/gateway_config_reloader.cj" \
-  "src/gateway/runtime/gateway_configured_channel_binding_registry.cj" \
-  "src/gateway/runtime/gateway_control_ui_ws.cj" \
-  "src/gateway/runtime/gateway_external_console.cj" \
-  "src/gateway/runtime/gateway_platform_state.cj" \
-  "src/gateway/channels/feishu/feishu_adapter.cj" \
-  "src/gateway/channels/plugin/command_plugin_adapter.cj" \
-  "src/gateway/channels/plugin/legacy_node_plugin_adapter.cj" \
-  "src/gateway/channels/qq/qq_adapter.cj" \
-  "src/gateway/channels/telegram/telegram_adapter.cj"
+  "$TMP_DIR/logutils.allowed"
 
 check_file_allowlist \
   "Gateway PrintUtils.printLine" \
@@ -178,6 +155,7 @@ check_file_allowlist \
   "Gateway raw print/eprintln" \
   "$direct_print_scan" \
   "$TMP_DIR/direct-print.allowed" \
+  "src/gateway/logging/gateway_logging.cj" \
   "src/gateway/runtime/gateway_control_ui_app.cj"
 
 check_file_allowlist \

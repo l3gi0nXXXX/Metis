@@ -1,7 +1,6 @@
 package metis.gateway.core
 
 import magic.jsonable.*
-import magic.log.LogUtils
 
 import metis.core.config.{CliConfig, GatewayUserSettings}
 import metis.gateway.session.{GatewayDeliveryTarget, GatewayIngressSource, GatewaySessionRequest, gatewaySessionRequestFromRpcParams}
@@ -184,7 +183,15 @@ public class GatewaySessionStore {
             jo.put("ts", JsonString("${ts}"))
             appendUtf8Line(p, jo.toJsonString() + "\n")
         } catch (e: Exception) {
-            LogUtils.error("GatewaySessionStore.appendBindingSnapshot failed (sessionKey=${sessionKey}): ${e.message}")
+            gatewayLogEventError(
+                "gateway/session",
+                "session.write.failed",
+                "append binding snapshot failed",
+                meta: gatewayLogMeta()
+                    .identityHash("sessionHash", sessionKey)
+                    .rawString("error", e.message)
+                    .object()
+            )
         }
     }
 
@@ -311,7 +318,16 @@ public class GatewaySessionStore {
             }
             appendUtf8Line(p, jo.toJsonString() + "\n")
         } catch (e: Exception) {
-            LogUtils.error("GatewaySessionStore.appendRole failed (sessionKey=${sessionKey}, role=${role}): ${e.message}")
+            gatewayLogEventError(
+                "gateway/session",
+                "session.write.failed",
+                "append transcript role failed",
+                meta: gatewayLogMeta()
+                    .identityHash("sessionHash", sessionKey)
+                    .string("role", role)
+                    .rawString("error", e.message)
+                    .object()
+            )
         }
     }
 
@@ -1358,7 +1374,12 @@ public func gatewayMigrateLegacyGatewaySessionsIfNeeded(newRoot: Path): Unit {
             copy(from, to: to, overwrite: false)
         }
     } catch (e: Exception) {
-        LogUtils.info("gatewayMigrateLegacyGatewaySessionsIfNeeded: ${e.message}")
+        gatewayLogEventWarn(
+            "gateway/session",
+            "session.migration.failed",
+            "legacy gateway session migration failed",
+            meta: gatewayLogMeta().rawString("error", e.message).object()
+        )
     }
 }
 

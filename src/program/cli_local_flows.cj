@@ -322,6 +322,19 @@ private func cliLogsFileSize(path: Path): Int64 {
     }
 }
 
+private func cliLogsUtf8TextFromBytes(bytes: Array<UInt8>, startRaw: Int64): String {
+    let size = Int64(bytes.size)
+    var start = max(0, min(startRaw, size))
+    while (start < size) {
+        try {
+            return String.fromUtf8(bytes[start..])
+        } catch (_e: Exception) {
+            start += 1
+        }
+    }
+    ""
+}
+
 private func cliLogsTailPayload(path: Path, cursor: Int64, limitRaw: Int64, maxBytesRaw: Int64): JsonObject {
     let result = JsonObject()
     result.put("file", JsonString(path.toString()))
@@ -357,19 +370,12 @@ private func cliLogsTailPayload(path: Path, cursor: Int64, limitRaw: Int64, maxB
         start = max(0, size - maxBytes)
         truncated = start > 0
     }
-    let text = String.fromUtf8(bytes)
-    let slice = if (start > 0 && start < text.size) {
-        text[start..]
-    } else if (start >= text.size) {
-        ""
-    } else {
-        text
-    }
+    let slice = cliLogsUtf8TextFromBytes(bytes, start)
     let split = slice.split("\n")
     var first: Int64 = 0
     if (start > 0) {
-        let prev = if (start <= text.size) { text[(start - 1)..start] } else { "" }
-        first = if (prev == "\n") { 0 } else { 1 }
+        let prevIsNewline = start <= Int64(bytes.size) && bytes[start - 1] == b'\n'
+        first = if (prevIsNewline) { 0 } else { 1 }
     }
     var end: Int64 = Int64(split.size)
     if (end > 0 && split[end - 1].isEmpty()) {

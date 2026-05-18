@@ -1,11 +1,11 @@
 package metis.gateway.runtime
 
 import magic.jsonable.*
-import magic.log.LogUtils
 
 import metis.core.config.CliConfig
 import metis.core.config.CliSettingManager
 import metis.gateway.config.buildGatewayConfigFromUserSettings
+import metis.gateway.core.{gatewayLogEventInfo, gatewayLogMeta}
 import metis.gateway.model.GatewayConfig
 
 import std.convert.Parsable
@@ -110,8 +110,16 @@ private func appendLifecycleHistory(history: JsonArray, state: String, status: S
     out.add(row)
     let nextSize = out.size()
     if (nextSize == 1 || nextSize % 100 == 0) {
-        LogUtils.info(
-            "Gateway.platform: lifecycle history append size=${nextSize} state=${state} status=${status} detail=${detail}"
+        gatewayLogEventInfo(
+            "gateway/platform",
+            "gateway.ready",
+            "platform lifecycle history appended",
+            meta: gatewayLogMeta()
+                .int("historySize", nextSize)
+                .string("state", state)
+                .string("status", status)
+                .rawString("detail", detail)
+                .object()
         )
     }
     out
@@ -575,8 +583,18 @@ public func gatewayRegisterOrHeartbeatNode(
             row.put("heartbeatCount", nextHeartbeatCount.toJsonValue())
             row.put("lifecycleHistory", appendLifecycleHistory(history, lifecycleState, status, detail: if (lifecycleChanged || runningChanged) { "state-change" } else { "heartbeat" }))
             if (nextHeartbeatCount == 1 || nextHeartbeatCount % 100 == 0 || lifecycleChanged || runningChanged) {
-                LogUtils.info(
-                    "Gateway.platform: node heartbeat node=${normalizedNodeId} count=${nextHeartbeatCount} historySize=${history.size() + 1} lifecycle=${lifecycleState} status=${status} running=${running}"
+                gatewayLogEventInfo(
+                    "gateway/platform",
+                    "gateway.ready",
+                    "platform node heartbeat updated",
+                    meta: gatewayLogMeta()
+                        .identityHash("nodeHash", normalizedNodeId)
+                        .int("heartbeatCount", nextHeartbeatCount)
+                        .int("historySize", history.size() + 1)
+                        .string("lifecycleState", lifecycleState)
+                        .string("status", status)
+                        .bool("running", running)
+                        .object()
                 )
             }
             updated.add(row)
@@ -3237,8 +3255,16 @@ public func gatewayPlatformHeartbeat(cfg: GatewayConfig): Unit {
                 case None => JsonArray([])
             }
             if (heartbeatCount == 1 || heartbeatCount % 100 == 0) {
-                LogUtils.info(
-                    "Gateway.platform: heartbeat persisted nodeBytes=${nodeBytes} platformBytes=${platformBytes} heartbeatCount=${heartbeatCount} lifecycleHistorySize=${lifecycleHistory.size()}"
+                gatewayLogEventInfo(
+                    "gateway/platform",
+                    "gateway.ready",
+                    "platform heartbeat persisted",
+                    meta: gatewayLogMeta()
+                        .int("nodeBytes", nodeBytes)
+                        .int("platformBytes", platformBytes)
+                        .int("heartbeatCount", heartbeatCount)
+                        .int("lifecycleHistorySize", lifecycleHistory.size())
+                        .object()
                 )
             }
         }

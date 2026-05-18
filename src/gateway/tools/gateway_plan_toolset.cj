@@ -80,7 +80,6 @@ public class GatewayPlanToolset {
         this.plan = nextPlan
         this.plan.save()
         PrintUtils.printPlan(this.plan)
-        PrintUtils.printLine("")
         let note = match (explanation) {
             case Some(text) =>
                 let trimmed = text.trimAscii()

@@ -16,7 +16,7 @@
   no-color = true
 
 [profile.test.env]
-  cjHeapSize = { value = "128MB", splice-type = "replace" }
+  cjHeapSize = { value = "64MB", splice-type = "replace" }
 
 [dependencies]
   magic = { path = "${MAGIC_PATH}" }
