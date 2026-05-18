@@ -25,6 +25,7 @@ public class MetisLogEvent {
     public static const gatewayStarting: String = "gateway.starting"
     public static const gatewayReady: String = "gateway.ready"
     public static const gatewayShutdown: String = "gateway.shutdown"
+    public static const gatewayStopped: String = "gateway.stopped"
     public static const channelRegistered: String = "channel.registered"
     public static const channelStarting: String = "channel.starting"
     public static const channelStarted: String = "channel.started"
@@ -40,10 +41,29 @@ public class MetisLogEvent {
     public static const messageReplyGenerated: String = "message.reply.generated"
     public static const messageOutbound: String = "message.outbound"
     public static const messageSent: String = "message.sent"
-    public static const messageSendFailed: String = "message.send_failed"
+    public static const messageSendFailed: String = "message.send.failed"
+    public static const messageSendFailedLegacy: String = "message.send_failed"
     public static const modelRequest: String = "model.request"
     public static const modelResponse: String = "model.response"
     public static const modelFailed: String = "model.failed"
+    public static const toolInvoked: String = "tool.invoked"
+    public static const toolFailed: String = "tool.failed"
+    public static const skillMatched: String = "skill.matched"
+    public static const skillSkipped: String = "skill.skipped"
+    public static const sessionReadFailed: String = "session.read.failed"
+    public static const sessionWriteFailed: String = "session.write.failed"
+    public static const sessionMigrationFailed: String = "session.migration.failed"
+    public static const sessionReaped: String = "session.reaped"
+    public static const cronScheduled: String = "cron.scheduled"
+    public static const cronStarted: String = "cron.started"
+    public static const cronSucceeded: String = "cron.succeeded"
+    public static const cronFailed: String = "cron.failed"
+    public static const cronDisabled: String = "cron.disabled"
+    public static const cronSkipped: String = "cron.skipped"
+    public static const processMemory: String = "process.memory"
+    public static const chatTurnPublished: String = "chat_turn.published"
+    public static const rpcRequestSlow: String = "rpc.request.slow"
+    public static const rpcRequestFailed: String = "rpc.request.failed"
     public static const rpcSlow: String = "rpc.slow"
     public static const rpcFailed: String = "rpc.failed"
     public static const loggingRaw: String = "logging.raw"
@@ -51,11 +71,14 @@ public class MetisLogEvent {
 
     public static func all(): Array<String> {
         [
-            gatewayStarting, gatewayReady, gatewayShutdown, channelRegistered, channelStarting,
+            gatewayStarting, gatewayReady, gatewayShutdown, gatewayStopped, channelRegistered, channelStarting,
             channelStarted, channelFailed, channelStopped, channelTiming, channelStartupSummary,
             channelPull, channelSend, messageInbound, messageInboundPreview, messageRouted,
-            messageReplyGenerated, messageOutbound, messageSent, messageSendFailed,
-            modelRequest, modelResponse, modelFailed, rpcSlow, rpcFailed, loggingRaw,
+            messageReplyGenerated, messageOutbound, messageSent, messageSendFailed, messageSendFailedLegacy,
+            modelRequest, modelResponse, modelFailed, toolInvoked, toolFailed, skillMatched, skillSkipped,
+            sessionReadFailed, sessionWriteFailed, sessionMigrationFailed, sessionReaped,
+            cronScheduled, cronStarted, cronSucceeded, cronFailed, cronDisabled, cronSkipped,
+            processMemory, chatTurnPublished, rpcRequestSlow, rpcRequestFailed, rpcSlow, rpcFailed, loggingRaw,
             loggingFileSizeCap
         ]
     }

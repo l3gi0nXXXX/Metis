@@ -8,7 +8,6 @@ import metis.gateway.security.gatewayPairingAccountStore
 import metis.gateway.session.{GatewaySessionContext, GatewaySessionRequest, gatewayResolveSessionContext, gatewaySessionRequestFromInbound}
 import metis.gateway.tools.{gatewayHandleNativeCommandLine, gatewayHandleSubagentsCommandLine}
 import magic.jsonable.*
-import magic.log.LogUtils
 import std.collection.{ArrayList, HashSet}
 import std.convert.Parsable
 import std.fs.{Directory, File, Path, copy, exists, remove}
@@ -124,7 +123,17 @@ public class GatewayService {
         let user = CliSettingManager.readGatewaySettings()
         let _ = gatewayOpenClawCompatHostStart(user)
         let _ = gatewayOpenClawPluginSidecarStart(user)
-        LogUtils.info("Gateway.service.timing: step=startChannels elapsedMs=${this.startNowMs() - startMs}")
+        gatewayLogEventInfo(
+            "gateway/service",
+            "gateway.ready",
+            "gateway service start completed",
+            meta: gatewayLogMeta()
+                .string("phase", "start")
+                .string("step", "startChannels")
+                .string("status", "ok")
+                .int("durationMs", this.startNowMs() - startMs)
+                .object()
+        )
     }
 
     /**
@@ -169,12 +178,29 @@ public class GatewayService {
                         "gateway/message",
                         "message.outbound",
                         "outbound policy degraded",
-                        fields: "channel=${channelName} accountId=${deliveryAccountId} peerHash=${gatewayLogIdentityHash(peerId)} status=degraded reason=${gatewayLogEventValue(policyReason)}"
+                        meta: gatewayLogMeta()
+                            .string("channel", channelName)
+                            .string("accountId", deliveryAccountId)
+                            .identityHash("peerHash", peerId)
+                            .string("status", "degraded")
+                            .rawString("reason", policyReason)
+                            .object()
                     )
                 }
                 let autoVoiceText = if (telegramAutoVoiceReply && this.telegramIsSilentReplyText(text)) {
                     let fallback = this.telegramVoiceFallbackText(message)
-                    LogUtils.info("Telegram auto TTS reply fallback: silent_reply")
+                    gatewayLogEventInfo(
+                        "gateway/message",
+                        "message.outbound",
+                        "telegram auto TTS reply fallback",
+                        meta: gatewayLogMeta()
+                            .string("channel", "telegram")
+                            .string("accountId", effectiveAccountId)
+                            .identityHash("peerHash", message.peerId)
+                            .string("status", "fallback")
+                            .string("reason", "silent_reply")
+                            .object()
+                    )
                     fallback
                 } else {
                     text
@@ -210,36 +236,70 @@ public class GatewayService {
             "gateway/message",
             "message.routed",
             "inbound message routed to session",
-            fields: "channel=${context.channelName} accountId=${context.accountId} sessionKey=${gatewayLogEventValue(context.sessionKey)} peerHash=${gatewayLogIdentityHash(message.peerId)} matchedBy=${gatewayLogEventValue(context.matchedBy)} agentId=${gatewayLogEventValue(context.agentId)} accepted=true reason=${gatewayLogEventValue("accepted")}"
+            meta: gatewayLogMeta()
+                .string("channel", context.channelName)
+                .string("accountId", context.accountId)
+                .string("sessionKey", context.sessionKey)
+                .identityHash("peerHash", message.peerId)
+                .string("matchedBy", context.matchedBy)
+                .string("agentId", context.agentId)
+                .bool("accepted", true)
+                .string("reason", "accepted")
+                .object()
         )
         gatewayLogEventInfo(
             "gateway/message",
             "message.reply.generated",
             "gateway reply generated",
-            fields: "channel=${context.channelName} accountId=${context.accountId} sessionKey=${gatewayLogEventValue(context.sessionKey)} answerChars=${execution.answer.size} deliveryStatus=${gatewayLogEventValue(execution.deliveryStatus)}"
+            meta: gatewayLogMeta()
+                .string("channel", context.channelName)
+                .string("accountId", context.accountId)
+                .string("sessionKey", context.sessionKey)
+                .int("answerChars", Int64(execution.answer.size))
+                .string("deliveryStatus", execution.deliveryStatus)
+                .object()
         )
         match (context.deliveryTarget) {
             case Some(target) =>
                 gatewayLogEventInfo(
                     "gateway/message",
-                    if (execution.delivered) { "message.sent" } else { "message.send_failed" },
+                    if (execution.delivered) { "message.sent" } else { "message.send.failed" },
                     if (execution.delivered) { "gateway reply delivered" } else { "gateway reply delivery failed" },
-                    fields: "channel=${target.channelName} accountId=${context.accountId} sessionKey=${gatewayLogEventValue(context.sessionKey)} peerHash=${gatewayLogIdentityHash(target.peerId)} deliveryStatus=${gatewayLogEventValue(execution.deliveryStatus)}"
+                    meta: gatewayLogMeta()
+                        .string("channel", target.channelName)
+                        .string("accountId", context.accountId)
+                        .string("sessionKey", context.sessionKey)
+                        .identityHash("peerHash", target.peerId)
+                        .string("deliveryStatus", execution.deliveryStatus)
+                        .object()
                 )
             case None =>
                 gatewayLogEventInfo(
                     "gateway/message",
-                    "message.send_failed",
+                    "message.send.failed",
                     "gateway reply delivery target missing",
-                    fields: "channel=${context.channelName} accountId=${context.accountId} sessionKey=${gatewayLogEventValue(context.sessionKey)} deliveryStatus=${gatewayLogEventValue(execution.deliveryStatus)} errorKind=missing_delivery_target"
+                    meta: gatewayLogMeta()
+                        .string("channel", context.channelName)
+                        .string("accountId", context.accountId)
+                        .string("sessionKey", context.sessionKey)
+                        .string("deliveryStatus", execution.deliveryStatus)
+                        .string("errorKind", "missing_delivery_target")
+                        .object()
                 )
         }
         if (!execution.delivered) {
             gatewayLogEventError(
                 "gateway/message",
-                "message.send_failed",
+                "message.send.failed",
                 "gateway reply delivery failed",
-                fields: "channel=${context.channelName} accountId=${context.accountId} sessionKey=${gatewayLogEventValue(context.sessionKey)} deliveryStatus=${gatewayLogEventValue(execution.deliveryStatus)} errorKind=delivery_failed error=${gatewayLogEventValue(execution.deliveryError)}"
+                meta: gatewayLogMeta()
+                    .string("channel", context.channelName)
+                    .string("accountId", context.accountId)
+                    .string("sessionKey", context.sessionKey)
+                    .string("deliveryStatus", execution.deliveryStatus)
+                    .string("errorKind", "delivery_failed")
+                    .rawString("error", execution.deliveryError)
+                    .object()
             )
         }
     }
@@ -254,13 +314,27 @@ public class GatewayService {
             "gateway/message",
             "message.inbound",
             "inbound message accepted by gateway",
-            fields: "channel=${channelToString(message.channel)} accountId=${effectiveAccountId} chatType=${chatTypeToString(message.chatType)} senderHash=${gatewayLogIdentityHash(message.senderId)} peerHash=${gatewayLogIdentityHash(message.peerId)} textLen=${message.text.size} mediaCount=${message.mediaContext.size()} messageId=${gatewayLogEventValue(message.messageId)}"
+            meta: gatewayLogMeta()
+                .string("channel", channelToString(message.channel))
+                .string("accountId", effectiveAccountId)
+                .string("chatType", chatTypeToString(message.chatType))
+                .identityHash("senderHash", message.senderId)
+                .identityHash("peerHash", message.peerId)
+                .int("textLen", Int64(message.text.size))
+                .int("mediaCount", Int64(message.mediaContext.size()))
+                .string("messageId", message.messageId)
+                .object()
         )
         gatewayLogEventDebug(
             "gateway/message",
             "message.inbound.preview",
             "inbound message preview",
-            fields: "channel=${channelToString(message.channel)} accountId=${effectiveAccountId} messageId=${gatewayLogEventValue(message.messageId)} textLen=${message.text.size}"
+            meta: gatewayLogMeta()
+                .string("channel", channelToString(message.channel))
+                .string("accountId", effectiveAccountId)
+                .string("messageId", message.messageId)
+                .int("textLen", Int64(message.text.size))
+                .object()
         )
         let user = CliSettingManager.readGatewaySettings()
         if (channelToString(message.channel) == "feishu" && this.handleFeishuNativeCommand(message, effectiveAccountId, user)) {
@@ -271,7 +345,13 @@ public class GatewayService {
             "gateway/message",
             "message.routed",
             "inbound route decision",
-            fields: "channel=${channelToString(message.channel)} accountId=${effectiveAccountId} peerHash=${gatewayLogIdentityHash(message.peerId)} accepted=${decision.accepted} reason=${gatewayLogEventValue(decision.reason)}"
+            meta: gatewayLogMeta()
+                .string("channel", channelToString(message.channel))
+                .string("accountId", effectiveAccountId)
+                .identityHash("peerHash", message.peerId)
+                .bool("accepted", decision.accepted)
+                .rawString("reason", decision.reason)
+                .object()
         )
         if (!decision.accepted) {
             // P0: 被拒绝消息直接忽略。后续可补审计日志与指标上报。
@@ -286,7 +366,18 @@ public class GatewayService {
             let bindingSession = gatewayTelegramThreadBindingSessionHintForMessage(user, message, effectiveAccountId)
             if (!bindingSession.trimAscii().isEmpty()) {
                 conversationKey = bindingSession.trimAscii()
-                LogUtils.info("Gateway.telegram.threadBinding: peer=${message.peerId} session=${conversationKey}")
+                gatewayLogEventInfo(
+                    "gateway/message",
+                    "message.routed",
+                    "telegram thread binding selected session",
+                    meta: gatewayLogMeta()
+                        .string("channel", "telegram")
+                        .string("accountId", effectiveAccountId)
+                        .identityHash("peerHash", message.peerId)
+                        .string("sessionKey", conversationKey)
+                        .string("matchedBy", "thread_binding")
+                        .object()
+                )
             }
         }
         if (channelToString(message.channel) == "telegram" && message.text.trimAscii().startsWith("[telegram-approval]")) {
@@ -324,8 +415,18 @@ public class GatewayService {
         }
         let broadcastPlan = gatewayResolveAgentTeamBroadcastPlan(request)
         if (broadcastPlan.enabled) {
-            LogUtils.info(
-                "Gateway.agentTeam.broadcast: team=${broadcastPlan.teamId}, turns=${broadcastPlan.turns.size}, agents=${String.join(broadcastPlan.selectedAgentIds, delimiter: ",")}"
+            gatewayLogEventInfo(
+                "gateway/message",
+                "message.routed",
+                "agent team broadcast selected",
+                meta: gatewayLogMeta()
+                    .string("channel", channelToString(message.channel))
+                    .string("accountId", effectiveAccountId)
+                    .identityHash("peerHash", message.peerId)
+                    .string("teamId", broadcastPlan.teamId)
+                    .int("turns", Int64(broadcastPlan.turns.size))
+                    .int("selectedAgentCount", Int64(broadcastPlan.selectedAgentIds.size))
+                    .object()
             )
             var delivered = false
             for (broadcastTurn in broadcastPlan.turns) {
@@ -495,7 +596,16 @@ public class GatewayService {
                 try {
                     let payload = v.asString().getValue().trimAscii()
                     if (!payload.isEmpty()) {
-                        LogUtils.info("Telegram auto TTS reply synthesized: payloadKind=${this.telegramJsonString(result, "payloadKind", "")}")
+                        gatewayLogEventInfo(
+                            "gateway/message",
+                            "message.outbound",
+                            "telegram auto TTS reply synthesized",
+                            meta: gatewayLogMeta()
+                                .string("channel", "telegram")
+                                .string("status", "synthesized")
+                                .string("payloadKind", this.telegramJsonString(result, "payloadKind", ""))
+                                .object()
+                        )
                         return payload
                     }
                 } catch (_: Exception) {
@@ -503,7 +613,16 @@ public class GatewayService {
                 }
             case None => ()
         }
-        LogUtils.info("Telegram auto TTS reply fallback to text: status=${this.telegramJsonString(result, "status", "")}")
+        gatewayLogEventInfo(
+            "gateway/message",
+            "message.outbound",
+            "telegram auto TTS reply fallback to text",
+            meta: gatewayLogMeta()
+                .string("channel", "telegram")
+                .string("status", "fallback")
+                .string("ttsStatus", this.telegramJsonString(result, "status", ""))
+                .object()
+        )
         text
     }
 
@@ -526,7 +645,18 @@ public class GatewayService {
             case Some(notify) => notify(context, 1, kind, "system")
             case None => ()
         }
-        LogUtils.info("Gateway.systemEvent: channel=${channelToString(message.channel)} session=${context.sessionKey} kind=${kind}")
+        gatewayLogEventInfo(
+            "gateway/message",
+            "message.routed",
+            "gateway system event recorded",
+            meta: gatewayLogMeta()
+                .string("channel", channelToString(message.channel))
+                .string("accountId", accountId)
+                .string("sessionKey", context.sessionKey)
+                .string("kind", kind)
+                .int("textLen", Int64(text.size))
+                .object()
+        )
     }
 
     private func handleFeishuNativeCommand(message: InboundMessage, accountId: String, user: GatewayUserSettings): Bool {
@@ -549,7 +679,18 @@ public class GatewayService {
             replyInThread: message.replyInThread,
             accountId: accountId
         )
-        LogUtils.info("Gateway.feishu.nativeCommand: command=${command} account=${accountId} peer=${message.peerId}")
+        gatewayLogEventInfo(
+            "gateway/message",
+            "message.routed",
+            "feishu native command handled",
+            meta: gatewayLogMeta()
+                .string("channel", "feishu")
+                .string("accountId", accountId)
+                .identityHash("peerHash", message.peerId)
+                .string("command", command)
+                .string("status", "handled")
+                .object()
+        )
         return true
     }
 
@@ -1042,7 +1183,19 @@ public class GatewayService {
                 accountId: accountId
             )
         } catch (e: Exception) {
-            LogUtils.info("Telegram auto topic label skipped: ${e.message}")
+            gatewayLogEventInfo(
+                "gateway/message",
+                "message.send.failed",
+                "telegram auto topic label skipped",
+                meta: gatewayLogMeta()
+                    .string("channel", "telegram")
+                    .string("accountId", accountId)
+                    .identityHash("peerHash", message.peerId)
+                    .string("status", "skipped")
+                    .string("errorKind", "auto_topic_label_failed")
+                    .rawString("error", e.message)
+                    .object()
+            )
         }
     }
 
@@ -1062,9 +1215,21 @@ public class GatewayService {
                     replyToMessageId: target,
                     replyInThread: message.replyInThread,
                     accountId: accountId
-                )
-            } catch (e: Exception) {
-                LogUtils.info("Telegram lifecycle chat-action skipped: ${e.message}")
+            )
+        } catch (e: Exception) {
+            gatewayLogEventInfo(
+                "gateway/message",
+                "message.send.failed",
+                "telegram lifecycle chat-action skipped",
+                meta: gatewayLogMeta()
+                    .string("channel", "telegram")
+                    .string("accountId", accountId)
+                    .identityHash("peerHash", message.peerId)
+                    .string("status", "skipped")
+                    .string("errorKind", "chat_action_failed")
+                    .rawString("error", e.message)
+                    .object()
+            )
             }
             return
         }
@@ -1082,7 +1247,19 @@ public class GatewayService {
                 accountId: accountId
             )
         } catch (e: Exception) {
-            LogUtils.info("Telegram lifecycle reaction skipped: ${e.message}")
+            gatewayLogEventInfo(
+                "gateway/message",
+                "message.send.failed",
+                "telegram lifecycle reaction skipped",
+                meta: gatewayLogMeta()
+                    .string("channel", "telegram")
+                    .string("accountId", accountId)
+                    .identityHash("peerHash", message.peerId)
+                    .string("status", "skipped")
+                    .string("errorKind", "reaction_failed")
+                    .rawString("error", e.message)
+                    .object()
+            )
         }
     }
 
@@ -1111,7 +1288,18 @@ public class GatewayService {
             "gateway-execution",
             nowMs
         )) {
-            LogUtils.info("Telegram error reply suppressed by errorPolicy for peer=${message.peerId}")
+            gatewayLogEventInfo(
+                "gateway/message",
+                "message.outbound",
+                "telegram error reply suppressed by policy",
+                meta: gatewayLogMeta()
+                    .string("channel", "telegram")
+                    .string("accountId", accountId)
+                    .identityHash("peerHash", message.peerId)
+                    .string("status", "suppressed")
+                    .string("reason", "error_policy")
+                    .object()
+            )
             return
         }
         let reply = "Gateway agent failed: ${error.message}"
@@ -1125,7 +1313,19 @@ public class GatewayService {
                 accountId: accountId
             )
         } catch (sendError: Exception) {
-            LogUtils.error("Telegram error reply delivery failed: ${sendError.message}")
+            gatewayLogEventError(
+                "gateway/message",
+                "message.send.failed",
+                "telegram error reply delivery failed",
+                meta: gatewayLogMeta()
+                    .string("channel", "telegram")
+                    .string("accountId", accountId)
+                    .identityHash("peerHash", message.peerId)
+                    .string("status", "failed")
+                    .string("errorKind", "error_reply_failed")
+                    .rawString("error", sendError.message)
+                    .object()
+            )
         }
     }
 
@@ -2568,7 +2768,19 @@ public class GatewayService {
         try {
             File.writeTo(store.sessionsRoot().join("sessions.json"), indexRoot.toJsonString().toArray())
         } catch (e: Exception) {
-            LogUtils.error("Telegram native command failed to persist session option: ${e.message}")
+            gatewayLogEventError(
+                "gateway/session",
+                "session.write.failed",
+                "telegram native command failed to persist session option",
+                meta: gatewayLogMeta()
+                    .string("channel", "telegram")
+                    .string("accountId", accountId)
+                    .string("sessionKey", sessionKey)
+                    .string("field", field)
+                    .string("errorKind", "session_option_persist_failed")
+                    .rawString("error", e.message)
+                    .object()
+            )
         }
     }
 
@@ -2824,7 +3036,20 @@ public class GatewayService {
                 accountId: accountId
             )
         } catch (e: Exception) {
-            LogUtils.info("Telegram plugin command progress placeholder skipped: ${e.message}")
+            gatewayLogEventInfo(
+                "gateway/message",
+                "message.send.failed",
+                "telegram plugin command progress placeholder skipped",
+                meta: gatewayLogMeta()
+                    .string("channel", "telegram")
+                    .string("accountId", accountId)
+                    .identityHash("peerHash", message.peerId)
+                    .string("command", command)
+                    .string("status", "skipped")
+                    .string("errorKind", "plugin_progress_failed")
+                    .rawString("error", e.message)
+                    .object()
+            )
         }
         if (!progressMessageId.trimAscii().isEmpty()) {
             payload.put("progressMessageId", JsonString(progressMessageId.trimAscii()))
@@ -3948,9 +4173,17 @@ public class GatewayService {
                 )
                 gatewayLogEventInfo(
                     "gateway/message",
-                    "message.send_failed",
+                    "message.send.failed",
                     "outbound message cancelled by plugin hook",
-                    fields: "channel=${nm} accountId=${accountId} peerHash=${gatewayLogIdentityHash(peerId)} status=skipped errorKind=plugin_cancelled error=${gatewayLogEventValue(reason)} durationMs=${this.startNowMs() - sendStartedAtMs}"
+                    meta: gatewayLogMeta()
+                        .string("channel", nm)
+                        .string("accountId", accountId)
+                        .identityHash("peerHash", peerId)
+                        .string("status", "skipped")
+                        .string("errorKind", "plugin_cancelled")
+                        .rawString("error", reason)
+                        .int("durationMs", this.startNowMs() - sendStartedAtMs)
+                        .object()
                 )
                 return ""
             } else {
@@ -3967,14 +4200,27 @@ public class GatewayService {
                 "gateway/message",
                 "message.outbound",
                 "outbound policy degraded",
-                fields: "channel=${nm} accountId=${accountId} peerHash=${gatewayLogIdentityHash(peerId)} status=degraded reason=${gatewayLogEventValue(policyReason)}"
+                meta: gatewayLogMeta()
+                    .string("channel", nm)
+                    .string("accountId", accountId)
+                    .identityHash("peerHash", peerId)
+                    .string("status", "degraded")
+                    .rawString("reason", policyReason)
+                    .object()
             )
         }
         gatewayLogEventInfo(
             "gateway/message",
             "message.outbound",
             "outbound message prepared",
-            fields: "channel=${nm} accountId=${accountId} peerHash=${gatewayLogIdentityHash(peerId)} textLen=${effectiveText.size} replyTo=${if (effectiveReplyToMessageId.isSome()) { "true" } else { "false" }} replyInThread=${effectiveReplyInThread}"
+            meta: gatewayLogMeta()
+                .string("channel", nm)
+                .string("accountId", accountId)
+                .identityHash("peerHash", peerId)
+                .int("textLen", Int64(effectiveText.size))
+                .bool("replyTo", effectiveReplyToMessageId.isSome())
+                .bool("replyInThread", effectiveReplyInThread)
+                .object()
         )
         let outbound = OutboundMessage(
             channelTypeFromAdapterName(nm),
@@ -4002,7 +4248,16 @@ public class GatewayService {
                 "gateway/message",
                 "message.sent",
                 "outbound message sent",
-                fields: "channel=${nm} accountId=${canonicalAccountId} rawAccountId=${accountId} peerHash=${gatewayLogIdentityHash(peerId)} textLen=${effectiveText.size} messageId=${gatewayLogEventValue(directSend.messageId)} status=ok durationMs=${this.startNowMs() - sendStartedAtMs}"
+                meta: gatewayLogMeta()
+                    .string("channel", nm)
+                    .string("accountId", canonicalAccountId)
+                    .string("rawAccountId", accountId)
+                    .identityHash("peerHash", peerId)
+                    .int("textLen", Int64(effectiveText.size))
+                    .string("messageId", directSend.messageId)
+                    .string("status", "ok")
+                    .int("durationMs", this.startNowMs() - sendStartedAtMs)
+                    .object()
             )
             return directSend.messageId
         }
@@ -4023,7 +4278,16 @@ public class GatewayService {
                 "gateway/message",
                 "message.sent",
                 "outbound message sent",
-                fields: "channel=${nm} accountId=${canonicalAccountId} rawAccountId=${accountId} peerHash=${gatewayLogIdentityHash(peerId)} textLen=${effectiveText.size} messageId=${gatewayLogEventValue(send.messageId)} status=ok durationMs=${this.startNowMs() - sendStartedAtMs}"
+                meta: gatewayLogMeta()
+                    .string("channel", nm)
+                    .string("accountId", canonicalAccountId)
+                    .string("rawAccountId", accountId)
+                    .identityHash("peerHash", peerId)
+                    .int("textLen", Int64(effectiveText.size))
+                    .string("messageId", send.messageId)
+                    .string("status", "ok")
+                    .int("durationMs", this.startNowMs() - sendStartedAtMs)
+                    .object()
             )
             return send.messageId
         }
@@ -4046,9 +4310,19 @@ public class GatewayService {
         )
         gatewayLogEventError(
             "gateway/message",
-            "message.send_failed",
+            "message.send.failed",
             "outbound message send failed",
-            fields: "channel=${nm} accountId=${canonicalAccountId} rawAccountId=${accountId} peerHash=${gatewayLogIdentityHash(peerId)} textLen=${effectiveText.size} status=failed errorKind=${send.reasonKind} error=${gatewayLogEventValue(finalReason)} durationMs=${this.startNowMs() - sendStartedAtMs}"
+            meta: gatewayLogMeta()
+                .string("channel", nm)
+                .string("accountId", canonicalAccountId)
+                .string("rawAccountId", accountId)
+                .identityHash("peerHash", peerId)
+                .int("textLen", Int64(effectiveText.size))
+                .string("status", "failed")
+                .string("errorKind", send.reasonKind)
+                .rawString("error", finalReason)
+                .int("durationMs", this.startNowMs() - sendStartedAtMs)
+                .object()
         )
         throw Exception("send failed for channel='${nm}' peer=${peerId} reasonKind=${send.reasonKind} lastReason=${finalReason}")
     }

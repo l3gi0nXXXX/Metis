@@ -5,8 +5,8 @@ import magic.core.agent.*
 import magic.core.tool.*
 import magic.interaction.*
 import magic.jsonable.TypeSchema
-import magic.prelude.*
 import magic.log.LogUtils
+import magic.prelude.*
 
 import metis.core.{RuntimeToolInvocationPolicyContext, gatewayMainRuntimeRequiredToolNames, gatewayNotifyCurrentToolRuntimeStatus, resolveRuntimeToolPolicyFromRoot, runtimePopToolInvocationPolicyContext, runtimePushToolInvocationPolicyContext, runtimeToolInvocationAllowedFromRoot, runtimeToolNamesContain, runtimeToolNamesContainAll}
 import metis.core.model.CliModelManager
@@ -665,8 +665,20 @@ private func gatewayLogReplyMemory(
 ): Unit {
     let pid = gatewayProcessCurrentPid()
     let rssKb = gatewayProcessResidentSetKb()
-    LogUtils.info(
-        "Gateway.reply.memory: stage=${stage}, pid=${pid}, rssKb=${rssKb}, channel=${channelName.trimAscii().toAsciiLower()}, agentId=${agentId.trimAscii()}, conversationKey=${conversationKey}, model=${modelName.trimAscii()}, note=${note.trimAscii()}"
+    gatewayLogEventDebug(
+        "gateway/agent",
+        "process.memory",
+        "gateway reply memory snapshot",
+        meta: gatewayLogMeta()
+            .string("stage", stage)
+            .int("pid", pid)
+            .int("rssKb", rssKb)
+            .string("channel", channelName.trimAscii().toAsciiLower())
+            .string("agentId", agentId)
+            .string("sessionKey", conversationKey)
+            .string("model", modelName)
+            .rawString("note", note)
+            .object()
     )
 }
 
@@ -769,8 +781,17 @@ public class AgentBridge {
     ): String {
         synchronized(this.replyLock) {
             let effectiveAgentId = gatewayTurnEffectiveAgentId(agentId, turnContext)
-            LogUtils.info(
-                "Gateway.reply: channel=${channelName.trimAscii().toAsciiLower()}, agentId=${effectiveAgentId}, conversationKey=${conversationKey}, promptChars=${prompt.size}"
+            gatewayLogEventInfo(
+                "gateway/agent",
+                "model.request",
+                "gateway reply requested",
+                meta: gatewayLogMeta()
+                    .string("channel", channelName.trimAscii().toAsciiLower())
+                    .string("agentId", effectiveAgentId)
+                    .string("sessionKey", conversationKey)
+                    .int("promptChars", Int64(prompt.size))
+                    .bool("streaming", streamingEnabled)
+                    .object()
             )
             match (gatewayAgentBridgeReplyRunnerForTest) {
                 case Some(runner) => return runner(conversationKey, prompt, channelName, effectiveAgentId, streamingEnabled, streamChunkHook)
@@ -803,7 +824,18 @@ public class AgentBridge {
                 let forcedSkillCheck = parseForcedSkillFromSlash(trimmedPrompt, agentId: effectiveAgentId,
                     runtimeSkillNames: gatewayRouteRuntimeSkillNames(turnContext))
                 if (forcedSkillCheck.isNone()) {
-                    LogUtils.info("Gateway.reply: unknown slash command, bypass LLM and history")
+                    gatewayLogEventInfo(
+                        "gateway/agent",
+                        "model.request",
+                        "unknown slash command bypassed model",
+                        meta: gatewayLogMeta()
+                            .string("channel", channelName.trimAscii().toAsciiLower())
+                            .string("agentId", effectiveAgentId)
+                            .string("sessionKey", conversationKey)
+                            .string("status", "bypassed")
+                            .string("reason", "unknown_slash_command")
+                            .object()
+                    )
                     return "这不是一个有效的命令。可用 /cron 管理定时任务，/subagents 管理后台 subagent，或使用 /skills list 查看可用技能，或使用 /<skillName> 参数（例如 /weather 上海）。"
                 }
             }
@@ -853,8 +885,17 @@ public class AgentBridge {
                         "不要给出“去启用配置”的建议。\n\n用户问题：${prompt}"
                 }
             }
-            LogUtils.info(
-                "Gateway.reply: forcedSkill=${match (forcedSkillName) { case Some(s) => s case None => "none" }}, effectivePromptChars=${effectivePrompt.size}"
+            gatewayLogEventInfo(
+                "gateway/skills",
+                "skill.matched",
+                "gateway skill decision completed",
+                meta: gatewayLogMeta()
+                    .string("channel", channelName.trimAscii().toAsciiLower())
+                    .string("agentId", effectiveAgentId)
+                    .string("sessionKey", conversationKey)
+                    .string("forcedSkill", match (forcedSkillName) { case Some(s) => s case None => "none" })
+                    .int("effectivePromptChars", Int64(effectivePrompt.size))
+                    .object()
             )
             let skillNotice = gatewaySkillSelectionUserNotice(skillsEnabled, selectedSkillNameOpt)
             if (!skillNotice.isEmpty()) {
@@ -863,9 +904,26 @@ public class AgentBridge {
             match (selectedSkillNameOpt) {
                 case Some(skillName) =>
                     let enabled = SkillsPrompt.isSkillEnabledByName(skillName)
-                    LogUtils.info("Skills: matched skill='${skillName}' for prompt (enabled=${enabled})")
+                    gatewayLogEventInfo(
+                        "gateway/skills",
+                        "skill.matched",
+                        "gateway skill matched",
+                        meta: gatewayLogMeta()
+                            .string("skill", skillName)
+                            .bool("enabled", enabled)
+                            .string("agentId", effectiveAgentId)
+                            .object()
+                    )
                 case None =>
-                    LogUtils.info("Skills: no matched skill for prompt; no skill logic will be injected")
+                    gatewayLogEventDebug(
+                        "gateway/skills",
+                        "skill.skipped",
+                        "no gateway skill matched",
+                        meta: gatewayLogMeta()
+                            .string("agentId", effectiveAgentId)
+                            .string("reason", "no_match")
+                            .object()
+                    )
             }
 
             var answer: String = ""
@@ -896,8 +954,18 @@ public class AgentBridge {
                 firstModel = false
                 modelOrderSb.append(m.fullName)
             }
-            LogUtils.info(
-                "Gateway pre-call: channel=${channelName.trimAscii().toAsciiLower()}, selectedSkill=${selectedSkillForLog}, enabledSkill=${enabledSkillForLog}, modelOrder=[${modelOrderSb.toString()}]"
+            gatewayLogEventInfo(
+                "gateway/model",
+                "model.request",
+                "gateway model order resolved",
+                meta: gatewayLogMeta()
+                    .string("channel", channelName.trimAscii().toAsciiLower())
+                    .string("agentId", effectiveAgentId)
+                    .string("selectedSkill", selectedSkillForLog)
+                    .string("enabledSkill", enabledSkillForLog)
+                    .int("modelCount", Int64(allModels.size))
+                    .rawString("modelOrder", modelOrderSb.toString())
+                    .object()
             )
             let preCallStartedAtMs = DateTime.now().toUnixTimeStamp().toMilliseconds()
 

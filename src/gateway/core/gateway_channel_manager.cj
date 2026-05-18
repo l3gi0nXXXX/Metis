@@ -8,7 +8,7 @@ import std.collection.{ArrayList, HashMap}
 import std.convert.Parsable
 import std.sync.Mutex
 import std.time.DateTime
-import stdx.encoding.json.{JsonArray, JsonObject, JsonString}
+import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString, JsonValue}
 
 public func gatewayCanonicalChannelAccountId(channelId: String, rawAccountId: String): String {
     let channel = channelId.trimAscii().toAsciiLower()
@@ -66,50 +66,215 @@ public func gatewayLogIdentityHash(raw: String): String {
     "redacted-len-${detail.size}"
 }
 
-public func gatewayLogEventLine(subsystem: String, event: String, summary: String, fields!: String = ""): String {
-    let tail = fields.trimAscii()
+public class GatewayLogMetaBuilder {
+    private let meta: JsonObject = JsonObject()
+
+    public init() {}
+
+    public func string(key: String, value: String): GatewayLogMetaBuilder {
+        let normalized = key.trimAscii()
+        if (!normalized.isEmpty()) {
+            this.meta.put(normalized, JsonString(value.trimAscii()))
+        }
+        this
+    }
+
+    public func rawString(key: String, value: String): GatewayLogMetaBuilder {
+        let normalized = key.trimAscii()
+        if (!normalized.isEmpty()) {
+            this.meta.put(normalized, JsonString(value))
+        }
+        this
+    }
+
+    public func int(key: String, value: Int64): GatewayLogMetaBuilder {
+        let normalized = key.trimAscii()
+        if (!normalized.isEmpty()) {
+            this.meta.put(normalized, JsonInt(value))
+        }
+        this
+    }
+
+    public func bool(key: String, value: Bool): GatewayLogMetaBuilder {
+        let normalized = key.trimAscii()
+        if (!normalized.isEmpty()) {
+            this.meta.put(normalized, JsonBool(value))
+        }
+        this
+    }
+
+    public func value(key: String, value: JsonValue): GatewayLogMetaBuilder {
+        let normalized = key.trimAscii()
+        if (!normalized.isEmpty()) {
+            this.meta.put(normalized, value)
+        }
+        this
+    }
+
+    public func identityHash(key: String, raw: String): GatewayLogMetaBuilder {
+        this.string(key, gatewayLogIdentityHash(raw))
+    }
+
+    public func object(): JsonObject {
+        this.meta
+    }
+}
+
+public func gatewayLogMeta(): GatewayLogMetaBuilder {
+    GatewayLogMetaBuilder()
+}
+
+private func gatewayLogCanonicalEvent(event: String): String {
+    let normalized = event.trimAscii()
+    match (normalized) {
+        case "message.send_failed" => "message.send.failed"
+        case "rpc.failed" => "rpc.request.failed"
+        case "rpc.slow" => "rpc.request.slow"
+        case "gateway.shutdown" => "gateway.stopped"
+        case _ => normalized
+    }
+}
+
+private func gatewayLogMetaFromFields(fields: String): JsonObject {
+    let meta = JsonObject()
+    for (part in fields.trimAscii().split(" ")) {
+        let token = part.trimAscii()
+        if (token.isEmpty()) {
+            continue
+        }
+        match (token.indexOf(b'=')) {
+            case Some(pivot) =>
+                let key = token[0..pivot].trimAscii()
+                var value = token[pivot + 1..].trimAscii()
+                if (key.isEmpty()) {
+                    continue
+                }
+                if (value.startsWith("\"") && value.endsWith("\"") && value.size >= 2) {
+                    value = value[1..value.size - 1].replace("\\\"", "\"").replace("\\\\", "\\")
+                }
+                let lower = value.toAsciiLower()
+                if (lower == "true") {
+                    meta.put(key, JsonBool(true))
+                } else if (lower == "false") {
+                    meta.put(key, JsonBool(false))
+                } else {
+                    try {
+                        meta.put(key, JsonInt(Int64.parse(value)))
+                    } catch (_: Exception) {
+                        meta.put(key, JsonString(value))
+                    }
+                }
+            case None => ()
+        }
+    }
+    meta
+}
+
+private func gatewayLogMergeMeta(meta: JsonObject, fields: String): JsonObject {
+    let out = gatewayLogMetaFromFields(fields)
+    for (key in meta.getFields().keys()) {
+        match (meta.get(key)) {
+            case Some(value) => out.put(key, value)
+            case None => ()
+        }
+    }
+    out
+}
+
+private func gatewayLogConsoleValue(value: JsonValue): String {
+    match (value) {
+        case s: JsonString =>
+            let raw = s.getValue().trimAscii()
+            if (
+                raw.isEmpty() ||
+                raw.contains(" ") ||
+                raw.contains("\"") ||
+                raw.contains("\\") ||
+                raw.contains("\n") ||
+                raw.contains("\r") ||
+                raw.contains("\t")
+            ) {
+                return gatewayLogEventValue(raw)
+            }
+            raw
+        case _ => value.toJsonString()
+    }
+}
+
+private func gatewayLogConsoleFields(meta: JsonObject): String {
+    let parts = ArrayList<String>()
+    for (key in meta.getFields().keys()) {
+        match (meta.get(key)) {
+            case Some(value) => parts.add("${key}=${gatewayLogConsoleValue(value)}")
+            case None => ()
+        }
+    }
+    String.join(parts.toArray(), delimiter: " ")
+}
+
+public func gatewayLogEventLine(
+    subsystem: String,
+    event: String,
+    summary: String,
+    meta!: JsonObject = JsonObject(),
+    fields!: String = ""
+): String {
+    let canonicalEvent = gatewayLogCanonicalEvent(event)
+    let tail = gatewayLogConsoleFields(gatewayLogMergeMeta(meta, fields)).trimAscii()
     if (tail.isEmpty()) {
-        return "Gateway.event subsystem=${subsystem} event=${event} message=${gatewayLogEventValue(summary)}"
+        return "Gateway.event subsystem=${subsystem} event=${canonicalEvent} message=${gatewayLogEventValue(summary)}"
     }
-    "Gateway.event subsystem=${subsystem} event=${event} message=${gatewayLogEventValue(summary)} ${tail}"
+    "Gateway.event subsystem=${subsystem} event=${canonicalEvent} message=${gatewayLogEventValue(summary)} ${tail}"
 }
 
-public func gatewayLogEventInfo(subsystem: String, event: String, summary: String, fields!: String = ""): Unit {
-    let meta = JsonObject()
-    if (!fields.trimAscii().isEmpty()) {
-        meta.put("fields", JsonString(fields.trimAscii()))
-    }
+public func gatewayLogEventInfo(
+    subsystem: String,
+    event: String,
+    summary: String,
+    meta!: JsonObject = JsonObject(),
+    fields!: String = ""
+): Unit {
+    let canonicalEvent = gatewayLogCanonicalEvent(event)
+    let mergedMeta = gatewayLogMergeMeta(meta, fields)
     metisCreateSubsystemLogger(subsystem).info(
-        event,
+        canonicalEvent,
         summary,
-        meta: meta,
-        consoleMessage: gatewayLogEventLine(subsystem, event, summary, fields: fields)
+        meta: mergedMeta,
+        consoleMessage: gatewayLogEventLine(subsystem, canonicalEvent, summary, meta: mergedMeta)
     )
 }
 
-public func gatewayLogEventDebug(subsystem: String, event: String, summary: String, fields!: String = ""): Unit {
-    let meta = JsonObject()
-    if (!fields.trimAscii().isEmpty()) {
-        meta.put("fields", JsonString(fields.trimAscii()))
-    }
+public func gatewayLogEventDebug(
+    subsystem: String,
+    event: String,
+    summary: String,
+    meta!: JsonObject = JsonObject(),
+    fields!: String = ""
+): Unit {
+    let canonicalEvent = gatewayLogCanonicalEvent(event)
+    let mergedMeta = gatewayLogMergeMeta(meta, fields)
     metisCreateSubsystemLogger(subsystem).debug(
-        event,
+        canonicalEvent,
         summary,
-        meta: meta,
-        consoleMessage: gatewayLogEventLine(subsystem, event, summary, fields: fields)
+        meta: mergedMeta,
+        consoleMessage: gatewayLogEventLine(subsystem, canonicalEvent, summary, meta: mergedMeta)
     )
 }
 
-public func gatewayLogEventError(subsystem: String, event: String, summary: String, fields!: String = ""): Unit {
-    let meta = JsonObject()
-    if (!fields.trimAscii().isEmpty()) {
-        meta.put("fields", JsonString(fields.trimAscii()))
-    }
+public func gatewayLogEventError(
+    subsystem: String,
+    event: String,
+    summary: String,
+    meta!: JsonObject = JsonObject(),
+    fields!: String = ""
+): Unit {
+    let canonicalEvent = gatewayLogCanonicalEvent(event)
+    let mergedMeta = gatewayLogMergeMeta(meta, fields)
     metisCreateSubsystemLogger(subsystem).error(
-        event,
+        canonicalEvent,
         summary,
-        meta: meta,
-        consoleMessage: gatewayLogEventLine(subsystem, event, summary, fields: fields)
+        meta: mergedMeta,
+        consoleMessage: gatewayLogEventLine(subsystem, canonicalEvent, summary, meta: mergedMeta)
     )
 }
 
@@ -222,13 +387,20 @@ public class GatewayChannelManager {
 
     private func timingLog(step: String, startMs: Int64, channelId!: String = "", accountId!: String = ""): Unit {
         let elapsedMs = this.timingNowMs() - startMs
-        let channelPart = if (channelId.trimAscii().isEmpty()) { "" } else { " channel=${channelId}" }
-        let accountPart = if (accountId.trimAscii().isEmpty()) { "" } else { " account=${accountId}" }
+        let meta = gatewayLogMeta()
+            .string("phase", step)
+            .int("durationMs", elapsedMs)
+        if (!channelId.trimAscii().isEmpty()) {
+            meta.string("channel", channelId)
+        }
+        if (!accountId.trimAscii().isEmpty()) {
+            meta.string("accountId", accountId)
+        }
         gatewayLogEventDebug(
             "gateway/channel",
             "channel.timing",
             "channel timing",
-            fields: "phase=${step}${channelPart}${accountPart} durationMs=${elapsedMs}"
+            meta: meta.object()
         )
         let scope = if (channelId.trimAscii().isEmpty()) {
             "channel:${step}"
@@ -359,7 +531,13 @@ public class GatewayChannelManager {
                 "gateway/channel/${entry.channelId}",
                 "channel.starting",
                 "channel account start skipped",
-                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=skipped reason=runtime-start-suppressed"
+                meta: gatewayLogMeta()
+                    .string("channel", entry.channelId)
+                    .string("accountId", entry.accountId)
+                    .string("phase", "start")
+                    .string("status", "skipped")
+                    .string("reason", "runtime-start-suppressed")
+                    .object()
             )
             return this.lifecycleAccountRow(entry, false, "skipped", "runtime-start-suppressed", row)
         }
@@ -367,7 +545,12 @@ public class GatewayChannelManager {
             "gateway/channel/${entry.channelId}",
             "channel.starting",
             "channel account starting",
-            fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=starting"
+            meta: gatewayLogMeta()
+                .string("channel", entry.channelId)
+                .string("accountId", entry.accountId)
+                .string("phase", "start")
+                .string("status", "starting")
+                .object()
         )
         gatewayChannelRuntimeMarkStarting(entry.channelId, accountId: entry.accountId)
         try {
@@ -383,7 +566,12 @@ public class GatewayChannelManager {
                 "gateway/channel/${entry.channelId}",
                 "channel.started",
                 "channel account running",
-                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=ok"
+                meta: gatewayLogMeta()
+                    .string("channel", entry.channelId)
+                    .string("accountId", entry.accountId)
+                    .string("phase", "start")
+                    .string("status", "ok")
+                    .object()
             )
             return this.lifecycleAccountRow(entry, true, "started", "", runtime)
         } catch (e: Exception) {
@@ -399,7 +587,14 @@ public class GatewayChannelManager {
                 "gateway/channel/${entry.channelId}",
                 "channel.failed",
                 "channel account start failed",
-                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=failed errorKind=start_failed error=${gatewayLogEventValue(reason)}"
+                meta: gatewayLogMeta()
+                    .string("channel", entry.channelId)
+                    .string("accountId", entry.accountId)
+                    .string("phase", "start")
+                    .string("status", "failed")
+                    .string("errorKind", "start_failed")
+                    .rawString("error", reason)
+                    .object()
             )
             return this.lifecycleAccountRow(entry, false, "not-started", reason, runtime)
         }
@@ -422,7 +617,13 @@ public class GatewayChannelManager {
                 "gateway/channel/${entry.channelId}",
                 "channel.stopped",
                 "channel account stopped",
-                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=stop status=ok reason=${gatewayLogEventValue(reason)}"
+                meta: gatewayLogMeta()
+                    .string("channel", entry.channelId)
+                    .string("accountId", entry.accountId)
+                    .string("phase", "stop")
+                    .string("status", "ok")
+                    .rawString("reason", reason)
+                    .object()
             )
             return this.lifecycleAccountRow(entry, true, "stopped", "", runtime)
         } catch (e: Exception) {
@@ -437,7 +638,14 @@ public class GatewayChannelManager {
                 "gateway/channel/${entry.channelId}",
                 "channel.failed",
                 "channel account stop failed",
-                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=stop status=failed errorKind=stop_failed error=${gatewayLogEventValue(safeReason)}"
+                meta: gatewayLogMeta()
+                    .string("channel", entry.channelId)
+                    .string("accountId", entry.accountId)
+                    .string("phase", "stop")
+                    .string("status", "failed")
+                    .string("errorKind", "stop_failed")
+                    .rawString("error", safeReason)
+                    .object()
             )
             return this.lifecycleAccountRow(entry, false, "not-stopped", safeReason, runtime)
         }
@@ -644,7 +852,14 @@ public class GatewayChannelManager {
             "gateway/channel",
             "channel.registered",
             "channel account registered",
-            fields: "channel=${registered.channelId} accountId=${registered.accountId} phase=register status=ok configured=${registered.configured} enabled=${registered.enabled}"
+            meta: gatewayLogMeta()
+                .string("channel", registered.channelId)
+                .string("accountId", registered.accountId)
+                .string("phase", "register")
+                .string("status", "ok")
+                .bool("configured", registered.configured)
+                .bool("enabled", registered.enabled)
+                .object()
         )
     }
 
@@ -727,7 +942,13 @@ public class GatewayChannelManager {
                 "gateway/channel/${entry.channelId}",
                 "channel.starting",
                 "channel account start skipped",
-                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=skipped reason=runtime-start-suppressed"
+                meta: gatewayLogMeta()
+                    .string("channel", entry.channelId)
+                    .string("accountId", entry.accountId)
+                    .string("phase", "start")
+                    .string("status", "skipped")
+                    .string("reason", "runtime-start-suppressed")
+                    .object()
             )
             this.timingLog("skip-cannot-start", entryStartMs, channelId: entry.channelId, accountId: entry.accountId)
             return
@@ -736,7 +957,12 @@ public class GatewayChannelManager {
             "gateway/channel/${entry.channelId}",
             "channel.starting",
             "channel account starting",
-            fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=starting"
+            meta: gatewayLogMeta()
+                .string("channel", entry.channelId)
+                .string("accountId", entry.accountId)
+                .string("phase", "start")
+                .string("status", "starting")
+                .object()
         )
         this.timingLog("can-start-checked", entryStartMs, channelId: entry.channelId, accountId: entry.accountId)
         gatewayChannelRuntimeMarkStarting(entry.channelId, accountId: entry.accountId)
@@ -759,7 +985,13 @@ public class GatewayChannelManager {
                 "gateway/channel/${entry.channelId}",
                 "channel.started",
                 "channel account running",
-                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=ok durationMs=${this.timingNowMs() - entryStartMs}"
+                meta: gatewayLogMeta()
+                    .string("channel", entry.channelId)
+                    .string("accountId", entry.accountId)
+                    .string("phase", "start")
+                    .string("status", "ok")
+                    .int("durationMs", this.timingNowMs() - entryStartMs)
+                    .object()
             )
         } catch (e: Exception) {
             this.updateLiveAccount(entry.channelId, entry.accountId, { state =>
@@ -773,7 +1005,14 @@ public class GatewayChannelManager {
                 "gateway/channel/${entry.channelId}",
                 "channel.failed",
                 "channel account start failed",
-                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=failed errorKind=start_failed error=${gatewayLogEventValue(e.message)}"
+                meta: gatewayLogMeta()
+                    .string("channel", entry.channelId)
+                    .string("accountId", entry.accountId)
+                    .string("phase", "start")
+                    .string("status", "failed")
+                    .string("errorKind", "start_failed")
+                    .rawString("error", e.message)
+                    .object()
             )
             this.timingLog("start-failed", adapterStartMs, channelId: entry.channelId, accountId: entry.accountId)
             this.timingLog("entry-total-failed", entryStartMs, channelId: entry.channelId, accountId: entry.accountId)
@@ -794,7 +1033,12 @@ public class GatewayChannelManager {
             "gateway/channel",
             "channel.startup_summary",
             "channel startup completed",
-            fields: "phase=start status=ok accountCount=${this.adapters.size} durationMs=${this.timingNowMs() - startMs}"
+            meta: gatewayLogMeta()
+                .string("phase", "start")
+                .string("status", "ok")
+                .int("accountCount", Int64(this.adapters.size))
+                .int("durationMs", this.timingNowMs() - startMs)
+                .object()
         )
     }
 
@@ -842,7 +1086,13 @@ public class GatewayChannelManager {
                     "gateway/channel/${entry.channelId}",
                     "channel.stopped",
                     "channel account stopped",
-                    fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=stop status=ok reason=${gatewayLogEventValue(reason)}"
+                    meta: gatewayLogMeta()
+                        .string("channel", entry.channelId)
+                        .string("accountId", entry.accountId)
+                        .string("phase", "stop")
+                        .string("status", "ok")
+                        .rawString("reason", reason)
+                        .object()
                 )
             } catch (e: Exception) {
                 this.updateLiveAccount(entry.channelId, entry.accountId, { state =>
@@ -855,7 +1105,14 @@ public class GatewayChannelManager {
                     "gateway/channel/${entry.channelId}",
                     "channel.failed",
                     "channel account stop failed",
-                    fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=stop status=failed errorKind=stop_failed error=${gatewayLogEventValue(e.message)}"
+                    meta: gatewayLogMeta()
+                        .string("channel", entry.channelId)
+                        .string("accountId", entry.accountId)
+                        .string("phase", "stop")
+                        .string("status", "failed")
+                        .string("errorKind", "stop_failed")
+                        .rawString("error", e.message)
+                        .object()
                 )
             }
         }
@@ -934,7 +1191,13 @@ public class GatewayChannelManager {
                     "gateway/channel/${entry.channelId}",
                     "channel.pull",
                     "channel pull completed",
-                    fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=pull status=ok inboundCount=${messages.size}"
+                    meta: gatewayLogMeta()
+                        .string("channel", entry.channelId)
+                        .string("accountId", entry.accountId)
+                        .string("phase", "pull")
+                        .string("status", "ok")
+                        .int("inboundCount", Int64(messages.size))
+                        .object()
                 )
                 for (message in messages) {
                     try {
@@ -950,7 +1213,15 @@ public class GatewayChannelManager {
                             "gateway/channel/${entry.channelId}",
                             "channel.failed",
                             "channel inbound handler failed",
-                            fields: "channel=${channelToString(message.channel)} accountId=${entry.accountId} phase=inbound status=failed peerHash=${gatewayLogIdentityHash(message.peerId)} errorKind=inbound_failed error=${gatewayLogEventValue(e.message)}"
+                            meta: gatewayLogMeta()
+                                .string("channel", channelToString(message.channel))
+                                .string("accountId", entry.accountId)
+                                .string("phase", "inbound")
+                                .string("status", "failed")
+                                .identityHash("peerHash", message.peerId)
+                                .string("errorKind", "inbound_failed")
+                                .rawString("error", e.message)
+                                .object()
                         )
                     }
                 }
@@ -965,7 +1236,14 @@ public class GatewayChannelManager {
                     "gateway/channel/${entry.channelId}",
                     "channel.failed",
                     "channel pull failed",
-                    fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=pull status=failed errorKind=pull_failed error=${gatewayLogEventValue(e.message)}"
+                    meta: gatewayLogMeta()
+                        .string("channel", entry.channelId)
+                        .string("accountId", entry.accountId)
+                        .string("phase", "pull")
+                        .string("status", "failed")
+                        .string("errorKind", "pull_failed")
+                        .rawString("error", e.message)
+                        .object()
                 )
             }
         }
@@ -1000,7 +1278,14 @@ public class GatewayChannelManager {
                         "gateway/channel/${entry.channelId}",
                         "channel.send",
                         "channel send completed",
-                        fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=send status=ok peerHash=${gatewayLogIdentityHash(outbound.peerId)} textLen=${outbound.text.size}"
+                        meta: gatewayLogMeta()
+                            .string("channel", entry.channelId)
+                            .string("accountId", entry.accountId)
+                            .string("phase", "send")
+                            .string("status", "ok")
+                            .identityHash("peerHash", outbound.peerId)
+                            .int("textLen", Int64(outbound.text.size))
+                            .object()
                     )
                     return GatewayChannelSendResult(true, rawAccountId: rawAccountId, canonicalAccountId: requiredAccountId)
                 case SendResult.Failed(reason) =>
@@ -1013,7 +1298,16 @@ public class GatewayChannelManager {
                         "gateway/channel/${entry.channelId}",
                         "channel.failed",
                         "channel send failed",
-                        fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=send status=failed peerHash=${gatewayLogIdentityHash(outbound.peerId)} textLen=${outbound.text.size} errorKind=send_failed error=${gatewayLogEventValue(safeReason)}"
+                        meta: gatewayLogMeta()
+                            .string("channel", entry.channelId)
+                            .string("accountId", entry.accountId)
+                            .string("phase", "send")
+                            .string("status", "failed")
+                            .identityHash("peerHash", outbound.peerId)
+                            .int("textLen", Int64(outbound.text.size))
+                            .string("errorKind", "send_failed")
+                            .rawString("error", safeReason)
+                            .object()
                     )
                     lastReason = "adapter send failed for channel='${normalized}' rawAccountId='${rawAccountId}' canonicalAccountId='${requiredAccountId}': ${safeReason}"
             }
@@ -1059,7 +1353,15 @@ public class GatewayChannelManager {
                         "gateway/channel/${entry.channelId}",
                         "channel.send",
                         "channel direct send completed",
-                        fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=send status=ok peerHash=${gatewayLogIdentityHash(outbound.peerId)} textLen=${outbound.text.size} messageId=${gatewayLogEventValue(sentMessageId)}"
+                        meta: gatewayLogMeta()
+                            .string("channel", entry.channelId)
+                            .string("accountId", entry.accountId)
+                            .string("phase", "send")
+                            .string("status", "ok")
+                            .identityHash("peerHash", outbound.peerId)
+                            .int("textLen", Int64(outbound.text.size))
+                            .string("messageId", sentMessageId)
+                            .object()
                     )
                     return GatewayChannelSendResult(
                         true,
@@ -1079,7 +1381,16 @@ public class GatewayChannelManager {
                     "gateway/channel/${entry.channelId}",
                     "channel.failed",
                     "channel direct send failed",
-                    fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=send status=failed peerHash=${gatewayLogIdentityHash(outbound.peerId)} textLen=${outbound.text.size} errorKind=send_failed error=${gatewayLogEventValue(safeReason)}"
+                    meta: gatewayLogMeta()
+                        .string("channel", entry.channelId)
+                        .string("accountId", entry.accountId)
+                        .string("phase", "send")
+                        .string("status", "failed")
+                        .identityHash("peerHash", outbound.peerId)
+                        .int("textLen", Int64(outbound.text.size))
+                        .string("errorKind", "send_failed")
+                        .rawString("error", safeReason)
+                        .object()
                 )
                 return GatewayChannelSendResult(
                     false,
