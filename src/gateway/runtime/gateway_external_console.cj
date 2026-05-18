@@ -1,14 +1,16 @@
 package metis.gateway.runtime
 
 import metis.core.config.{CliConfig, CliSettingManager}
+import metis.gateway.logging.{MetisLogEvent, metisCreateSubsystemLogger}
 import metis.io.PrintUtils
 import metis.utils.InfoUtils
-import magic.log.LogUtils
 
 import std.env.getVariable
 import std.fs.{File, Path, canonicalize, exists}
 import std.process.*
 import std.time.DateTime
+
+private let gatewayExternalConsoleLogger = metisCreateSubsystemLogger("gateway/runtime")
 
 private func gatewayLaunchNowMs(): Int64 {
     DateTime.now().toUnixTimeStamp().toNanoseconds() / 1000000
@@ -20,7 +22,7 @@ public func gatewayLaunchTimingMessage(step: String, startMs: Int64, nowMs!: Int
 }
 
 private func gatewayLaunchTimingLog(step: String, startMs: Int64): Unit {
-    LogUtils.info(gatewayLaunchTimingMessage(step, startMs))
+    gatewayExternalConsoleLogger.debug(MetisLogEvent.loggingRaw, gatewayLaunchTimingMessage(step, startMs))
 }
 
 /**
@@ -167,7 +169,7 @@ public func gatewayLaunchDedicatedConsole(): Bool {
         gatewayLaunchTimingLog("nohup-launch-done", startMs)
         return true
     } catch (e: Exception) {
-        LogUtils.error("[网关] 启动独立进程失败: ${e.message}")
+        gatewayExternalConsoleLogger.error(MetisLogEvent.loggingRaw, "[网关] 启动独立进程失败: ${e.message}")
         PrintUtils.printLine(
             "[网关] 自动启动失败: ${e.message}。请手动在工程目录执行: cjpm run --name metis --run-args \"gateway serve\""
         )

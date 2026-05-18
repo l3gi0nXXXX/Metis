@@ -75,6 +75,36 @@ public class GatewayControlUiWsTest {
     }
 
     @TestCase
+    public func rpcLogDecisionKeepsNormalModeQuietButLogsFailureSlowAndVerbose(): Unit {
+        @Expect(gatewayControlUiWsShouldLogRpcSummary(true, 10, false), false)
+        @Expect(gatewayControlUiWsShouldLogRpcSummary(false, 10, false), true)
+        @Expect(gatewayControlUiWsShouldLogRpcSummary(true, 1000, false), true)
+        @Expect(gatewayControlUiWsShouldLogRpcSummary(true, 10, true), true)
+    }
+
+    @TestCase
+    public func rpcLogPreviewRedactsTokenFieldsAndTruncatesMetadata(): Unit {
+        let params = JsonObject()
+        params.put("method", JsonString("dashboard.chat.send"))
+        params.put("authToken", JsonString("secret-token-never-visible"))
+        let nested = JsonObject()
+        nested.put("deviceToken", JsonString("device-token-never-visible"))
+        params.put("device", nested)
+        var longMessage = ""
+        for (_i in 0..400) {
+            longMessage += "x"
+        }
+        params.put("message", JsonString(longMessage))
+
+        let preview = gatewayControlUiWsRedactedPreviewForTest(params)
+
+        @Expect(preview.contains("secret-token-never-visible"), false)
+        @Expect(preview.contains("device-token-never-visible"), false)
+        @Expect(preview.contains("[redacted]"), true)
+        @Expect(preview.size <= 240, true)
+    }
+
+    @TestCase
     public func chatEventPayloadCarriesSessionAndState(): Unit {
         let content = JsonArray([])
         let item = JsonObject()

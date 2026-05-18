@@ -34,13 +34,14 @@ import metis.gateway.core.{
     gatewayPersistedSessionsRootForUser
 }
 import metis.gateway.model.*
-
-import magic.log.LogUtils
+import metis.gateway.logging.{MetisLogEvent, metisCreateSubsystemLogger}
 
 import std.collection.HashMap
 import std.convert.Parsable
 import std.time.DateTime
 import stdx.encoding.json.{JsonObject, JsonString, JsonValue}
+
+private let gatewayConfigFactoryLogger = metisCreateSubsystemLogger("gateway/config")
 
 private func gatewayConfigFactoryNowMs(): Int64 {
     DateTime.now().toUnixTimeStamp().toNanoseconds() / 1000000
@@ -48,7 +49,7 @@ private func gatewayConfigFactoryNowMs(): Int64 {
 
 private func gatewayConfigFactoryTimingLog(step: String, startMs: Int64): Unit {
     let elapsedMs = gatewayConfigFactoryNowMs() - startMs
-    LogUtils.info("Gateway.factory.timing: step=${step} elapsedMs=${elapsedMs}")
+    gatewayConfigFactoryLogger.debug(MetisLogEvent.loggingRaw, "Gateway.factory.timing: step=${step} elapsedMs=${elapsedMs}")
     gatewayLogProcessMemory("factory:${step}", note: "elapsedMs=${elapsedMs}")
 }
 
@@ -173,7 +174,8 @@ public func buildGatewayServiceFromUserSettings(user: GatewayUserSettings): (Gat
                     )
                 }
             case None =>
-                LogUtils.info(
+                gatewayConfigFactoryLogger.warn(
+                    MetisLogEvent.loggingRaw,
                     "Gateway: gatewayPlugins 项 id='${pid}' 未找到可用插件（请确认已安装到 ~/.metis/gateway-plugins，并包含插件 manifest + gatewayRuntime）。"
                 )
         }

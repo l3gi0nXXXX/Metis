@@ -2,12 +2,12 @@ package metis.program
 
 import magic.utils.readFile
 import magic.jsonable.*
-import magic.config.Config
 
 import metis.cliapp.runEmbeddedPrompt
 import metis.core.config.{CliConfig, MetisConfigManager, MetisPaths, CliSettingManager, cliFindModelProviderDescriptor, cliModelProviderCatalogDescriptors, cliValidateProviderBaseUrl}
 import metis.core.mcp.{mcpConfiguredServerJson, mcpConfiguredServersJson, mcpConfiguredServersPath, mcpResolveSecretOption, mcpSetConfiguredServerJson, mcpUnsetConfiguredServerJson}
 import metis.gateway.channels.telegram.telegramPairingAccountStore
+import metis.gateway.logging.gatewayLoggingCurrentLogFile
 import metis.gateway.security.{gatewayNormalizePairingAccountId, gatewayPairingAccountStore}
 import metis.mcp.{MetisMcpServeOptions, serveMetisChannelMcp}
 import metis.gateway.runtime.{gatewayCliClient, gatewayCliShouldPrintRuntimeRequiredHint, gatewayInvokeCliAgent, gatewayInvokeCliAgentResult}
@@ -281,17 +281,17 @@ private func cliLogsPositionalTarget(args: Array<String>): String {
 
 private func cliLogsResolvePath(raw: String): Path {
     let target = raw.trimAscii()
-    if (target.isEmpty()) {
-        let configured = Config.logFile.trimAscii()
-        if (!configured.isEmpty() && exists(Path(configured))) {
-            return Path(configured)
-        }
-        return cliLogsLatestPath()
+    if (target.isEmpty() || target == "current") {
+        return cliLogsCurrentPath()
     }
     if (target.contains("/")) {
         return Path(target)
     }
     CliConfig.logsDir.join(target)
+}
+
+private func cliLogsCurrentPath(): Path {
+    Path(gatewayLoggingCurrentLogFile())
 }
 
 private func cliLogsRecentNames(limit: Int64): Array<String> {
@@ -309,18 +309,6 @@ private func cliLogsRecentNames(limit: Int64): Array<String> {
         return names
     }
     names[(Int64(names.size) - limit)..]
-}
-
-private func cliLogsLatestPath(): Path {
-    let names = cliLogsRecentNames(1)
-    if (!names.isEmpty()) {
-        return CliConfig.logsDir.join(names[names.size - 1])
-    }
-    let configured = Config.logFile.trimAscii()
-    if (!configured.isEmpty()) {
-        return Path(configured)
-    }
-    CliConfig.logsDir.join("metis.log")
 }
 
 private func cliLogsFileSize(path: Path): Int64 {
@@ -596,7 +584,7 @@ public func executeCliLogsCommand(args: Array<String>): (String, Int64) {
         return (String.join(out.toArray(), delimiter: "\n"), CLI_EXIT_OK)
     }
     if (sub == "current") {
-        let path = cliLogsLatestPath()
+        let path = cliLogsCurrentPath()
         if (jsonMode) {
             out.add(cliLogsMetaLine("logs.current", [
                 cliLogsJsonStringPair("file", path.toString()),

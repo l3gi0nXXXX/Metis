@@ -1,8 +1,7 @@
 package metis.core.support_surface_tests
 
-import magic.config.Config
-
 import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager}
+import metis.gateway.logging.{gatewayLoggingCurrentLogFile, gatewayLoggingResetForTest}
 import metis.program.executeCliLogsCommand
 import metis.program_support.*
 
@@ -21,22 +20,27 @@ private func withLogsCliTestHome<T>(block: () -> T): T {
     }
     Directory.create(testHome, recursive: true)
     let oldHome = getVariable("METIS_HOME")
-    let oldLogFile = Config.logFile
+    let oldMetisLogFile = getVariable("METIS_LOG_FILE")
     setVariable("METIS_HOME", testHome)
     CliConfig.invalidatePathCache()
     MetisConfigManager.invalidate()
     CliSettingManager.invalidate()
+    gatewayLoggingResetForTest()
     try {
         return block()
     } finally {
-        Config.logFile = oldLogFile
         match (oldHome) {
             case Some(value) => setVariable("METIS_HOME", value)
             case None => setVariable("METIS_HOME", "")
         }
+        match (oldMetisLogFile) {
+            case Some(value) => setVariable("METIS_LOG_FILE", value)
+            case None => setVariable("METIS_LOG_FILE", "")
+        }
         CliConfig.invalidatePathCache()
         MetisConfigManager.invalidate()
         CliSettingManager.invalidate()
+        gatewayLoggingResetForTest()
     }
 }
 
@@ -158,7 +162,8 @@ public class CliLocalFlowsTest {
             let third = "plain fallback line\n"
             let logPath = CliConfig.logsDir.join("2026_05_18-10_00_00_000.log")
             File.writeTo(logPath, "${first}${second}${third}".toArray())
-            Config.logFile = logPath.toString()
+            setVariable("METIS_LOG_FILE", logPath.toString())
+            gatewayLoggingResetForTest()
 
             let (recent, recentCode) = executeCliLogsCommand(["recent", "--limit", "1"])
             @Expect(recentCode, 0)
@@ -170,6 +175,7 @@ public class CliLocalFlowsTest {
             @Expect(currentCode, 0)
             @Expect(current.contains("Current log file:"), true)
             @Expect(current.contains(logPath.toString()), true)
+            @Expect(current.contains(gatewayLoggingCurrentLogFile()), true)
 
             let (tail, tailCode) = executeCliLogsCommand(["tail", "--limit", "2"])
             @Expect(tailCode, 0)
@@ -193,7 +199,8 @@ public class CliLocalFlowsTest {
             let third = "{\"ts\":\"2026-05-18T10:00:02.000Z\",\"level\":\"info\",\"subsystem\":\"gateway\",\"event\":\"three\",\"message\":\"three\"}\n"
             let logPath = CliConfig.logsDir.join("2026_05_18-10_00_01_000.log")
             File.writeTo(logPath, "${first}${second}${third}".toArray())
-            Config.logFile = logPath.toString()
+            setVariable("METIS_LOG_FILE", logPath.toString())
+            gatewayLoggingResetForTest()
 
             let cursor = Int64(first.toArray().size)
             let (cursorTail, cursorCode) = executeCliLogsCommand(["tail", "--cursor", "${cursor}", "--limit", "10", "--json"])

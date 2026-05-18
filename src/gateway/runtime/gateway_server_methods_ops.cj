@@ -1887,14 +1887,9 @@ public func handleGatewayOpsFamily(method: String, user: GatewayUserSettings, re
         return Some(GatewayRpcResponse(true, method, result: result))
     }
     if (method == "logs.get") {
-        let result = JsonObject()
-        let requested = gatewayOpsStringParam(requestValue, ["file", "name", "id"], "")
-        let latest = match (gatewayRecentLogFiles(1).get(0)) {
-            case Some(v) =>
-                try { v.asString().getValue() } catch (_e: Exception) { gatewayCurrentLogFileName() }
-            case None => gatewayCurrentLogFileName()
-        }
-        let payload = gatewayLogGetJson(if (requested.isEmpty()) { latest } else { requested })
+    let result = JsonObject()
+    let requested = gatewayOpsStringParam(requestValue, ["file", "name", "id"], "")
+    let payload = gatewayLogGetJson(if (requested.isEmpty()) { "current" } else { requested })
         for ((key, value) in payload.getFields()) {
             result.put(key, value)
         }

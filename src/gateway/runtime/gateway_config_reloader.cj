@@ -1,13 +1,14 @@
 package metis.gateway.runtime
 
 import metis.core.config.{GatewayUserSettings, MetisConfigManager, MetisConfigWriteNotification, MetisConfigWriteNotificationListener}
-
-import magic.log.LogUtils
+import metis.gateway.logging.{MetisLogEvent, metisCreateSubsystemLogger}
 
 import std.collection.{ArrayList, HashSet}
 import std.fs.{File, Path, exists}
 import std.time.DateTime
 import stdx.encoding.json.{JsonArray, JsonObject, JsonValue}
+
+private let gatewayConfigReloaderLogger = metisCreateSubsystemLogger("gateway/config")
 
 public class GatewayConfigSnapshot {
     public let exists: Bool
@@ -199,7 +200,7 @@ public class GatewayConfigReloader <: MetisConfigWriteNotificationListener {
                     return
                 }
                 if (!snapshot.valid) {
-                    LogUtils.error("Gateway.config.reload: invalid config snapshot skipped: ${snapshot.error}")
+                    gatewayConfigReloaderLogger.error(MetisLogEvent.loggingRaw, "Gateway.config.reload: invalid config snapshot skipped: ${snapshot.error}")
                     return
                 }
                 if (snapshot.hash == this.currentHash) {
@@ -219,7 +220,7 @@ public class GatewayConfigReloader <: MetisConfigWriteNotificationListener {
         let plan = buildGatewayReloadPlan(changedPaths)
         let mode = gatewayReloadMode(user.reload.mode)
         if (mode == "off") {
-            LogUtils.info("Gateway.config.reload: skipped because gateway.reload.mode=off")
+            gatewayConfigReloaderLogger.debug(MetisLogEvent.loggingRaw, "Gateway.config.reload: skipped because gateway.reload.mode=off")
             return
         }
         if (mode == "restart") {
@@ -228,7 +229,7 @@ public class GatewayConfigReloader <: MetisConfigWriteNotificationListener {
         }
         if (plan.restartGateway) {
             if (mode == "hot") {
-                LogUtils.error("Gateway.config.reload: hot mode cannot apply restart-required config change")
+                gatewayConfigReloaderLogger.error(MetisLogEvent.loggingRaw, "Gateway.config.reload: hot mode cannot apply restart-required config change")
                 return
             }
             this.callbacks.onRestartRequired(plan, user)

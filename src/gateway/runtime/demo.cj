@@ -5,13 +5,14 @@ import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager, Meti
 import metis.gateway.config.buildGatewayConfigFromUserSettings
 import metis.gateway.gatewayPrepareStartupAuth
 import metis.gateway.core.gatewayLogProcessMemory
+import metis.gateway.logging.{MetisLogEvent, gatewayLoggingCurrentLogFile, metisCreateSubsystemLogger}
 import metis.core.memory.{DreamingPhaseRuntime, MemoryRuntime}
 import metis.io.PrintUtils
 import metis.gateway.model.ChatType
-import magic.config.Config
-import magic.log.LogUtils
 import std.time.*
 import stdx.encoding.json.JsonObject
+
+private let gatewayServeLogger = metisCreateSubsystemLogger("gateway/runtime")
 
 private func gatewayServeNowMs(): Int64 {
     DateTime.now().toUnixTimeStamp().toNanoseconds() / 1000000
@@ -19,7 +20,7 @@ private func gatewayServeNowMs(): Int64 {
 
 private func gatewayServeTimingLog(step: String, startMs: Int64): Unit {
     let elapsedMs = gatewayServeNowMs() - startMs
-    LogUtils.info("Gateway.serve.timing: step=${step} elapsedMs=${elapsedMs}")
+    gatewayServeLogger.debug(MetisLogEvent.loggingRaw, "Gateway.serve.timing: step=${step} elapsedMs=${elapsedMs}")
     gatewayLogProcessMemory("serve:${step}", note: "elapsedMs=${elapsedMs}")
 }
 
@@ -50,6 +51,7 @@ public func runGatewayP0Demo(): Unit {
     gateway.processOnce()
     let logs = feishu.getOutboundLog()
 
+    // Demo-only shell output; production `runGatewayService` reports through gatewayShellPrintLines/logger.
     PrintUtils.printLine("Gateway P0 demo finished. Outbound messages: ${logs.size}")
     for (msg in logs) {
         PrintUtils.printLine(" - channel=feishu peer=${msg.peerId} text=${msg.text}")
@@ -88,6 +90,7 @@ public func runGatewayP1DemoWithFeishuWebhook(): Unit {
 }
 """
     let ack = feishu.ingestWebhookPayload(webhookPayload)
+    // Demo-only shell output; production `runGatewayService` reports through gatewayShellPrintLines/logger.
     PrintUtils.printLine("Feishu webhook ack: ${ack}")
 
     gateway.processOnce()
@@ -105,31 +108,28 @@ public func runGatewayP1DemoWithFeishuWebhook(): Unit {
  */
 public func runGatewayService(verbose!: Bool = false): Unit {
     let startMs = gatewayServeNowMs()
+    gatewayServeLogger.info(MetisLogEvent.gatewayStarting, "Gateway serve starting")
     gatewayServeTimingLog("enter", startMs)
     let persistedUser = CliSettingManager.readGatewaySettings()
     let (user, generatedAuthToken, _) = gatewayPrepareStartupAuth(persistedUser)
-    LogUtils.info("Gateway.serve: read settings gateway.enabled=${user.enabled}")
+    gatewayServeLogger.debug(MetisLogEvent.loggingRaw, "Gateway.serve: read settings gateway.enabled=${user.enabled}")
     gatewayServeTimingLog("settings-ready", startMs)
     if (!user.enabled) {
         gatewayRuntimeMarkStopped(reason: "disabled")
-        LogUtils.info("Gateway.serve: aborted (gateway.enabled=false)")
+        gatewayServeLogger.warn(MetisLogEvent.gatewayShutdown, "Gateway serve aborted because gateway.enabled=false")
         gatewayServeTimingLog("disabled", startMs)
-        PrintUtils.printLine(
-            "网关总开关已关闭（metis.json 中 gateway.enabled=false）。执行：metis gateway master on"
-        )
+        gatewayShellPrintLines(["网关总开关已关闭（metis.json 中 gateway.enabled=false）。执行：metis gateway master on"])
         return
     }
     if (!gatewayAcquireServeLockForRunningProcess()) {
         gatewayRuntimeMarkStopped(reason: "lock-not-acquired")
-        LogUtils.error("Gateway.serve: aborted (serve lock not acquired; another instance or stale lock)")
+        gatewayServeLogger.error(MetisLogEvent.gatewayShutdown, "Gateway serve aborted because serve lock was not acquired")
         gatewayServeTimingLog("lock-failed", startMs)
-        PrintUtils.printLine(
-            "[网关] 无法启动：检测到已有网关实例在运行，或锁文件 ~/.metis/gateway-serve.lock 仍有效。请先关闭旧网关窗口后再试。"
-        )
+        gatewayShellPrintLines(["[网关] 无法启动：检测到已有网关实例在运行，或锁文件 ~/.metis/gateway-serve.lock 仍有效。请先关闭旧网关窗口后再试。"])
         return
     }
     gatewayRuntimeMarkStarting()
-    LogUtils.info("Gateway.serve: serve lock acquired, building gateway service")
+    gatewayServeLogger.debug(MetisLogEvent.loggingRaw, "Gateway.serve: serve lock acquired, building gateway service")
     gatewayServeTimingLog("lock-acquired", startMs)
     let (gateway, feishu) = buildGatewayServiceFromUserSettings(user)
     let gatewayCfg = buildGatewayConfigFromUserSettings(user)
@@ -154,19 +154,20 @@ public func runGatewayService(verbose!: Bool = false): Unit {
     )
     try {
         if (generatedAuthToken) {
-            LogUtils.info(
+            gatewayServeLogger.debug(
+                MetisLogEvent.loggingRaw,
                 "Gateway.serve: startup auth generated runtime-only gateway.auth.token for this startup; config was not modified."
             )
         }
         let reconcileOut = DreamingPhaseRuntime.reconcileManagedCronJobs()
         if (!reconcileOut.trimAscii().isEmpty()) {
-            LogUtils.info("Gateway.serve: dreaming reconcile => ${reconcileOut.replace("\n", " | ")}")
+            gatewayServeLogger.debug(MetisLogEvent.loggingRaw, "Gateway.serve: dreaming reconcile => ${reconcileOut.replace("\n", " | ")}")
         }
         // Keep gateway control-plane startup compact. QMD maintenance/indexing can be
         // triggered manually instead of scanning the workspace during gateway boot.
         if (gatewayHttpAnyEndpointEnabled(gatewayCfg)) {
             GatewayHttpSurface.startIfNeeded(gatewayCfg)
-            LogUtils.info("Gateway.serve: HTTP surface started at ${GatewayHttpSurface.baseUrl(gatewayCfg)}")
+            gatewayServeLogger.debug(MetisLogEvent.loggingRaw, "Gateway.serve: HTTP surface started at ${GatewayHttpSurface.baseUrl(gatewayCfg)}")
             gatewayServeTimingLog("http-started", startMs)
         }
         if (gatewayCfg.controlUi.enabled) {
@@ -183,20 +184,21 @@ public func runGatewayService(verbose!: Bool = false): Unit {
                     try { v.asString().getValue() } catch (_e: Exception) { "" }
                 case None => ""
             }
-            LogUtils.info("Gateway.serve: control UI embedded at ${snapshot.httpUrl} assetMode=${assetMode} rootState=${rootKind}")
+            gatewayServeLogger.debug(MetisLogEvent.loggingRaw, "Gateway.serve: control UI embedded at ${snapshot.httpUrl} assetMode=${assetMode} rootState=${rootKind}")
             if (assetMode == "inline-fallback") {
-                LogUtils.info("Gateway.serve: control UI is using legacy inline fallback; restore bundled static assets or set gateway.controlUi.root to a built static UI directory for the formal production path.")
+                gatewayServeLogger.warn(MetisLogEvent.loggingRaw, "Gateway.serve: control UI is using legacy inline fallback; restore bundled static assets or set gateway.controlUi.root to a built static UI directory for the formal production path.")
             }
             gatewayServeTimingLog("control-ui-started", startMs)
         }
         gatewayPlatformMarkRunning(gatewayCfg)
-        LogUtils.info("Gateway.serve: calling gateway.start()")
+        gatewayServeLogger.debug(MetisLogEvent.loggingRaw, "Gateway.serve: calling gateway.start()")
         gatewayServeTimingLog("gateway-start-begin", startMs)
         gateway.start()
         gatewayRuntimeMarkRunning()
+        gatewayServeLogger.info(MetisLogEvent.gatewayReady, "Gateway serve ready")
         gatewayShellPrintLines(gatewayShellReadySummaryLines(
             CliConfig.model,
-            Config.logFile,
+            gatewayLoggingCurrentLogFile(),
             GatewayHttpSurface.baseUrl(gatewayCfg),
             if (gatewayCfg.controlUi.enabled) { GatewayControlUiRuntime.controlUiSnapshot(gatewayCfg).httpUrl } else { "" },
             gateway.liveChannelSnapshot(),
@@ -213,19 +215,21 @@ public func runGatewayService(verbose!: Bool = false): Unit {
         let memoryArm = MemoryRuntime.armSearchBackend(purpose: "gateway-startup")
         match (memoryArm.manager) {
             case Some(manager) =>
-                LogUtils.info(
+                gatewayServeLogger.debug(
+                    MetisLogEvent.loggingRaw,
                     "Gateway.serve: memory backend armed provider=${manager.backendConfig.providerId} backend=${manager.backendConfig.backend}"
                 )
             case None =>
                 let error = memoryArm.error.trimAscii()
                 if (!error.isEmpty()) {
-                    LogUtils.error("Gateway.serve: memory backend arm failed: ${error}")
+                    gatewayServeLogger.error(MetisLogEvent.loggingRaw, "Gateway.serve: memory backend arm failed: ${error}")
                 }
         }
-        LogUtils.info(
+        gatewayServeLogger.debug(
+            MetisLogEvent.loggingRaw,
             "Gateway.serve: gateway.start() returned, entering poll loop (IM/processOnce 200ms; cron tick 按需，臂长≤60s 对齐当前 armTimer 语义)"
         )
-        LogUtils.info("Gateway.serve: cron store=${cronRunner.storeFilePath().toString()}")
+        gatewayServeLogger.debug(MetisLogEvent.loggingRaw, "Gateway.serve: cron store=${cronRunner.storeFilePath().toString()}")
         gatewayServeTimingLog("poll-loop-enter", startMs)
         feishu.printFeishuIngressHints()
 
@@ -240,7 +244,7 @@ public func runGatewayService(verbose!: Bool = false): Unit {
                 gatewayRuntimeHeartbeat()
                 gatewayPlatformHeartbeat(gatewayCfg)
                 // 无入站消息时文件里仍应有迹可循，便于区分「未拉到消息」与「进程未进循环」
-                LogUtils.info("Gateway.serve: heartbeat pollTicks=${heartbeatTick} (~${heartbeatTick * 200 / 1000}s)")
+                gatewayServeLogger.debug(MetisLogEvent.loggingRaw, "Gateway.serve: heartbeat pollTicks=${heartbeatTick} (~${heartbeatTick * 200 / 1000}s)")
             }
             sleep(Duration.millisecond * 200)
         }
@@ -261,6 +265,7 @@ public func runGatewayService(verbose!: Bool = false): Unit {
         MemoryRuntime.stopActiveMaintenance()
         gatewayRuntimeMarkStopped(reason: "shutdown")
         gatewayReleaseServeLockQuiet()
+        gatewayServeLogger.info(MetisLogEvent.gatewayShutdown, "Gateway serve stopped")
     }
 }
 

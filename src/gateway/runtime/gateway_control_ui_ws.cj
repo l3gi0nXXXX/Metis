@@ -11,10 +11,10 @@ import metis.cron.{CronJob, computeJobNextRun, cronLoadOrEmpty, cronStorePath, r
 import metis.gateway.config.{buildGatewayConfigFromUserSettings, listGatewayChannelCatalogEntries}
 import metis.gateway.core.GatewaySessionStore
 import metis.gateway.core.{GATEWAY_CONTROL_UI_CLIENT_NAME, GatewaySessionCatalogRow, GatewaySessionCatalogView, GatewaySessionConversationView, gatewayBuildChatEventPayload, gatewayBuildSessionCatalogOrigin, gatewayFindSessionConversationViewForUser, gatewayListSessionConversationViewsForUser, gatewaySessionStoreForSessionKey, gatewaySessionStoreForUserWithAgentId}
+import metis.gateway.logging.{MetisLogEvent, MetisLogLevel, gatewayLogRedactText, gatewayLogTruncateText, metisCreateSubsystemLogger}
 import metis.gateway.model.GatewayConfig
 import metis.gateway.session.{GatewayIngressSource, gatewayBuildChatHistoryRpcParams, gatewayBuildChatSendRpcParams, gatewayBuildSessionsDeleteRpcParams}
 import metis.gateway.protocol.{GATEWAY_ERROR_CONNECT_CHALLENGE_REQUIRED, GATEWAY_ERROR_INVALID_CONNECT, GATEWAY_ERROR_NOT_CONNECTED, GatewayClientInfo, GatewayConnectParams, GatewayProtocolRequest, GatewayProtocolResponse, validateGatewayConnectParams}
-import magic.log.LogUtils
 
 import std.collection.{ArrayList, HashMap}
 import std.convert.Parsable
@@ -30,6 +30,9 @@ private let gatewayControlUiWsConnectionRegistryLock = Mutex()
 private var gatewayControlUiWsConnectionRegistry = HashMap<String, GatewayControlUiWsConnection>()
 private const GATEWAY_CONTROL_UI_AGENT_FILE_INITIAL_LIMIT: Int64 = 32 * 1024
 private const GATEWAY_CONTROL_UI_AGENT_FILE_MAX_LIMIT: Int64 = 256 * 1024
+private const GATEWAY_CONTROL_UI_WS_SLOW_MS: Int64 = 1000
+private const GATEWAY_CONTROL_UI_WS_PREVIEW_LIMIT: Int64 = 240
+private let gatewayControlUiWsLogger = metisCreateSubsystemLogger("gateway/ws")
 
 private class GatewayControlUiWsSessionState {
     public var connectParams: Option<GatewayConnectParams> = None<GatewayConnectParams>
@@ -111,6 +114,154 @@ private func gatewayControlUiWsInt(obj: JsonObject, key: String, defaultValue: I
             }
         case None => defaultValue
     }
+}
+
+private func gatewayControlUiWsShortId(value: String): String {
+    let clean = value.trimAscii()
+    if (clean.size <= 24) {
+        return clean
+    }
+    clean[0..12] + "..." + clean[(clean.size - 4)..clean.size]
+}
+
+private func gatewayControlUiWsSecretKey(key: String): Bool {
+    let low = key.trimAscii().toAsciiLower()
+    low == "authorization" ||
+        low == "authtoken" ||
+        low == "authpassword" ||
+        low == "devicetoken" ||
+        low == "password" ||
+        low == "token" ||
+        low.contains("secret") ||
+        low.contains("token") ||
+        low.contains("password")
+}
+
+private func gatewayControlUiWsSafeJsonValue(key: String, value: JsonValue): JsonValue {
+    if (gatewayControlUiWsSecretKey(key)) {
+        return JsonString("[redacted]")
+    }
+    match (value) {
+        case obj: JsonObject =>
+            let out = JsonObject()
+            for (field in obj.getFields().keys()) {
+                match (obj.get(field)) {
+                    case Some(child) => out.put(field, gatewayControlUiWsSafeJsonValue(field, child))
+                    case None => ()
+                }
+            }
+            out
+        case arr: JsonArray =>
+            let out = ArrayList<JsonValue>()
+            for (item in arr.getItems()) {
+                out.add(gatewayControlUiWsSafeJsonValue(key, item))
+            }
+            JsonArray(out)
+        case s: JsonString => JsonString(gatewayLogRedactText(s.getValue()))
+        case _ => value
+    }
+}
+
+private func gatewayControlUiWsSafePreview(value: JsonValue): String {
+    gatewayLogTruncateText(
+        gatewayLogRedactText(gatewayControlUiWsSafeJsonValue("", value).toJsonString()),
+        limit: GATEWAY_CONTROL_UI_WS_PREVIEW_LIMIT
+    )
+}
+
+public func gatewayControlUiWsRedactedPreviewForTest(value: JsonValue): String {
+    gatewayControlUiWsSafePreview(value)
+}
+
+public func gatewayControlUiWsShouldLogRpcSummary(ok: Bool, durationMs: Int64, verbose: Bool): Bool {
+    verbose || !ok || durationMs >= GATEWAY_CONTROL_UI_WS_SLOW_MS
+}
+
+private func gatewayControlUiWsRpcMeta(
+    method: String,
+    frameId: String,
+    clientId: String,
+    durationMs: Int64,
+    params: JsonObject,
+    response!: Option<GatewayProtocolResponse> = None<GatewayProtocolResponse>
+): JsonObject {
+    let meta = JsonObject()
+    meta.put("method", JsonString(method.trimAscii()))
+    meta.put("requestId", JsonString(gatewayControlUiWsShortId(frameId)))
+    if (!clientId.trimAscii().isEmpty()) {
+        meta.put("clientId", JsonString(gatewayControlUiWsShortId(clientId)))
+    }
+    meta.put("durationMs", durationMs.toJsonValue())
+    meta.put("paramsBytes", Int64(params.toJsonString().size).toJsonValue())
+    if (gatewayControlUiWsLogger.isEnabled(MetisLogLevel.debug)) {
+        meta.put("paramsPreview", JsonString(gatewayControlUiWsSafePreview(params)))
+    }
+    match (response) {
+        case Some(res) =>
+            meta.put("ok", res.ok.toJsonValue())
+            meta.put("responseBytes", Int64(res.result.toJsonString().size).toJsonValue())
+            if (!res.ok) {
+                meta.put("errorKind", JsonString(if (res.errorCode.trimAscii().isEmpty()) { "RPC_ERROR" } else { res.errorCode.trimAscii() }))
+                meta.put("error", JsonString(gatewayLogTruncateText(gatewayLogRedactText(res.error), limit: GATEWAY_CONTROL_UI_WS_PREVIEW_LIMIT)))
+            }
+            if (gatewayControlUiWsLogger.isEnabled(MetisLogLevel.debug)) {
+                meta.put("responsePreview", JsonString(gatewayControlUiWsSafePreview(res.result)))
+            }
+        case None => ()
+    }
+    meta
+}
+
+private func gatewayControlUiWsLogRpcRequest(method: String, frameId: String, clientId: String, params: JsonObject): Unit {
+    if (!gatewayControlUiWsLogger.isEnabled(MetisLogLevel.debug)) {
+        return
+    }
+    gatewayControlUiWsLogger.debug(
+        MetisLogEvent.loggingRaw,
+        "rpc.request method=${method.trimAscii()}",
+        meta: gatewayControlUiWsRpcMeta(method, frameId, clientId, 0, params)
+    )
+}
+
+private func gatewayControlUiWsLogRpcResponse(
+    method: String,
+    frameId: String,
+    clientId: String,
+    response: GatewayProtocolResponse,
+    startMs: Int64,
+    params: JsonObject
+): Unit {
+    let durationMs = max(0, gatewayControlUiWsNowMs() - startMs)
+    let verbose = gatewayControlUiWsLogger.isEnabled(MetisLogLevel.debug)
+    if (verbose) {
+        gatewayControlUiWsLogger.debug(
+            MetisLogEvent.loggingRaw,
+            "rpc.response method=${method.trimAscii()} ok=${response.ok} durationMs=${durationMs}",
+            meta: gatewayControlUiWsRpcMeta(method, frameId, clientId, durationMs, params, response: Some(response))
+        )
+    }
+    if (!response.ok) {
+        gatewayControlUiWsLogger.error(
+            MetisLogEvent.rpcFailed,
+            "rpc.request.failed method=${method.trimAscii()} durationMs=${durationMs}",
+            meta: gatewayControlUiWsRpcMeta(method, frameId, clientId, durationMs, params, response: Some(response))
+        )
+        return
+    }
+    if (durationMs >= GATEWAY_CONTROL_UI_WS_SLOW_MS) {
+        gatewayControlUiWsLogger.info(
+            MetisLogEvent.rpcSlow,
+            "rpc.request.slow method=${method.trimAscii()} durationMs=${durationMs}",
+            meta: gatewayControlUiWsRpcMeta(method, frameId, clientId, durationMs, params, response: Some(response))
+        )
+    }
+}
+
+private func gatewayControlUiWsLogParseError(raw: String, frameId: String): Unit {
+    let meta = JsonObject()
+    meta.put("requestId", JsonString(gatewayControlUiWsShortId(frameId)))
+    meta.put("rawBytes", Int64(raw.size).toJsonValue())
+    gatewayControlUiWsLogger.warn(MetisLogEvent.rpcFailed, "rpc.request.failed parse-error", meta: meta)
 }
 
 private func gatewayControlUiWsStringArray(obj: JsonObject, key: String): Array<String> {
@@ -377,7 +528,11 @@ private func gatewayControlUiWsMaybeAutoAckChallenge(connect: GatewayConnectPara
     }
     let ack = gatewayControlUiWsGatewayAckRequest(connect, token)
     if (!ack.ok) {
-        LogUtils.error("Gateway.control-ui.ws: challenge auto-ack failed clientId=${connect.client.id} error=${ack.error}")
+        let meta = JsonObject()
+        meta.put("clientId", JsonString(gatewayControlUiWsShortId(connect.client.id)))
+        meta.put("errorKind", JsonString(ack.errorCode))
+        meta.put("error", JsonString(gatewayLogTruncateText(gatewayLogRedactText(ack.error), limit: GATEWAY_CONTROL_UI_WS_PREVIEW_LIMIT)))
+        gatewayControlUiWsLogger.error(MetisLogEvent.rpcFailed, "rpc.request.failed connect.ack", meta: meta)
         return GatewayProtocolResponse(
             false,
             response.method,
@@ -999,9 +1154,10 @@ private func gatewayControlUiWsNodeListResult(cfg: GatewayConfig): JsonValue {
         }
         summarized.add(row)
     }
-    LogUtils.info(
-        "Gateway.control-ui.ws: node.list snapshot nodes=${items.size()} lifecycleHistoryTotal=${historyTotal}"
-    )
+    let meta = JsonObject()
+    meta.put("nodes", Int64(items.size()).toJsonValue())
+    meta.put("lifecycleHistoryTotal", historyTotal.toJsonValue())
+    gatewayControlUiWsLogger.debug(MetisLogEvent.loggingRaw, "rpc.response node.list snapshot", meta: meta)
     let result = JsonObject()
     result.put("ts", gatewayControlUiWsNowMs().toJsonValue())
     result.put("nodes", summarized)
@@ -3110,9 +3266,12 @@ private func gatewayControlUiWsMaybeEmitChatEvents(
     if (eventSession.isEmpty()) {
         return
     }
-    LogUtils.info(
-        "Gateway.control-ui.chat: requestedSession=${requestedSession}, effectiveSession=${effectiveSession}, eventSession=${eventSession}, ok=${response.ok}"
-    )
+    let meta = JsonObject()
+    meta.put("requestedSession", JsonString(gatewayControlUiWsShortId(requestedSession)))
+    meta.put("effectiveSession", JsonString(gatewayControlUiWsShortId(effectiveSession)))
+    meta.put("eventSession", JsonString(gatewayControlUiWsShortId(eventSession)))
+    meta.put("ok", response.ok.toJsonValue())
+    gatewayControlUiWsLogger.debug(MetisLogEvent.loggingRaw, "control-ui.chat event projection", meta: meta)
     if (!message.trimAscii().isEmpty()) {
         gatewayControlUiWsWriteChatEvent(
             clientId,
@@ -3178,21 +3337,28 @@ private func gatewayControlUiWsHandleChatSendAsync(
     frameId: String,
     params: JsonObject
 ): Unit {
+    let acceptedStartMs = gatewayControlUiWsNowMs()
+    gatewayControlUiWsLogRpcRequest("dashboard.chat.send", frameId, bound.client.id, params)
     let accepted = GatewayProtocolResponse(
         true,
         "chat.send",
         requestId: frameId,
         result: gatewayControlUiWsChatAcceptedPayload(params)
     )
+    gatewayControlUiWsLogRpcResponse("dashboard.chat.send.accepted", frameId, bound.client.id, accepted, acceptedStartMs, params)
     gatewayControlUiWsWriteJson(websocket, writeLock, gatewayControlUiWsResponseFrame(accepted, frameId))
     spawn {
+        let startMs = gatewayControlUiWsNowMs()
         try {
             let response = gatewayControlUiWsGatewayRequest(bound, frameId, "dashboard.chat.send", params: params)
             gatewayControlUiWsMaybeEmitChatEvents(bound.client.id, "dashboard.chat.send", params, response)
             if (response.ok) {
                 gatewayControlUiWsPublishInvalidate(bound, "dashboard.chat.send", params: params, response: Some(response))
             }
+            gatewayControlUiWsLogRpcResponse("dashboard.chat.send", frameId, bound.client.id, response, startMs, params)
         } catch (e: Exception) {
+            let failed = GatewayProtocolResponse(false, "dashboard.chat.send", requestId: frameId, error: e.message, errorCode: "EXCEPTION")
+            gatewayControlUiWsLogRpcResponse("dashboard.chat.send", frameId, bound.client.id, failed, startMs, params)
             let sessionKey = gatewayControlUiWsString(params, "sessionKey").trimAscii()
             if (!sessionKey.isEmpty()) {
                 let runIdRaw = gatewayControlUiWsString(params, "idempotencyKey").trimAscii()
@@ -3351,6 +3517,7 @@ private func gatewayControlUiWsHandleConnect(
     frameId: String,
     payload: JsonObject
 ): Unit {
+    let startMs = gatewayControlUiWsNowMs()
     let defaultConnectionId = synchronized(stateLock) {
         if (state.connectionId.trimAscii().isEmpty()) {
             let hintedClientId = gatewayControlUiWsString(gatewayControlUiWsObject(payload, "client"), "id").trimAscii()
@@ -3364,16 +3531,18 @@ private func gatewayControlUiWsHandleConnect(
         state.connectionId
     }
     let connect = gatewayControlUiWsBuildConnectParams(cfg, payload, defaultConnectionId)
+    gatewayControlUiWsLogRpcRequest("connect", frameId, connect.client.id, payload)
     if (!validateGatewayConnectParams(connect)) {
-        LogUtils.error("Gateway.control-ui.ws: connect rejected, invalid params clientId=${connect.client.id}")
-        gatewayControlUiWsWriteInvalidConnect(websocket, writeLock, frameId)
+        let response = GatewayProtocolResponse(false, "connect", requestId: frameId, error: "Invalid gateway connect params.", errorCode: GATEWAY_ERROR_INVALID_CONNECT)
+        gatewayControlUiWsLogRpcResponse("connect", frameId, connect.client.id, response, startMs, payload)
+        gatewayControlUiWsWriteJson(websocket, writeLock, gatewayControlUiWsResponseFrame(response, frameId))
         return
     }
     let response = gatewayControlUiWsGatewayConnectRequest(connect, frameId)
     if (response.ok) {
         let effectiveResponse = gatewayControlUiWsMaybeAutoAckChallenge(connect, response)
         if (!effectiveResponse.ok) {
-            LogUtils.error("Gateway.control-ui.ws: connect failed clientId=${connect.client.id} error=${effectiveResponse.error}")
+            gatewayControlUiWsLogRpcResponse("connect", frameId, connect.client.id, effectiveResponse, startMs, payload)
             gatewayControlUiWsWriteJson(websocket, writeLock, gatewayControlUiWsResponseFrame(effectiveResponse, frameId))
             return
         }
@@ -3384,11 +3553,11 @@ private func gatewayControlUiWsHandleConnect(
             }
         }
         gatewayControlUiWsRegisterConnection(connect.client.id, synchronized(stateLock) { state.registryToken }, websocket, writeLock)
-        LogUtils.info("Gateway.control-ui.ws: connect ok clientId=${connect.client.id}")
+        gatewayControlUiWsLogRpcResponse("connect", frameId, connect.client.id, effectiveResponse, startMs, payload)
         gatewayControlUiWsWriteJson(websocket, writeLock, gatewayControlUiWsResponseFrame(effectiveResponse, frameId))
         return
     }
-    LogUtils.error("Gateway.control-ui.ws: connect failed clientId=${connect.client.id} error=${response.error}")
+    gatewayControlUiWsLogRpcResponse("connect", frameId, connect.client.id, response, startMs, payload)
     gatewayControlUiWsWriteJson(websocket, writeLock, gatewayControlUiWsResponseFrame(response, frameId))
 }
 
@@ -3402,23 +3571,28 @@ private func gatewayControlUiWsHandleRequest(
     method: String,
     params: JsonObject
 ): Unit {
+    let startMs = gatewayControlUiWsNowMs()
     let connect = synchronized(stateLock) {
         state.connectParams
     }
     match (connect) {
         case Some(bound) =>
+            gatewayControlUiWsLogRpcRequest(method, frameId, bound.client.id, params)
             if (method.trimAscii().toAsciiLower() == "sessions.subscribe") {
                 let response = gatewayControlUiWsSessionSubscribeRequest(bound, frameId)
+                gatewayControlUiWsLogRpcResponse("sessions.subscribe", frameId, bound.client.id, response, startMs, params)
                 gatewayControlUiWsWriteJson(websocket, writeLock, gatewayControlUiWsResponseFrame(response, frameId))
                 return
             }
             if (method.trimAscii().toAsciiLower() == "sessions.unsubscribe") {
                 let response = gatewayControlUiWsSessionUnsubscribeRequest(bound, frameId)
+                gatewayControlUiWsLogRpcResponse("sessions.unsubscribe", frameId, bound.client.id, response, startMs, params)
                 gatewayControlUiWsWriteJson(websocket, writeLock, gatewayControlUiWsResponseFrame(response, frameId))
                 return
             }
             match (gatewayControlUiWsCompatResponse(method, params, cfg)) {
                 case Some(compatResponse) =>
+                    gatewayControlUiWsLogRpcResponse(method, frameId, bound.client.id, compatResponse, startMs, params)
                     gatewayControlUiWsWriteJson(websocket, writeLock, gatewayControlUiWsResponseFrame(compatResponse, frameId))
                     return
                 case None => ()
@@ -3436,9 +3610,12 @@ private func gatewayControlUiWsHandleRequest(
             if (response.ok) {
                 gatewayControlUiWsPublishInvalidate(bound, normalizedMethod, params: params, response: Some(response))
             }
+            gatewayControlUiWsLogRpcResponse(normalizedMethod, frameId, bound.client.id, response, startMs, params)
             gatewayControlUiWsWriteJson(websocket, writeLock, gatewayControlUiWsResponseFrame(response, frameId))
         case None =>
             let response = GatewayProtocolResponse(false, method, requestId: frameId, error: "Gateway websocket client is not connected.", errorCode: GATEWAY_ERROR_NOT_CONNECTED)
+            gatewayControlUiWsLogRpcRequest(method, frameId, "", params)
+            gatewayControlUiWsLogRpcResponse(method, frameId, "", response, startMs, params)
             gatewayControlUiWsWriteJson(websocket, writeLock, gatewayControlUiWsResponseFrame(response, frameId))
     }
 }
@@ -3478,9 +3655,11 @@ private func gatewayControlUiWsHandleFrame(
     state: GatewayControlUiWsSessionState,
     raw: String
 ): Unit {
+    var parseFailed = false
     let root = try {
         JsonValue.fromStr(raw).asObject()
     } catch (_e: Exception) {
+        parseFailed = true
         JsonObject()
     }
     let frameType = gatewayControlUiWsString(root, "type").trimAscii().toAsciiLower()
@@ -3493,11 +3672,24 @@ private func gatewayControlUiWsHandleFrame(
     } else {
         "gw-ws-${gatewayControlUiWsNowMs()}"
     }
+    if (parseFailed) {
+        gatewayControlUiWsLogParseError(raw, frameId)
+        let response = GatewayProtocolResponse(false, "unknown", requestId: frameId, error: "Invalid gateway websocket frame JSON.", errorCode: "INVALID_JSON")
+        gatewayControlUiWsWriteJson(websocket, writeLock, gatewayControlUiWsResponseFrame(response, frameId))
+        return
+    }
     let method = gatewayControlUiWsString(root, "method").trimAscii()
     let payloadObj = gatewayControlUiWsObject(root, "payload")
     let paramsObj = gatewayControlUiWsObject(root, "params")
     let payload = if (payloadObj.size() > 0) { payloadObj } else { paramsObj }
-    LogUtils.info("Gateway.control-ui.ws: frame received type=${if (frameType.isEmpty()) { "<empty>" } else { frameType }} method=${if (method.isEmpty()) { "<empty>" } else { method }}")
+    if (gatewayControlUiWsLogger.isEnabled(MetisLogLevel.debug)) {
+        let meta = JsonObject()
+        meta.put("type", JsonString(if (frameType.isEmpty()) { "<empty>" } else { frameType }))
+        meta.put("method", JsonString(if (method.isEmpty()) { "<empty>" } else { method }))
+        meta.put("requestId", JsonString(gatewayControlUiWsShortId(frameId)))
+        meta.put("rawBytes", Int64(raw.size).toJsonValue())
+        gatewayControlUiWsLogger.debug(MetisLogEvent.loggingRaw, "ws.frame.received", meta: meta)
+    }
     if (frameType.isEmpty() && !method.isEmpty()) {
         if (method.trimAscii().toAsciiLower() == "connect") {
             gatewayControlUiWsHandleConnect(websocket, cfg, writeLock, stateLock, state, frameId, payload)
@@ -3540,13 +3732,13 @@ private func gatewayControlUiWsHandleFrame(
         return
     }
     let response = GatewayProtocolResponse(false, "unknown", requestId: frameId, error: "Unsupported gateway websocket frame.", errorCode: "UNSUPPORTED_FRAME")
-    LogUtils.error("Gateway.control-ui.ws: unsupported frame type=${frameType} method=${method}")
+    gatewayControlUiWsLogRpcResponse("unknown", frameId, "", response, gatewayControlUiWsNowMs(), payload)
     gatewayControlUiWsWriteJson(websocket, writeLock, gatewayControlUiWsResponseFrame(response, frameId))
 }
 
 public func gatewayHandleControlUiWebSocket(ctx: HttpContext, cfg: GatewayConfig): Unit {
     let contract = GatewayControlUiRuntime.controlUiContract(cfg)
-    LogUtils.info("Gateway.control-ui.ws: upgrade request")
+    gatewayControlUiWsLogger.debug(MetisLogEvent.loggingRaw, "ws.upgrade.request")
     let websocket = if (contract.allowedOrigins.isEmpty()) {
         WebSocket.upgradeFromServer(ctx)
     } else {
@@ -3560,13 +3752,15 @@ public func gatewayHandleControlUiWebSocket(ctx: HttpContext, cfg: GatewayConfig
     let stateLock = Mutex()
     let state = GatewayControlUiWsSessionState()
     try {
-        LogUtils.info("Gateway.control-ui.ws: upgrade ok")
+        gatewayControlUiWsLogger.debug(MetisLogEvent.loggingRaw, "ws.upgrade.ok")
         let nonce = gatewayControlUiWsWriteConnectChallenge(websocket, writeLock)
-        LogUtils.info("Gateway.control-ui.ws: challenge sent nonce=${nonce}")
+        let challengeMeta = JsonObject()
+        challengeMeta.put("nonce", JsonString(gatewayControlUiWsShortId(nonce)))
+        gatewayControlUiWsLogger.debug(MetisLogEvent.loggingRaw, "ws.challenge.sent", meta: challengeMeta)
         while (true) {
             let frame = websocket.read()
             if (frame.frameType == CloseWebFrame) {
-                LogUtils.info("Gateway.control-ui.ws: received close frame")
+                gatewayControlUiWsLogger.debug(MetisLogEvent.loggingRaw, "ws.close.received")
                 break
             }
             if (frame.frameType != TextWebFrame) {
@@ -3583,7 +3777,9 @@ public func gatewayHandleControlUiWebSocket(ctx: HttpContext, cfg: GatewayConfig
             try {
                 gatewayControlUiWsHandleFrame(websocket, cfg, writeLock, stateLock, state, raw)
             } catch (e: Exception) {
-                LogUtils.error("Gateway.control-ui.ws: frame handling failed: ${e.message}")
+                let meta = JsonObject()
+                meta.put("error", JsonString(gatewayLogTruncateText(gatewayLogRedactText(e.message), limit: GATEWAY_CONTROL_UI_WS_PREVIEW_LIMIT)))
+                gatewayControlUiWsLogger.error(MetisLogEvent.rpcFailed, "rpc.request.failed frame handling failed", meta: meta)
             }
         }
     } finally {
@@ -3611,8 +3807,13 @@ private func gatewayControlUiWsCloseBoundClient(bound: GatewayConnectParams, tok
         connectionId: bound.connectionId
     )
     if (stopped) {
-        LogUtils.info("Gateway.control-ui.ws: closing clientId=${bound.client.id}")
+        let meta = JsonObject()
+        meta.put("clientId", JsonString(gatewayControlUiWsShortId(bound.client.id)))
+        gatewayControlUiWsLogger.debug(MetisLogEvent.loggingRaw, "ws.client.closing", meta: meta)
     } else {
-        LogUtils.info("Gateway.control-ui.ws: skip stale close clientId=${bound.client.id} connectionId=${bound.connectionId}")
+        let meta = JsonObject()
+        meta.put("clientId", JsonString(gatewayControlUiWsShortId(bound.client.id)))
+        meta.put("connectionId", JsonString(gatewayControlUiWsShortId(bound.connectionId)))
+        gatewayControlUiWsLogger.debug(MetisLogEvent.loggingRaw, "ws.client.stale-close-skipped", meta: meta)
     }
 }

@@ -7,22 +7,23 @@ import metis.core.memory.MemoryRuntimeRegistry
 import metis.core.skills.SkillsPrompt
 import metis.core.model.CliModelManager
 import metis.gateway.config.buildGatewayConfigFromUserSettings
+import metis.gateway.logging.{MetisLogEvent, gatewayLoggingCurrentLogFile, metisCreateSubsystemLogger}
 import metis.gateway.session.GatewayIngressSource
 import metis.io.PrintUtils
 import metis.utils.InfoUtils
 
 import magic.config.Config
-import magic.log.LogUtils
 
 import std.collection.{collectArray, filter, map}
 import std.collection.ArrayList
-import std.env.getVariable
+import std.env.{getVariable, setVariable}
 import std.fs.{Path, exists}
 import std.process.executeWithOutput
 import std.time.DateTime
 import stdx.encoding.json.{JsonArray, JsonObject, JsonString, JsonValue}
 
 private let GATEWAY_PREFIX: String = "gateway "
+private let gatewayCliLogger = metisCreateSubsystemLogger("gateway/runtime")
 
 public func gatewayCliShouldPrintRuntimeRequiredHint(error: String): Bool {
     let normalized = error.trimAscii().toAsciiLower()
@@ -41,7 +42,32 @@ public func gatewayCliTimingMessage(flow: String, step: String, startMs: Int64, 
 }
 
 private func gatewayCliTimingLog(flow: String, step: String, startMs: Int64): Unit {
-    LogUtils.info(gatewayCliTimingMessage(flow, step, startMs))
+    gatewayCliLogger.debug(MetisLogEvent.loggingRaw, gatewayCliTimingMessage(flow, step, startMs))
+}
+
+private func gatewayCliConsoleLevelRank(level: String): Int64 {
+    match (level.trimAscii().toAsciiLower()) {
+        case "fatal" => 0
+        case "error" => 1
+        case "warn" => 2
+        case "info" => 3
+        case "debug" => 4
+        case "trace" => 5
+        case _ => -1
+    }
+}
+
+public func gatewayCliApplyVerboseRuntimeLogging(verbose: Bool): Unit {
+    if (!verbose) {
+        return
+    }
+    let current = match (getVariable("METIS_CONSOLE_LEVEL")) {
+        case Some(value) => value.trimAscii()
+        case None => ""
+    }
+    if (current.isEmpty() || gatewayCliConsoleLevelRank(current) < gatewayCliConsoleLevelRank("debug")) {
+        setVariable("METIS_CONSOLE_LEVEL", "debug")
+    }
 }
 
 private func gatewayShellJsonString(obj: JsonObject, key: String, defaultValue!: String = ""): String {
@@ -478,6 +504,7 @@ private func gatewayRunMediaImageCli(sub: Array<String>): Int64 {
 }
 
 private func gatewayRunForeground(flowName!: String = "run", verbose!: Bool = false): Int64 {
+    gatewayCliApplyVerboseRuntimeLogging(verbose)
     let startMs = gatewayCliNowMs()
     gatewayCliTimingLog(flowName, "enter", startMs)
     let user = CliSettingManager.readGatewaySettings()
@@ -490,7 +517,7 @@ private func gatewayRunForeground(flowName!: String = "run", verbose!: Bool = fa
     gatewayShellPrintLines(gatewayShellStartupIntroLines(
         cfg.auth.mode,
         CliConfig.model,
-        Config.logFile,
+        gatewayLoggingCurrentLogFile(),
         GatewayHttpSurface.baseUrl(cfg),
         controlUiUrl,
         verbose: verbose
@@ -1168,7 +1195,7 @@ public func runGatewayDashboardCli(args: Array<String>): Int64 {
  * 放在 `metis.gateway.runtime`，避免 `metis.core.config` 依赖 `metis.core.model` 产生环。
  */
 private func applyRuntimeForGatewayServe(): Unit {
-    // 与 parseArgsAndSetConfig 对齐：否则 LogUtils.info 可能不写文件或级别不对，~/.metis/logs 里看不到 Gateway.*。
+    // 与 parseArgsAndSetConfig 对齐：否则 Gateway runtime 日志可能不写入当前日志文件。
     Config.logLevel = "INFO"
     Config.logFile = CliConfig.logFile.toString()
     Config.modelRequestDir = CliConfig.dotDir.join("model-requests").toString()
