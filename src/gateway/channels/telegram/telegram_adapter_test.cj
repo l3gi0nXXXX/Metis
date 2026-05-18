@@ -730,8 +730,18 @@ public class TelegramAdapterTest {
         @Expect(this.telegramPayloadHasCommand(commands, "unfocus"), true)
         @Expect(this.telegramPayloadHasCommand(commands, "agents"), true)
         @Expect(this.telegramPayloadHasCommand(commands, "bash"), true)
+        @Expect(this.telegramPayloadHasCommand(commands, "export_session"), true)
+        @Expect(this.telegramPayloadHasCommand(commands, "export-session"), false)
         @Expect(this.telegramPayloadHasCommand(commands, "btw"), false)
         @Expect(this.telegramPayloadHasCommand(commands, "acp"), false)
+        for (i in 0..commands.size()) {
+            let command = commands[i].asObject().get("command").getOrThrow().asString().getValue()
+            @Expect(command.isEmpty(), false)
+            @Expect(command.size >= 1, true)
+            @Expect(command.size <= 32, true)
+            @Expect(command.contains("-"), false)
+            @Expect(this.telegramPayloadCommandNameIsValid(command), true)
+        }
     }
 
     private func telegramPayloadHasCommand(commands: JsonArray, command: String): Bool {
@@ -742,6 +752,42 @@ public class TelegramAdapterTest {
             }
         }
         false
+    }
+
+    private func telegramPayloadCommandCount(commands: JsonArray, command: String): Int64 {
+        var total: Int64 = 0
+        for (i in 0..commands.size()) {
+            let row = commands[i].asObject()
+            if (row.get("command").getOrThrow().asString().getValue() == command) {
+                total += 1
+            }
+        }
+        total
+    }
+
+    private func telegramPayloadCommandNameIsValid(command: String): Bool {
+        if (command.isEmpty() || command.size < 1 || command.size > 32 || command.contains("-")) {
+            return false
+        }
+        for (r in command.toRuneArray()) {
+            let ok = (r >= r'a' && r <= r'z') ||
+                (r >= r'0' && r <= r'9') ||
+                r == r'_'
+            if (!ok) {
+                return false
+            }
+        }
+        true
+    }
+
+    private func telegramPayloadCommandDescription(commands: JsonArray, command: String): String {
+        for (i in 0..commands.size()) {
+            let row = commands[i].asObject()
+            if (row.get("command").getOrThrow().asString().getValue() == command) {
+                return row.get("description").getOrThrow().asString().getValue()
+            }
+        }
+        ""
     }
 
     @TestCase
@@ -772,7 +818,7 @@ public class TelegramAdapterTest {
                 botToken: "telegram-token",
                 customCommands: [
                     TelegramCustomCommandConfig(command: "/status", description: "Override"),
-                    TelegramCustomCommandConfig(command: "Bad-Name", description: "Bad"),
+                    TelegramCustomCommandConfig(command: "Bad Name", description: "Bad"),
                     TelegramCustomCommandConfig(command: "generate", description: "Create image")
                 ]
             )
@@ -780,9 +826,31 @@ public class TelegramAdapterTest {
         let payload = adapter.debugBuildNativeCommandsPayload()
         let commands = payload.get("commands").getOrThrow().asArray()
         @Expect(commands.size(), 45)
+        @Expect(this.telegramPayloadCommandCount(commands, "status"), 1)
         let last = commands[commands.size() - 1].asObject()
         @Expect(last.get("command").getOrThrow().asString().getValue(), "generate")
         @Expect(last.get("description").getOrThrow().asString().getValue(), "Create image")
+    }
+
+    @TestCase
+    public func nativeCommandsPayloadNormalizesHyphenCustomCommandNames(): Unit {
+        let adapter = TelegramAdapter(
+            config: TelegramConfig(
+                enabled: true,
+                botToken: "telegram-token",
+                commandsNative: "off",
+                customCommands: [
+                    TelegramCustomCommandConfig(command: "custom-backup", description: "Custom backup")
+                ]
+            )
+        )
+        let payload = adapter.debugBuildNativeCommandsPayload()
+        let commands = payload.get("commands").getOrThrow().asArray()
+        @Expect(commands.size(), 1)
+        @Expect(this.telegramPayloadHasCommand(commands, "custom_backup"), true)
+        @Expect(this.telegramPayloadHasCommand(commands, "custom-backup"), false)
+        @Expect(this.telegramPayloadCommandCount(commands, "custom_backup"), 1)
+        @Expect(this.telegramPayloadCommandDescription(commands, "custom_backup"), "Custom backup")
     }
 
     @TestCase

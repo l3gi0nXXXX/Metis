@@ -5349,8 +5349,16 @@ public class TelegramAdapter <: ChannelAdapter {
         let nativeMode = this.config.commandsNative.trimAscii().toAsciiLower()
         if (nativeMode != "off" && nativeMode != "false" && nativeMode != "disabled") {
             for ((command, description) in gatewayTelegramNativeCommandMenuRows()) {
-                rows.add((command, description))
-                seen[command] = true
+                let normalizedCommand = this.normalizeTelegramCommandName(command)
+                let normalizedDescription = description.trimAscii()
+                if (normalizedCommand.isEmpty() || normalizedDescription.isEmpty()) {
+                    continue
+                }
+                if (seen.contains(normalizedCommand)) {
+                    continue
+                }
+                rows.add((normalizedCommand, normalizedDescription))
+                seen[normalizedCommand] = true
             }
         }
         for ((command, description) in gatewayOpenClawPluginSidecarCommandCatalogForMenu()) {
@@ -5403,10 +5411,11 @@ public class TelegramAdapter <: ChannelAdapter {
     }
 
     private func normalizeTelegramCommandName(raw: String): String {
-        var normalized = raw.trimAscii().toAsciiLower()
+        var normalized = raw.trimAscii()
         while (normalized.startsWith("/")) {
             normalized = normalized[1..]
         }
+        normalized = normalized.toAsciiLower().replace("-", "_")
         if (normalized.isEmpty() || normalized.size > 32) {
             return ""
         }

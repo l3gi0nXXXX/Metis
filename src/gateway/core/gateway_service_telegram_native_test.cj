@@ -1580,6 +1580,7 @@ public class GatewayServiceTelegramNativeTest {
         for (command in expected) {
             @Expect(gatewayFindTelegramNativeCommandSpec(command).isSome(), true)
         }
+        @Expect(gatewayFindTelegramNativeCommandSpec("export_session").getOrThrow().command, "export-session")
         @Expect(gatewayFindTelegramNativeCommandSpec("tell").getOrThrow().command, "steer")
         @Expect(gatewayFindTelegramNativeCommandSpec("elev").getOrThrow().command, "elevated")
     }
@@ -1668,6 +1669,30 @@ public class GatewayServiceTelegramNativeTest {
             @Expect(adapter.sentText(6).contains("Status: ok"), true)
             @Expect(adapter.sentText(7).contains("Telegram session export"), true)
             @Expect(adapter.sentText(7).contains("/tmp/metis-gateway-telegram-native-test-home"), true)
+        }
+    }
+
+    @TestCase
+    public func t51ExportSessionAcceptsUnderscoreAliasAndHyphenCanonical(): Unit {
+        withGatewayTelegramNativeTestHome {
+            var user = GatewayUserSettings()
+            user.telegram.enabled = true
+            user.telegram.allowFrom = ["*"]
+            CliSettingManager.writeGatewaySettings(user)
+
+            let adapter = GatewayTelegramNativeTestAdapter()
+            let service = gatewayTelegramNativeService(adapter)
+            service.start()
+            adapter.queue("/export_session alias-smoke.html")
+            adapter.queue("/export-session canonical-smoke.html")
+            service.processOnce()
+
+            @Expect(adapter.sentText(0).contains("Telegram session export"), true)
+            @Expect(adapter.sentText(0).contains("alias-smoke.html"), true)
+            @Expect(adapter.sentText(0).startsWith("{"), false)
+            @Expect(adapter.sentText(1).contains("Telegram session export"), true)
+            @Expect(adapter.sentText(1).contains("canonical-smoke.html"), true)
+            @Expect(adapter.sentText(1).startsWith("{"), false)
         }
     }
 
@@ -1907,6 +1932,7 @@ public class GatewayServiceTelegramNativeTest {
             user.telegram.allowFrom = ["*"]
             user.telegram.customCommands = [
                 TelegramCustomCommandUserSettings(command: "deploy", description: "Deploy", reply: "deploying {args}"),
+                TelegramCustomCommandUserSettings(command: "custom-backup", description: "Backup", reply: "backup {args}"),
                 TelegramCustomCommandUserSettings(command: "noop", description: "No handler")
             ]
             CliSettingManager.writeGatewaySettings(user)
@@ -1915,13 +1941,15 @@ public class GatewayServiceTelegramNativeTest {
             let service = gatewayTelegramNativeService(adapter)
             service.start()
             adapter.queue("/deploy prod")
+            adapter.queue("/custom_backup archive one")
             adapter.queue("/noop prod")
             service.processOnce()
 
             @Expect(adapter.sentText(0), "deploying prod")
-            @Expect(adapter.sentText(1).contains("Telegram command: /noop"), true)
-            @Expect(adapter.sentText(1).contains("Status: handler_missing"), true)
-            @Expect(adapter.sentText(1).startsWith("{"), false)
+            @Expect(adapter.sentText(1), "backup archive one")
+            @Expect(adapter.sentText(2).contains("Telegram command: /noop"), true)
+            @Expect(adapter.sentText(2).contains("Status: handler_missing"), true)
+            @Expect(adapter.sentText(2).startsWith("{"), false)
         }
     }
 

@@ -2128,7 +2128,7 @@ public class GatewayService {
         sessionKey: String
     ): Option<Bool> {
         let text = message.text.trimAscii()
-        let command = gatewayTelegramNativeCommandNameFromText(text)
+        let command = this.normalizeTelegramCommandName(gatewayTelegramNativeCommandNameFromText(text))
         if (command.isEmpty()) {
             return None<Bool>
         }
@@ -2183,10 +2183,11 @@ public class GatewayService {
     }
 
     private func normalizeTelegramCommandName(raw: String): String {
-        var normalized = raw.trimAscii().toAsciiLower()
-        while (normalized.startsWith("/")) {
+        var normalized = raw.trimAscii()
+        if (normalized.startsWith("/")) {
             normalized = normalized[1..]
         }
+        normalized = normalized.toAsciiLower().replace("-", "_")
         if (normalized.isEmpty() || normalized.size > 32) {
             return ""
         }

@@ -77,7 +77,7 @@ public func gatewayTelegramNativeCommandCatalog(): Array<GatewayTelegramNativeCo
         spec("approve", "Approve or deny exec requests.", "management", auth: "approval", args: ["id", "decision"]),
         spec("context", "Explain how context is built and used.", "status"),
         spec("btw", "One-shot non-persistent side questions are not implemented in the Telegram native path.", "tools", auth: "operator", status: "not_applicable", args: ["question"], reason: "Telegram native commands bypass the model; send a normal message when you want Metis to answer."),
-        spec("export-session", "Export current session transcript.", "status", aliases: ["export"], args: ["path"]),
+        spec("export-session", "Export current session transcript.", "status", aliases: ["export", "export_session"], args: ["path"]),
         spec("tts", "Control text-to-speech.", "media", auth: "operator", args: ["action", "value"], menu: ["status", "on", "off", "provider", "limit", "summary", "audio", "help"]),
         spec("whoami", "Show your sender id.", "status", aliases: ["id"]),
         spec("session", "Show the current Telegram Gateway session key.", "session"),
