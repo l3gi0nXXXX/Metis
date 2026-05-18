@@ -258,6 +258,30 @@ private func cliSafeRedactedValue(value: String): String {
     "[redacted]"
 }
 
+private func cliSafeDiagnosticText(value: String): String {
+    let trimmed = value.trimAscii()
+    if (trimmed.isEmpty()) {
+        return ""
+    }
+    let lower = trimmed.toAsciiLower()
+    if (
+        lower.contains("authorization") ||
+        lower.contains("bearer ") ||
+        lower.contains("appsecret") ||
+        lower.contains("app_secret") ||
+        lower.contains("secret") ||
+        lower.contains("token") ||
+        lower.contains("verificationtoken") ||
+        lower.contains("verification_token") ||
+        lower.contains("encryptkey") ||
+        lower.contains("encrypt_key") ||
+        lower.contains("password")
+    ) {
+        return "[redacted]"
+    }
+    trimmed
+}
+
 private func cliAddAccountSourceBit(bits: ArrayList<String>, label: String, row: JsonObject, key: String): Unit {
     let source = cliJsonString(row, key)
     if (!source.isEmpty() && source != "none") {
@@ -426,7 +450,7 @@ private func cliRenderChannelsRuntime(result: JsonObject): Option<String> {
                     "  - ${cliJsonString(row, "channelId")}/${cliJsonString(row, "accountId")}: running=${cliJsonBool(row, "running")} phase=${cliJsonString(row, "phase")} pull=${cliJsonInt(row, "pullCount")} inbound=${cliJsonInt(row, "inboundCount")} sendOk=${cliJsonInt(row, "sendSuccessCount")} sendFail=${cliJsonInt(row, "sendFailureCount")}"
                 )
                 let err = cliJsonString(row, "lastError")
-                if (!err.isEmpty()) { lines.add("    lastError: ${cliOneLine(err)}") }
+                if (!err.isEmpty()) { lines.add("    lastError: ${cliOneLine(cliSafeDiagnosticText(err))}") }
             } catch (_: Exception) {
                 ()
             }
@@ -508,6 +532,61 @@ private func cliRenderChannelGet(result: JsonObject): Option<String> {
     Some<String>(String.join(lines.toArray(), delimiter: "\n"))
 }
 
+private func cliRenderFeishuAuditDiagnostics(lines: ArrayList<String>, audit: JsonObject, summary: JsonObject): Unit {
+    let summaryDiag = cliJsonObject(summary, "feishuDiagnostics")
+    let diagnostics = cliJsonObject(audit, "feishuDiagnostics")
+    let ownership = cliJsonObject(diagnostics, "eventOwnership")
+    if (summaryDiag.toJsonString() == "{}" && ownership.toJsonString() == "{}") {
+        return
+    }
+    let byStatus = cliJsonObject(summaryDiag, "byStatus")
+    lines.add(
+        "Feishu diagnostics: status=${cliJsonString(summaryDiag, "status", defaultValue: cliJsonString(ownership, "status", defaultValue: "unknown"))} accounts=${cliJsonInt(summaryDiag, "accountCount", defaultValue: cliJsonInt(ownership, "accountCount"))} wrongApp=${cliJsonInt(byStatus, "wrong_app")} noEvent=${cliJsonInt(byStatus, "no_event")} ambiguousAppId=${cliJsonInt(byStatus, "ambiguous_app_id")} missingAppId=${cliJsonInt(byStatus, "missing_app_id")}"
+    )
+    let accounts = cliJsonArray(ownership, "accounts")
+    if (accounts.size() > 0) {
+        lines.add("Feishu account diagnostics:")
+        let limit = if (accounts.size() > 8) { 8 } else { accounts.size() }
+        for (i in 0..limit) {
+            try {
+                let row = accounts[i].asObject()
+                let accountId = cliJsonString(row, "accountId", defaultValue: "default")
+                let status = cliJsonString(row, "status", defaultValue: "unknown")
+                let reason = cliJsonString(row, "reason")
+                var text = "  - feishu/${accountId}: ${status}"
+                if (!reason.isEmpty()) {
+                    text += " (${reason})"
+                }
+                let lastError = cliSafeDiagnosticText(cliJsonString(row, "lastError"))
+                if (!lastError.isEmpty()) {
+                    text += " lastError=${cliOneLine(lastError, maxLen: 80)}"
+                }
+                lines.add(text)
+                let advice = cliJsonArray(row, "advice")
+                if (advice.size() > 0) {
+                    let first = try { advice[0].asString().getValue().trimAscii() } catch (_: Exception) { "" }
+                    if (!first.isEmpty()) {
+                        lines.add("    next: ${cliOneLine(cliSafeDiagnosticText(first), maxLen: 160)}")
+                    }
+                }
+            } catch (_: Exception) {
+                ()
+            }
+        }
+    }
+    let actions = cliJsonArray(ownership, "actions")
+    if (actions.size() > 0) {
+        lines.add("Feishu actions:")
+        let limit = if (actions.size() > 6) { 6 } else { actions.size() }
+        for (i in 0..limit) {
+            let text = try { actions[i].asString().getValue().trimAscii() } catch (_: Exception) { "" }
+            if (!text.isEmpty()) {
+                lines.add("  - ${cliOneLine(cliSafeDiagnosticText(text), maxLen: 180)}")
+            }
+        }
+    }
+}
+
 private func cliRenderChannelsAudit(result: JsonObject): Option<String> {
     let audit = cliJsonObject(result, "audit")
     if (audit.toJsonString() == "{}") {
@@ -521,6 +600,7 @@ private func cliRenderChannelsAudit(result: JsonObject): Option<String> {
     if (diagnostics.toJsonString() != "{}") {
         lines.add("Telegram diagnostics: healthy=${cliJsonBool(diagnostics, "healthy")} findings=${cliJsonInt(diagnostics, "findingCount")} warnings=${cliJsonInt(diagnostics, "warningCount")} failed=${cliJsonInt(diagnostics, "failedCount")}")
     }
+    cliRenderFeishuAuditDiagnostics(lines, audit, summary)
     let acceptance = cliJsonArray(audit, "acceptance")
     if (acceptance.size() > 0) {
         lines.add("Acceptance:")

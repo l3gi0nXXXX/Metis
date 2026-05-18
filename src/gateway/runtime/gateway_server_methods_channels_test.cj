@@ -949,6 +949,130 @@ public class GatewayServerMethodsChannelsTest {
     }
 
     @TestCase
+    public func feishuChannelsRuntimeShowsConfiguredAndLiveAccountsWithoutSecrets(): Unit {
+        withGatewayChannelsTestHome {
+            var user = GatewayUserSettings()
+            user.feishu.enabled = true
+            user.feishu.defaultAccount = "default"
+            let accounts = JsonObject()
+            let defaultAccount = JsonObject()
+            defaultAccount.put("appId", JsonString("cli_default_app"))
+            defaultAccount.put("appSecret", JsonString("default-secret-never-visible"))
+            let writer = JsonObject()
+            writer.put("appId", JsonString("cli_writer_app"))
+            writer.put("appSecret", JsonString("writer-secret-never-visible"))
+            accounts.put("default", defaultAccount)
+            accounts.put("feishu-writer", writer)
+            user.feishu.accounts = Some(accounts)
+
+            gatewayChannelRuntimeRegisterAccount("feishu", accountId: "default")
+            gatewayChannelRuntimeMarkRunning("feishu", accountId: "default")
+            gatewayChannelRuntimeMarkPull("feishu", accountId: "default", inboundCount: 1)
+            gatewayChannelRuntimeRegisterAccount("feishu", accountId: "feishu-writer")
+            gatewayChannelRuntimeMarkFailure("feishu", accountId: "feishu-writer", error: "wrong_app app_id mismatch")
+
+            let params = JsonObject()
+            params.put("channelId", JsonString("feishu"))
+            let result = handleGatewayChannelsFamily(
+                "channels.runtime",
+                user,
+                request: Some(GatewayRpcRequest("channels.runtime", params: params))
+            ).getOrThrow().result.asObject()
+
+            let runtimeAccounts = result.get("accounts").getOrThrow().asArray()
+            @Expect(channelsRowsContainStringField(runtimeAccounts, "accountId", "default"), true)
+            @Expect(channelsRowsContainStringField(runtimeAccounts, "accountId", "feishu-writer"), true)
+            let feishu = result.get("feishu").getOrThrow().asObject()
+            let inspect = feishu.get("accountInspect").getOrThrow().asObject()
+            let configuredAccounts = inspect.get("accounts").getOrThrow().asArray()
+            @Expect(channelsRowsContainStringField(configuredAccounts, "accountId", "default"), true)
+            @Expect(channelsRowsContainStringField(configuredAccounts, "accountId", "feishu-writer"), true)
+            let ownership = feishu.get("eventOwnership").getOrThrow().asObject()
+            @Expect(channelsTestString(ownership, "status"), "wrong_app")
+            let ownershipRows = ownership.get("accounts").getOrThrow().asArray()
+            @Expect(channelsRowsContainStringField(ownershipRows, "status", "wrong_app"), true)
+            let raw = result.toJsonString()
+            @Expect(raw.contains("default-secret-never-visible"), false)
+            @Expect(raw.contains("writer-secret-never-visible"), false)
+            @Expect(raw.contains("cli_default_app"), false)
+            @Expect(raw.contains("cli_writer_app"), false)
+            @Expect(raw.contains("cli***app"), true)
+        }
+    }
+
+    @TestCase
+    public func feishuChannelsAuditGivesOwnershipConsoleAndMappingDiagnostics(): Unit {
+        withGatewayChannelsTestHome {
+            var user = GatewayUserSettings()
+            user.feishu.enabled = true
+            user.feishu.defaultAccount = "default"
+            let accounts = JsonObject()
+            let defaultAccount = JsonObject()
+            defaultAccount.put("appId", JsonString("cli_default_app"))
+            defaultAccount.put("appSecret", JsonString("default-secret-never-visible"))
+            let writer = JsonObject()
+            writer.put("appId", JsonString("cli_writer_app"))
+            writer.put("appSecret", JsonString("writer-secret-never-visible"))
+            let noEvent = JsonObject()
+            noEvent.put("appId", JsonString("cli_noevent_app"))
+            noEvent.put("appSecret", JsonString("noevent-secret-never-visible"))
+            let missing = JsonObject()
+            missing.put("appId", JsonString(""))
+            missing.put("appSecret", JsonString("missing-secret-never-visible"))
+            let duplicate = JsonObject()
+            duplicate.put("appId", JsonString("cli_writer_app"))
+            duplicate.put("appSecret", JsonString("duplicate-secret-never-visible"))
+            accounts.put("default", defaultAccount)
+            accounts.put("feishu-writer", writer)
+            accounts.put("feishu-noevent", noEvent)
+            accounts.put("feishu-missing", missing)
+            accounts.put("feishu-duplicate", duplicate)
+            user.feishu.accounts = Some(accounts)
+
+            gatewayChannelRuntimeRegisterAccount("feishu", accountId: "default")
+            gatewayChannelRuntimeMarkRunning("feishu", accountId: "default")
+            gatewayChannelRuntimeMarkPull("feishu", accountId: "default", inboundCount: 1)
+            gatewayChannelRuntimeRegisterAccount("feishu", accountId: "feishu-writer")
+            gatewayChannelRuntimeMarkFailure("feishu", accountId: "feishu-writer", error: "wrong_app app_id mismatch")
+            gatewayChannelRuntimeRegisterAccount("feishu", accountId: "feishu-noevent")
+            gatewayChannelRuntimeMarkRunning("feishu", accountId: "feishu-noevent")
+
+            let params = JsonObject()
+            params.put("channelId", JsonString("feishu"))
+            let result = handleGatewayChannelsFamily(
+                "channels.audit",
+                user,
+                request: Some(GatewayRpcRequest("channels.audit", params: params))
+            ).getOrThrow().result.asObject()
+            let audit = result.get("audit").getOrThrow().asObject()
+            let summary = audit.get("summary").getOrThrow().asObject()
+            let feishuSummary = summary.get("feishuDiagnostics").getOrThrow().asObject()
+            @Expect(channelsTestString(feishuSummary, "status"), "wrong_app")
+            let diagnostics = audit.get("feishuDiagnostics").getOrThrow().asObject()
+            let ownership = diagnostics.get("eventOwnership").getOrThrow().asObject()
+            let rows = ownership.get("accounts").getOrThrow().asArray()
+            @Expect(channelsRowsContainStringField(rows, "status", "running"), true)
+            @Expect(channelsRowsContainStringField(rows, "status", "wrong_app"), true)
+            @Expect(channelsRowsContainStringField(rows, "status", "no_event"), true)
+            @Expect(channelsRowsContainStringField(rows, "status", "missing_app_id"), true)
+            @Expect(channelsRowsContainStringField(rows, "status", "ambiguous_app_id"), true)
+            let actions = ownership.get("actions").getOrThrow().asArray().toJsonString()
+            @Expect(actions.contains("long connection"), true)
+            @Expect(actions.contains("im.message.receive_v1"), true)
+            @Expect(actions.contains("bot is installed"), true)
+            @Expect(actions.contains("gateway.feishu.accounts.feishu-writer.appId"), true)
+            @Expect(actions.contains("gateway.feishu.accounts.feishu-missing.appId"), true)
+            let raw = audit.toJsonString()
+            @Expect(raw.contains("default-secret-never-visible"), false)
+            @Expect(raw.contains("writer-secret-never-visible"), false)
+            @Expect(raw.contains("noevent-secret-never-visible"), false)
+            @Expect(raw.contains("missing-secret-never-visible"), false)
+            @Expect(raw.contains("duplicate-secret-never-visible"), false)
+            @Expect(raw.contains("cli_writer_app"), false)
+        }
+    }
+
+    @TestCase
     public func qqChannelGetAndStatusExposeAccountsWithRedactedSecrets(): Unit {
         var user = GatewayUserSettings()
         user.qq.enabled = true

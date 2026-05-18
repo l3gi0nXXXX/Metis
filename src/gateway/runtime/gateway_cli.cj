@@ -559,10 +559,10 @@ private func gatewayPrintChannelHelp(): Unit {
     PrintUtils.printLine("")
     PrintUtils.printLine("Usage:")
     PrintUtils.printLine("  gateway channel list")
-    PrintUtils.printLine("  gateway channel health [id]")
-    PrintUtils.printLine("  gateway channel runtime [id]")
-    PrintUtils.printLine("  gateway channel get <id>")
-    PrintUtils.printLine("  gateway channel audit [id]")
+    PrintUtils.printLine("  gateway channel health [id] [--json]")
+    PrintUtils.printLine("  gateway channel runtime [id] [--json]")
+    PrintUtils.printLine("  gateway channel get <id> [--json]")
+    PrintUtils.printLine("  gateway channel audit [id] [--json]")
     PrintUtils.printLine("  gateway channel start <id> [--account <accountId>] [--json]")
     PrintUtils.printLine("  gateway channel stop <id> [--account <accountId>] [--json]")
     PrintUtils.printLine("  gateway channel restart <id> [--account <accountId>] [--json]")
@@ -589,9 +589,24 @@ public func gatewayRunChannelCli(sub: Array<String>): Int64 {
         return gatewayRunChannelLifecycleCli(sub, subcmd)
     }
     if (subcmd == "health" || subcmd == "runtime" || subcmd == "audit" || subcmd == "get") {
-        let channelId = if (sub.size >= 3) { sub[2].trimAscii() } else { "" }
+        var channelId = ""
+        var json = false
+        var idx: Int64 = 2
+        while (idx < sub.size) {
+            let token = sub[idx].trimAscii()
+            if (token.toAsciiLower() == "--json") {
+                json = true
+            } else if (channelId.isEmpty()) {
+                channelId = token
+            } else {
+                PrintUtils.printLine("Unknown gateway channel ${subcmd} option: ${token}")
+                PrintUtils.printLine("Usage: gateway channel ${subcmd}${if (subcmd == "get") { " <id>" } else { " [id]" }} [--json]")
+                return 1
+            }
+            idx += 1
+        }
         if (subcmd == "get" && channelId.isEmpty()) {
-            PrintUtils.printLine("Usage: gateway channel get <id>")
+            PrintUtils.printLine("Usage: gateway channel get <id> [--json]")
             return 1
         }
         let method = match (subcmd) {
@@ -601,7 +616,11 @@ public func gatewayRunChannelCli(sub: Array<String>): Int64 {
             case _ => "channels.get"
         }
         let res = gatewayCliClient().call(method, params: gatewayChannelRpcParams(channelId))
-        gatewayPrintCommandOutput(res.toJson().toJsonString())
+        if (json) {
+            PrintUtils.printLine(res.toJson().toJsonString())
+        } else {
+            gatewayPrintCommandOutput(res.toJson().toJsonString())
+        }
         return if (res.ok) { 0 } else { 1 }
     }
     if (subcmd == "enable") {

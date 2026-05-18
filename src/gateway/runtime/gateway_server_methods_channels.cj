@@ -4,7 +4,13 @@ import magic.jsonable.*
 
 import metis.core.gatewayVideoGenerationResolveConfig
 import metis.core.config.{CliConfig, CliSettingManager, GatewayPluginUserSettings, GatewayUserSettings}
-import metis.gateway.channels.feishu.{gatewayFeishuDescribeAccounts, feishuGatewayNativeAuthLiveSmoke}
+import metis.gateway.channels.feishu.{
+    gatewayFeishuDescribeAccounts,
+    gatewayFeishuListAccountIds,
+    gatewayFeishuRedactedValue,
+    gatewayFeishuResolveAccount,
+    feishuGatewayNativeAuthLiveSmoke
+}
 import metis.gateway.channels.qq.{gatewayQqDefaultAccountId, gatewayQqDescribeAccounts}
 import metis.gateway.channels.telegram.{TelegramAdapter, gatewayTelegramResolveAccount, telegramPairingAccountStore}
 import metis.gateway.model.{ChannelType, OutboundMessage}
@@ -514,19 +520,40 @@ private func gatewayFeishuAccountInspectRow(user: GatewayUserSettings, accountId
     let accountAppId = gatewayBindingStringParam(accountConfig, ["appId", "app_id"], "")
     let accountSecret = gatewayBindingStringParam(accountConfig, ["appSecret", "app_secret"], "")
     let accountEnabled = gatewayJsonBool(accountConfig, "enabled", true)
-    let globalConfigured = !user.feishu.appId.trimAscii().isEmpty() || !user.feishu.appSecret.trimAscii().isEmpty()
-    let credentialSource = if (!accountSecret.isEmpty() || !accountAppId.isEmpty()) {
+    let appIdSource = if (!accountAppId.isEmpty()) {
         "account"
-    } else if (globalConfigured) {
+    } else if (!user.feishu.appId.trimAscii().isEmpty()) {
         "global-inherited"
     } else {
         "missing"
     }
+    let appSecretSource = if (!accountSecret.isEmpty()) {
+        "account"
+    } else if (!user.feishu.appSecret.trimAscii().isEmpty()) {
+        "global-inherited"
+    } else {
+        "missing"
+    }
+    let credentialSource = if (appIdSource == "missing" && appSecretSource == "missing") {
+        "missing"
+    } else if (appIdSource == appSecretSource) {
+        appIdSource
+    } else {
+        "mixed"
+    }
+    let effectiveAppId = if (!accountAppId.isEmpty()) { accountAppId } else { user.feishu.appId.trimAscii() }
     row.put("accountId", JsonString(accountId))
     row.put("defaultAccount", (accountId == defaultAccountId).toJsonValue())
     row.put("enabled", accountEnabled.toJsonValue())
-    row.put("configured", (credentialSource != "missing").toJsonValue())
+    row.put("configured", (appIdSource != "missing" && appSecretSource != "missing").toJsonValue())
     row.put("credentialSource", JsonString(credentialSource))
+    let credentialSources = JsonObject()
+    credentialSources.put("summary", JsonString(credentialSource))
+    credentialSources.put("appId", JsonString(appIdSource))
+    credentialSources.put("appSecret", JsonString(appSecretSource))
+    credentialSources.put("redacted", true.toJsonValue())
+    row.put("credentialSources", credentialSources)
+    row.put("appId", JsonString(gatewayFeishuRedactedValue(effectiveAppId)))
     row.put("hasAppId", (!accountAppId.isEmpty()).toJsonValue())
     row.put("hasAppSecret", (!accountSecret.isEmpty()).toJsonValue())
     row.put("redacted", true.toJsonValue())
@@ -561,6 +588,300 @@ private func gatewayFeishuAccountInspectJson(user: GatewayUserSettings): JsonObj
     out.put("accounts", rows)
     out.put("count", rows.size().toJsonValue())
     return out
+}
+
+private func gatewayFeishuDiagString(obj: JsonObject, key: String, defaultValue!: String = ""): String {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { defaultValue }
+        case None => defaultValue
+    }
+}
+
+private func gatewayFeishuDiagBool(obj: JsonObject, key: String, defaultValue!: Bool = false): Bool {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asBool().getValue() } catch (_e: Exception) { defaultValue }
+        case None => defaultValue
+    }
+}
+
+private func gatewayFeishuDiagInt(obj: JsonObject, key: String, defaultValue!: Int64 = 0): Int64 {
+    match (obj.get(key)) {
+        case Some(v) =>
+            try { return Int64.parse(v.toJsonString()) } catch (_e: Exception) { defaultValue }
+        case None => defaultValue
+    }
+}
+
+private func gatewayFeishuDiagArray(obj: JsonObject, key: String): JsonArray {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asArray() } catch (_e: Exception) { JsonArray([]) }
+        case None => JsonArray([])
+    }
+}
+
+private func gatewayFeishuDiagObject(obj: JsonObject, key: String): JsonObject {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+}
+
+private func gatewayFeishuDiagnosticRedact(raw: String): String {
+    let text = raw.trimAscii()
+    if (text.isEmpty()) {
+        return ""
+    }
+    let lower = text.toAsciiLower()
+    if (
+        lower.contains("authorization") ||
+        lower.contains("bearer ") ||
+        lower.contains("appsecret") ||
+        lower.contains("app_secret") ||
+        lower.contains("secret") ||
+        lower.contains("token") ||
+        lower.contains("verificationtoken") ||
+        lower.contains("verification_token") ||
+        lower.contains("encryptkey") ||
+        lower.contains("encrypt_key") ||
+        lower.contains("password")
+    ) {
+        return "[redacted]"
+    }
+    text
+}
+
+private func gatewayFeishuRuntimeRow(runtime: JsonObject, accountId: String): JsonObject {
+    let accounts = gatewayFeishuDiagArray(runtime, "accounts")
+    for (i in 0..accounts.size()) {
+        let row = try { accounts[i].asObject() } catch (_e: Exception) { JsonObject() }
+        if (gatewayFeishuDiagString(row, "accountId") == accountId) {
+            return row
+        }
+    }
+    JsonObject()
+}
+
+private func gatewayFeishuAddUniqueText(values: ArrayList<String>, value: String): Unit {
+    let trimmed = value.trimAscii()
+    if (trimmed.isEmpty()) {
+        return
+    }
+    for (existing in values) {
+        if (existing == trimmed) {
+            return
+        }
+    }
+    values.add(trimmed)
+}
+
+private func gatewayFeishuAdviceArray(values: ArrayList<String>): JsonArray {
+    let out = JsonArray([])
+    for (value in values) {
+        out.add(JsonString(value))
+    }
+    out
+}
+
+private func gatewayFeishuConsoleAdvice(accountId: String): ArrayList<String> {
+    let advice = ArrayList<String>()
+    advice.add("Check that the Feishu console receive mode uses long connection for this app.")
+    advice.add("Confirm event subscription includes im.message.receive_v1.")
+    advice.add("Confirm the bot is installed in the tenant and joined the target chat.")
+    advice.add("Confirm the chat bot appId matches gateway.feishu.accounts.${accountId}.appId.")
+    advice
+}
+
+private func gatewayFeishuMappingAdvice(accountId: String): ArrayList<String> {
+    let advice = ArrayList<String>()
+    advice.add("Event reached Gateway but app ownership did not match this account.")
+    advice.add("Verify the bot being messaged maps to gateway.feishu.accounts.${accountId}.appId.")
+    advice.add("If several accounts use the same appId, make each gateway.feishu.accounts.<accountId>.appId unique.")
+    advice
+}
+
+private func gatewayFeishuStatusRank(status: String): Int64 {
+    match (status) {
+        case "wrong_app" => 60
+        case "ambiguous_app_id" => 50
+        case "missing_app_id" => 40
+        case "no_event" => 30
+        case "configured" => 20
+        case "running" => 10
+        case _ => 0
+    }
+}
+
+private func gatewayFeishuAmbiguousAppIdAccounts(user: GatewayUserSettings): HashMap<String, Bool> {
+    let counts = HashMap<String, Int64>()
+    let cfg = buildGatewayConfigFromUserSettings(user).feishu
+    for (accountId in gatewayFeishuListAccountIds(cfg)) {
+        let resolved = gatewayFeishuResolveAccount(cfg, accountId)
+        let appId = resolved.config.appId.trimAscii()
+        if (appId.isEmpty()) {
+            continue
+        }
+        let current = match (counts.get(appId)) {
+            case Some(v) => v
+            case None => 0
+        }
+        counts[appId] = current + 1
+    }
+    let ambiguous = HashMap<String, Bool>()
+    for (accountId in gatewayFeishuListAccountIds(cfg)) {
+        let resolved = gatewayFeishuResolveAccount(cfg, accountId)
+        let appId = resolved.config.appId.trimAscii()
+        if (appId.isEmpty()) {
+            continue
+        }
+        let count = match (counts.get(appId)) {
+            case Some(v) => v
+            case None => 0
+        }
+        if (count > 1) {
+            ambiguous[resolved.accountId] = true
+        }
+    }
+    ambiguous
+}
+
+private func gatewayFeishuIsAmbiguousAccount(accounts: HashMap<String, Bool>, accountId: String): Bool {
+    match (accounts.get(accountId)) {
+        case Some(v) => v
+        case None => false
+    }
+}
+
+private func gatewayFeishuAccountEventDiagnostic(
+    accountRow: JsonObject,
+    runtime: JsonObject,
+    ambiguousAccounts: HashMap<String, Bool>,
+    defaultAccountId: String
+): JsonObject {
+    let accountId = gatewayFeishuDiagString(accountRow, "accountId", defaultValue: defaultAccountId)
+    let runtimeRow = gatewayFeishuRuntimeRow(runtime, accountId)
+    let configured = gatewayFeishuDiagBool(accountRow, "configured")
+    let running = gatewayFeishuDiagBool(runtimeRow, "running", defaultValue: gatewayFeishuDiagBool(accountRow, "running"))
+    let inboundCount = gatewayFeishuDiagInt(runtimeRow, "inboundCount", defaultValue: gatewayFeishuDiagInt(accountRow, "inboundCount"))
+    let pullCount = gatewayFeishuDiagInt(runtimeRow, "pullCount", defaultValue: gatewayFeishuDiagInt(accountRow, "pullCount"))
+    let lastEventAtMs = gatewayFeishuDiagInt(runtimeRow, "lastEventAtMs", defaultValue: gatewayFeishuDiagInt(accountRow, "lastEventAtMs"))
+    let rawLastError = gatewayFeishuDiagString(runtimeRow, "lastError", defaultValue: gatewayFeishuDiagString(accountRow, "lastError"))
+    let safeLastError = gatewayFeishuDiagnosticRedact(rawLastError)
+    let lastError = rawLastError.toAsciiLower()
+    let appId = gatewayFeishuDiagString(accountRow, "appId")
+    let hasAppId = gatewayFeishuDiagBool(accountRow, "hasAppId") || !appId.trimAscii().isEmpty()
+    let ambiguousAppId = gatewayFeishuIsAmbiguousAccount(ambiguousAccounts, accountId)
+    var status = "configured"
+    var reason = "configured_account_waiting_for_runtime"
+    let advice = ArrayList<String>()
+    if (lastError.contains("wrong_app") || lastError.contains("wrong app") || lastError.contains("app_id mismatch")) {
+        status = "wrong_app"
+        reason = "event_app_id_mismatch"
+        for (item in gatewayFeishuMappingAdvice(accountId)) {
+            gatewayFeishuAddUniqueText(advice, item)
+        }
+    } else if (lastError.contains("ambiguous_app_id") || ambiguousAppId) {
+        status = "ambiguous_app_id"
+        reason = "multiple_accounts_share_app_id"
+        gatewayFeishuAddUniqueText(advice, "Multiple Feishu accounts match the same appId; make gateway.feishu.accounts.<accountId>.appId unique.")
+    } else if (lastError.contains("missing_app_id") || !hasAppId) {
+        status = "missing_app_id"
+        reason = "account_app_id_missing_or_event_app_id_unavailable"
+        gatewayFeishuAddUniqueText(advice, "Confirm gateway.feishu.accounts.${accountId}.appId is set for the bot receiving messages.")
+        gatewayFeishuAddUniqueText(advice, "If the event lacks app_id, verify the Feishu sidecar SDK event envelope before routing.")
+    } else if (running && inboundCount == 0 && pullCount == 0 && lastEventAtMs == 0) {
+        status = "no_event"
+        reason = "runtime_running_but_no_sidecar_event_seen"
+        for (item in gatewayFeishuConsoleAdvice(accountId)) {
+            gatewayFeishuAddUniqueText(advice, item)
+        }
+    } else if (running) {
+        status = "running"
+        reason = "runtime_seen_event_or_poll_activity"
+        gatewayFeishuAddUniqueText(advice, "Runtime is active; if replies are still absent, inspect Gateway.inbound and send-path logs for this account.")
+    } else if (configured) {
+        status = "configured"
+        reason = "account_configured_but_runtime_not_running"
+        gatewayFeishuAddUniqueText(advice, "Start the Gateway or run metis gateway channel restart feishu --account ${accountId}.")
+    } else {
+        status = "missing_app_id"
+        reason = "account_credentials_incomplete"
+        gatewayFeishuAddUniqueText(advice, "Configure gateway.feishu.accounts.${accountId}.appId and appSecret before starting this account.")
+    }
+    let row = JsonObject()
+    row.put("accountId", JsonString(accountId))
+    row.put("defaultAccount", (accountId == defaultAccountId).toJsonValue())
+    row.put("configured", configured.toJsonValue())
+    row.put("running", running.toJsonValue())
+    row.put("status", JsonString(status))
+    row.put("reason", JsonString(reason))
+    row.put("appId", JsonString(gatewayFeishuRedactedValue(appId)))
+    row.put("inboundCount", inboundCount.toJsonValue())
+    row.put("pullCount", pullCount.toJsonValue())
+    row.put("lastEventAtMs", lastEventAtMs.toJsonValue())
+    if (!safeLastError.isEmpty()) {
+        row.put("lastError", JsonString(safeLastError))
+    }
+    row.put("advice", gatewayFeishuAdviceArray(advice))
+    row.put("redacted", true.toJsonValue())
+    row
+}
+
+private func gatewayFeishuEventOwnershipDiagnosticsJson(user: GatewayUserSettings, runtime!: JsonObject = JsonObject()): JsonObject {
+    let out = JsonObject()
+    let cfg = buildGatewayConfigFromUserSettings(user).feishu
+    let inspect = gatewayFeishuDescribeAccounts(cfg, runtime: runtime)
+    let accounts = gatewayFeishuDiagArray(inspect, "accounts")
+    let defaultAccountId = gatewayFeishuDiagString(inspect, "defaultAccountId", defaultValue: gatewayFeishuDefaultAccountId(user))
+    let ambiguousAccounts = gatewayFeishuAmbiguousAppIdAccounts(user)
+    let rows = JsonArray([])
+    let actions = ArrayList<String>()
+    let byStatus = HashMap<String, Int64>()
+    var summaryStatus = "not_configured"
+    var worstRank: Int64 = 0
+    for (i in 0..accounts.size()) {
+        let accountRow = try { accounts[i].asObject() } catch (_e: Exception) { JsonObject() }
+        let row = gatewayFeishuAccountEventDiagnostic(accountRow, runtime, ambiguousAccounts, defaultAccountId)
+        rows.add(row)
+        let status = gatewayFeishuDiagString(row, "status")
+        let current = match (byStatus.get(status)) {
+            case Some(v) => v
+            case None => 0
+        }
+        byStatus[status] = current + 1
+        let rank = gatewayFeishuStatusRank(status)
+        if (rank > worstRank) {
+            worstRank = rank
+            summaryStatus = status
+        }
+        let advice = gatewayFeishuDiagArray(row, "advice")
+        for (idx in 0..advice.size()) {
+            let text = try { advice[idx].asString().getValue() } catch (_e: Exception) { "" }
+            gatewayFeishuAddUniqueText(actions, text)
+        }
+    }
+    let counts = JsonObject()
+    for ((status, count) in byStatus) {
+        counts.put(status, count.toJsonValue())
+    }
+    out.put("channel", JsonString("feishu"))
+    out.put("status", JsonString(summaryStatus))
+    out.put("accountCount", accounts.size().toJsonValue())
+    out.put("accounts", rows)
+    out.put("byStatus", counts)
+    out.put("actions", gatewayFeishuAdviceArray(actions))
+    out.put("redacted", true.toJsonValue())
+    out
+}
+
+private func gatewayFeishuRuntimeViewJson(user: GatewayUserSettings, runtime: JsonObject): JsonObject {
+    let out = JsonObject()
+    let accountInspect = gatewayFeishuAccountInspectJson(user)
+    out.put("mode", JsonString(user.feishu.receiveMode))
+    out.put("accountInspect", accountInspect)
+    out.put("eventOwnership", gatewayFeishuEventOwnershipDiagnosticsJson(user, runtime: runtime))
+    out.put("diagnostics", gatewayFeishuChannelDiagnosticsJson(user, runtime: runtime))
+    out.put("redacted", true.toJsonValue())
+    out
 }
 
 private func gatewayFeishuDirectoryJson(user: GatewayUserSettings): JsonObject {
@@ -660,7 +981,7 @@ private func gatewayFeishuThreadSessionDiagnosticsJson(user: GatewayUserSettings
     return out
 }
 
-private func gatewayFeishuChannelDiagnosticsJson(user: GatewayUserSettings): JsonObject {
+private func gatewayFeishuChannelDiagnosticsJson(user: GatewayUserSettings, runtime!: JsonObject = JsonObject()): JsonObject {
     let out = JsonObject()
     let account = gatewayFeishuDescribeAccounts(buildGatewayConfigFromUserSettings(user).feishu)
     out.put("channel", JsonString("feishu"))
@@ -671,7 +992,8 @@ private func gatewayFeishuChannelDiagnosticsJson(user: GatewayUserSettings): Jso
         JsonString("groupPolicy"),
         JsonString("threadSession"),
         JsonString("media"),
-        JsonString("nativeCommands")
+        JsonString("nativeCommands"),
+        JsonString("eventOwnership")
     ]))
     out.put("account", account)
     out.put("receiveMode", gatewayFeishuReceiveModeDiagnosticsJson(user))
@@ -679,6 +1001,7 @@ private func gatewayFeishuChannelDiagnosticsJson(user: GatewayUserSettings): Jso
     out.put("threadSession", gatewayFeishuThreadSessionDiagnosticsJson(user))
     out.put("media", gatewayFeishuMediaJson(user))
     out.put("nativeCommands", gatewayFeishuNativeCommandsJson())
+    out.put("eventOwnership", gatewayFeishuEventOwnershipDiagnosticsJson(user, runtime: runtime))
     out.put("unsupportedFields", account.get("unsupportedFields") ?? JsonArray([]))
     out.put("ignoredFields", account.get("ignoredFields") ?? JsonArray([]))
     return out
@@ -2097,7 +2420,7 @@ private func gatewayChannelStatusRow(user: GatewayUserSettings, channelId: Strin
         let auth = gatewayFeishuNativeAuthStatus(gatewayFeishuDefaultAccountId(user), user)
         row.put("auth", auth)
         row.put("oauth", auth)
-        row.put("doctor", gatewayFeishuChannelDiagnosticsJson(user))
+        row.put("doctor", gatewayFeishuChannelDiagnosticsJson(user, runtime: runtime))
         row.put("capabilities", JsonArray([
             JsonString("oauth:device-flow"),
             JsonString("oauth:lifecycle"),
@@ -2250,6 +2573,8 @@ private func gatewayChannelsHealthJson(user: GatewayUserSettings, liveProbe!: Bo
     let telegramRuntime = gatewayTelegramRuntimeJson(user, liveProbe: liveProbe)
     result.put("telegram", telegramRuntime)
     result.put("telegramDiagnostics", gatewayTelegramDiagnosticsJson(user, runtime: telegramRuntime))
+    let feishuRuntime = gatewayChannelRuntimeSummary("feishu")
+    result.put("feishuDiagnostics", gatewayFeishuChannelDiagnosticsJson(user, runtime: feishuRuntime))
     result
 }
 
@@ -2300,9 +2625,20 @@ private func gatewayChannelsAuditJson(user: GatewayUserSettings, channelId!: Str
     acceptance.add(JsonString("telegram-thread-binding-is-projected-into-session-surfaces"))
     acceptance.add(JsonString("telegram-thread-binding-is-visible-in-dashboard-and-control-ui-session-surfaces"))
     acceptance.add(JsonString("telegram-thread-binding-is-visible-in-control-ui-ws-session-surface"))
+    acceptance.add(JsonString("feishu-multi-account-runtime-diagnostics-are-visible"))
+    acceptance.add(JsonString("feishu-event-ownership-diagnostics-are-actionable-and-redacted"))
+
+    let feishuRuntime = gatewayChannelRuntimeSummary("feishu")
+    let feishuDiagnostics = gatewayFeishuChannelDiagnosticsJson(user, runtime: feishuRuntime)
+    let feishuOwnership = gatewayFeishuDiagObject(feishuDiagnostics, "eventOwnership")
 
     summary.put("closure", closure)
     summary.put("consumers", consumers)
+    let feishuSummary = JsonObject()
+    feishuSummary.put("status", feishuOwnership.get("status") ?? JsonString("not_configured"))
+    feishuSummary.put("accountCount", feishuOwnership.get("accountCount") ?? 0.toJsonValue())
+    feishuSummary.put("byStatus", feishuOwnership.get("byStatus") ?? JsonObject())
+    summary.put("feishuDiagnostics", feishuSummary)
     summary.put("acceptanceCount", acceptance.size().toJsonValue())
     summary.put("remainingCount", remaining.size().toJsonValue())
 
@@ -2313,12 +2649,16 @@ private func gatewayChannelsAuditJson(user: GatewayUserSettings, channelId!: Str
         runtime.put("channelMeta", gatewayChannelMetaJson(user))
         telegramRuntime = gatewayTelegramRuntimeJson(user, liveProbe: true)
         runtime.put("telegram", telegramRuntime)
+        runtime.put("feishu", gatewayFeishuRuntimeViewJson(user, feishuRuntime))
     } else {
         runtime.put("channel", gatewayChannelGetJson(user, normalized))
         runtime.put("summary", gatewayChannelRuntimeSummary(normalized))
         if (normalized == "telegram") {
             telegramRuntime = gatewayTelegramRuntimeJson(user, liveProbe: true)
             runtime.put("telegram", telegramRuntime)
+        }
+        if (normalized == "feishu") {
+            runtime.put("feishu", gatewayFeishuRuntimeViewJson(user, feishuRuntime))
         }
     }
     let telegramDiagnostics = gatewayTelegramDiagnosticsJson(user, runtime: telegramRuntime)
@@ -2328,6 +2668,7 @@ private func gatewayChannelsAuditJson(user: GatewayUserSettings, channelId!: Str
     result.put("summary", summary)
     result.put("runtime", runtime)
     result.put("telegramDiagnostics", telegramDiagnostics)
+    result.put("feishuDiagnostics", feishuDiagnostics)
     result.put("acceptance", acceptance)
     result.put("remaining", remaining)
     return result
@@ -2642,6 +2983,9 @@ public func handleGatewayChannelsFamily(method: String, user: GatewayUserSetting
         result.put("running", ((summary.get("running") ?? 0.toJsonValue()).toJsonString() != "0").toJsonValue())
         if (channelId == "telegram") {
             result.put("telegram", gatewayTelegramRuntimeJson(user, liveProbe: wantsProbe))
+        }
+        if (channelId == "feishu") {
+            result.put("feishu", gatewayFeishuRuntimeViewJson(user, summary))
         }
         return Some(GatewayRpcResponse(true, method, result: result))
     }

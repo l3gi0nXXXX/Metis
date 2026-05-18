@@ -73,30 +73,36 @@ private func gatewayHumanFeishuChannelGetRaw(): String {
         "\"configured\":true," +
         "\"mode\":\"event\"," +
         "\"accountInspect\":{" +
-            "\"defaultAccountId\":\"tenant-a\"," +
+            "\"defaultAccountId\":\"default\"," +
             "\"tokenRedacted\":true," +
             "\"count\":2," +
             "\"accounts\":[" +
                 "{" +
-                    "\"accountId\":\"tenant-a\"," +
+                    "\"accountId\":\"default\"," +
                     "\"defaultAccount\":true," +
                     "\"enabled\":true," +
                     "\"configured\":true," +
-                    "\"credentialSource\":\"account\"," +
+                    "\"credentialSource\":\"global-inherited\"," +
+                    "\"credentialSources\":{\"summary\":\"global-inherited\",\"appId\":\"global-inherited\",\"appSecret\":\"global-inherited\",\"redacted\":true}," +
                     "\"hasAppId\":true," +
                     "\"hasAppSecret\":true," +
-                    "\"appId\":\"cli***123\"," +
+                    "\"appId\":\"cli***ult\"," +
                     "\"appSecret\":\"fake-feishu-secret-never-output\"," +
                     "\"token\":\"fake-feishu-token-never-output\"" +
                 "}," +
                 "{" +
-                    "\"accountId\":\"tenant-b\"," +
+                    "\"accountId\":\"feishu-writer\"," +
                     "\"defaultAccount\":false," +
                     "\"enabled\":true," +
-                    "\"configured\":false," +
-                    "\"credentialSource\":\"missing\"," +
-                    "\"hasAppId\":false," +
-                    "\"hasAppSecret\":false" +
+                    "\"configured\":true," +
+                    "\"credentialSource\":\"account\"," +
+                    "\"credentialSources\":{\"summary\":\"account\",\"appId\":\"account\",\"appSecret\":\"account\",\"redacted\":true}," +
+                    "\"hasAppId\":true," +
+                    "\"hasAppSecret\":true," +
+                    "\"appId\":\"cli***ter\"," +
+                    "\"appSecret\":\"fake-feishu-writer-secret-never-output\"," +
+                    "\"verificationToken\":\"fake-feishu-verification-token-never-output\"," +
+                    "\"encryptKey\":\"fake-feishu-encrypt-key-never-output\"" +
                 "}" +
             "]" +
         "}" +
@@ -187,14 +193,18 @@ public class GatewayCliHumanOutputTest {
         let out = gatewayFormatCommandOutput(gatewayHumanFeishuChannelGetRaw())
         @Expect(out.contains("Channel: feishu"), true)
         @Expect(out.contains("Accounts: 2"), true)
-        @Expect(out.contains("default=tenant-a"), true)
-        @Expect(out.contains("feishu/tenant-a [default]"), true)
-        @Expect(out.contains("feishu/tenant-b"), true)
+        @Expect(out.contains("default=default"), true)
+        @Expect(out.contains("feishu/default [default]"), true)
+        @Expect(out.contains("feishu/feishu-writer"), true)
         @Expect(out.contains("credential=account"), true)
-        @Expect(out.contains("binding=feishu:tenant-a"), true)
-        @Expect(out.contains("binding=feishu:tenant-b"), true)
+        @Expect(out.contains("appId=cli***ter"), true)
+        @Expect(out.contains("binding=feishu:default"), true)
+        @Expect(out.contains("binding=feishu:feishu-writer"), true)
         @Expect(out.contains("fake-feishu-secret-never-output"), false)
+        @Expect(out.contains("fake-feishu-writer-secret-never-output"), false)
         @Expect(out.contains("fake-feishu-token-never-output"), false)
+        @Expect(out.contains("fake-feishu-verification-token-never-output"), false)
+        @Expect(out.contains("fake-feishu-encrypt-key-never-output"), false)
         @Expect(out.contains("\"appSecret\""), false)
         @Expect(out.contains("\"token\""), false)
         @Expect(out.contains("{"), false)
@@ -255,6 +265,95 @@ public class GatewayCliHumanOutputTest {
         @Expect(out.contains("111111111:fake-writer-token"), false)
         @Expect(out.contains("222222222:fake-reviewer-token"), false)
         @Expect(out.contains("\"accountInspect\""), false)
+        @Expect(out.contains("\"accounts\""), false)
+        @Expect(out.contains("{"), false)
+    }
+
+    @TestCase
+    public func formatsFeishuChannelRuntimeWithConfiguredAccountsSeparately(): Unit {
+        let raw = "{\"ok\":true,\"method\":\"channels.runtime\",\"result\":{" +
+            "\"channelId\":\"feishu\"," +
+            "\"defaultAccountId\":\"default\"," +
+            "\"accounts\":[" +
+                "{\"channelId\":\"feishu\",\"accountId\":\"default\",\"running\":true,\"phase\":\"active\",\"pullCount\":1,\"inboundCount\":1,\"sendSuccessCount\":1,\"sendFailureCount\":0}," +
+                "{\"channelId\":\"feishu\",\"accountId\":\"feishu-writer\",\"running\":false,\"phase\":\"failed\",\"pullCount\":0,\"inboundCount\":0,\"sendSuccessCount\":0,\"sendFailureCount\":0,\"lastError\":\"wrong_app app_id mismatch appSecret=fake-feishu-writer-secret-never-output\"}" +
+            "]," +
+            "\"feishu\":{" +
+                "\"accountInspect\":{" +
+                    "\"defaultAccountId\":\"default\"," +
+                    "\"tokenRedacted\":true," +
+                    "\"count\":2," +
+                    "\"accounts\":[" +
+                        "{\"accountId\":\"default\",\"defaultAccount\":true,\"enabled\":true,\"configured\":true,\"credentialSource\":\"global-inherited\",\"appId\":\"cli***ult\",\"appSecret\":\"fake-feishu-secret-never-output\"}," +
+                        "{\"accountId\":\"feishu-writer\",\"defaultAccount\":false,\"enabled\":true,\"configured\":true,\"credentialSource\":\"account\",\"appId\":\"cli***ter\",\"appSecret\":\"fake-feishu-writer-secret-never-output\"}" +
+                    "]" +
+                "}" +
+            "}" +
+        "}}"
+        let out = gatewayFormatCommandOutput(raw)
+        @Expect(out.contains("Channel runtime: feishu"), true)
+        @Expect(out.contains("Runtime accounts:"), true)
+        @Expect(out.contains("feishu/default: running=true"), true)
+        @Expect(out.contains("feishu/feishu-writer: running=false"), true)
+        @Expect(out.contains("lastError: [redacted]"), true)
+        @Expect(out.contains("Configured accounts: 2"), true)
+        @Expect(out.contains("feishu/default [default]"), true)
+        @Expect(out.contains("feishu/feishu-writer"), true)
+        @Expect(out.contains("binding=feishu:default"), true)
+        @Expect(out.contains("binding=feishu:feishu-writer"), true)
+        @Expect(out.contains("fake-feishu-secret-never-output"), false)
+        @Expect(out.contains("fake-feishu-writer-secret-never-output"), false)
+        @Expect(out.contains("\"accounts\""), false)
+        @Expect(out.contains("{"), false)
+    }
+
+    @TestCase
+    public func formatsFeishuAuditDiagnosticsWithoutRawJsonOrSecrets(): Unit {
+        let raw = "{\"ok\":true,\"method\":\"channels.audit\",\"result\":{\"audit\":{" +
+            "\"kind\":\"gateway-channels-audit\"," +
+            "\"summary\":{" +
+                "\"focus\":\"feishu\"," +
+                "\"acceptanceCount\":1," +
+                "\"remainingCount\":0," +
+                "\"feishuDiagnostics\":{" +
+                    "\"status\":\"wrong_app\"," +
+                    "\"accountCount\":2," +
+                    "\"byStatus\":{\"running\":1,\"wrong_app\":1,\"no_event\":1,\"missing_app_id\":1,\"ambiguous_app_id\":1}" +
+                "}" +
+            "}," +
+            "\"feishuDiagnostics\":{" +
+                "\"eventOwnership\":{" +
+                    "\"status\":\"wrong_app\"," +
+                    "\"accountCount\":2," +
+                    "\"accounts\":[" +
+                        "{\"accountId\":\"default\",\"status\":\"running\",\"reason\":\"runtime_seen_event_or_poll_activity\",\"running\":true,\"configured\":true,\"advice\":[\"Runtime is active; if replies are still absent, inspect Gateway.inbound and send-path logs for this account.\"]}," +
+                        "{\"accountId\":\"feishu-writer\",\"status\":\"wrong_app\",\"reason\":\"event_app_id_mismatch\",\"running\":false,\"configured\":true,\"lastError\":\"wrong_app appSecret=fake-feishu-writer-secret-never-output\",\"advice\":[\"Verify the bot being messaged maps to gateway.feishu.accounts.feishu-writer.appId.\"]}" +
+                    "]," +
+                    "\"actions\":[" +
+                        "\"Check that the Feishu console receive mode uses long connection for this app.\"," +
+                        "\"Confirm event subscription includes im.message.receive_v1.\"," +
+                        "\"Confirm the bot is installed in the tenant and joined the target chat.\"," +
+                        "\"Verify the bot being messaged maps to gateway.feishu.accounts.feishu-writer.appId.\"" +
+                    "]" +
+                "}" +
+            "}," +
+            "\"acceptance\":[\"feishu-event-ownership-diagnostics-are-actionable-and-redacted\"]," +
+            "\"remaining\":[]" +
+        "}}}"
+        let out = gatewayFormatCommandOutput(raw)
+        @Expect(out.contains("Channel audit"), true)
+        @Expect(out.contains("Feishu diagnostics: status=wrong_app"), true)
+        @Expect(out.contains("wrongApp=1"), true)
+        @Expect(out.contains("noEvent=1"), true)
+        @Expect(out.contains("ambiguousAppId=1"), true)
+        @Expect(out.contains("missingAppId=1"), true)
+        @Expect(out.contains("feishu/feishu-writer: wrong_app"), true)
+        @Expect(out.contains("gateway.feishu.accounts.feishu-writer.appId"), true)
+        @Expect(out.contains("long connection"), true)
+        @Expect(out.contains("im.message.receive_v1"), true)
+        @Expect(out.contains("bot is installed"), true)
+        @Expect(out.contains("fake-feishu-writer-secret-never-output"), false)
+        @Expect(out.contains("\"feishuDiagnostics\""), false)
         @Expect(out.contains("\"accounts\""), false)
         @Expect(out.contains("{"), false)
     }
