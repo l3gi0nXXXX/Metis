@@ -7,12 +7,13 @@ import metis.core.memory.memorySessionStoreForGatewayUser
 
 import magic.core.message.Message
 import magic.core.model.{AsyncChatResponse, ChatModel, ChatRequest, ChatResponse}
+import magic.config.Config
 import magic.jsonable.*
 import magic.model.ModelManager
 
 import std.collection.{ArrayList, HashMap}
 import std.env.{getVariable, setVariable}
-import std.fs.{Directory, File, Path, remove}
+import std.fs.{Directory, File, Path, exists, remove}
 import std.time.DateTime
 import std.unittest.testmacro.*
 import stdx.encoding.json.{JsonArray, JsonBool, JsonInt, JsonObject, JsonString, JsonValue}
@@ -251,6 +252,29 @@ private func withGatewayTelegramNativeTestHome<T>(block: () -> T): T {
     }
 }
 
+private func withGatewayTelegramNativeLogCapture<T>(name: String, block: (String) -> T): T {
+    let oldLevel = Config.logLevel
+    let oldFile = Config.logFile
+    let path = "/tmp/metis-gateway-telegram-native-${name}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}.log"
+    try { remove(Path(path), recursive: true) } catch (_: Exception) { () }
+    Config.logLevel = "info"
+    Config.logFile = path
+    try {
+        return block(path)
+    } finally {
+        Config.logLevel = oldLevel
+        Config.logFile = oldFile
+        try { remove(Path(path), recursive: true) } catch (_: Exception) { () }
+    }
+}
+
+private func gatewayTelegramNativeReadLog(path: String): String {
+    if (!exists(Path(path))) {
+        return ""
+    }
+    String.fromUtf8(File.readFrom(Path(path)))
+}
+
 private func gatewayTelegramNativeService(adapter: GatewayTelegramNativeTestAdapter): GatewayService {
     let policies = HashMap<String, ChannelPolicyConfig>()
     policies["telegram"] = ChannelPolicyConfig(enableDirect: true, allowFrom: ["*"])
@@ -404,6 +428,50 @@ public class GatewayServiceTelegramSendDiagnosticsTest {
 
 @Test
 public class GatewayServiceTelegramNativeTest {
+    @TestCase
+    public func gatewayMessageFlowLogsStructuredEventsWithoutInfoTextBody(): Unit {
+        withGatewayTelegramNativeTestHome {
+            withGatewayTelegramNativeLogCapture("message-flow", { path =>
+                let modelName = "metis-test-telegram-logging-${DateTime.now().toUnixTimeStamp().toMilliseconds()}"
+                ModelManager.registerChatModel(modelName, { => GatewayTelegramNativeFakeModel() })
+                let oldModel = CliConfig.model
+                CliConfig.model = modelName
+                try {
+                    var user = GatewayUserSettings()
+                    user.telegram.enabled = true
+                    user.telegram.allowFrom = ["*"]
+                    CliSettingManager.writeGatewaySettings(user)
+
+                    let adapter = GatewayTelegramNativeTestAdapter()
+                    let service = gatewayTelegramNativeService(adapter)
+                    service.start()
+                    adapter.queue("secret message body")
+                    service.processOnce()
+
+                    let log = gatewayTelegramNativeReadLog(path)
+                    var foundAnswer = false
+                    for (i in 0..adapter.sentCount()) {
+                        if (adapter.sentText(i) == "fake telegram native session answer") {
+                            foundAnswer = true
+                        }
+                    }
+                    @Expect(foundAnswer, true)
+                    @Expect(log.contains("event=message.inbound"), true)
+                    @Expect(log.contains("event=message.routed"), true)
+                    @Expect(log.contains("event=message.reply.generated"), true)
+                    @Expect(log.contains("event=message.outbound"), true)
+                    @Expect(log.contains("event=message.sent"), true)
+                    @Expect(log.contains("textLen=19"), true)
+                    @Expect(log.contains("secret message body"), false)
+                    @Expect(log.contains("senderHash="), true)
+                    @Expect(log.contains("peerHash="), true)
+                } finally {
+                    CliConfig.model = oldModel
+                }
+            })
+        }
+    }
+
     @TestCase
     public func telegramReactionSystemEventBypassesModelAndWritesTranscript(): Unit {
         withGatewayTelegramNativeTestHome {

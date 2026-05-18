@@ -44,6 +44,101 @@ private func gatewayCliTimingLog(flow: String, step: String, startMs: Int64): Un
     LogUtils.info(gatewayCliTimingMessage(flow, step, startMs))
 }
 
+private func gatewayShellJsonString(obj: JsonObject, key: String, defaultValue!: String = ""): String {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asString().getValue().trimAscii() } catch (_e: Exception) { defaultValue }
+        case None => defaultValue
+    }
+}
+
+private func gatewayShellJsonBool(obj: JsonObject, key: String, defaultValue!: Bool = false): Bool {
+    match (obj.get(key)) {
+        case Some(v) => try { v.asBool().getValue() } catch (_e: Exception) { defaultValue }
+        case None => defaultValue
+    }
+}
+
+public func gatewayShellStartupIntroLines(
+    authMode: String,
+    model: String,
+    logFile: String,
+    httpUrl: String,
+    controlUiUrl: String,
+    verbose!: Bool = false
+): Array<String> {
+    let lines = ArrayList<String>()
+    lines.add("[gateway] config loaded")
+    lines.add("[gateway] auth mode: ${authMode.trimAscii()}")
+    lines.add("[gateway] model: ${model.trimAscii()}")
+    lines.add("[gateway] log file: ${logFile.trimAscii()}")
+    if (!httpUrl.trimAscii().isEmpty()) {
+        lines.add("[gateway] HTTP: ${httpUrl.trimAscii()}")
+    }
+    if (!controlUiUrl.trimAscii().isEmpty()) {
+        lines.add("[gateway] Control UI: ${controlUiUrl.trimAscii()}")
+    }
+    if (verbose) {
+        lines.add("[gateway] verbose runtime output enabled")
+    }
+    lines.toArray()
+}
+
+public func gatewayShellReadySummaryLines(
+    model: String,
+    logFile: String,
+    httpUrl: String,
+    controlUiUrl: String,
+    channelSnapshot: JsonObject,
+    durationMs: Int64,
+    verbose!: Bool = false
+): Array<String> {
+    let lines = ArrayList<String>()
+    lines.add("[gateway] ready in ${durationMs}ms")
+    lines.add("[gateway] model: ${model.trimAscii()}")
+    lines.add("[gateway] log file: ${logFile.trimAscii()}")
+    if (!httpUrl.trimAscii().isEmpty()) {
+        lines.add("[gateway] HTTP: ${httpUrl.trimAscii()}")
+    }
+    if (!controlUiUrl.trimAscii().isEmpty()) {
+        lines.add("[gateway] Control UI: ${controlUiUrl.trimAscii()}")
+    }
+    let channelAccounts = match (channelSnapshot.get("channelAccounts")) {
+        case Some(v) => try { v.asObject() } catch (_e: Exception) { JsonObject() }
+        case None => JsonObject()
+    }
+    for (channelId in channelAccounts.getFields().keys()) {
+        let accounts = try { channelAccounts.getFields()[channelId].asArray() } catch (_e: Exception) { JsonArray([]) }
+        for (i in 0..accounts.size()) {
+            let row = try { accounts[i].asObject() } catch (_e: Exception) { JsonObject() }
+            let accountId = gatewayShellJsonString(row, "accountId", defaultValue: "default")
+            let configured = gatewayShellJsonBool(row, "configured", defaultValue: true)
+            let running = gatewayShellJsonBool(row, "running")
+            let connected = gatewayShellJsonBool(row, "connected")
+            let lastError = gatewayShellJsonString(row, "lastError")
+            let status = if (!configured) {
+                "not-configured"
+            } else if (!lastError.isEmpty()) {
+                "failed"
+            } else if (running || connected) {
+                "running"
+            } else {
+                "waiting"
+            }
+            lines.add("[gateway] channel ${channelId}/${accountId} ${status}")
+            if (verbose && !lastError.isEmpty()) {
+                lines.add("[gateway] channel ${channelId}/${accountId} error: ${lastError}")
+            }
+        }
+    }
+    lines.toArray()
+}
+
+public func gatewayShellPrintLines(lines: Array<String>): Unit {
+    for (line in lines) {
+        PrintUtils.printLine(line)
+    }
+}
+
 public func gatewayRestartConfigValidationMessage(): Option<String> {
     match (MetisConfigManager.currentConfigParseError()) {
         case Some(parseError) =>
@@ -382,12 +477,25 @@ private func gatewayRunMediaImageCli(sub: Array<String>): Int64 {
     1
 }
 
-private func gatewayRunForeground(flowName!: String = "run"): Int64 {
+private func gatewayRunForeground(flowName!: String = "run", verbose!: Bool = false): Int64 {
     let startMs = gatewayCliNowMs()
     gatewayCliTimingLog(flowName, "enter", startMs)
-    PrintUtils.printLine("[gateway] model: ${CliConfig.model}")
-    PrintUtils.printLine("[gateway] log file: ${Config.logFile}")
-    runGatewayService()
+    let user = CliSettingManager.readGatewaySettings()
+    let cfg = buildGatewayConfigFromUserSettings(user)
+    let controlUiUrl = if (cfg.controlUi.enabled) {
+        GatewayControlUiRuntime.controlUiSnapshot(cfg).httpUrl
+    } else {
+        ""
+    }
+    gatewayShellPrintLines(gatewayShellStartupIntroLines(
+        cfg.auth.mode,
+        CliConfig.model,
+        Config.logFile,
+        GatewayHttpSurface.baseUrl(cfg),
+        controlUiUrl,
+        verbose: verbose
+    ))
+    runGatewayService(verbose: verbose)
     gatewayCliTimingLog(flowName, "exit", startMs)
     0
 }
@@ -1204,7 +1312,7 @@ public func runGatewayCli(sub: Array<String>): Int64 {
 
     let cmd = sub[0]
     if (cmd == "run") {
-        return gatewayRunForeground(flowName: "run")
+        return gatewayRunForeground(flowName: "run", verbose: sub.contains("--verbose"))
     }
     if (cmd == "status") {
         gatewayActionsPrintStatus()
@@ -1246,7 +1354,7 @@ public func runGatewayCli(sub: Array<String>): Int64 {
         return 0
     }
     if (cmd == "serve") {
-        return gatewayRunForeground(flowName: "serve")
+        return gatewayRunForeground(flowName: "serve", verbose: sub.contains("--verbose"))
     }
     if (cmd == "stop") {
         return gatewayExecuteStopServe()

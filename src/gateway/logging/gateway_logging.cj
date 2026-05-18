@@ -30,7 +30,12 @@ public class MetisLogEvent {
     public static const channelStarted: String = "channel.started"
     public static const channelFailed: String = "channel.failed"
     public static const channelStopped: String = "channel.stopped"
+    public static const channelTiming: String = "channel.timing"
+    public static const channelStartupSummary: String = "channel.startup_summary"
+    public static const channelPull: String = "channel.pull"
+    public static const channelSend: String = "channel.send"
     public static const messageInbound: String = "message.inbound"
+    public static const messageInboundPreview: String = "message.inbound.preview"
     public static const messageRouted: String = "message.routed"
     public static const messageReplyGenerated: String = "message.reply.generated"
     public static const messageOutbound: String = "message.outbound"
@@ -46,9 +51,10 @@ public class MetisLogEvent {
     public static func all(): Array<String> {
         [
             gatewayStarting, gatewayReady, gatewayShutdown, channelRegistered, channelStarting,
-            channelStarted, channelFailed, channelStopped, messageInbound, messageRouted,
-            messageReplyGenerated, messageOutbound, messageSent, messageSendFailed, modelRequest,
-            modelResponse, modelFailed, rpcSlow, rpcFailed, loggingRaw
+            channelStarted, channelFailed, channelStopped, channelTiming, channelStartupSummary,
+            channelPull, channelSend, messageInbound, messageInboundPreview, messageRouted,
+            messageReplyGenerated, messageOutbound, messageSent, messageSendFailed,
+            modelRequest, modelResponse, modelFailed, rpcSlow, rpcFailed, loggingRaw
         ]
     }
 }

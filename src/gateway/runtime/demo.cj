@@ -1,13 +1,14 @@
 package metis.gateway.runtime
 
 import metis.core.{gatewayClearSubagentNoticeDeliveryHook, gatewayClearSubagentNoticeEventHook, gatewayRegisterSubagentNoticeDeliveryHook}
-import metis.core.config.{CliSettingManager, MetisConfigManager, MetisConfigWriteNotificationListener}
+import metis.core.config.{CliConfig, CliSettingManager, MetisConfigManager, MetisConfigWriteNotificationListener}
 import metis.gateway.config.buildGatewayConfigFromUserSettings
 import metis.gateway.gatewayPrepareStartupAuth
 import metis.gateway.core.gatewayLogProcessMemory
 import metis.core.memory.{DreamingPhaseRuntime, MemoryRuntime}
 import metis.io.PrintUtils
 import metis.gateway.model.ChatType
+import magic.config.Config
 import magic.log.LogUtils
 import std.time.*
 import stdx.encoding.json.JsonObject
@@ -102,7 +103,7 @@ public func runGatewayP1DemoWithFeishuWebhook(): Unit {
  * 常驻模式：启动网关并循环处理消息。
  * 配置来自 `~/.metis/metis.json` 的 `gateway` 与可选环境变量；总开关为 `gateway.enabled`。
  */
-public func runGatewayService(): Unit {
+public func runGatewayService(verbose!: Bool = false): Unit {
     let startMs = gatewayServeNowMs()
     gatewayServeTimingLog("enter", startMs)
     let persistedUser = CliSettingManager.readGatewaySettings()
@@ -193,6 +194,15 @@ public func runGatewayService(): Unit {
         gatewayServeTimingLog("gateway-start-begin", startMs)
         gateway.start()
         gatewayRuntimeMarkRunning()
+        gatewayShellPrintLines(gatewayShellReadySummaryLines(
+            CliConfig.model,
+            Config.logFile,
+            GatewayHttpSurface.baseUrl(gatewayCfg),
+            if (gatewayCfg.controlUi.enabled) { GatewayControlUiRuntime.controlUiSnapshot(gatewayCfg).httpUrl } else { "" },
+            gateway.liveChannelSnapshot(),
+            gatewayServeNowMs() - startMs,
+            verbose: verbose
+        ))
         gatewayServeTimingLog("gateway-start-done", startMs)
         let reloadSnapshot = readGatewayConfigSnapshot()
         let reloadRoot = if (reloadSnapshot.valid) { reloadSnapshot.root } else { JsonObject() }

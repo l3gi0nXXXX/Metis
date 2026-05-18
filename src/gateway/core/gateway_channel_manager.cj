@@ -1,8 +1,8 @@
 package metis.gateway.core
 
+import metis.gateway.logging.metisCreateSubsystemLogger
 import metis.gateway.model.*
 import magic.jsonable.*
-import magic.log.LogUtils
 
 import std.collection.{ArrayList, HashMap}
 import std.convert.Parsable
@@ -48,6 +48,69 @@ public func gatewaySanitizeChannelDiagnostic(raw: String): String {
         return "[redacted sensitive error]"
     }
     detail
+}
+
+public func gatewayLogEventValue(raw: String): String {
+    var detail = gatewaySanitizeChannelDiagnostic(raw)
+    if (detail.size > 160) {
+        detail = detail[0..160] + "..."
+    }
+    "\"" + detail.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+}
+
+public func gatewayLogIdentityHash(raw: String): String {
+    let detail = raw.trimAscii()
+    if (detail.isEmpty()) {
+        return "redacted-len-0"
+    }
+    "redacted-len-${detail.size}"
+}
+
+public func gatewayLogEventLine(subsystem: String, event: String, summary: String, fields!: String = ""): String {
+    let tail = fields.trimAscii()
+    if (tail.isEmpty()) {
+        return "Gateway.event subsystem=${subsystem} event=${event} message=${gatewayLogEventValue(summary)}"
+    }
+    "Gateway.event subsystem=${subsystem} event=${event} message=${gatewayLogEventValue(summary)} ${tail}"
+}
+
+public func gatewayLogEventInfo(subsystem: String, event: String, summary: String, fields!: String = ""): Unit {
+    let meta = JsonObject()
+    if (!fields.trimAscii().isEmpty()) {
+        meta.put("fields", JsonString(fields.trimAscii()))
+    }
+    metisCreateSubsystemLogger(subsystem).info(
+        event,
+        summary,
+        meta: meta,
+        consoleMessage: gatewayLogEventLine(subsystem, event, summary, fields: fields)
+    )
+}
+
+public func gatewayLogEventDebug(subsystem: String, event: String, summary: String, fields!: String = ""): Unit {
+    let meta = JsonObject()
+    if (!fields.trimAscii().isEmpty()) {
+        meta.put("fields", JsonString(fields.trimAscii()))
+    }
+    metisCreateSubsystemLogger(subsystem).debug(
+        event,
+        summary,
+        meta: meta,
+        consoleMessage: gatewayLogEventLine(subsystem, event, summary, fields: fields)
+    )
+}
+
+public func gatewayLogEventError(subsystem: String, event: String, summary: String, fields!: String = ""): Unit {
+    let meta = JsonObject()
+    if (!fields.trimAscii().isEmpty()) {
+        meta.put("fields", JsonString(fields.trimAscii()))
+    }
+    metisCreateSubsystemLogger(subsystem).error(
+        event,
+        summary,
+        meta: meta,
+        consoleMessage: gatewayLogEventLine(subsystem, event, summary, fields: fields)
+    )
 }
 
 private class GatewayChannelLiveAccountState {
@@ -161,13 +224,20 @@ public class GatewayChannelManager {
         let elapsedMs = this.timingNowMs() - startMs
         let channelPart = if (channelId.trimAscii().isEmpty()) { "" } else { " channel=${channelId}" }
         let accountPart = if (accountId.trimAscii().isEmpty()) { "" } else { " account=${accountId}" }
-        LogUtils.info("Gateway.channel.timing: step=${step}${channelPart}${accountPart} elapsedMs=${elapsedMs}")
+        gatewayLogEventDebug(
+            "gateway/channel",
+            "channel.timing",
+            "channel timing",
+            fields: "phase=${step}${channelPart}${accountPart} durationMs=${elapsedMs}"
+        )
         let scope = if (channelId.trimAscii().isEmpty()) {
             "channel:${step}"
         } else {
             "channel:${channelId}:${step}"
         }
-        gatewayLogProcessMemory(scope, note: "account=${accountId.trimAscii()}, elapsedMs=${elapsedMs}")
+        if (metisCreateSubsystemLogger("gateway/channel").isEnabled("debug", target: "file")) {
+            gatewayLogProcessMemory(scope, note: "account=${accountId.trimAscii()}, elapsedMs=${elapsedMs}")
+        }
     }
 
     private func liveKey(channelId: String, accountId: String): String {
@@ -285,8 +355,20 @@ public class GatewayChannelManager {
             let runtime = gatewayChannelRuntimeAccountsJson(entry.channelId)
             let row = JsonObject()
             row.put("accounts", runtime)
+            gatewayLogEventInfo(
+                "gateway/channel/${entry.channelId}",
+                "channel.starting",
+                "channel account start skipped",
+                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=skipped reason=runtime-start-suppressed"
+            )
             return this.lifecycleAccountRow(entry, false, "skipped", "runtime-start-suppressed", row)
         }
+        gatewayLogEventInfo(
+            "gateway/channel/${entry.channelId}",
+            "channel.starting",
+            "channel account starting",
+            fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=starting"
+        )
         gatewayChannelRuntimeMarkStarting(entry.channelId, accountId: entry.accountId)
         try {
             entry.adapter.start()
@@ -297,6 +379,12 @@ public class GatewayChannelManager {
                 state.lastError = ""
             })
             let runtime = gatewayChannelRuntimeMarkRunning(entry.channelId, accountId: entry.accountId)
+            gatewayLogEventInfo(
+                "gateway/channel/${entry.channelId}",
+                "channel.started",
+                "channel account running",
+                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=ok"
+            )
             return this.lifecycleAccountRow(entry, true, "started", "", runtime)
         } catch (e: Exception) {
             let reason = gatewaySanitizeChannelDiagnostic(e.message)
@@ -307,7 +395,12 @@ public class GatewayChannelManager {
                 state.lastError = reason
             })
             let runtime = gatewayChannelRuntimeMarkFailure(entry.channelId, accountId: entry.accountId, lifecycleState: "failed", error: reason)
-            LogUtils.error("Gateway.channel.start failed: channel=${entry.channelId} account=${entry.accountId} err=${reason}")
+            gatewayLogEventError(
+                "gateway/channel/${entry.channelId}",
+                "channel.failed",
+                "channel account start failed",
+                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=failed errorKind=start_failed error=${gatewayLogEventValue(reason)}"
+            )
             return this.lifecycleAccountRow(entry, false, "not-started", reason, runtime)
         }
     }
@@ -325,6 +418,12 @@ public class GatewayChannelManager {
                 state.lastError = if (manualStop) { "" } else { reason.trimAscii() }
             })
             let runtime = gatewayChannelRuntimeMarkStopped(entry.channelId, accountId: entry.accountId, reason: reason, manualStop: manualStop)
+            gatewayLogEventInfo(
+                "gateway/channel/${entry.channelId}",
+                "channel.stopped",
+                "channel account stopped",
+                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=stop status=ok reason=${gatewayLogEventValue(reason)}"
+            )
             return this.lifecycleAccountRow(entry, true, "stopped", "", runtime)
         } catch (e: Exception) {
             let safeReason = gatewaySanitizeChannelDiagnostic(e.message)
@@ -334,7 +433,12 @@ public class GatewayChannelManager {
                 state.lastError = safeReason
             })
             let runtime = gatewayChannelRuntimeMarkFailure(entry.channelId, accountId: entry.accountId, lifecycleState: "failed", error: safeReason)
-            LogUtils.error("Gateway.channel.stop failed: channel=${entry.channelId} account=${entry.accountId} err=${safeReason}")
+            gatewayLogEventError(
+                "gateway/channel/${entry.channelId}",
+                "channel.failed",
+                "channel account stop failed",
+                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=stop status=failed errorKind=stop_failed error=${gatewayLogEventValue(safeReason)}"
+            )
             return this.lifecycleAccountRow(entry, false, "not-stopped", safeReason, runtime)
         }
     }
@@ -536,6 +640,12 @@ public class GatewayChannelManager {
             accountId: registered.accountId,
             enabled: registered.healthMonitorEnabled
         )
+        gatewayLogEventInfo(
+            "gateway/channel",
+            "channel.registered",
+            "channel account registered",
+            fields: "channel=${registered.channelId} accountId=${registered.accountId} phase=register status=ok configured=${registered.configured} enabled=${registered.enabled}"
+        )
     }
 
     public func getAdapter(name: String): Option<ChannelAdapter> {
@@ -613,9 +723,21 @@ public class GatewayChannelManager {
     private func startEntry(entry: GatewayRegisteredAdapter): Unit {
         let entryStartMs = this.timingNowMs()
         if (!gatewayChannelRuntimeCanStart(entry.channelId, accountId: entry.accountId)) {
+            gatewayLogEventInfo(
+                "gateway/channel/${entry.channelId}",
+                "channel.starting",
+                "channel account start skipped",
+                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=skipped reason=runtime-start-suppressed"
+            )
             this.timingLog("skip-cannot-start", entryStartMs, channelId: entry.channelId, accountId: entry.accountId)
             return
         }
+        gatewayLogEventInfo(
+            "gateway/channel/${entry.channelId}",
+            "channel.starting",
+            "channel account starting",
+            fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=starting"
+        )
         this.timingLog("can-start-checked", entryStartMs, channelId: entry.channelId, accountId: entry.accountId)
         gatewayChannelRuntimeMarkStarting(entry.channelId, accountId: entry.accountId)
         this.timingLog("marked-starting", entryStartMs, channelId: entry.channelId, accountId: entry.accountId)
@@ -633,6 +755,12 @@ public class GatewayChannelManager {
             gatewayChannelRuntimeMarkRunning(entry.channelId, accountId: entry.accountId)
             this.timingLog("start", adapterStartMs, channelId: entry.channelId, accountId: entry.accountId)
             this.timingLog("entry-total", entryStartMs, channelId: entry.channelId, accountId: entry.accountId)
+            gatewayLogEventInfo(
+                "gateway/channel/${entry.channelId}",
+                "channel.started",
+                "channel account running",
+                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=ok durationMs=${this.timingNowMs() - entryStartMs}"
+            )
         } catch (e: Exception) {
             this.updateLiveAccount(entry.channelId, entry.accountId, { state =>
                 state.configured = entry.configured
@@ -641,7 +769,12 @@ public class GatewayChannelManager {
                 state.lastError = e.message.trimAscii()
             })
             gatewayChannelRuntimeMarkFailure(entry.channelId, accountId: entry.accountId, lifecycleState: "failed", error: e.message)
-            LogUtils.error("Gateway.channel.start failed: channel=${entry.channelId} account=${entry.accountId} err=${e.message}")
+            gatewayLogEventError(
+                "gateway/channel/${entry.channelId}",
+                "channel.failed",
+                "channel account start failed",
+                fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=start status=failed errorKind=start_failed error=${gatewayLogEventValue(e.message)}"
+            )
             this.timingLog("start-failed", adapterStartMs, channelId: entry.channelId, accountId: entry.accountId)
             this.timingLog("entry-total-failed", entryStartMs, channelId: entry.channelId, accountId: entry.accountId)
         }
@@ -657,6 +790,12 @@ public class GatewayChannelManager {
         }
         this.started = true
         this.timingLog("startChannels-total", startMs)
+        gatewayLogEventInfo(
+            "gateway/channel",
+            "channel.startup_summary",
+            "channel startup completed",
+            fields: "phase=start status=ok accountCount=${this.adapters.size} durationMs=${this.timingNowMs() - startMs}"
+        )
     }
 
     public func startChannel(channelId: String, accountId!: String = ""): JsonObject {
@@ -699,6 +838,12 @@ public class GatewayChannelManager {
                     state.lastError = if (manualStop) { "" } else { reason.trimAscii() }
                 })
                 gatewayChannelRuntimeMarkStopped(entry.channelId, accountId: entry.accountId, reason: reason, manualStop: manualStop)
+                gatewayLogEventInfo(
+                    "gateway/channel/${entry.channelId}",
+                    "channel.stopped",
+                    "channel account stopped",
+                    fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=stop status=ok reason=${gatewayLogEventValue(reason)}"
+                )
             } catch (e: Exception) {
                 this.updateLiveAccount(entry.channelId, entry.accountId, { state =>
                     state.running = false
@@ -706,7 +851,12 @@ public class GatewayChannelManager {
                     state.lastError = e.message.trimAscii()
                 })
                 gatewayChannelRuntimeMarkFailure(entry.channelId, accountId: entry.accountId, lifecycleState: "failed", error: e.message)
-                LogUtils.error("Gateway.channel.stop failed: channel=${entry.channelId} account=${entry.accountId} err=${e.message}")
+                gatewayLogEventError(
+                    "gateway/channel/${entry.channelId}",
+                    "channel.failed",
+                    "channel account stop failed",
+                    fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=stop status=failed errorKind=stop_failed error=${gatewayLogEventValue(e.message)}"
+                )
             }
         }
         this.started = false
@@ -780,6 +930,12 @@ public class GatewayChannelManager {
                     })
                 }
                 gatewayChannelRuntimeMarkPull(entry.channelId, accountId: entry.accountId, inboundCount: Int64(messages.size))
+                gatewayLogEventInfo(
+                    "gateway/channel/${entry.channelId}",
+                    "channel.pull",
+                    "channel pull completed",
+                    fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=pull status=ok inboundCount=${messages.size}"
+                )
                 for (message in messages) {
                     try {
                         handleInbound(message, entry.accountId)
@@ -790,8 +946,11 @@ public class GatewayChannelManager {
                             state.lastError = e.message.trimAscii()
                         })
                         gatewayChannelRuntimeMarkInboundFailure(entry.channelId, accountId: entry.accountId, error: e.message)
-                        LogUtils.error(
-                            "Gateway.handleInbound failed: channel=${channelToString(message.channel)} peer=${message.peerId} err=${e.message}"
+                        gatewayLogEventError(
+                            "gateway/channel/${entry.channelId}",
+                            "channel.failed",
+                            "channel inbound handler failed",
+                            fields: "channel=${channelToString(message.channel)} accountId=${entry.accountId} phase=inbound status=failed peerHash=${gatewayLogIdentityHash(message.peerId)} errorKind=inbound_failed error=${gatewayLogEventValue(e.message)}"
                         )
                     }
                 }
@@ -802,7 +961,12 @@ public class GatewayChannelManager {
                     state.lastError = e.message.trimAscii()
                 })
                 gatewayChannelRuntimeMarkFailure(entry.channelId, accountId: entry.accountId, lifecycleState: "backoff", error: e.message, backoffMs: 1000)
-                LogUtils.error("Gateway.channel.pull failed: channel=${entry.channelId} account=${entry.accountId} err=${e.message}")
+                gatewayLogEventError(
+                    "gateway/channel/${entry.channelId}",
+                    "channel.failed",
+                    "channel pull failed",
+                    fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=pull status=failed errorKind=pull_failed error=${gatewayLogEventValue(e.message)}"
+                )
             }
         }
     }
@@ -832,6 +996,12 @@ public class GatewayChannelManager {
                         state.lastError = ""
                     })
                     gatewayChannelRuntimeMarkSend(entry.channelId, accountId: entry.accountId, success: true)
+                    gatewayLogEventInfo(
+                        "gateway/channel/${entry.channelId}",
+                        "channel.send",
+                        "channel send completed",
+                        fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=send status=ok peerHash=${gatewayLogIdentityHash(outbound.peerId)} textLen=${outbound.text.size}"
+                    )
                     return GatewayChannelSendResult(true, rawAccountId: rawAccountId, canonicalAccountId: requiredAccountId)
                 case SendResult.Failed(reason) =>
                     let safeReason = gatewaySanitizeChannelDiagnostic(reason)
@@ -839,6 +1009,12 @@ public class GatewayChannelManager {
                         state.lastError = safeReason
                     })
                     gatewayChannelRuntimeMarkSend(entry.channelId, accountId: entry.accountId, success: false, detail: safeReason)
+                    gatewayLogEventError(
+                        "gateway/channel/${entry.channelId}",
+                        "channel.failed",
+                        "channel send failed",
+                        fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=send status=failed peerHash=${gatewayLogIdentityHash(outbound.peerId)} textLen=${outbound.text.size} errorKind=send_failed error=${gatewayLogEventValue(safeReason)}"
+                    )
                     lastReason = "adapter send failed for channel='${normalized}' rawAccountId='${rawAccountId}' canonicalAccountId='${requiredAccountId}': ${safeReason}"
             }
         }
@@ -879,6 +1055,12 @@ public class GatewayChannelManager {
                         state.lastError = ""
                     })
                     gatewayChannelRuntimeMarkSend(entry.channelId, accountId: entry.accountId, success: true)
+                    gatewayLogEventInfo(
+                        "gateway/channel/${entry.channelId}",
+                        "channel.send",
+                        "channel direct send completed",
+                        fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=send status=ok peerHash=${gatewayLogIdentityHash(outbound.peerId)} textLen=${outbound.text.size} messageId=${gatewayLogEventValue(sentMessageId)}"
+                    )
                     return GatewayChannelSendResult(
                         true,
                         messageId: sentMessageId,
@@ -893,6 +1075,12 @@ public class GatewayChannelManager {
                     state.lastError = safeReason
                 })
                 gatewayChannelRuntimeMarkSend(entry.channelId, accountId: entry.accountId, success: false, detail: safeReason)
+                gatewayLogEventError(
+                    "gateway/channel/${entry.channelId}",
+                    "channel.failed",
+                    "channel direct send failed",
+                    fields: "channel=${entry.channelId} accountId=${entry.accountId} phase=send status=failed peerHash=${gatewayLogIdentityHash(outbound.peerId)} textLen=${outbound.text.size} errorKind=send_failed error=${gatewayLogEventValue(safeReason)}"
+                )
                 return GatewayChannelSendResult(
                     false,
                     lastReason: "direct adapter send failed for channel='${normalized}' rawAccountId='${rawAccountId}' canonicalAccountId='${requiredAccountId}': ${safeReason}",
